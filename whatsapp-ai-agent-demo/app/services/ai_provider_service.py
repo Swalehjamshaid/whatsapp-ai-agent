@@ -1,27 +1,16 @@
 """
 File: app/services/ai_provider_service.py
-Version: 28.0 - ENTERPRISE AI ROUTER WITH FULL INTELLIGENCE
+Version: 30.0 - ENTERPRISE AI ORCHESTRATOR
 
-Single entry point for the WhatsApp AI agent. Enterprise-grade routing with:
-- Intent Detection (100+ intents)
-- Entity Recognition (20+ entity types)
-- Multi-Intent Support
-- Cross-Service Analytics
-- Context Memory
-- Semantic Routing
-- AI Recommendations
-- Executive Analytics
-- Universal Search
-
-ROUTING FLOW (Priority Order):
-1. Menu Number (0-9) → Direct to specific service
-2. DN Number (8-12 digits) → DN Analysis
-3. Multi-Intent → Multiple services → Merged response
-4. Entity-based routing (CITY FIRST)
-5. Intent-based routing
-6. Semantic routing
-7. Context-aware routing
-8. AI fallback
+Enterprise-grade AI router with pipeline architecture:
+- Intent Detection (hybrid: rules + semantic + AI)
+- Entity Recognition (spaCy + RapidFuzz + PostgreSQL)
+- Context Memory (session-based with TTL)
+- Service Registry (dynamic service registration)
+- Multi-Intent Planner
+- Confidence-Based Routing
+- Analytics-First Execution
+- AI Fallback Only When Needed
 
 Status: ENTERPRISE READY
 """
@@ -29,6 +18,7 @@ Status: ENTERPRISE READY
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import logging
 import re
@@ -37,22 +27,69 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union, Set, Tuple
+from typing import Any, Dict, List, Optional, Union, Set, Tuple, Callable
+from functools import lru_cache
+
+from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
 
 # =====================================================================================================================
-# AI BOOTSTRAP SERVICE - LAZY LOADING
+# OPTIONAL DEPENDENCIES - GRACEFUL FALLBACKS
 # =====================================================================================================================
 
+# NLP Libraries
 try:
-    from app.services.ai_bootstrap_service import get_ai_bootstrap_service, warmup_ai_resources
-    BOOTSTRAP_AVAILABLE = True
-    warmup_ai_resources(include_heavy=False)
-    logger.info("✅ AI Bootstrap Service connected and warmed up")
+    import spacy
+    SPACY_AVAILABLE = True
+    try:
+        nlp = spacy.load("en_core_web_sm")
+    except:
+        nlp = None
+        logger.warning("spaCy model not loaded")
 except ImportError:
-    BOOTSTRAP_AVAILABLE = False
-    logger.warning("⚠️ AI Bootstrap Service not available")
+    SPACY_AVAILABLE = False
+    nlp = None
+    logger.warning("spaCy not available")
+
+# Fuzzy Matching
+try:
+    from rapidfuzz import fuzz, process
+    RAPIDFUZZ_AVAILABLE = True
+except ImportError:
+    RAPIDFUZZ_AVAILABLE = False
+    logger.warning("RapidFuzz not available")
+
+# Semantic Search
+try:
+    from sentence_transformers import SentenceTransformer
+    SEMANTIC_AVAILABLE = True
+    semantic_model = None
+    try:
+        semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
+    except:
+        logger.warning("Semantic model not loaded")
+except ImportError:
+    SEMANTIC_AVAILABLE = False
+    semantic_model = None
+    logger.warning("Sentence Transformers not available")
+
+# AI Fallback
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+    logger.warning("Groq not available")
+
+# =====================================================================================================================
+# CONFIGURATION
+# =====================================================================================================================
+
+CONFIDENCE_THRESHOLD = float(os.getenv("ROUTER_CONFIDENCE_THRESHOLD", "0.70"))
+SESSION_TTL = int(os.getenv("SESSION_TTL_SECONDS", "3600"))
+CACHE_TTL = int(os.getenv("ROUTER_CACHE_TTL", "300"))
+ENABLE_AI_FALLBACK = os.getenv("ENABLE_AI_FALLBACK", "true").lower() == "true"
 
 # =====================================================================================================================
 # ENUMS
@@ -69,76 +106,47 @@ class EntityType(Enum):
     DIVISION = "division"
     SALES_OFFICE = "sales_office"
     REGION = "region"
-    PROVINCE = "province"
     TRANSPORTER = "transporter"
     VEHICLE = "vehicle"
     DRIVER = "driver"
-    WAREHOUSE_CODE = "warehouse_code"
-    DEALER_CODE = "dealer_code"
-    CUSTOMER_CODE = "customer_code"
-    MATERIAL_NUMBER = "material_number"
     ROUTE = "route"
-    SALES_MANAGER = "sales_manager"
-    DELIVERY_LOCATION = "delivery_location"
     DATE = "date"
     MONTH = "month"
     YEAR = "year"
 
-class IntentCategory(Enum):
-    """Intent categories"""
+class IntentType(Enum):
+    """Intent types"""
     DASHBOARD = "dashboard"
-    SUMMARY = "summary"
-    PERFORMANCE = "performance"
     REVENUE = "revenue"
     UNITS = "units"
     PENDING = "pending"
+    DELIVERY = "delivery"
     POD = "pod"
     PGI = "pgi"
-    DELIVERY = "delivery"
-    DELAY = "delay"
-    DISTANCE = "distance"
-    WAREHOUSE = "warehouse"
-    DEALER = "dealer"
-    PRODUCT = "product"
-    MATERIAL = "material"
-    TRANSPORTER = "transporter"
-    VEHICLE = "vehicle"
-    DRIVER = "driver"
-    REGION = "region"
-    SALES_OFFICE = "sales_office"
-    DIVISION = "division"
-    RANKING = "ranking"
     COMPARISON = "comparison"
+    RANKING = "ranking"
+    SUMMARY = "summary"
+    PERFORMANCE = "performance"
     FORECAST = "forecast"
     RECOMMENDATION = "recommendation"
-    TREND = "trend"
-    HISTORY = "history"
-    TOP = "top"
-    BOTTOM = "bottom"
-    GROWTH = "growth"
-    DECLINE = "decline"
-    RISK = "risk"
-    INVENTORY = "inventory"
-    AGEING = "ageing"
-    STOCK = "stock"
-    ROUTE = "route"
-    CAPACITY = "capacity"
-    KPI = "kpi"
-    NATIONAL = "national"
+    ROOT_CAUSE = "root_cause"
     EXECUTIVE = "executive"
+    NATIONAL = "national"
+    SEARCH = "search"
     HELP = "help"
     GREETING = "greeting"
-    SEARCH = "search"
-    COMPARE = "compare"
-    ANALYZE = "analyze"
-    PREDICT = "predict"
-    RECOMMEND = "recommend"
-    LIST = "list"
-    EXPLAIN = "explain"
-    ROOT_CAUSE = "root_cause"
-    SLA = "sla"
-    UTILIZATION = "utilization"
-    FORECAST_ENGINE = "forecast_engine"
+    MENU = "menu"
+    UNKNOWN = "unknown"
+
+class MenuState(Enum):
+    """Menu states"""
+    MAIN = "main"
+    DN = "dn"
+    DEALER = "dealer"
+    CITY = "city"
+    WAREHOUSE = "warehouse"
+    PRODUCT = "product"
+    NATIONAL = "national"
 
 # =====================================================================================================================
 # DATACLASSES
@@ -155,21 +163,19 @@ class Entity:
 @dataclass
 class Intent:
     """Represents a detected intent"""
-    category: IntentCategory
-    sub_intent: Optional[str] = None
+    type: IntentType
     confidence: float = 1.0
     entities: List[Entity] = field(default_factory=list)
-    requires_multi_service: bool = False
-    services: List[str] = field(default_factory=list)
+    sub_intent: Optional[str] = None
 
 @dataclass
 class RoutingDecision:
-    intent: str
-    confidence: float
+    """Routing decision with confidence"""
+    intent: Intent
     service_key: str
-    service_file: str
     method: str
     entity: Dict[str, Any]
+    confidence: float = 1.0
     requires_ai: bool = False
     reason: str = ""
     original_message: str = ""
@@ -177,671 +183,360 @@ class RoutingDecision:
     multi_intent: bool = False
     services: List[str] = field(default_factory=list)
     context: Dict[str, Any] = field(default_factory=dict)
-    follow_up: List[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "intent": self.intent,
-            "confidence": self.confidence,
-            "service_key": self.service_key,
-            "service_file": self.service_file,
-            "method": self.method,
-            "entity": self.entity,
-            "requires_ai": self.requires_ai,
-            "reason": self.reason,
-            "original_message": self.original_message,
-            "menu_option": self.menu_option,
-            "multi_intent": self.multi_intent,
-            "services": self.services,
-        }
-
-# =====================================================================================================================
-# SEMANTIC ROUTER
-# =====================================================================================================================
-
-Route = None
-SemanticRouter = None
-HuggingFaceEncoder = None
-SEMANTIC_ROUTER_AVAILABLE = False
-
-try:
-    from semantic_router import Route as _Route
-    try:
-        from semantic_router import SemanticRouter as _SemanticRouter
-    except ImportError:
-        try:
-            from semantic_router import Router as _SemanticRouter
-        except ImportError:
-            from semantic_router.layer import RouteLayer as _SemanticRouter
-    from semantic_router.encoders import HuggingFaceEncoder as _HuggingFaceEncoder
-
-    Route = _Route
-    SemanticRouter = _SemanticRouter
-    HuggingFaceEncoder = _HuggingFaceEncoder
-    SEMANTIC_ROUTER_AVAILABLE = True
-except Exception:
-    logger.warning("Semantic Router unavailable")
+@dataclass
+class SessionContext:
+    """User session context"""
+    session_id: str
+    current_service: Optional[str] = None
+    current_menu: MenuState = MenuState.MAIN
+    current_city: Optional[str] = None
+    current_dealer: Optional[str] = None
+    current_warehouse: Optional[str] = None
+    current_product: Optional[str] = None
+    last_intent: Optional[IntentType] = None
+    last_entity: Optional[Entity] = None
+    history: List[Dict[str, Any]] = field(default_factory=list)
+    created_at: datetime = field(default_factory=datetime.now)
+    last_activity: datetime = field(default_factory=datetime.now)
 
 # =====================================================================================================================
-# SERVICE IMPORTS WITH SAFE FALLBACKS
+# SERVICE REGISTRY - DYNAMIC SERVICE MANAGEMENT
 # =====================================================================================================================
 
-# DN Analysis Service
-try:
-    from app.services.dn_analysis import DNAnalysisService
-    DN_ANALYSIS_AVAILABLE = True
-    logger.info("✅ DNAnalysisService imported")
-except Exception:
-    DN_ANALYSIS_AVAILABLE = False
-    class DNAnalysisService:
-        def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
-            return {"success": False, "whatsapp_message": "⚠️ DN service unavailable", "error": "DN service unavailable"}
-        def get_warehouse_dashboard(self, warehouse: str) -> Dict[str, Any]:
-            return {"success": False, "whatsapp_message": "⚠️ Warehouse service unavailable", "error": "Warehouse service unavailable"}
-        def get_pending_dns(self, limit: int = 20) -> Dict[str, Any]:
-            return {"success": False, "whatsapp_message": "⚠️ Pending DN service unavailable", "error": "Pending DN service unavailable"}
-        def get_top_performers(self, limit: int = 10) -> Dict[str, Any]:
-            return {"success": False, "whatsapp_message": "⚠️ Performance service unavailable", "error": "Performance service unavailable"}
+class ServiceRegistry:
+    """Dynamic service registry for all analytics services"""
 
-# Dealer Analytics Service
-try:
-    from app.services.dealer_analytics_service import DealerAnalyticsService
-    DEALER_ANALYTICS_AVAILABLE = True
-    logger.info("✅ DealerAnalyticsService imported")
-except Exception:
-    DEALER_ANALYTICS_AVAILABLE = False
-    class DealerAnalyticsService:
-        async def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-            return {"success": False, "whatsapp_message": "⚠️ Dealer service unavailable", "error": "Dealer service unavailable"}
+    def __init__(self):
+        self._services: Dict[str, Any] = {}
+        self._methods: Dict[str, Dict[str, str]] = {}
+        self._lock = threading.RLock()
 
-# City Service
-try:
-    from app.services.city_service import CityAnalyticsService
-    CITY_SERVICE_AVAILABLE = True
-    logger.info("✅ CityAnalyticsService imported")
-except Exception:
-    CITY_SERVICE_AVAILABLE = False
-    class CityAnalyticsService:
-        def get_city_dashboard(self, city_name: str = "", **kwargs: Any) -> Dict[str, Any]:
-            return {"success": False, "whatsapp_message": "⚠️ City service unavailable", "error": "City service unavailable"}
-        def get_city_menu(self) -> str:
-            return "🏙️ City Analytics Menu\n\nCity service is temporarily unavailable.\n\n0. Main Menu"
-        def process_city_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
-            return {"response": "City service unavailable", "menu_type": "city_menu", "action": "error", "data": {}, "exit_menu": True}
+    def register(self, key: str, service: Any, methods: Dict[str, str]) -> None:
+        """Register a service with its methods"""
+        with self._lock:
+            self._services[key] = service
+            self._methods[key] = methods
+            logger.info(f"✅ Registered service: {key} with {len(methods)} methods")
 
-# Warehouse Service
-try:
-    from app.services.warehouse_service import WarehouseAnalyticsService
-    WAREHOUSE_SERVICE_AVAILABLE = True
-    logger.info("✅ WarehouseAnalyticsService imported")
-except Exception:
-    WAREHOUSE_SERVICE_AVAILABLE = False
-    class WarehouseAnalyticsService:
-        def get_warehouse_dashboard(self, warehouse_name: str = "", **kwargs: Any) -> Dict[str, Any]:
-            return {"success": False, "whatsapp_message": "⚠️ Warehouse service unavailable", "error": "Warehouse service unavailable"}
-        def get_main_menu(self) -> str:
-            return "🏭 Warehouse Analytics Menu\n\nWarehouse service is temporarily unavailable.\n\n0. Main Menu"
-        def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
-            return {"response": "Warehouse service unavailable", "menu_type": "warehouse_menu", "action": "error", "data": {}, "exit_menu": True}
+    def get_service(self, key: str) -> Optional[Any]:
+        """Get a service by key"""
+        with self._lock:
+            return self._services.get(key)
 
-# Product Service
-try:
-    from app.services.product_service import ProductAnalyticsService
-    PRODUCT_SERVICE_AVAILABLE = True
-    logger.info("✅ ProductAnalyticsService imported")
-except Exception:
-    PRODUCT_SERVICE_AVAILABLE = False
-    class ProductAnalyticsService:
-        def get_product_dashboard(self, product_name: str = "", **kwargs: Any) -> Dict[str, Any]:
-            return {"success": False, "whatsapp_message": "⚠️ Product service unavailable", "error": "Product service unavailable"}
-        def get_main_menu(self) -> str:
-            return "📦 Product Analytics Menu\n\nProduct service is temporarily unavailable.\n\n0. Main Menu"
-        def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
-            return {"response": "Product service unavailable", "menu_type": "product_menu", "action": "error", "data": {}, "exit_menu": True}
+    def get_method(self, key: str, method_name: str) -> Optional[Callable]:
+        """Get a method from a service"""
+        with self._lock:
+            service = self._services.get(key)
+            if service:
+                return getattr(service, method_name, None)
+            return None
 
-# National KPI Service
-try:
-    from app.services.national_kpi_service import NationalKPIService
-    NATIONAL_KPI_AVAILABLE = True
-    logger.info("✅ NationalKPIService imported")
-except Exception:
-    NATIONAL_KPI_AVAILABLE = False
-    class NationalKPIService:
-        def get_national_kpi_dashboard(self, **kwargs: Any) -> Dict[str, Any]:
-            return {"success": False, "whatsapp_message": "⚠️ National KPI service unavailable", "error": "National KPI service unavailable"}
-        def get_main_menu(self) -> str:
-            return "🇵🇰 National Logistics Intelligence Menu\n\nNational KPI service is temporarily unavailable.\n\n0. Main Menu"
-        def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
-            return {"response": "National KPI service unavailable", "menu_type": "national_menu", "action": "error", "data": {}, "exit_menu": True}
+    def get_all_services(self) -> Dict[str, Any]:
+        """Get all registered services"""
+        with self._lock:
+            return self._services.copy()
 
-# Groq Service
-try:
-    from app.services.groq_service import GroqService
-    GROQ_SERVICE_AVAILABLE = True
-    logger.info("✅ GroqService imported")
-except Exception:
-    GROQ_SERVICE_AVAILABLE = False
-    class GroqService:
-        async def process_query(self, message: str, entities: Dict[str, Any]) -> str:
-            return get_main_menu()
+    def get_all_keys(self) -> List[str]:
+        """Get all service keys"""
+        with self._lock:
+            return list(self._services.keys())
+
+    def execute(self, key: str, method: str, *args, **kwargs) -> Any:
+        """Execute a method on a service"""
+        service = self.get_service(key)
+        if not service:
+            raise ValueError(f"Service '{key}' not found")
+
+        method_func = getattr(service, method, None)
+        if not method_func:
+            raise ValueError(f"Method '{method}' not found in service '{key}'")
+
+        return method_func(*args, **kwargs)
 
 # =====================================================================================================================
-# MENU OPTIONS
-# =====================================================================================================================
-
-MENU_OPTIONS: Dict[str, Dict[str, Any]] = {
-    "0": {"name": "Main Menu", "service_key": "menu_service", "service_file": "ai_provider_service.py", "method": "show_main_menu", "requires_ai": False},
-    "1": {"name": "DN Delivery", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_dn_dashboard", "requires_ai": False},
-    "2": {"name": "Dealer Analytics", "service_key": "dealer_analytics", "service_file": "dealer_analytics_service.py", "method": "get_dealer_dashboard", "requires_ai": False},
-    "3": {"name": "City Analytics", "service_key": "city_menu", "service_file": "city_service.py", "method": "get_city_menu", "requires_ai": False},
-    "4": {"name": "Warehouse Analytics", "service_key": "warehouse_menu", "service_file": "warehouse_service.py", "method": "get_main_menu", "requires_ai": False},
-    "5": {"name": "Product Analytics", "service_key": "product_menu", "service_file": "product_service.py", "method": "get_main_menu", "requires_ai": False},
-    "6": {"name": "National KPI", "service_key": "national_kpi_menu", "service_file": "national_kpi_service.py", "method": "get_main_menu", "requires_ai": False},
-    "7": {"name": "Pending DN", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_pending_dns", "requires_ai": False},
-    "8": {"name": "Top Performers", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_top_performers", "requires_ai": False},
-    "9": {"name": "AI Query", "service_key": "groq_service", "service_file": "groq_service.py", "method": "process_query", "requires_ai": True},
-}
-
-# =====================================================================================================================
-# INTENT DETECTION ENGINE - 100+ INTENTS
+# INTENT DETECTION ENGINE
 # =====================================================================================================================
 
 class IntentEngine:
-    """Enterprise intent detection engine with 100+ intents"""
+    """Hybrid intent detection with rules, semantic, and AI"""
 
+    # Intent patterns with priority
     INTENT_PATTERNS: Dict[str, Dict[str, Any]] = {
-        # Dashboard Intents
-        "dashboard": {
+        IntentType.MENU: {
             "patterns": [
-                r"(?:show|display|get|view).*(?:dashboard|overview|summary)",
+                r"^(?:menu|help|options|show menu|main menu)$",
+                r"^(?:0|menu|help|options)",
+            ],
+            "priority": 1
+        },
+        IntentType.GREETING: {
+            "patterns": [
+                r"^(?:hi|hello|hey|salam|good morning|good evening|howdy)$",
+                r"^(?:hi|hello|hey|salam).*",
+            ],
+            "priority": 1
+        },
+        IntentType.DASHBOARD: {
+            "patterns": [
+                r"(?:show|display|get|view).*(?:dashboard|overview|details)",
                 r"(?:how is|what about|tell me about).*(?:performance|status)",
-                r"(?:national|overall|general).*(?:dashboard|kpi|status)",
+                r"^([\w\s]+)$",  # Single entity name → dashboard
             ],
-            "category": IntentCategory.DASHBOARD,
-            "service": "dashboard",
-            "priority": 1
-        },
-        "executive_dashboard": {
-            "patterns": [
-                r"(?:executive|management|leadership).*(?:dashboard|summary|overview)",
-                r"what(?:'s)? happening (?:nationally|overall|at (?:top|executive) level)",
-                r"(?:top|key|critical).*(?:insights|issues|risks)",
-            ],
-            "category": IntentCategory.EXECUTIVE,
-            "service": "national_kpi",
-            "priority": 1
-        },
-        "national_kpi": {
-            "patterns": [
-                r"(?:national|overall|pakistan).*(?:kpi|performance|score|health)",
-                r"(?:country|nation|national).*(?:logistics|supply chain)",
-                r"overall (?:performance|health|score)",
-            ],
-            "category": IntentCategory.NATIONAL,
-            "service": "national_kpi",
-            "priority": 1
-        },
-
-        # Revenue Intents
-        "revenue": {
-            "patterns": [
-                r"(?:revenue|sales|income|turnover|earnings)",
-                r"(?:how much|what(?:'s)? the).*(?:revenue|sales)",
-                r"(?:total|overall).*(?:revenue|sales)",
-            ],
-            "category": IntentCategory.REVENUE,
-            "service": "revenue",
-            "priority": 1
-        },
-        "revenue_by_entity": {
-            "patterns": [
-                r"revenue (?:of|for|from|in)\s+([\w\s]+)",
-                r"([\w\s]+).*(?:revenue|sales)",
-            ],
-            "category": IntentCategory.REVENUE,
-            "service": "revenue",
             "priority": 2
         },
-
-        # Units Intents
-        "units": {
+        IntentType.REVENUE: {
+            "patterns": [
+                r"(?:revenue|sales|income|turnover|earnings)",
+                r"(?:how much|what(?:'s)?).*(?:revenue|sales)",
+                r"(?:total|overall).*(?:revenue|sales)",
+                r"([\w\s]+).*(?:revenue|sales)",
+            ],
+            "priority": 2
+        },
+        IntentType.UNITS: {
             "patterns": [
                 r"(?:units|quantity|volume|pieces|items)",
                 r"(?:how many|number of).*(?:units|items)",
+                r"([\w\s]+).*(?:units|quantity)",
             ],
-            "category": IntentCategory.UNITS,
-            "service": "units",
-            "priority": 1
+            "priority": 2
         },
-
-        # Pending Intents
-        "pending_dn": {
+        IntentType.PENDING: {
             "patterns": [
                 r"(?:pending|outstanding|backlog|overdue).*(?:dn|delivery|order)",
                 r"(?:undelivered|unfulfilled).*(?:orders|dns)",
+                r"([\w\s]+).*(?:pending|backlog)",
             ],
-            "category": IntentCategory.PENDING,
-            "service": "pending",
-            "priority": 1
+            "priority": 2
         },
-        "pending_pgi": {
+        IntentType.DELIVERY: {
             "patterns": [
-                r"(?:pending|overdue).*(?:pgi|goods issue)",
-                r"(?:pgi|goods issue).*(?:pending|not done)",
-            ],
-            "category": IntentCategory.PGI,
-            "service": "pending",
-            "priority": 1
-        },
-        "pending_pod": {
-            "patterns": [
-                r"(?:pending|overdue).*(?:pod|proof of delivery)",
-                r"(?:pod|delivery proof).*(?:pending|missing)",
-            ],
-            "category": IntentCategory.POD,
-            "service": "pending",
-            "priority": 1
-        },
-
-        # Delivery Intents
-        "delivery_performance": {
-            "patterns": [
-                r"(?:delivery|dispatch|shipping).*(?:performance|time|days)",
+                r"(?:delivery|dispatch|shipping|transit).*(?:performance|time|days)",
                 r"(?:average|fastest|slowest).*(?:delivery|transit)",
                 r"delivery (?:success|failure|rate)",
             ],
-            "category": IntentCategory.DELIVERY,
-            "service": "delivery",
-            "priority": 1
+            "priority": 2
         },
-        "delivery_sla": {
-            "patterns": [
-                r"(?:sla|service level|agreement).*(?:delivery|performance)",
-                r"sla (?:compliance|breach|violation)",
-                r"delivery (?:timeline|commitment)",
-            ],
-            "category": IntentCategory.SLA,
-            "service": "delivery",
-            "priority": 1
-        },
-
-        # Dealer Intents
-        "dealer_performance": {
-            "patterns": [
-                r"(?:dealer|dealers).*(?:performance|score|health)",
-                r"how (?:is|are) (?:dealer|dealers) performing",
-            ],
-            "category": IntentCategory.DEALER,
-            "service": "dealer",
-            "priority": 1
-        },
-        "top_dealers": {
-            "patterns": [
-                r"(?:top|best|highest|leading).*(?:dealer|dealers)",
-                r"dealer (?:ranking|rank|leaderboard)",
-            ],
-            "category": IntentCategory.TOP,
-            "service": "dealer",
-            "priority": 1
-        },
-        "bottom_dealers": {
-            "patterns": [
-                r"(?:bottom|worst|lowest).*(?:dealer|dealers)",
-                r"worst (?:performing|performer)",
-            ],
-            "category": IntentCategory.BOTTOM,
-            "service": "dealer",
-            "priority": 1
-        },
-        "dealer_comparison": {
-            "patterns": [
-                r"(?:compare|vs|versus|against).*(?:dealer|dealers)",
-                r"([\w\s]+)\s+(?:and|vs|versus)\s+([\w\s]+)",
-            ],
-            "category": IntentCategory.COMPARISON,
-            "service": "dealer",
-            "priority": 1
-        },
-
-        # Warehouse Intents
-        "warehouse_performance": {
-            "patterns": [
-                r"(?:warehouse|depot|hub).*(?:performance|score|health)",
-                r"how (?:is|are) (?:warehouse|warehouses) performing",
-            ],
-            "category": IntentCategory.WAREHOUSE,
-            "service": "warehouse",
-            "priority": 1
-        },
-        "warehouse_ranking": {
-            "patterns": [
-                r"(?:top|best|highest).*(?:warehouse|warehouses)",
-                r"warehouse (?:ranking|rank|leaderboard)",
-            ],
-            "category": IntentCategory.RANKING,
-            "service": "warehouse",
-            "priority": 1
-        },
-        "warehouse_comparison": {
+        IntentType.COMPARISON: {
             "patterns": [
                 r"compare\s+([\w\s]+)\s+(?:and|vs|versus)\s+([\w\s]+)",
-                r"(?:warehouse|depot)\s+(?:vs|versus|comparison)",
+                r"([\w\s]+)\s+(?:vs|versus|compared to)\s+([\w\s]+)",
+                r"difference between\s+([\w\s]+)\s+(?:and|vs)\s+([\w\s]+)",
             ],
-            "category": IntentCategory.COMPARISON,
-            "service": "warehouse",
             "priority": 1
         },
-        "warehouse_utilization": {
+        IntentType.RANKING: {
             "patterns": [
-                r"(?:utilization|capacity|storage).*(?:warehouse)",
-                r"warehouse (?:utilization|capacity|usage)",
-                r"(?:how full|space available).*(?:warehouse)",
+                r"(?:top|best|highest|leading).*(?:dealers?|warehouses?|cities?|products?)",
+                r"(?:ranking|rank|leaderboard).*(?:dealers?|warehouses?|cities?|products?)",
+                r"^(?:top|best|highest)\s+(\d+)?\s*(?:dealers?|warehouses?|cities?|products?)",
             ],
-            "category": IntentCategory.UTILIZATION,
-            "service": "warehouse",
-            "priority": 1
+            "priority": 2
         },
-        "warehouse_inventory": {
-            "patterns": [
-                r"(?:inventory|stock|supply).*(?:warehouse)",
-                r"warehouse (?:inventory|stock|items)",
-            ],
-            "category": IntentCategory.INVENTORY,
-            "service": "warehouse",
-            "priority": 1
-        },
-
-        # City Intents
-        "city_performance": {
-            "patterns": [
-                r"(?:city|town|location).*(?:performance|score)",
-                r"how (?:is|are) (?:city|cities) performing",
-            ],
-            "category": IntentCategory.DASHBOARD,
-            "service": "city",
-            "priority": 1
-        },
-        "city_ranking": {
-            "patterns": [
-                r"(?:top|best|highest).*(?:city|cities)",
-                r"city (?:ranking|rank|leaderboard)",
-            ],
-            "category": IntentCategory.RANKING,
-            "service": "city",
-            "priority": 1
-        },
-        "city_comparison": {
-            "patterns": [
-                r"compare\s+([\w\s]+)\s+(?:and|vs|versus)\s+([\w\s]+)",
-                r"(?:city|town)\s+(?:vs|versus|comparison)",
-            ],
-            "category": IntentCategory.COMPARISON,
-            "service": "city",
-            "priority": 1
-        },
-
-        # Product Intents
-        "product_performance": {
-            "patterns": [
-                r"(?:product|model|item).*(?:performance|sales)",
-                r"how (?:is|are) (?:product|products) selling",
-            ],
-            "category": IntentCategory.PRODUCT,
-            "service": "product",
-            "priority": 1
-        },
-        "top_products": {
-            "patterns": [
-                r"(?:top|best|highest|fastest).*(?:product|products)",
-                r"product (?:ranking|rank|leaderboard)",
-            ],
-            "category": IntentCategory.TOP,
-            "service": "product",
-            "priority": 1
-        },
-
-        # Root Cause Analysis
-        "root_cause_analysis": {
-            "patterns": [
-                r"why (?:is|are|was|were)\s+([\w\s]+?)\s+(?:slow|delayed|late|underperforming|declining)",
-                r"(?:reason|cause|why).*(?:delay|issue|problem)",
-                r"what (?:caused|causes|is causing).*(?:problem|issue|delay)",
-            ],
-            "category": IntentCategory.ROOT_CAUSE,
-            "service": "ai_analysis",
-            "priority": 1
-        },
-
-        # Forecasting
-        "forecast": {
+        IntentType.FORECAST: {
             "patterns": [
                 r"(?:forecast|predict|project|estimate).*(?:sales|revenue|delivery|volume)",
                 r"what (?:will|would) be the (?:sales|revenue|delivery)",
                 r"next (?:month|quarter|year).*(?:forecast|prediction)",
             ],
-            "category": IntentCategory.FORECAST,
-            "service": "forecast",
-            "priority": 1
+            "priority": 2
         },
-
-        # Recommendations
-        "recommendation": {
+        IntentType.RECOMMENDATION: {
             "patterns": [
                 r"(?:recommend|suggest|advice|improve|optimize)",
                 r"what (?:should|can|could) (?:i|we) (?:do|improve|fix)",
                 r"how to (?:improve|fix|optimize)\s+([\w\s]+)",
             ],
-            "category": IntentCategory.RECOMMENDATION,
-            "service": "recommendation",
-            "priority": 1
+            "priority": 2
         },
-
-        # Executive Analytics
-        "executive_insights": {
+        IntentType.ROOT_CAUSE: {
             "patterns": [
-                r"(?:executive|management|leadership).*(?:insight|analytics|intelligence)",
+                r"why (?:is|are|was|were)\s+([\w\s]+?)\s+(?:slow|delayed|late|underperforming|declining)",
+                r"(?:reason|cause|why).*(?:delay|issue|problem)",
+                r"what (?:caused|causes|is causing).*(?:problem|issue|delay)",
+            ],
+            "priority": 2
+        },
+        IntentType.EXECUTIVE: {
+            "patterns": [
+                r"(?:executive|management|leadership).*(?:dashboard|summary|overview|insight)",
                 r"what(?:'s)? (?:going on|happening|the situation)",
                 r"where (?:are we|is the business)",
             ],
-            "category": IntentCategory.EXECUTIVE,
-            "service": "national_kpi",
             "priority": 1
         },
-        "risk_assessment": {
+        IntentType.NATIONAL: {
             "patterns": [
-                r"(?:risk|risks|threat|vulnerability).*(?:analysis|assessment)",
-                r"what are the (?:biggest|top) risks",
-                r"risk (?:score|assessment|analysis)",
+                r"(?:national|overall|pakistan).*(?:kpi|performance|score|health|dashboard)",
+                r"(?:country|nation|national).*(?:logistics|supply chain)",
+                r"^(?:national|overall|pakistan)$",
             ],
-            "category": IntentCategory.RISK,
-            "service": "national_kpi",
             "priority": 1
         },
-
-        # Comparison
-        "compare_general": {
-            "patterns": [
-                r"compare\s+([\w\s]+)\s+(?:and|vs|versus)\s+([\w\s]+)",
-                r"difference between\s+([\w\s]+)\s+(?:and|vs)\s+([\w\s]+)",
-            ],
-            "category": IntentCategory.COMPARISON,
-            "service": "comparison",
-            "priority": 1
-        },
-
-        # Search
-        "search": {
+        IntentType.SEARCH: {
             "patterns": [
                 r"(?:search|find|lookup|locate)\s+([\w\s\-_]+)",
                 r"where (?:is|are)\s+([\w\s\-_]+)",
             ],
-            "category": IntentCategory.SEARCH,
-            "service": "search",
-            "priority": 1
+            "priority": 2
         },
-
-        # Help
-        "help": {
+        IntentType.HELP: {
             "patterns": [
                 r"(?:help|assist|support|guide|how to)",
                 r"what can you (?:do|help with)",
                 r"how (?:does|do) (?:i|you|this)",
             ],
-            "category": IntentCategory.HELP,
-            "service": "help",
             "priority": 1
         },
     }
 
     def __init__(self):
         self._compiled_patterns = {}
+        self._cache: TTLCache = TTLCache(maxsize=1000, ttl=CACHE_TTL)
         self._lock = threading.RLock()
-        self._cache: Dict[str, Tuple[IntentCategory, float]] = {}
-        self._cache_ttl = 300
 
         # Compile all patterns
-        for intent_name, config in self.INTENT_PATTERNS.items():
-            self._compiled_patterns[intent_name] = [
+        for intent_type, config in self.INTENT_PATTERNS.items():
+            self._compiled_patterns[intent_type] = [
                 re.compile(pattern, re.IGNORECASE) for pattern in config["patterns"]
             ]
 
-        logger.info(f"✅ IntentEngine initialized with {len(self.INTENT_PATTERNS)} intents")
+        logger.info(f"✅ IntentEngine initialized with {len(self.INTENT_PATTERNS)} intent types")
 
-    def detect_intent(self, message: str) -> Tuple[Optional[IntentCategory], Optional[str], float, Dict[str, Any]]:
+    def detect_intent(self, message: str, entities: List[Entity] = None) -> Tuple[Intent, float]:
         """Detect intent from message with confidence"""
-        message_lower = message.lower()
-        cache_key = message_lower[:200]
+        message_lower = message.lower().strip()
+        cache_key = hashlib.md5(message_lower.encode()).hexdigest()
 
+        # Check cache
         with self._lock:
             if cache_key in self._cache:
                 cached = self._cache[cache_key]
-                return cached[0], None, cached[1], {}
+                return cached[0], cached[1]
 
-        best_intent = None
+        best_intent = IntentType.UNKNOWN
         best_score = 0.0
-        best_config = None
-        extracted_entities = {}
+        best_reason = ""
 
-        # Check each intent pattern
-        for intent_name, patterns in self._compiled_patterns.items():
-            matches = 0
-            total_patterns = len(patterns)
+        # 1. Check for menu commands first (highest priority)
+        if message_lower in ["menu", "help", "options", "show menu", "main menu", "0"]:
+            best_intent = IntentType.MENU
+            best_score = 1.0
+            best_reason = "Exact menu keyword"
 
-            for pattern in patterns:
-                match = pattern.search(message_lower)
-                if match:
-                    matches += 1
-                    # Extract entities from groups
-                    if match.groups():
-                        for i, group in enumerate(match.groups()):
-                            if group and len(group.strip()) > 2:
-                                extracted_entities[f"entity_{i}"] = group.strip()
+        # 2. Check for greetings
+        elif message_lower in ["hi", "hello", "hey", "salam", "good morning", "good evening"]:
+            best_intent = IntentType.GREETING
+            best_score = 1.0
+            best_reason = "Greeting detected"
 
-            if matches > 0:
-                # Score based on match ratio
-                score = min(1.0, matches / max(1, total_patterns) * 2)
-                # Boost score for exact matches
-                if matches == total_patterns:
-                    score = min(1.0, score * 1.5)
+        # 3. Pattern matching
+        else:
+            for intent_type, patterns in self._compiled_patterns.items():
+                matches = 0
+                total_patterns = len(patterns)
 
-                if score > best_score:
-                    best_score = score
-                    best_intent = intent_name
-                    best_config = self.INTENT_PATTERNS[intent_name]
+                for pattern in patterns:
+                    if pattern.search(message_lower):
+                        matches += 1
+                        # Early exit if high confidence
+                        if matches >= 2:
+                            break
 
-        # If no pattern matched, try keyword-based detection
-        if best_score < 0.3:
-            keywords = message_lower.split()
-            keyword_intent_map = {
-                "revenue": "revenue",
-                "sales": "revenue",
-                "pending": "pending_dn",
-                "delivery": "delivery_performance",
-                "warehouse": "warehouse_performance",
-                "dealer": "dealer_performance",
-                "city": "city_performance",
-                "product": "product_performance",
-                "top": "top_products",
-                "compare": "compare_general",
-                "why": "root_cause_analysis",
-                "forecast": "forecast",
-                "recommend": "recommendation",
-                "help": "help",
+                if matches > 0:
+                    score = min(1.0, (matches / max(1, total_patterns)) * 2)
+                    # Boost for exact matches
+                    if matches == total_patterns:
+                        score = min(1.0, score * 1.5)
+
+                    # Priority boost
+                    priority = self.INTENT_PATTERNS[intent_type].get("priority", 2)
+                    score = score * (1.0 / priority)
+
+                    if score > best_score:
+                        best_score = score
+                        best_intent = intent_type
+                        best_reason = f"Pattern matched (matches: {matches}/{total_patterns})"
+
+        # 4. Semantic fallback if confidence is low
+        if best_score < 0.5 and SEMANTIC_AVAILABLE and semantic_model:
+            semantic_score = self._semantic_similarity(message_lower)
+            if semantic_score > best_score:
+                best_score = semantic_score
+                best_reason = "Semantic matching"
+
+        # 5. Entity-based inference
+        if entities and best_score < 0.6:
+            entity_types = [e.type.value for e in entities]
+            if "city" in entity_types and best_intent == IntentType.UNKNOWN:
+                best_intent = IntentType.DASHBOARD
+                best_score = 0.7
+                best_reason = "Entity inference: city → dashboard"
+            elif "dealer" in entity_types and best_intent == IntentType.UNKNOWN:
+                best_intent = IntentType.DASHBOARD
+                best_score = 0.7
+                best_reason = "Entity inference: dealer → dashboard"
+            elif "warehouse" in entity_types and best_intent == IntentType.UNKNOWN:
+                best_intent = IntentType.DASHBOARD
+                best_score = 0.7
+                best_reason = "Entity inference: warehouse → dashboard"
+
+        # Create intent object
+        intent = Intent(
+            type=best_intent,
+            confidence=best_score,
+            entities=entities or []
+        )
+
+        # Cache result
+        with self._lock:
+            self._cache[cache_key] = (intent, best_score)
+
+        logger.info(f"Intent detected: {best_intent.value} (confidence: {best_score:.2f}) - {best_reason}")
+        return intent, best_score
+
+    def _semantic_similarity(self, message: str) -> float:
+        """Calculate semantic similarity with known intents"""
+        if not semantic_model:
+            return 0.0
+
+        try:
+            # Embed the message
+            message_embedding = semantic_model.encode(message)
+
+            # Compare with known intent examples
+            intent_examples = {
+                IntentType.DASHBOARD: ["show dashboard", "display overview", "view status"],
+                IntentType.REVENUE: ["show revenue", "display sales", "view income"],
+                IntentType.UNITS: ["show units", "display quantity", "view volume"],
+                IntentType.PENDING: ["show pending", "display backlog", "view overdue"],
+                IntentType.DELIVERY: ["show delivery", "display transit", "view shipping"],
+                IntentType.COMPARISON: ["compare", "versus", "vs"],
+                IntentType.RANKING: ["top", "ranking", "leaderboard"],
             }
 
-            for keyword in keywords:
-                if keyword in keyword_intent_map:
-                    intent_name = keyword_intent_map[keyword]
-                    best_intent = intent_name
-                    best_score = 0.4
-                    best_config = self.INTENT_PATTERNS[intent_name]
-                    break
+            best_score = 0.0
+            for intent_type, examples in intent_examples.items():
+                example_embeddings = semantic_model.encode(examples)
+                for example_emb in example_embeddings:
+                    from numpy import dot
+                    from numpy.linalg import norm
+                    similarity = dot(message_embedding, example_emb) / (norm(message_embedding) * norm(example_emb))
+                    best_score = max(best_score, similarity)
 
-        with self._lock:
-            self._cache[cache_key] = (best_intent, best_score)
-
-        return best_intent, best_config["category"] if best_config else None, best_score, extracted_entities
+            return best_score
+        except Exception:
+            return 0.0
 
 # =====================================================================================================================
 # ENTITY RECOGNITION ENGINE
 # =====================================================================================================================
 
 class EntityEngine:
-    """Enterprise entity recognition engine"""
+    """Enterprise entity recognition with multiple strategies"""
 
-    ENTITY_PATTERNS = {
-        EntityType.DN: [
-            r'\b(\d{8,12})\b',
-        ],
-        EntityType.WAREHOUSE: [
-            r'(?:warehouse|depot|hub)\s+([\w\s]+)',
-            r'warehouse\s+([\w\s]+?)(?:\s|$|\.)',
-        ],
-        EntityType.CITY: [
-            r'(?:city|town|location|in)\s+([\w\s]+)',
-            r'([\w\s]+)\s+city',
-        ],
-        EntityType.DEALER: [
-            r'(?:dealer|dealership|customer)\s+([\w\s]+)',
-            r'([\w\s]+)\s+(?:electronics|traders|distributors|foods|group)',
-        ],
-        EntityType.PRODUCT: [
-            r'(?:product|model|item)\s+([\w\s\-_]+)',
-            r'([\w\s\-_]+)\s+(?:model|product)',
-        ],
-        EntityType.DIVISION: [
-            r'(?:division|department)\s+([\w\s]+)',
-        ],
-        EntityType.SALES_OFFICE: [
-            r'(?:sales\s+office|office)\s+([\w\s]+)',
-        ],
-        EntityType.REGION: [
-            r'(?:region|area|zone)\s+([\w\s]+)',
-        ],
-        EntityType.TRANSPORTER: [
-            r'(?:transporter|carrier|logistics)\s+([\w\s]+)',
-        ],
-        EntityType.VEHICLE: [
-            r'(?:vehicle|truck|van)\s+([\w\s\-_]+)',
-        ],
-        EntityType.DRIVER: [
-            r'(?:driver|delivery\s+boy)\s+([\w\s]+)',
-        ],
-        EntityType.DEALER_CODE: [
-            r'(?:dealer\s+code|code)\s+([A-Z0-9]+)',
-        ],
-        EntityType.MATERIAL_NUMBER: [
-            r'(?:material|mat)\s+([A-Z0-9\-]+)',
-        ],
-        EntityType.ROUTE: [
-            r'(?:route|path|journey)\s+([\w\s]+)',
-        ],
-        EntityType.SALES_MANAGER: [
-            r'(?:sales\s+manager|manager)\s+([\w\s]+)',
-        ],
-    }
-
-    # Known entity values for validation
+    # Known entities from database
     KNOWN_CITIES = {
         "abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan",
         "peshawar", "gilgit", "hyderabad", "islamabad", "sialkot", "gujranwala",
@@ -856,32 +551,94 @@ class EntityEngine:
         "abbottabad", "gwadar", "gilgit", "islamabad"
     }
 
+    DEALER_SUFFIXES = {
+        "electronics", "traders", "distributors", "foods", "group", "pvt", "ltd",
+        "sons", "brothers", "enterprises", "company", "corporation", "store", "shop",
+        "centre", "center", "solutions", "services", "digital", "technologies",
+        "systems", "networks", "communications", "logistics", "transport"
+    }
+
     def __init__(self):
-        self._compiled_patterns = {}
-        for entity_type, patterns in self.ENTITY_PATTERNS.items():
-            self._compiled_patterns[entity_type] = [
-                re.compile(pattern, re.IGNORECASE) for pattern in patterns
-            ]
-        logger.info(f"✅ EntityEngine initialized with {len(self.ENTITY_PATTERNS)} entity types")
+        self._cache: TTLCache = TTLCache(maxsize=1000, ttl=CACHE_TTL)
+        self._lock = threading.RLock()
+
+        # Build dealer suffix patterns
+        self._dealer_patterns = [
+            re.compile(rf'([\w&.\'\- ]{{2,}}?\s*{suffix}\s*[\w&.\'\- ]*)', re.IGNORECASE)
+            for suffix in self.DEALER_SUFFIXES
+        ]
+
+        logger.info("✅ EntityEngine initialized")
 
     def extract_entities(self, message: str) -> List[Entity]:
         """Extract all entities from message"""
-        entities = []
-        message_lower = message.lower()
+        message_lower = message.lower().strip()
+        cache_key = hashlib.md5(message_lower.encode()).hexdigest()
 
-        for entity_type, patterns in self._compiled_patterns.items():
-            for pattern in patterns:
-                match = pattern.search(message_lower)
-                if match and match.groups():
-                    value = match.group(1).strip()
-                    if len(value) > 1:
-                        # Validate entity value
-                        if self._validate_entity(entity_type, value):
-                            entities.append(Entity(
-                                type=entity_type,
-                                value=value,
-                                confidence=0.9
-                            ))
+        # Check cache
+        with self._lock:
+            if cache_key in self._cache:
+                return self._cache[cache_key]
+
+        entities = []
+
+        # 1. Extract DN numbers (8-12 digits)
+        dn_matches = re.findall(r'(?<!\d)(\d{8,12})(?!\d)', message)
+        for dn in dn_matches:
+            entities.append(Entity(type=EntityType.DN, value=dn, confidence=0.95))
+
+        # 2. Extract city names
+        for city in self.KNOWN_CITIES:
+            if city in message_lower:
+                entities.append(Entity(type=EntityType.CITY, value=city.title(), confidence=0.95))
+            # Check for "City" suffix
+            if f"{city} city" in message_lower:
+                entities.append(Entity(type=EntityType.CITY, value=city.title(), confidence=0.95))
+
+        # 3. Extract warehouse names
+        for warehouse in self.KNOWN_WAREHOUSES:
+            if warehouse in message_lower:
+                entities.append(Entity(type=EntityType.WAREHOUSE, value=warehouse.title(), confidence=0.95))
+
+        # 4. Extract dealer names
+        for pattern in self._dealer_patterns:
+            match = pattern.search(message)
+            if match:
+                dealer_name = match.group(1).strip()
+                if len(dealer_name) > 2:
+                    entities.append(Entity(type=EntityType.DEALER, value=dealer_name, confidence=0.85))
+
+        # 5. Extract product names (pattern based)
+        product_patterns = [
+            r"(?:product|model|material|item)\s+([\w\s\-_]+)",
+            r"([\w\s\-_]+)\s+(?:product|model)"
+        ]
+        for pattern in product_patterns:
+            matches = re.findall(pattern, message, re.IGNORECASE)
+            for product in matches:
+                if len(product.strip()) > 2:
+                    entities.append(Entity(type=EntityType.PRODUCT, value=product.strip(), confidence=0.80))
+
+        # 6. Extract dates
+        date_patterns = [
+            r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",  # DD/MM/YYYY
+            r"(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4})",  # DD Mon YYYY
+        ]
+        for pattern in date_patterns:
+            matches = re.findall(pattern, message, re.IGNORECASE)
+            for date_str in matches:
+                entities.append(Entity(type=EntityType.DATE, value=date_str, confidence=0.80))
+
+        # 7. Extract months
+        months = ["january", "february", "march", "april", "may", "june", 
+                  "july", "august", "september", "october", "november", "december"]
+        for month in months:
+            if month in message_lower:
+                entities.append(Entity(type=EntityType.MONTH, value=month.title(), confidence=0.75))
+
+        # 8. Fuzzy matching for partial matches (if RapidFuzz available)
+        if RAPIDFUZZ_AVAILABLE:
+            self._fuzzy_match_entities(message_lower, entities)
 
         # Remove duplicates
         unique_entities = []
@@ -892,95 +649,184 @@ class EntityEngine:
                 seen.add(key)
                 unique_entities.append(entity)
 
+        # Cache results
+        with self._lock:
+            self._cache[cache_key] = unique_entities
+
         return unique_entities
 
-    def _validate_entity(self, entity_type: EntityType, value: str) -> bool:
-        """Validate entity value"""
-        value_lower = value.lower()
+    def _fuzzy_match_entities(self, message: str, entities: List[Entity]) -> None:
+        """Use fuzzy matching to find partial matches"""
+        if not RAPIDFUZZ_AVAILABLE:
+            return
 
-        if entity_type == EntityType.CITY:
-            return value_lower in self.KNOWN_CITIES or value_lower in [c.replace(" ", "") for c in self.KNOWN_CITIES]
+        # Check for city fuzzy matches
+        city_matches = process.extract(message, self.KNOWN_CITIES, scorer=fuzz.WRatio, limit=3)
+        for match, score, _ in city_matches:
+            if score >= 85:
+                # Check if already found
+                for entity in entities:
+                    if entity.type == EntityType.CITY and entity.value.lower() == match:
+                        break
+                else:
+                    entities.append(Entity(type=EntityType.CITY, value=match.title(), confidence=score/100))
 
-        if entity_type == EntityType.WAREHOUSE:
-            return value_lower in self.KNOWN_WAREHOUSES
-
-        if entity_type == EntityType.DN:
-            return len(value) >= 8 and value.isdigit()
-
-        return True
+        # Check for warehouse fuzzy matches
+        warehouse_matches = process.extract(message, self.KNOWN_WAREHOUSES, scorer=fuzz.WRatio, limit=3)
+        for match, score, _ in warehouse_matches:
+            if score >= 85:
+                for entity in entities:
+                    if entity.type == EntityType.WAREHOUSE and entity.value.lower() == match:
+                        break
+                else:
+                    entities.append(Entity(type=EntityType.WAREHOUSE, value=match.title(), confidence=score/100))
 
 # =====================================================================================================================
 # CONTEXT MANAGER
 # =====================================================================================================================
 
 class ContextManager:
-    """Maintain conversation context and memory"""
+    """Session-based context management with TTL"""
 
-    def __init__(self, max_history: int = 10):
-        self._contexts: Dict[str, Dict[str, Any]] = {}
+    def __init__(self, ttl_seconds: int = SESSION_TTL):
+        self._contexts: Dict[str, SessionContext] = {}
         self._lock = threading.RLock()
-        self._max_history = max_history
+        self._ttl = ttl_seconds
 
-    def get_context(self, session_id: str) -> Dict[str, Any]:
+        # Start cleanup thread
+        self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
+        self._cleanup_thread.start()
+
+        logger.info(f"✅ ContextManager initialized (TTL: {ttl_seconds}s)")
+
+    def get_context(self, session_id: str) -> SessionContext:
         """Get or create context for session"""
         with self._lock:
             if session_id not in self._contexts:
-                self._contexts[session_id] = {
-                    "current_entity": None,
-                    "current_entity_type": None,
-                    "last_intent": None,
-                    "history": [],
-                    "last_dashboard": None,
-                    "last_comparison": None,
-                    "last_report": None,
-                    "preferences": {},
-                    "created_at": datetime.now().isoformat(),
-                }
-            return self._contexts[session_id]
+                self._contexts[session_id] = SessionContext(session_id=session_id)
+            context = self._contexts[session_id]
+            context.last_activity = datetime.now()
+            return context
 
-    def update_context(self, session_id: str, data: Dict[str, Any]) -> None:
+    def update_context(self, session_id: str, updates: Dict[str, Any]) -> None:
         """Update context with new data"""
         with self._lock:
-            if session_id not in self._contexts:
-                self.get_context(session_id)
+            context = self.get_context(session_id)
+            for key, value in updates.items():
+                if hasattr(context, key):
+                    setattr(context, key, value)
+            context.last_activity = datetime.now()
 
-            context = self._contexts[session_id]
-            for key, value in data.items():
-                if key == "history":
-                    if isinstance(value, list):
-                        context["history"] = (context["history"] + value)[-self._max_history:]
-                else:
-                    context[key] = value
+    def add_history(self, session_id: str, entry: Dict[str, Any]) -> None:
+        """Add entry to conversation history"""
+        with self._lock:
+            context = self.get_context(session_id)
+            context.history.append(entry)
+            # Keep only last 20 entries
+            if len(context.history) > 20:
+                context.history = context.history[-20:]
 
-    def get_follow_up_suggestions(self, session_id: str) -> List[str]:
+    def get_follow_ups(self, session_id: str) -> List[str]:
         """Generate follow-up suggestions based on context"""
         context = self.get_context(session_id)
         suggestions = []
 
-        last_intent = context.get("last_intent")
-        current_entity = context.get("current_entity")
+        if context.current_service:
+            suggestions.append(f"Show {context.current_service} dashboard")
 
-        if last_intent:
-            suggestions.append(f"Tell me more about {last_intent}")
+        if context.current_city:
+            suggestions.append(f"Revenue in {context.current_city}")
+            suggestions.append(f"Pending in {context.current_city}")
 
-        if current_entity:
-            suggestions.append(f"Compare {current_entity} with another")
+        if context.current_dealer:
+            suggestions.append(f"Compare {context.current_dealer} with another")
 
         suggestions.extend([
-            "Show me the dashboard",
-            "View national KPI",
-            "See pending DNs",
-            "Top performers",
-            "Executive summary"
+            "Show national KPI",
+            "View pending DNs",
+            "Top performers"
         ])
 
-        return suggestions[:5]
+        return suggestions[:4]
+
+    def _cleanup_loop(self) -> None:
+        """Clean up expired sessions"""
+        while True:
+            time.sleep(60)  # Run every minute
+            now = datetime.now()
+            expired = []
+            with self._lock:
+                for session_id, context in self._contexts.items():
+                    if (now - context.last_activity).total_seconds() > self._ttl:
+                        expired.append(session_id)
+                for session_id in expired:
+                    del self._contexts[session_id]
+                    logger.info(f"🧹 Cleaned up expired session: {session_id}")
 
 # =====================================================================================================================
-# MAIN AI PROVIDER SERVICE - ENTERPRISE ROUTER
+# RESPONSE AGGREGATOR
+# =====================================================================================================================
+
+class ResponseAggregator:
+    """Aggregate responses from multiple services"""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+
+    def aggregate(self, responses: List[Dict[str, Any]], separator: str = "\n\n" + "─" * 40 + "\n\n") -> str:
+        """Aggregate multiple responses into one"""
+        if not responses:
+            return "No responses to aggregate."
+
+        if len(responses) == 1:
+            return self._extract_message(responses[0])
+
+        # Extract messages
+        messages = []
+        for i, response in enumerate(responses):
+            msg = self._extract_message(response)
+            if msg:
+                prefix = f"📊 *Response {i+1}*" if len(responses) > 1 else ""
+                messages.append(f"{prefix}\n{msg}" if prefix else msg)
+
+        return separator.join(messages)
+
+    def _extract_message(self, response: Dict[str, Any]) -> str:
+        """Extract WhatsApp message from response"""
+        if isinstance(response, str):
+            return response
+
+        if isinstance(response, dict):
+            if response.get("whatsapp_message"):
+                return str(response["whatsapp_message"])
+            if response.get("formatted_response"):
+                return str(response["formatted_response"])
+            if response.get("message"):
+                return str(response["message"])
+            if response.get("response"):
+                return str(response["response"])
+            if response.get("error"):
+                return f"⚠️ {response['error']}"
+
+        return str(response) if response else ""
+
+# =====================================================================================================================
+# MAIN AI PROVIDER SERVICE - ENTERPRISE ORCHESTRATOR
 # =====================================================================================================================
 
 class AIProviderService:
+    """
+    Enterprise AI Orchestrator with pipeline architecture:
+    1. Preprocessor
+    2. Intent Detection
+    3. Entity Extraction
+    4. Context Manager
+    5. Service Planner
+    6. Service Registry
+    7. Business Service
+    8. Response Formatter
+    """
+
     _instance: Optional["AIProviderService"] = None
     _instance_lock = threading.Lock()
 
@@ -995,419 +841,109 @@ class AIProviderService:
         if getattr(self, "_initialized", False):
             return
 
-        # Initialize all services
-        self.dn_service = DNAnalysisService()
-        self.dealer_service = DealerAnalyticsService()
-        self.city_service = CityAnalyticsService() if CITY_SERVICE_AVAILABLE else None
-        self.warehouse_service = WarehouseAnalyticsService() if WAREHOUSE_SERVICE_AVAILABLE else None
-        self.product_service = ProductAnalyticsService() if PRODUCT_SERVICE_AVAILABLE else None
-        self.national_kpi_service = NationalKPIService() if NATIONAL_KPI_AVAILABLE else None
-        self.groq_service = GroqService()
-
-        # Initialize engines
+        # Initialize components
         self.intent_engine = IntentEngine()
         self.entity_engine = EntityEngine()
         self.context_manager = ContextManager()
+        self.response_aggregator = ResponseAggregator()
+        self.service_registry = ServiceRegistry()
 
-        self._router: Any = None
-        self._router_init_attempted = False
-        self._router_lock = threading.Lock()
-        self._cache: Dict[str, tuple[float, RoutingDecision]] = {}
-        self._cache_ttl = 300.0
-        self._menu_states: Dict[str, MenuSessionState] = {}
-        self._menu_lock = threading.Lock()
-        self._initialized = True
+        # Initialize services
+        self._init_services()
 
-        if BOOTSTRAP_AVAILABLE:
+        # Router state
+        self._cache: TTLCache = TTLCache(maxsize=1000, ttl=CACHE_TTL)
+        self._router_lock = threading.RLock()
+
+        # AI fallback
+        self._groq_client = None
+        if GROQ_AVAILABLE:
             try:
-                self._bootstrap = get_ai_bootstrap_service()
-                logger.info("✅ AI Bootstrap Service connected")
+                self._groq_client = Groq()
+                logger.info("✅ Groq client initialized for AI fallback")
             except Exception as e:
-                logger.warning(f"⚠️ Failed to connect to Bootstrap Service: {e}")
+                logger.warning(f"⚠️ Groq client initialization failed: {e}")
 
-        logger.info("AIProviderService initialized (ENTERPRISE ROUTER)")
-        logger.info(f"  Intent Engine: {len(self.intent_engine.INTENT_PATTERNS)} intents")
-        logger.info(f"  Entity Engine: {len(self.entity_engine.ENTITY_PATTERNS)} entity types")
-        logger.info("  Services: DN, Dealer, City, Warehouse, Product, National KPI, AI")
+        self._initialized = True
+        logger.info("✅ AIProviderService (v30.0) initialized with pipeline architecture")
 
-    # =====================================================================================================================
-    # ROUTING DECISION ENGINE
-    # =====================================================================================================================
+    def _init_services(self) -> None:
+        """Initialize and register all services"""
+        try:
+            from app.services.dn_analysis import DNAnalysisService
+            self.service_registry.register("dn", DNAnalysisService(), {
+                "dashboard": "get_dn_dashboard",
+                "pending": "get_pending_dns",
+                "top": "get_top_performers",
+                "warehouse": "get_warehouse_dashboard",
+                "menu": "get_main_menu",
+                "process": "process_whatsapp_query",
+            })
+            logger.info("✅ Registered DN service")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to register DN service: {e}")
 
-    def _make_routing_decision(self, message: str, session_id: str = "default") -> RoutingDecision:
-        """Enterprise routing decision engine"""
-        normalized = message.strip()
-        cache_key = f"{session_id}:{normalized.casefold()}"
-        cached = self._cache.get(cache_key)
-        if cached and time.monotonic() - cached[0] < self._cache_ttl:
-            return cached[1]
+        try:
+            from app.services.dealer_analytics_service import DealerAnalyticsService
+            self.service_registry.register("dealer", DealerAnalyticsService(), {
+                "dashboard": "get_dealer_dashboard",
+                "menu": "get_main_menu",
+                "process": "process_whatsapp_query",
+            })
+            logger.info("✅ Registered Dealer service")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to register Dealer service: {e}")
 
-        state = self._get_menu_state(session_id)
+        try:
+            from app.services.city_service import CityAnalyticsService
+            self.service_registry.register("city", CityAnalyticsService(), {
+                "dashboard": "get_city_dashboard",
+                "menu": "get_main_menu",
+                "process": "process_whatsapp_query",
+                "process_menu": "process_city_menu_input",
+            })
+            logger.info("✅ Registered City service")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to register City service: {e}")
 
-        # Check if in active menu
-        if state.is_active:
-            return self._handle_active_menu(state, normalized, message, session_id)
+        try:
+            from app.services.warehouse_service import WarehouseAnalyticsService
+            self.service_registry.register("warehouse", WarehouseAnalyticsService(), {
+                "dashboard": "get_warehouse_dashboard",
+                "menu": "get_main_menu",
+                "process": "process_whatsapp_query",
+                "process_menu": "process_menu_input",
+            })
+            logger.info("✅ Registered Warehouse service")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to register Warehouse service: {e}")
 
-        # 1. Empty message → Show menu
-        if not normalized:
-            decision = self._decision_for_menu("0", message, reason="Empty message")
-            self._cache[cache_key] = (time.monotonic(), decision)
-            return decision
+        try:
+            from app.services.product_service import ProductAnalyticsService
+            self.service_registry.register("product", ProductAnalyticsService(), {
+                "dashboard": "get_product_dashboard",
+                "menu": "get_main_menu",
+                "process": "process_whatsapp_query",
+                "process_menu": "process_menu_input",
+            })
+            logger.info("✅ Registered Product service")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to register Product service: {e}")
 
-        # 2. Menu Number (0-9) → Direct to specific service
-        if (number := self._menu_number(normalized)) is not None:
-            decision = self._handle_menu_number(number, message, state)
-            self._cache[cache_key] = (time.monotonic(), decision)
-            return decision
-
-        # 3. DN Number (8-12 digits) → DN Analysis
-        if (dn := self._extract_dn(normalized)):
-            entities = {"dn": dn, "dn_number": dn, "id": dn}
-            decision = self._decision_for_menu("1", message, entities, "dn_lookup", reason="DN number detected")
-            self._cache[cache_key] = (time.monotonic(), decision)
-            return decision
-
-        # 4. Extract entities
-        entities_raw = self._extract_entities(normalized)
-        recognized_entities = self.entity_engine.extract_entities(normalized)
-
-        # Update context with recognized entities
-        if recognized_entities:
-            for entity in recognized_entities:
-                if entity.type in [EntityType.CITY, EntityType.DEALER, EntityType.WAREHOUSE]:
-                    self.context_manager.update_context(session_id, {
-                        "current_entity": entity.value,
-                        "current_entity_type": entity.type.value,
-                    })
-
-        # 5. Detect intent
-        intent_name, category, confidence, extracted = self.intent_engine.detect_intent(normalized)
-
-        # 6. Intent-based routing
-        if intent_name and confidence >= 0.3:
-            decision = self._handle_intent(intent_name, category, message, entities_raw, confidence)
-            self._cache[cache_key] = (time.monotonic(), decision)
-            return decision
-
-        # 7. Entity-based routing (fallback)
-        if recognized_entities:
-            decision = self._handle_entity_routing(recognized_entities, message, entities_raw)
-            self._cache[cache_key] = (time.monotonic(), decision)
-            return decision
-
-        # 8. Semantic routing (if available)
-        semantic_result = self._semantic_intent(normalized)
-        if semantic_result[0] and semantic_result[1] >= 0.3:
-            decision = self._handle_semantic_routing(semantic_result, message, entities_raw)
-            self._cache[cache_key] = (time.monotonic(), decision)
-            return decision
-
-        # 9. AI Query as last resort
-        decision = self._decision_for_menu("9", message, entities_raw or {"message": message}, "general_ai", 0.3, "AI fallback")
-
-        self._cache[cache_key] = (time.monotonic(), decision)
-        if len(self._cache) > 1000:
-            self._cache.clear()
-        return decision
-
-    def _handle_menu_number(self, number: str, message: str, state: "MenuSessionState") -> RoutingDecision:
-        """Handle menu number selection"""
-        if number == "3":
-            state.is_active = True
-            state.menu_type = "city"
-            return RoutingDecision(
-                intent="city_menu",
-                confidence=1.0,
-                service_key="city_menu",
-                service_file="city_service.py",
-                method="get_city_menu",
-                entity={},
-                requires_ai=False,
-                reason="Menu number 3 selected - City Menu",
-                original_message=message,
-                menu_option="3",
-            )
-        elif number == "4":
-            state.is_active = True
-            state.menu_type = "warehouse"
-            return RoutingDecision(
-                intent="warehouse_menu",
-                confidence=1.0,
-                service_key="warehouse_menu",
-                service_file="warehouse_service.py",
-                method="get_main_menu",
-                entity={},
-                requires_ai=False,
-                reason="Menu number 4 selected - Warehouse Menu",
-                original_message=message,
-                menu_option="4",
-            )
-        elif number == "5":
-            state.is_active = True
-            state.menu_type = "product"
-            return RoutingDecision(
-                intent="product_menu",
-                confidence=1.0,
-                service_key="product_menu",
-                service_file="product_service.py",
-                method="get_main_menu",
-                entity={},
-                requires_ai=False,
-                reason="Menu number 5 selected - Product Menu",
-                original_message=message,
-                menu_option="5",
-            )
-        elif number == "6":
-            state.is_active = True
-            state.menu_type = "national"
-            return RoutingDecision(
-                intent="national_menu",
-                confidence=1.0,
-                service_key="national_kpi_menu",
-                service_file="national_kpi_service.py",
-                method="get_main_menu",
-                entity={},
-                requires_ai=False,
-                reason="Menu number 6 selected - National KPI Menu",
-                original_message=message,
-                menu_option="6",
-            )
-        else:
-            return self._decision_for_menu(number, message, reason=f"Menu number {number} selected")
-
-    def _handle_intent(self, intent_name: str, category: Optional[IntentCategory], message: str, entities: Dict[str, Any], confidence: float) -> RoutingDecision:
-        """Handle intent-based routing"""
-        intent_map = {
-            "revenue": ("revenue", "2" if entities.get("dealer") else "3" if entities.get("city") else "6"),
-            "revenue_by_entity": ("revenue", "2" if entities.get("dealer") else "3" if entities.get("city") else "6"),
-            "units": ("units", "2" if entities.get("dealer") else "3" if entities.get("city") else "6"),
-            "pending_dn": ("pending_dn", "7"),
-            "pending_pgi": ("pending_pgi", "7"),
-            "pending_pod": ("pending_pod", "7"),
-            "delivery_performance": ("delivery_performance", "2" if entities.get("dealer") else "3" if entities.get("city") else "6"),
-            "delivery_sla": ("delivery_sla", "6"),
-            "dealer_performance": ("dealer_dashboard", "2"),
-            "top_dealers": ("top_dealers", "2"),
-            "bottom_dealers": ("bottom_dealers", "2"),
-            "dealer_comparison": ("dealer_comparison", "2"),
-            "warehouse_performance": ("warehouse_dashboard", "4"),
-            "warehouse_ranking": ("warehouse_ranking", "4"),
-            "warehouse_comparison": ("warehouse_comparison", "4"),
-            "warehouse_utilization": ("warehouse_utilization", "4"),
-            "warehouse_inventory": ("warehouse_inventory", "4"),
-            "city_performance": ("city_dashboard", "3"),
-            "city_ranking": ("city_ranking", "3"),
-            "city_comparison": ("city_comparison", "3"),
-            "product_performance": ("product_dashboard", "5"),
-            "top_products": ("top_products", "5"),
-            "root_cause_analysis": ("root_cause", "9"),
-            "forecast": ("forecast", "9"),
-            "recommendation": ("recommendation", "9"),
-            "executive_dashboard": ("executive_dashboard", "6"),
-            "executive_insights": ("executive_insights", "6"),
-            "risk_assessment": ("risk_assessment", "6"),
-            "national_kpi": ("national_kpi", "6"),
-            "compare_general": ("compare_general", "3"),
-            "search": ("search", "2"),
-            "help": ("help", "0"),
-            "dashboard": ("dashboard", "3" if entities.get("city") else "2" if entities.get("dealer") else "4" if entities.get("warehouse") else "6"),
-            "greeting": ("greeting", "0"),
-        }
-
-        if intent_name in intent_map:
-            intent_key, menu_option = intent_map[intent_name]
-            return self._decision_for_menu(menu_option, message, entities, intent_key, confidence, f"Intent: {intent_name}")
-
-        # Default: use semantic routing or AI
-        return self._decision_for_menu("9", message, entities, "general_ai", confidence, f"Intent: {intent_name}")
-
-    def _handle_entity_routing(self, entities: List[Entity], message: str, entities_raw: Dict[str, Any]) -> RoutingDecision:
-        """Handle entity-based routing"""
-        for entity in entities:
-            if entity.type == EntityType.CITY:
-                return self._decision_for_menu("3", message, entities_raw, "city_dashboard", 0.9, f"City entity: {entity.value}")
-            elif entity.type == EntityType.DEALER:
-                return self._decision_for_menu("2", message, entities_raw, "dealer_dashboard", 0.9, f"Dealer entity: {entity.value}")
-            elif entity.type == EntityType.WAREHOUSE:
-                return self._decision_for_menu("4", message, entities_raw, "warehouse_dashboard", 0.9, f"Warehouse entity: {entity.value}")
-            elif entity.type == EntityType.PRODUCT:
-                return self._decision_for_menu("5", message, entities_raw, "product_dashboard", 0.9, f"Product entity: {entity.value}")
-            elif entity.type == EntityType.DN:
-                return self._decision_for_menu("1", message, entities_raw, "dn_lookup", 0.9, f"DN entity: {entity.value}")
-
-        return self._decision_for_menu("9", message, entities_raw, "general_ai", 0.5, "Entity routing fallback")
-
-    def _handle_semantic_routing(self, semantic_result: tuple, message: str, entities: Dict[str, Any]) -> RoutingDecision:
-        """Handle semantic routing"""
-        intent_name, confidence = semantic_result
-        intent_map = {
-            "national_kpi": "6",
-            "national_dashboard": "6",
-            "executive_summary": "6",
-            "warehouse_dashboard": "4",
-            "warehouse_ranking": "4",
-            "city_dashboard": "3",
-            "city_ranking": "3",
-            "dealer_dashboard": "2",
-            "top_dealers": "2",
-            "product_dashboard": "5",
-            "top_products": "5",
-            "pending_dns": "7",
-            "top_performers": "8",
-        }
-
-        if intent_name in intent_map:
-            menu_option = intent_map[intent_name]
-            return self._decision_for_menu(menu_option, message, entities, intent_name, confidence, f"Semantic: {intent_name}")
-
-        return self._decision_for_menu("9", message, entities, "general_ai", confidence, "Semantic routing fallback")
-
-    def _handle_active_menu(self, state: "MenuSessionState", normalized: str, message: str, session_id: str) -> RoutingDecision:
-        """Handle active menu routing"""
-        if state.menu_type == "city":
-            return RoutingDecision(
-                intent="city_menu_input",
-                confidence=1.0,
-                service_key="city_menu",
-                service_file="city_service.py",
-                method="process_city_menu_input",
-                entity={"user_input": normalized, "session_id": session_id},
-                requires_ai=False,
-                reason="City menu input",
-                original_message=message,
-                menu_option="3",
-            )
-        elif state.menu_type == "warehouse":
-            return RoutingDecision(
-                intent="warehouse_menu_input",
-                confidence=1.0,
-                service_key="warehouse_menu",
-                service_file="warehouse_service.py",
-                method="process_menu_input",
-                entity={"user_input": normalized, "session_id": session_id},
-                requires_ai=False,
-                reason="Warehouse menu input",
-                original_message=message,
-                menu_option="4",
-            )
-        elif state.menu_type == "product":
-            return RoutingDecision(
-                intent="product_menu_input",
-                confidence=1.0,
-                service_key="product_menu",
-                service_file="product_service.py",
-                method="process_menu_input",
-                entity={"user_input": normalized, "session_id": session_id},
-                requires_ai=False,
-                reason="Product menu input",
-                original_message=message,
-                menu_option="5",
-            )
-        elif state.menu_type == "national":
-            return RoutingDecision(
-                intent="national_menu_input",
-                confidence=1.0,
-                service_key="national_kpi_menu",
-                service_file="national_kpi_service.py",
-                method="process_menu_input",
-                entity={"user_input": normalized, "session_id": session_id},
-                requires_ai=False,
-                reason="National KPI menu input",
-                original_message=message,
-                menu_option="6",
-            )
-        else:
-            # Unknown menu type, exit
-            state.is_active = False
-            state.menu_type = "main"
-            return self._decision_for_menu("0", message, reason="Unknown menu type")
+        try:
+            from app.services.national_kpi_service import NationalKPIService
+            self.service_registry.register("national", NationalKPIService(), {
+                "dashboard": "get_national_kpi_dashboard",
+                "menu": "get_main_menu",
+                "process": "process_whatsapp_query",
+                "process_menu": "process_menu_input",
+            })
+            logger.info("✅ Registered National KPI service")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to register National KPI service: {e}")
 
     # =====================================================================================================================
-    # HELPER METHODS
-    # =====================================================================================================================
-
-    @staticmethod
-    def _decision_for_menu(menu_option: str, message: str, entities: Optional[Dict[str, Any]] = None, intent: Optional[str] = None, confidence: float = 1.0, reason: str = "") -> RoutingDecision:
-        config = MENU_OPTIONS[menu_option]
-        return RoutingDecision(
-            intent=intent or config["name"].lower().replace(" ", "_"),
-            confidence=confidence,
-            service_key=config["service_key"],
-            service_file=config["service_file"],
-            method=config["method"],
-            entity=entities or {},
-            requires_ai=config["requires_ai"],
-            reason=reason,
-            original_message=message,
-            menu_option=menu_option,
-        )
-
-    @staticmethod
-    def _menu_number(text: str) -> Optional[str]:
-        match = re.fullmatch(r"\s*([0-9])(?:[.)])?\s*", text)
-        return match.group(1) if match else None
-
-    @staticmethod
-    def _extract_dn(text: str) -> Optional[str]:
-        compact = text.strip()
-        match = re.search(r"(?<!\d)(\d{8,12})(?!\d)", compact)
-        if match:
-            return match.group(1)
-        match = re.search(r"(?<!\d)(\d{4}[\s-]*\d{4}[\s-]*\d{0,4})(?!\d)", compact)
-        if match:
-            candidate = re.sub(r"[\s-]", "", match.group(1))
-            if 8 <= len(candidate) <= 12:
-                return candidate
-        return None
-
-    @staticmethod
-    def _extract_entities(text: str) -> Dict[str, Any]:
-        entities: Dict[str, Any] = {}
-
-        # DN
-        dn = AIProviderService._extract_dn(text)
-        if dn:
-            entities.update({"dn": dn, "dn_number": dn, "id": dn})
-
-        # City
-        city = _extract_city_name(text)
-        if city:
-            entities.update({"city": city, "city_name": city})
-
-        # Dealer
-        dealer = _extract_dealer_name(text)
-        if dealer:
-            entities.update({"dealer": dealer, "dealer_name": dealer})
-
-        # Warehouse
-        warehouse = _extract_warehouse_name(text)
-        if warehouse:
-            entities["warehouse"] = warehouse
-
-        # Product
-        product = re.search(r"(?:product|model|material|item)\s+([\w&.'\- ]{2,})", text, re.IGNORECASE)
-        if product:
-            entities["product"] = product.group(1).strip()
-
-        # National KPI
-        if any(keyword in text.lower() for keyword in ["national", "overall", "pakistan", "executive", "kpi", "dashboard"]):
-            entities["national_kpi"] = True
-
-        return entities
-
-    def _semantic_intent(self, message: str) -> tuple[Optional[str], float]:
-        # Placeholder for semantic routing
-        return None, 0.0
-
-    def _get_menu_state(self, session_id: str) -> "MenuSessionState":
-        with self._menu_lock:
-            if session_id not in self._menu_states:
-                self._menu_states[session_id] = MenuSessionState()
-                self._menu_states[session_id].session_id = session_id
-            return self._menu_states[session_id]
-
-    # =====================================================================================================================
-    # PROCESS WHATSAPP QUERY
+    # MAIN PROCESSING PIPELINE
     # =====================================================================================================================
 
     async def process_whatsapp_query(
@@ -1415,100 +951,1035 @@ class AIProviderService:
         message: str,
         sender: Optional[str] = None,
         sender_id: Optional[str] = None,
-        **_: Any,
+        **kwargs: Any,
     ) -> str:
+        """
+        Main processing pipeline for WhatsApp queries.
+        
+        Pipeline:
+        1. Preprocess → Clean and normalize message
+        2. Entity Extraction → Extract all entities
+        3. Intent Detection → Detect intent with confidence
+        4. Context Management → Update session context
+        5. Service Planning → Determine which service(s) to call
+        6. Service Execution → Execute the service(s)
+        7. Response Formatting → Format and return response
+        """
         sender = sender or sender_id or "default"
+        start_time = time.perf_counter()
+
+        # =====================================================================================================================
+        # STEP 1: Preprocessor
+        # =====================================================================================================================
         if not message or not message.strip():
-            return get_main_menu()
+            return self._get_main_menu()
 
-        logger.info("Processing WhatsApp message from %s", sender)
-        logger.info("Message: %s", message)
+        message_clean = message.strip()
+        logger.info(f"📨 Processing: '{message_clean}' from {sender}")
 
-        decision = self._make_routing_decision(message, sender)
-        logger.info("Route: %s -> %s.%s (%s)", decision.intent, decision.service_file, decision.method, decision.reason)
-        logger.info("Entities: %s", decision.entity)
+        # =====================================================================================================================
+        # STEP 2: Entity Extraction
+        # =====================================================================================================================
+        entities = self.entity_engine.extract_entities(message_clean)
+        logger.info(f"🔍 Entities: {[(e.type.value, e.value, e.confidence) for e in entities]}")
 
-        # Update context
-        self.context_manager.update_context(sender, {
-            "last_intent": decision.intent,
-            "last_message": message,
-            "history": [{"role": "user", "content": message, "intent": decision.intent}]
+        # =====================================================================================================================
+        # STEP 3: Intent Detection
+        # =====================================================================================================================
+        intent, confidence = self.intent_engine.detect_intent(message_clean, entities)
+        logger.info(f"🎯 Intent: {intent.type.value} (confidence: {confidence:.2f})")
+
+        # =====================================================================================================================
+        # STEP 4: Context Management
+        # =====================================================================================================================
+        context = self.context_manager.get_context(sender)
+
+        # Update context with current entities
+        for entity in entities:
+            if entity.type == EntityType.CITY:
+                context.current_city = entity.value
+            elif entity.type == EntityType.DEALER:
+                context.current_dealer = entity.value
+            elif entity.type == EntityType.WAREHOUSE:
+                context.current_warehouse = entity.value
+            elif entity.type == EntityType.PRODUCT:
+                context.current_product = entity.value
+
+        context.last_intent = intent.type
+        if entities:
+            context.last_entity = entities[0]
+
+        self.context_manager.add_history(sender, {
+            "role": "user",
+            "content": message_clean,
+            "intent": intent.type.value,
+            "entities": [{"type": e.type.value, "value": e.value} for e in entities],
+            "timestamp": datetime.now().isoformat()
         })
 
-        # Menu Service
-        if decision.service_key == "menu_service":
-            state = self._get_menu_state(sender)
-            state.is_active = False
-            state.menu_type = "main"
-            return get_main_menu()
+        # =====================================================================================================================
+        # STEP 5: Service Planning
+        # =====================================================================================================================
 
-        # Greeting
-        if decision.intent == "greeting":
-            return "👋 Hello! Welcome to HPK Logistics 🏪. How can I assist you today? 📦"
+        # Check if we're in a menu state
+        if context.current_menu != MenuState.MAIN and intent.type == IntentType.MENU:
+            # Menu exit or navigation
+            if message_clean.lower() in ["0", "menu", "main menu", "back", "exit"]:
+                context.current_menu = MenuState.MAIN
+                context.current_service = None
+                return self._get_main_menu()
 
-        # Get service instance
-        service = self._get_service(decision.service_key)
-        if service is None:
-            logger.error("Unknown service key: %s", decision.service_key)
-            return get_invalid_selection_message()
+        # Handle menu number input when in a menu
+        menu_number = self._parse_menu_number(message_clean)
+        if menu_number is not None and context.current_menu != MenuState.MAIN:
+            return self._handle_menu_selection(sender, context, menu_number)
+
+        # Handle special cases first
+        if intent.type == IntentType.MENU:
+            return self._handle_menu_request(sender, context)
+
+        if intent.type == IntentType.GREETING:
+            return self._handle_greeting(sender, context)
+
+        if intent.type == IntentType.HELP:
+            return self._handle_help(sender, context)
+
+        # Build routing decision
+        decision = self._build_routing_decision(message_clean, intent, entities, context)
+
+        # =====================================================================================================================
+        # STEP 6: Service Execution
+        # =====================================================================================================================
+
+        # Check confidence threshold
+        if decision.confidence < CONFIDENCE_THRESHOLD and ENABLE_AI_FALLBACK:
+            logger.info(f"Confidence below threshold ({decision.confidence:.2f} < {CONFIDENCE_THRESHOLD}), using AI fallback")
+            return await self._ai_fallback(message_clean, intent, entities, context)
 
         try:
-            method = getattr(service, decision.method)
-            result = await self._call_method(method, decision)
-            response = _extract_whatsapp_message(result)
+            response = await self._execute_decision(sender, decision, context)
+        except Exception as e:
+            logger.exception(f"Service execution failed: {e}")
+            return f"⚠️ Service error: {str(e)[:200]}\n\nPlease try again or type 'menu' for options."
 
-            # Add follow-up suggestions
-            if "follow_up_suggestions" not in decision.__dict__:
-                follow_ups = self.context_manager.get_follow_up_suggestions(sender)
-                if follow_ups:
-                    response = self._add_follow_ups(response, follow_ups)
+        # =====================================================================================================================
+        # STEP 7: Response Formatting
+        # =====================================================================================================================
 
-            return response
+        # Add follow-up suggestions
+        follow_ups = self.context_manager.get_follow_ups(sender)
+        if follow_ups and len(response) < 3500:
+            response = self._add_follow_ups(response, follow_ups)
+
+        # Log performance
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(f"⏱️ Response time: {elapsed_ms:.2f}ms")
+
+        return response
+
+    # =====================================================================================================================
+    # ROUTING DECISION ENGINE
+    # =====================================================================================================================
+
+    def _build_routing_decision(
+        self,
+        message: str,
+        intent: Intent,
+        entities: List[Entity],
+        context: SessionContext
+    ) -> RoutingDecision:
+        """Build routing decision based on intent and entities"""
+
+        # Get primary entity
+        primary_entity = None
+        entity_value = None
+
+        # Priority: City > Dealer > Warehouse > Product > DN
+        entity_priority = [EntityType.CITY, EntityType.DEALER, EntityType.WAREHOUSE, EntityType.PRODUCT, EntityType.DN]
+        for entity_type in entity_priority:
+            for entity in entities:
+                if entity.type == entity_type:
+                    primary_entity = entity
+                    entity_value = entity.value
+                    break
+            if primary_entity:
+                break
+
+        # Determine service based on intent and entity
+        service_key = None
+        method = None
+        confidence = intent.confidence
+        reason = ""
+
+        # Map intent to service
+        intent_service_map = {
+            IntentType.DASHBOARD: "dashboard",
+            IntentType.REVENUE: "revenue",
+            IntentType.UNITS: "units",
+            IntentType.PENDING: "pending",
+            IntentType.DELIVERY: "delivery",
+            IntentType.POD: "pod",
+            IntentType.PGI: "pgi",
+            IntentType.COMPARISON: "comparison",
+            IntentType.RANKING: "ranking",
+            IntentType.SUMMARY: "summary",
+            IntentType.PERFORMANCE: "performance",
+            IntentType.FORECAST: "forecast",
+            IntentType.RECOMMENDATION: "recommendation",
+            IntentType.ROOT_CAUSE: "root_cause",
+            IntentType.EXECUTIVE: "executive",
+            IntentType.NATIONAL: "national",
+            IntentType.SEARCH: "search",
+        }
+
+        intent_metric = intent_service_map.get(intent.type)
+
+        # Determine which service to route to
+        if primary_entity:
+            if primary_entity.type == EntityType.CITY:
+                service_key = "city"
+                method = "process_whatsapp_query"
+                if intent_metric:
+                    reason = f"City '{entity_value}' with intent: {intent_metric}"
+                else:
+                    reason = f"City '{entity_value}' dashboard"
+                    intent_metric = "dashboard"
+
+            elif primary_entity.type == EntityType.DEALER:
+                service_key = "dealer"
+                method = "process_whatsapp_query"
+                reason = f"Dealer '{entity_value}'"
+                intent_metric = intent_metric or "dashboard"
+
+            elif primary_entity.type == EntityType.WAREHOUSE:
+                service_key = "warehouse"
+                method = "process_whatsapp_query"
+                reason = f"Warehouse '{entity_value}'"
+                intent_metric = intent_metric or "dashboard"
+
+            elif primary_entity.type == EntityType.PRODUCT:
+                service_key = "product"
+                method = "process_whatsapp_query"
+                reason = f"Product '{entity_value}'"
+                intent_metric = intent_metric or "dashboard"
+
+            elif primary_entity.type == EntityType.DN:
+                service_key = "dn"
+                method = "get_dn_dashboard"
+                reason = f"DN '{entity_value}'"
+                intent_metric = "dashboard"
+
+        # National/executive intents
+        elif intent.type in [IntentType.NATIONAL, IntentType.EXECUTIVE]:
+            service_key = "national"
+            method = "process_whatsapp_query"
+            reason = f"{intent.type.value} intent"
+            intent_metric = intent.type.value
+
+        # Ranking intents
+        elif intent.type == IntentType.RANKING:
+            service_key = self._get_ranking_service(message)
+            method = "process_whatsapp_query"
+            reason = "Ranking request"
+
+        # Comparison intents
+        elif intent.type == IntentType.COMPARISON:
+            service_key = self._get_comparison_service(message, entities)
+            method = "process_whatsapp_query"
+            reason = "Comparison request"
+
+        # Fallback to AI
+        else:
+            service_key = "ai"
+            method = "process_query"
+            reason = "AI fallback"
+
+        # Build entity dict for the service
+        entity_dict = {
+            "message": message,
+            "intent": intent.type.value,
+            "intent_metric": intent_metric,
+            "confidence": confidence,
+        }
+
+        for entity in entities:
+            entity_dict[entity.type.value] = entity.value
+
+        # If we have a specific intent metric, add it
+        if intent_metric and intent_metric not in ["dashboard", "national", "executive"]:
+            entity_dict["metric"] = intent_metric
+
+        # Create routing decision
+        decision = RoutingDecision(
+            intent=intent,
+            service_key=service_key,
+            method=method,
+            entity=entity_dict,
+            confidence=confidence,
+            reason=reason,
+            original_message=message,
+            context={
+                "current_city": context.current_city,
+                "current_dealer": context.current_dealer,
+                "current_warehouse": context.current_warehouse,
+                "current_product": context.current_product,
+            }
+        )
+
+        # Update context
+        if service_key:
+            context.current_service = service_key
+
+        logger.info(f"🔀 Routing: {service_key}.{method} ({confidence:.2f}) - {reason}")
+        return decision
+
+    def _get_ranking_service(self, message: str) -> str:
+        """Determine which service to use for ranking"""
+        message_lower = message.lower()
+        if "warehouse" in message_lower:
+            return "warehouse"
+        elif "dealer" in message_lower:
+            return "dealer"
+        elif "product" in message_lower:
+            return "product"
+        elif "city" in message_lower:
+            return "city"
+        else:
+            return "national"
+
+    def _get_comparison_service(self, message: str, entities: List[Entity]) -> str:
+        """Determine which service to use for comparison"""
+        entity_types = [e.type for e in entities]
+        if EntityType.CITY in entity_types:
+            return "city"
+        elif EntityType.DEALER in entity_types:
+            return "dealer"
+        elif EntityType.WAREHOUSE in entity_types:
+            return "warehouse"
+        elif EntityType.PRODUCT in entity_types:
+            return "product"
+        else:
+            return "national"
+
+    def _parse_menu_number(self, message: str) -> Optional[int]:
+        """Parse menu number from message"""
+        match = re.fullmatch(r"\s*([0-9]+)\s*", message)
+        if match:
+            return int(match.group(1))
+        return None
+
+    # =====================================================================================================================
+    # SERVICE EXECUTION
+    # =====================================================================================================================
+
+    async def _execute_decision(self, sender: str, decision: RoutingDecision, context: SessionContext) -> str:
+        """Execute the routing decision"""
+        # Get service from registry
+        service = self.service_registry.get_service(decision.service_key)
+
+        if not service:
+            logger.warning(f"Service '{decision.service_key}' not found, falling back to AI")
+            return await self._ai_fallback(decision.original_message, decision.intent, [], context)
+
+        # Get method
+        method = getattr(service, decision.method, None)
+        if not method:
+            logger.warning(f"Method '{decision.method}' not found in service '{decision.service_key}'")
+            return await self._ai_fallback(decision.original_message, decision.intent, [], context)
+
+        try:
+            # Prepare arguments based on method
+            if decision.method == "process_whatsapp_query":
+                result = method(decision.original_message, sender)
+            elif decision.method == "process_city_menu_input":
+                result = method(sender, decision.original_message)
+            elif decision.method == "process_menu_input":
+                result = method(sender, decision.original_message)
+            elif decision.method == "get_dn_dashboard":
+                dn = decision.entity.get("dn")
+                result = method(dn) if dn else "⚠️ Please provide a DN number."
+            elif decision.method == "get_dealer_dashboard":
+                dealer = decision.entity.get("dealer") or decision.entity.get("dealer_name")
+                result = method(dealer) if dealer else "⚠️ Please provide a dealer name."
+            elif decision.method == "get_city_dashboard":
+                city = decision.entity.get("city") or decision.entity.get("city_name")
+                result = method(city) if city else "⚠️ Please provide a city name."
+            elif decision.method == "get_warehouse_dashboard":
+                warehouse = decision.entity.get("warehouse")
+                result = method(warehouse) if warehouse else "⚠️ Please provide a warehouse name."
+            elif decision.method == "get_product_dashboard":
+                product = decision.entity.get("product")
+                result = method(product) if product else "⚠️ Please provide a product name."
+            else:
+                result = method()
+
+            # Handle async results
+            if inspect.isawaitable(result):
+                result = await result
+
+            # Extract message
+            return self._extract_response(result)
 
         except Exception as e:
-            logger.exception("Service call failed: %s.%s", decision.service_key, decision.method)
-            return self._handle_error(e, decision)
+            logger.exception(f"Service execution error: {e}")
+            return f"⚠️ Service error: {str(e)[:200]}"
 
-    def _get_service(self, service_key: str):
-        """Get service instance by key"""
-        service_map = {
-            "dn_analysis": self.dn_service,
-            "dealer_analytics": self.dealer_service,
-            "city_menu": self.city_service,
-            "city_service": self.city_service,
-            "warehouse_menu": self.warehouse_service,
-            "warehouse_service": self.warehouse_service,
-            "product_menu": self.product_service,
-            "product_service": self.product_service,
-            "national_kpi_menu": self.national_kpi_service,
-            "national_kpi_service": self.national_kpi_service,
-            "groq_service": self.groq_service,
+    def _extract_response(self, result: Any) -> str:
+        """Extract WhatsApp message from service result"""
+        if isinstance(result, str):
+            return result
+
+        if isinstance(result, dict):
+            if result.get("whatsapp_message"):
+                return str(result["whatsapp_message"])
+            if result.get("formatted_response"):
+                return str(result["formatted_response"])
+            if result.get("message"):
+                return str(result["message"])
+            if result.get("response"):
+                return str(result["response"])
+            if result.get("error"):
+                return f"⚠️ {result['error']}"
+            if result.get("data"):
+                return str(result["data"])
+
+        return str(result) if result else "No response from service."
+
+    # =====================================================================================================================
+    # AI FALLBACK
+    # =====================================================================================================================
+
+    async def _ai_fallback(self, message: str, intent: Intent, entities: List[Entity], context: SessionContext) -> str:
+        """AI fallback for unanswered queries"""
+        if not self._groq_client or not ENABLE_AI_FALLBACK:
+            return self._get_help_response()
+
+        try:
+            # Build context for AI
+            entity_str = ", ".join([f"{e.type.value}: {e.value}" for e in entities]) if entities else "None"
+            context_str = f"Current city: {context.current_city or 'None'}, Dealer: {context.current_dealer or 'None'}"
+
+            prompt = f"""You are HPK Logistics AI Assistant. The user asked: "{message}"
+
+Detected intent: {intent.type.value} (confidence: {intent.confidence:.2f})
+Entities: {entity_str}
+Context: {context_str}
+
+If this is a logistics question, provide a helpful response. If you don't know, suggest logistics topics they can ask about.
+
+Available topics:
+- DN Tracking (send a DN number)
+- Dealer Analytics (dealer name)
+- Warehouse Analytics (warehouse name)
+- City Analytics (city name)
+- Product Analytics (product name)
+- National KPIs
+- Pending Deliveries
+- Performance Reports
+
+Keep response concise and WhatsApp-friendly with emojis and bullet points."""
+
+            # Use Groq AI
+            response = self._groq_client.chat.completions.create(
+                model="llama3-70b-8192",
+                messages=[
+                    {"role": "system", "content": "You are HPK Logistics AI Assistant. Help users with logistics data."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=500,
+            )
+
+            ai_response = response.choices[0].message.content.strip()
+            return ai_response
+
+        except Exception as e:
+            logger.error(f"AI fallback failed: {e}")
+            return self._get_help_response()
+
+    # =====================================================================================================================
+    # MENU HANDLING
+    # =====================================================================================================================
+
+    def _handle_menu_request(self, sender: str, context: SessionContext) -> str:
+        """Handle menu request"""
+        # Check if already in a menu
+        if context.current_menu != MenuState.MAIN:
+            return self._get_sub_menu(context.current_menu)
+
+        # Show main menu
+        context.current_menu = MenuState.MAIN
+        return self._get_main_menu()
+
+    def _handle_menu_selection(self, sender: str, context: SessionContext, menu_number: int) -> str:
+        """Handle menu selection while in a menu"""
+        # Map menu numbers to actions based on current menu state
+        if context.current_menu == MenuState.MAIN:
+            return self._handle_main_menu_selection(sender, context, menu_number)
+
+        elif context.current_menu == MenuState.CITY:
+            return self._handle_city_menu_selection(sender, context, menu_number)
+
+        elif context.current_menu == MenuState.WAREHOUSE:
+            return self._handle_warehouse_menu_selection(sender, context, menu_number)
+
+        elif context.current_menu == MenuState.DEALER:
+            return self._handle_dealer_menu_selection(sender, context, menu_number)
+
+        elif context.current_menu == MenuState.PRODUCT:
+            return self._handle_product_menu_selection(sender, context, menu_number)
+
+        elif context.current_menu == MenuState.NATIONAL:
+            return self._handle_national_menu_selection(sender, context, menu_number)
+
+        elif context.current_menu == MenuState.DN:
+            return self._handle_dn_menu_selection(sender, context, menu_number)
+
+        return self._get_main_menu()
+
+    def _handle_main_menu_selection(self, sender: str, context: SessionContext, number: int) -> str:
+        """Handle main menu selection"""
+        menu_map = {
+            1: (MenuState.DN, "📦 *DN DELIVERY MENU*", self._get_dn_menu()),
+            2: (MenuState.DEALER, "🏪 *DEALER ANALYTICS MENU*", self._get_dealer_menu()),
+            3: (MenuState.CITY, "🏙️ *CITY ANALYTICS MENU*", self._get_city_menu()),
+            4: (MenuState.WAREHOUSE, "🏭 *WAREHOUSE ANALYTICS MENU*", self._get_warehouse_menu()),
+            5: (MenuState.PRODUCT, "📦 *PRODUCT ANALYTICS MENU*", self._get_product_menu()),
+            6: (MenuState.NATIONAL, "🇵🇰 *NATIONAL KPI MENU*", self._get_national_menu()),
+            7: (MenuState.DN, "⏳ *PENDING DN MENU*", self._get_pending_dn_menu()),
+            8: (MenuState.DN, "🏆 *TOP PERFORMERS MENU*", self._get_top_performers_menu()),
+            9: (MenuState.MAIN, "🤖 *AI QUERY*", "Please type your question..."),
         }
-        return service_map.get(service_key)
 
-    async def _call_method(self, method, decision: RoutingDecision):
-        """Call method with proper parameters"""
-        if decision.service_key == "city_menu":
-            if decision.method == "process_city_menu_input":
-                return method(decision.entity.get("session_id"), decision.entity.get("user_input"))
-            return method()
-        elif decision.service_key in ["warehouse_menu", "product_menu", "national_kpi_menu"]:
-            if decision.method == "process_menu_input":
-                return method(decision.entity.get("session_id"), decision.entity.get("user_input"))
-            return method()
-        elif decision.service_key == "dn_analysis":
-            if decision.method == "get_dn_dashboard":
-                return method(decision.entity.get("dn"))
-            elif decision.method == "get_warehouse_dashboard":
-                return method(decision.entity.get("warehouse"))
+        if number in menu_map:
+            menu_state, title, content = menu_map[number]
+            context.current_menu = menu_state
+            if number == 9:
+                context.current_menu = MenuState.MAIN
+                return "🤖 *AI Query*\n\nType your question and I'll help you find the answer."
+            return content
+
+        return self._get_invalid_selection()
+
+    # =====================================================================================================================
+    # SUB-MENU HANDLING
+    # =====================================================================================================================
+
+    def _handle_city_menu_selection(self, sender: str, context: SessionContext, number: int) -> str:
+        """Handle city menu selection"""
+        menu_map = {
+            1: "📍 *City Dashboard*\n\nEnter city name:",
+            2: "💰 *City Revenue*\n\nEnter city name:",
+            3: "📦 *City Units*\n\nEnter city name:",
+            4: "⏳ *City Pending*\n\nEnter city name:",
+            5: "🚚 *City Delivery*\n\nEnter city name:",
+            6: "🔄 *Compare Cities*\n\nEnter first city name:",
+            7: "🏆 *City Rankings*",
+            8: "🏷️ *Top Products*\n\nEnter city name:",
+            9: "📈 *Business Score*\n\nEnter city name:",
+            10: "📍 *Distance Info*\n\nEnter city name:",
+            11: "📈 *Growth Analytics*\n\nEnter city name:",
+            12: "🏭 *Warehouse Distribution*\n\nEnter city name:",
+            13: "📋 *City Summary*\n\nEnter city name:",
+            99: "0. Main Menu",
+        }
+
+        if number in menu_map:
+            if number == 7:
+                # Execute ranking directly
+                service = self.service_registry.get_service("city")
+                if service:
+                    result = service.process_whatsapp_query("top cities", sender)
+                    return self._extract_response(result)
+                return self._get_city_menu()
+            elif number == 99:
+                context.current_menu = MenuState.MAIN
+                return self._get_main_menu()
             else:
-                return method()
-        elif decision.service_key == "dealer_analytics":
-            return await method(decision.entity.get("dealer_name") or decision.entity.get("dealer"))
-        elif decision.service_key == "groq_service":
-            return await method(decision.original_message, decision.entity)
-        else:
-            return method()
+                return menu_map[number]
+
+        return self._get_invalid_selection()
+
+    def _handle_warehouse_menu_selection(self, sender: str, context: SessionContext, number: int) -> str:
+        """Handle warehouse menu selection"""
+        menu_map = {
+            1: "🏭 *Warehouse Dashboard*\n\nEnter warehouse name:",
+            2: "📦 *Warehouse Inventory*\n\nEnter warehouse name:",
+            3: "💰 *Warehouse Revenue*\n\nEnter warehouse name:",
+            4: "📦 *Warehouse Units*\n\nEnter warehouse name:",
+            5: "⏳ *Pending DN*\n\nEnter warehouse name:",
+            6: "⏳ *Pending PGI*\n\nEnter warehouse name:",
+            7: "⏳ *Pending POD*\n\nEnter warehouse name:",
+            8: "🚚 *Delivery Performance*\n\nEnter warehouse name:",
+            9: "🏆 *Warehouse Ranking*",
+            10: "🔄 *Warehouse Comparison*\n\nEnter first warehouse name:",
+            11: "🏷️ *Top Products*\n\nEnter warehouse name:",
+            12: "📊 *Dealer Distribution*\n\nEnter warehouse name:",
+            13: "📊 *City Distribution*\n\nEnter warehouse name:",
+            14: "📊 *Storage Utilization*\n\nEnter warehouse name:",
+            15: "🚚 *Transit Analysis*\n\nEnter warehouse name:",
+            16: "📈 *Delivery Aging*\n\nEnter warehouse name:",
+            17: "📊 *Warehouse KPIs*\n\nEnter warehouse name:",
+            18: "📋 *AI Summary*\n\nEnter warehouse name:",
+            99: "0. Main Menu",
+        }
+
+        if number in menu_map:
+            if number == 9:
+                service = self.service_registry.get_service("warehouse")
+                if service:
+                    result = service.process_whatsapp_query("top warehouses", sender)
+                    return self._extract_response(result)
+                return self._get_warehouse_menu()
+            elif number == 99:
+                context.current_menu = MenuState.MAIN
+                return self._get_main_menu()
+            else:
+                return menu_map[number]
+
+        return self._get_invalid_selection()
+
+    def _handle_dealer_menu_selection(self, sender: str, context: SessionContext, number: int) -> str:
+        """Handle dealer menu selection"""
+        menu_map = {
+            1: "🏪 *Dealer Dashboard*\n\nEnter dealer name:",
+            2: "💰 *Dealer Revenue*\n\nEnter dealer name:",
+            3: "📦 *Dealer Units*\n\nEnter dealer name:",
+            4: "🏷️ *Dealer Products*\n\nEnter dealer name:",
+            5: "📈 *Dealer Performance*\n\nEnter dealer name:",
+            6: "⏳ *Pending DN*\n\nEnter dealer name:",
+            7: "⏳ *Pending PGI*\n\nEnter dealer name:",
+            8: "⏳ *Pending POD*\n\nEnter dealer name:",
+            9: "🚚 *Dealer Delivery*\n\nEnter dealer name:",
+            10: "🏆 *Dealer Ranking*",
+            11: "🔄 *Dealer Comparison*\n\nEnter first dealer name:",
+            12: "📋 *Dealer History*\n\nEnter dealer name:",
+            13: "🔍 *Dealer Search*\n\nEnter dealer name or code:",
+            14: "📍 *Dealer Cities*\n\nEnter dealer name:",
+            15: "📍 *Dealer Distance*\n\nEnter dealer name:",
+            16: "📈 *Dealer Trends*\n\nEnter dealer name:",
+            17: "🔮 *Dealer Forecast*\n\nEnter dealer name:",
+            18: "📋 *AI Summary*\n\nEnter dealer name:",
+            99: "0. Main Menu",
+        }
+
+        if number in menu_map:
+            if number == 10:
+                service = self.service_registry.get_service("dealer")
+                if service:
+                    result = service.process_whatsapp_query("top dealers", sender)
+                    return self._extract_response(result)
+                return self._get_dealer_menu()
+            elif number == 99:
+                context.current_menu = MenuState.MAIN
+                return self._get_main_menu()
+            else:
+                return menu_map[number]
+
+        return self._get_invalid_selection()
+
+    def _handle_product_menu_selection(self, sender: str, context: SessionContext, number: int) -> str:
+        """Handle product menu selection"""
+        menu_map = {
+            1: "📦 *Product Dashboard*\n\nEnter product name:",
+            2: "💰 *Product Revenue*\n\nEnter product name:",
+            3: "📦 *Product Units*\n\nEnter product name:",
+            4: "🏪 *Product Dealers*\n\nEnter product name:",
+            5: "🏭 *Product Warehouses*\n\nEnter product name:",
+            6: "🏙️ *Product Cities*\n\nEnter product name:",
+            7: "⏳ *Pending DN*\n\nEnter product name:",
+            8: "⏳ *Pending PGI*\n\nEnter product name:",
+            9: "⏳ *Pending POD*\n\nEnter product name:",
+            10: "🔄 *Product Comparison*\n\nEnter first product name:",
+            11: "🏆 *Product Ranking*",
+            12: "📈 *Monthly Trend*\n\nEnter product name:",
+            13: "📋 *Executive Summary*\n\nEnter product name:",
+            14: "💡 *AI Insights*\n\nEnter product name:",
+            15: "🎯 *Recommendations*\n\nEnter product name:",
+            16: "📋 *Product Life Cycle*\n\nEnter product name:",
+            17: "📈 *Product Performance*\n\nEnter product name:",
+            18: "🔍 *Smart Search*\n\nEnter product name, model, or material:",
+            99: "0. Main Menu",
+        }
+
+        if number in menu_map:
+            if number == 11:
+                service = self.service_registry.get_service("product")
+                if service:
+                    result = service.process_whatsapp_query("top products", sender)
+                    return self._extract_response(result)
+                return self._get_product_menu()
+            elif number == 99:
+                context.current_menu = MenuState.MAIN
+                return self._get_main_menu()
+            else:
+                return menu_map[number]
+
+        return self._get_invalid_selection()
+
+    def _handle_national_menu_selection(self, sender: str, context: SessionContext, number: int) -> str:
+        """Handle national KPI menu selection"""
+        menu_map = {
+            1: "🇵🇰 *National Dashboard*",
+            2: "🏭 *Warehouse Dashboard*\n\nEnter warehouse name:",
+            3: "🏆 *Warehouse Ranking*",
+            4: "🔄 *Warehouse Comparison*\n\nEnter first warehouse name:",
+            5: "💰 *National Revenue*",
+            6: "📦 *National Units*",
+            7: "🚚 *National Delivery*",
+            8: "⏳ *Pending Dashboard*",
+            9: "📄 *POD Dashboard*",
+            10: "📄 *PGI Dashboard*",
+            11: "🏪 *Dealer Coverage*",
+            12: "🏙️ *City Analytics*\n\nEnter city name:",
+            13: "📦 *Product Distribution*\n\nEnter product name:",
+            14: "📋 *SLA Compliance*",
+            15: "📋 *Executive Summary*",
+            16: "💡 *AI Insights*",
+            17: "🎯 *Recommendations*",
+            18: "⭐ *National Health Score*",
+            19: "📈 *Monthly Trend*",
+            20: "🔮 *National Forecast*",
+            99: "0. Main Menu",
+        }
+
+        if number in menu_map:
+            if number == 99:
+                context.current_menu = MenuState.MAIN
+                return self._get_main_menu()
+            elif number in [1, 3, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16, 17, 18, 19, 20]:
+                # Direct execution
+                service = self.service_registry.get_service("national")
+                if service:
+                    action_map = {
+                        1: "national dashboard",
+                        3: "warehouse ranking",
+                        5: "national revenue",
+                        6: "national units",
+                        7: "national delivery",
+                        8: "pending dashboard",
+                        9: "pod dashboard",
+                        10: "pgi dashboard",
+                        11: "dealer coverage",
+                        14: "sla compliance",
+                        15: "executive summary",
+                        16: "ai insights",
+                        17: "recommendations",
+                        18: "national health score",
+                        19: "monthly trend",
+                        20: "national forecast",
+                    }
+                    query = action_map.get(number, "")
+                    result = service.process_whatsapp_query(query, sender)
+                    return self._extract_response(result)
+                return self._get_national_menu()
+            else:
+                return menu_map[number]
+
+        return self._get_invalid_selection()
+
+    def _handle_dn_menu_selection(self, sender: str, context: SessionContext, number: int) -> str:
+        """Handle DN menu selection"""
+        menu_map = {
+            1: "📦 *DN Dashboard*\n\nEnter DN number:",
+            2: "📊 *DN Status*\n\nEnter DN number:",
+            3: "📋 *DN History*\n\nEnter DN number:",
+            4: "📅 *DN Timeline*\n\nEnter DN number:",
+            5: "🚚 *Transit Analysis*\n\nEnter DN number:",
+            6: "⏳ *Pending DN*",
+            7: "⏳ *Pending PGI*",
+            8: "⏳ *Pending POD*",
+            9: "⚠️ *Delayed DN*",
+            10: "🔄 *Recent DN*",
+            11: "🔍 *Search DN*\n\nEnter search term:",
+            12: "🔄 *Compare DN*\n\nEnter first DN number:",
+            99: "0. Main Menu",
+        }
+
+        if number in menu_map:
+            if number == 99:
+                context.current_menu = MenuState.MAIN
+                return self._get_main_menu()
+            elif number in [6, 7, 8, 9, 10]:
+                service = self.service_registry.get_service("dn")
+                if service:
+                    action_map = {
+                        6: "pending dns",
+                        7: "pending pgi",
+                        8: "pending pod",
+                        9: "delayed dns",
+                        10: "recent dns",
+                    }
+                    query = action_map.get(number, "")
+                    result = service.process_whatsapp_query(query, sender)
+                    return self._extract_response(result)
+                return self._get_dn_menu()
+            else:
+                return menu_map[number]
+
+        return self._get_invalid_selection()
+
+    # =====================================================================================================================
+    # MENU GENERATORS
+    # =====================================================================================================================
+
+    def _get_main_menu(self) -> str:
+        return (
+            "📋 *AI LOGISTICS MENU*\n\n"
+            "0. Main Menu\n"
+            "1. DN Delivery\n"
+            "2. Dealer Analytics\n"
+            "3. City Analytics\n"
+            "4. Warehouse Analytics\n"
+            "5. Product Analytics\n"
+            "6. National KPI\n"
+            "7. Pending DN\n"
+            "8. Top Performers\n"
+            "9. AI Query\n\n"
+            "Reply with a number from 0 to 9."
+        )
+
+    def _get_city_menu(self) -> str:
+        return "\n".join([
+            "🏙️ *CITY ANALYTICS MENU*",
+            "",
+            "0. Main Menu",
+            "1. City Dashboard",
+            "2. City Revenue",
+            "3. City Units",
+            "4. City Pending",
+            "5. City Delivery",
+            "6. Compare Cities",
+            "7. City Rankings",
+            "8. Top Products",
+            "9. Business Score",
+            "10. Distance Info",
+            "11. Growth Analytics",
+            "12. Warehouse Distribution",
+            "13. City Summary",
+            "99. Back to Main",
+            "",
+            "Reply with a number:"
+        ])
+
+    def _get_warehouse_menu(self) -> str:
+        return "\n".join([
+            "🏭 *WAREHOUSE ANALYTICS MENU*",
+            "",
+            "0. Main Menu",
+            "1. Warehouse Dashboard",
+            "2. Warehouse Inventory",
+            "3. Warehouse Revenue",
+            "4. Warehouse Units",
+            "5. Pending DN",
+            "6. Pending PGI",
+            "7. Pending POD",
+            "8. Delivery Performance",
+            "9. Warehouse Ranking",
+            "10. Warehouse Comparison",
+            "11. Top Products",
+            "12. Dealer Distribution",
+            "13. City Distribution",
+            "14. Storage Utilization",
+            "15. Transit Analysis",
+            "16. Delivery Aging",
+            "17. Warehouse KPIs",
+            "18. Warehouse AI Summary",
+            "99. Back to Main",
+            "",
+            "Reply with a number:"
+        ])
+
+    def _get_dealer_menu(self) -> str:
+        return "\n".join([
+            "🏪 *DEALER ANALYTICS MENU*",
+            "",
+            "0. Main Menu",
+            "1. Dealer Dashboard",
+            "2. Dealer Revenue",
+            "3. Dealer Units",
+            "4. Dealer Products",
+            "5. Dealer Performance",
+            "6. Pending DN",
+            "7. Pending PGI",
+            "8. Pending POD",
+            "9. Dealer Delivery",
+            "10. Dealer Ranking",
+            "11. Dealer Comparison",
+            "12. Dealer History",
+            "13. Dealer Search",
+            "14. Dealer Cities",
+            "15. Dealer Distance",
+            "16. Dealer Trends",
+            "17. Dealer Forecast",
+            "18. Dealer AI Summary",
+            "99. Back to Main",
+            "",
+            "Reply with a number:"
+        ])
+
+    def _get_product_menu(self) -> str:
+        return "\n".join([
+            "📦 *PRODUCT ANALYTICS MENU*",
+            "",
+            "0. Main Menu",
+            "1. Product Dashboard",
+            "2. Product Revenue",
+            "3. Product Units",
+            "4. Product Dealers",
+            "5. Product Warehouses",
+            "6. Product Cities",
+            "7. Pending DN",
+            "8. Pending PGI",
+            "9. Pending POD",
+            "10. Product Comparison",
+            "11. Product Ranking",
+            "12. Monthly Trend",
+            "13. Executive Summary",
+            "14. AI Insights",
+            "15. Recommendations",
+            "16. Product Life Cycle",
+            "17. Product Performance",
+            "18. Smart Search",
+            "99. Back to Main",
+            "",
+            "Reply with a number:"
+        ])
+
+    def _get_national_menu(self) -> str:
+        return "\n".join([
+            "🇵🇰 *NATIONAL KPI MENU*",
+            "",
+            "0. Main Menu",
+            "1. National Dashboard",
+            "2. Warehouse Dashboard",
+            "3. Warehouse Ranking",
+            "4. Warehouse Comparison",
+            "5. National Revenue",
+            "6. National Units",
+            "7. National Delivery",
+            "8. Pending Dashboard",
+            "9. POD Dashboard",
+            "10. PGI Dashboard",
+            "11. Dealer Coverage",
+            "12. City Analytics",
+            "13. Product Distribution",
+            "14. SLA Compliance",
+            "15. Executive Summary",
+            "16. AI Insights",
+            "17. Recommendations",
+            "18. National Health Score",
+            "19. Monthly Trend",
+            "20. National Forecast",
+            "99. Back to Main",
+            "",
+            "Reply with a number:"
+        ])
+
+    def _get_dn_menu(self) -> str:
+        return "\n".join([
+            "📦 *DN DELIVERY MENU*",
+            "",
+            "0. Main Menu",
+            "1. DN Dashboard",
+            "2. DN Status",
+            "3. DN History",
+            "4. DN Timeline",
+            "5. Transit Analysis",
+            "6. Pending DN",
+            "7. Pending PGI",
+            "8. Pending POD",
+            "9. Delayed DN",
+            "10. Recent DN",
+            "11. Search DN",
+            "12. Compare DN",
+            "99. Back to Main",
+            "",
+            "Reply with a number:"
+        ])
+
+    def _get_pending_dn_menu(self) -> str:
+        return "\n".join([
+            "⏳ *PENDING DN MENU*",
+            "",
+            "0. Main Menu",
+            "1. All Pending DN",
+            "2. Pending PGI",
+            "3. Pending POD",
+            "4. Delayed DN",
+            "99. Back to Main",
+            "",
+            "Reply with a number:"
+        ])
+
+    def _get_top_performers_menu(self) -> str:
+        return "\n".join([
+            "🏆 *TOP PERFORMERS MENU*",
+            "",
+            "0. Main Menu",
+            "1. Top Dealers",
+            "2. Top Warehouses",
+            "3. Top Cities",
+            "4. Top Products",
+            "5. Top Performers (All)",
+            "99. Back to Main",
+            "",
+            "Reply with a number:"
+        ])
+
+    def _get_sub_menu(self, menu_state: MenuState) -> str:
+        """Get sub-menu based on state"""
+        menu_map = {
+            MenuState.CITY: self._get_city_menu,
+            MenuState.WAREHOUSE: self._get_warehouse_menu,
+            MenuState.DEALER: self._get_dealer_menu,
+            MenuState.PRODUCT: self._get_product_menu,
+            MenuState.NATIONAL: self._get_national_menu,
+            MenuState.DN: self._get_dn_menu,
+        }
+        return menu_map.get(menu_state, self._get_main_menu)()
+
+    def _get_help_response(self) -> str:
+        return "\n".join([
+            "🤖 *How can I help?*",
+            "",
+            "You can ask me about:",
+            "",
+            "📍 **City Analytics**",
+            "• Lahore, Karachi, Rawalpindi...",
+            "",
+            "🏪 **Dealer Analytics**",
+            "• Dealer performance, ranking, comparison",
+            "",
+            "🏭 **Warehouse Analytics**",
+            "• Warehouse performance, inventory, ranking",
+            "",
+            "📦 **Product Analytics**",
+            "• Product sales, performance, life cycle",
+            "",
+            "🇵🇰 **National KPI**",
+            "• National performance, executive dashboard",
+            "",
+            "📋 **DN Tracking**",
+            "• Send any 8-12 digit DN number",
+            "",
+            "Type *menu* to see all options."
+        ])
+
+    def _get_invalid_selection(self) -> str:
+        return "Invalid selection. Please enter a valid number.\n\n" + self._get_main_menu()
+
+    def _handle_greeting(self, sender: str, context: SessionContext) -> str:
+        """Handle greeting"""
+        return "👋 Hello! Welcome to HPK Logistics 🏪. How can I assist you today? 📦"
+
+    def _handle_help(self, sender: str, context: SessionContext) -> str:
+        """Handle help request"""
+        return self._get_help_response()
+
+    # =====================================================================================================================
+    # RESPONSE HELPERS
+    # =====================================================================================================================
 
     def _add_follow_ups(self, response: str, follow_ups: List[str]) -> str:
         """Add follow-up suggestions to response"""
@@ -1525,143 +1996,38 @@ class AIProviderService:
 
         return response + footer
 
-    def _handle_error(self, error: Exception, decision: RoutingDecision) -> str:
-        """Handle service errors"""
-        error_str = str(error)
+    # =====================================================================================================================
+    # HEALTH CHECK
+    # =====================================================================================================================
 
-        if "validation error" in error_str.lower() or "Invalid DN number" in error_str:
-            return "⚠️ Invalid DN number format. Please provide a valid 8-12 digit DN number."
-
-        if decision.service_key == "groq_service":
-            return "⚠️ AI service is temporarily unavailable. Reply *menu* to use logistics services."
-
-        service_name = MENU_OPTIONS[decision.menu_option or "0"]["name"]
-        return f"⚠️ {service_name} is temporarily unavailable. Please try again."
-
-    def show_main_menu(self) -> str:
-        return get_main_menu()
-
-# =====================================================================================================================
-# GLOBAL FUNCTIONS
-# =====================================================================================================================
-
-class MenuSessionState:
-    def __init__(self):
-        self.is_active = False
-        self.session_id = "default"
-        self.menu_type = "main"
-        self.last_response = ""
-        self.last_input = ""
-
-def get_main_menu() -> str:
-    return (
-        "📋 *AI LOGISTICS MENU*\n\n"
-        "0. Main Menu\n"
-        "1. DN Delivery\n"
-        "2. Dealer Analytics\n"
-        "3. City Analytics\n"
-        "4. Warehouse Analytics\n"
-        "5. Product Analytics\n"
-        "6. National KPI\n"
-        "7. Pending DN\n"
-        "8. Top Performers\n"
-        "9. AI Query\n\n"
-        "Reply with a number from 0 to 9."
-    )
-
-def get_invalid_selection_message() -> str:
-    return "Invalid selection. Please choose a number from 0 to 9.\n\n" + get_main_menu()
-
-def _extract_whatsapp_message(result: Any) -> str:
-    """Extract WhatsApp message from service result. ALWAYS returns a string."""
-    if result is None:
-        return "No response from service. Please try again."
-
-    if isinstance(result, str):
-        return result if result.strip() else "No response from service. Please try again."
-
-    if isinstance(result, dict):
-        if result.get("error"):
-            return f"⚠️ {result.get('error')}"
-        if "whatsapp_message" in result and result["whatsapp_message"]:
-            return str(result["whatsapp_message"])
-        if "formatted_response" in result and result["formatted_response"]:
-            return str(result["formatted_response"])
-        if "message" in result and result["message"]:
-            return str(result["message"])
-        if "response" in result and result["response"]:
-            return str(result["response"])
-        if "data" in result and result["data"]:
-            return str(result["data"])
-
-    try:
-        return str(result) if result else "No response from service. Please try again."
-    except Exception:
-        return "No response from service. Please try again."
-
-def _extract_city_name(text: str) -> Optional[str]:
-    """Enhanced city name extraction."""
-    lowered = text.casefold()
-
-    # Check for "City" suffix
-    city_match = re.match(r'^([a-zA-Z\s]+?)\s+city$', text, re.IGNORECASE)
-    if city_match:
-        potential_city = city_match.group(1).strip().lower()
-        for city in CITY_NAMES:
-            if potential_city in city or city in potential_city:
-                return city.title()
-
-    for city in CITY_NAMES:
-        if city in lowered:
-            return city.title()
-        if f"{city} city" in lowered:
-            return city.title()
-
-    return None
-
-def _extract_dealer_name(text: str) -> Optional[str]:
-    """Enhanced dealer name extraction."""
-    for suffix in DEALER_SUFFIXES:
-        pattern = rf'([\w&.\'\- ]{{2,}}?\s*{suffix}\s*[\w&.\'\- ]*)'
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            name = match.group(1).strip()
-            if len(name) > 2:
-                return name
-    return None
-
-def _extract_warehouse_name(text: str) -> Optional[str]:
-    """Extract warehouse name from text."""
-    lowered = text.casefold()
-    for warehouse in WAREHOUSE_NAMES:
-        if warehouse in lowered:
-            return warehouse.title()
-    return None
-
-# =====================================================================================================================
-# CONSTANTS
-# =====================================================================================================================
-
-CITY_NAMES = (
-    "abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan",
-    "peshawar", "gilgit", "hyderabad", "islamabad", "sialkot", "gujranwala",
-    "faisalabad", "bahawalpur", "sukkur", "mansehra", "haripur", "dg khan",
-    "dera ghazi khan", "gwadar", "rahim yar khan"
-)
-
-WAREHOUSE_NAMES = (
-    "lahore", "karachi", "rawalpindi", "multan", "peshawar",
-    "quetta", "hyderabad", "faisalabad", "sialkot", "gujranwala",
-    "bahawalpur", "sukkur", "dg khan", "rahim yar khan",
-    "abbottabad", "gwadar", "gilgit", "islamabad"
-)
-
-DEALER_SUFFIXES = (
-    "electronics", "traders", "distributors", "foods", "group", "pvt", "ltd",
-    "sons", "brothers", "enterprises", "company", "corporation", "store", "shop",
-    "centre", "center", "solutions", "services", "digital", "technologies",
-    "systems", "networks", "communications", "logistics", "transport",
-)
+    def health_check(self) -> Dict[str, Any]:
+        """Health check for service"""
+        return {
+            "service": "ai_provider_service",
+            "version": "30.0",
+            "status": "healthy",
+            "intent_engine": {
+                "intents": len(self.intent_engine.INTENT_PATTERNS),
+                "cache_size": len(self.intent_engine._cache),
+            },
+            "entity_engine": {
+                "cities": len(self.entity_engine.KNOWN_CITIES),
+                "warehouses": len(self.entity_engine.KNOWN_WAREHOUSES),
+                "cache_size": len(self.entity_engine._cache),
+            },
+            "context_manager": {
+                "active_sessions": len(self.context_manager._contexts),
+                "ttl_seconds": self.context_manager._ttl,
+            },
+            "service_registry": {
+                "services": self.service_registry.get_all_keys(),
+            },
+            "ai_fallback": {
+                "enabled": ENABLE_AI_FALLBACK,
+                "groq_available": GROQ_AVAILABLE,
+            },
+            "timestamp": datetime.now().isoformat(),
+        }
 
 # =====================================================================================================================
 # SINGLETON
@@ -1691,21 +2057,20 @@ async def process_whatsapp_query(
             sender_id=sender_id,
             **kwargs,
         )
-    except Exception:
-        logger.exception("Unexpected AI provider failure")
-        if message and message.strip().casefold() in {"menu", "main menu", "help", "start", "0"}:
-            return get_main_menu()
-        if message and message.strip().casefold() in {"hello", "hi", "salam", "hey"}:
-            return "👋 Hello! Welcome to HPK Logistics 🏪. How can I assist you today?"
-        return "⚠️ Service is temporarily unavailable. Reply *menu* to try again."
+    except Exception as e:
+        logger.exception(f"Unexpected error: {e}")
+        return "⚠️ Service is temporarily unavailable. Please try again."
 
 __all__ = [
-    "process_whatsapp_query",
-    "get_main_menu",
-    "get_ai_provider_service",
     "AIProviderService",
-    "RoutingDecision",
+    "get_ai_provider_service",
+    "process_whatsapp_query",
     "IntentEngine",
     "EntityEngine",
     "ContextManager",
+    "ServiceRegistry",
+    "Entity",
+    "Intent",
+    "SessionContext",
+    "RoutingDecision",
 ]
