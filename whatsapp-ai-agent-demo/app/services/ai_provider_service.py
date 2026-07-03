@@ -50,6 +50,10 @@ logger = logging.getLogger(__name__)
 # BLOCK 2: CONFIGURATION
 # ============================================================
 
+# ============================================================
+# BLOCK 2: CONFIGURATION (Around line 58)
+# ============================================================
+
 CONFIDENCE_THRESHOLD = float(os.getenv("ROUTER_CONFIDENCE_THRESHOLD", "0.70"))
 SESSION_TTL = int(os.getenv("SESSION_TTL_SECONDS", "3600"))
 CACHE_TTL = int(os.getenv("ROUTER_CACHE_TTL", "300"))
@@ -57,6 +61,8 @@ ENABLE_AI_FALLBACK = os.getenv("ENABLE_AI_FALLBACK", "true").lower() == "true"
 DEFAULT_LLM = os.getenv("DEFAULT_LLM", "groq")
 ENABLE_REDIS = os.getenv("ENABLE_REDIS", "false").lower() == "true")
 ENABLE_MONITORING = os.getenv("ENABLE_MONITORING", "true").lower() == "true")
+
+# ❌ THE ISSUE IS ABOVE - Notice the extra closing parenthesis
 
 # ============================================================
 # BLOCK 3: LAZY LOADER - Import only when needed
