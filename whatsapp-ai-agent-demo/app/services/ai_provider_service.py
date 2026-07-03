@@ -1,6 +1,6 @@
 """
 File: app/services/ai_provider_service.py
-Version: 19.0 - COMPLETE SERVICE INTEGRATION
+Version: 20.0 - COMPLETE SERVICE INTEGRATION WITH CITY MENU
 
 Single entry point for the WhatsApp AI agent. Deterministic requests (menu,
 menu numbers, DN numbers and obvious entities) never depend on an AI provider.
@@ -9,10 +9,23 @@ Semantic Router and Groq are optional enhancements and cannot prevent startup.
 INTEGRATED SERVICES:
 - dn_analysis.py: get_dn_dashboard(dn_no: str)
 - dealer_analytics_service.py: get_dealer_dashboard(dealer_name: str)
-- city_service.py: get_city_dashboard(city_name: str, **kwargs)
+- city_service.py: get_city_dashboard(city_name: str, **kwargs) + FULL MENU
 - product_service.py: get_product_dashboard(product: str)
 - national_kpi_service.py: get_national_kpi()
 - groq_service.py: process_query(message: str, entities: Dict)
+
+MENU SYSTEM:
+- Main Menu: 0-9 options
+- City Menu: Press 3 → Full City Analytics Menu
+- City Menu Options: 0-12 with sub-menus
+- Quick Commands: Type city name, compare, top cities, etc.
+
+BOOTSTRAP INTEGRATION:
+- All AI models loaded ONCE at startup
+- Cached forever, no loading during queries
+- Semantic Router from bootstrap
+- Embeddings from bootstrap
+- Groq client from bootstrap
 
 FIXES:
 - Proper parameter passing to all services
@@ -20,6 +33,8 @@ FIXES:
 - Enhanced city name extraction (Haripur)
 - Proper DN validation (8-12 digits)
 - Integrated with AI Bootstrap Service
+- City Menu support (option 3 with full menu)
+- City Menu state management per session
 - ALWAYS returns string responses
 """
 
@@ -45,9 +60,10 @@ try:
     BOOTSTRAP_AVAILABLE = True
     # Warmup resources at startup (if not already done)
     warmup_ai_resources(include_heavy=False)
+    logger.info("✅ AI Bootstrap Service connected and warmed up")
 except ImportError:
     BOOTSTRAP_AVAILABLE = False
-    logger.warning("AI Bootstrap Service not available")
+    logger.warning("⚠️ AI Bootstrap Service not available")
 
 
 # Semantic Router has changed its public class names across releases. Support
@@ -147,11 +163,11 @@ except Exception as exc:
             return {"success": False, "whatsapp_message": "⚠️ Dealer service is temporarily unavailable.", "error": "Dealer service unavailable"}
 
 
-# City Service
+# City Service with Menu Support
 try:
-    from app.services.city_service import CityAnalyticsService
+    from app.services.city_service import CityAnalyticsService, get_city_main_menu, process_city_menu
     CITY_SERVICE_AVAILABLE = True
-    logger.info("✅ CityAnalyticsService imported successfully")
+    logger.info("✅ CityAnalyticsService with Menu imported successfully")
 except Exception as exc:
     logger.exception("Unable to import CityAnalyticsService: %s", exc)
     CITY_SERVICE_AVAILABLE = False
@@ -159,6 +175,21 @@ except Exception as exc:
     class CityAnalyticsService:  # type: ignore[no-redef]
         def get_city_dashboard(self, city_name: str = "", **kwargs: Any) -> Dict[str, Any]:
             return {"success": False, "whatsapp_message": "⚠️ City service is temporarily unavailable.", "error": "City service unavailable"}
+        
+        def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
+            return "⚠️ City service is temporarily unavailable. Please try again later."
+    
+    def get_city_main_menu() -> str:
+        return "🏙️ City Analytics Menu\n\nCity service is temporarily unavailable.\n\n0. Main Menu"
+    
+    def process_city_menu(session_id: str, user_input: str) -> Dict[str, Any]:
+        return {
+            "response": "City service is temporarily unavailable. Please try again later.",
+            "menu_type": "city_menu",
+            "action": "error",
+            "data": {},
+            "exit_menu": True
+        }
 
 
 # Product Service
@@ -211,7 +242,7 @@ MENU_OPTIONS: Dict[str, Dict[str, Any]] = {
     "0": {"name": "Main Menu", "service_key": "menu_service", "service_file": "ai_provider_service.py", "method": "show_main_menu", "requires_ai": False},
     "1": {"name": "DN Delivery", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_dn_dashboard", "requires_ai": False},
     "2": {"name": "Dealer Analytics", "service_key": "dealer_analytics", "service_file": "dealer_analytics_service.py", "method": "get_dealer_dashboard", "requires_ai": False},
-    "3": {"name": "City Analytics", "service_key": "city_service", "service_file": "city_service.py", "method": "get_city_dashboard", "requires_ai": False},
+    "3": {"name": "City Analytics", "service_key": "city_menu", "service_file": "city_service.py", "method": "process_city_menu", "requires_ai": False},
     "4": {"name": "Warehouse Dashboard", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_warehouse_dashboard", "requires_ai": False},
     "5": {"name": "Product Analytics", "service_key": "product_service", "service_file": "product_service.py", "method": "get_product_dashboard", "requires_ai": False},
     "6": {"name": "National KPI", "service_key": "national_kpi_service", "service_file": "national_kpi_service.py", "method": "get_national_kpi", "requires_ai": False},
@@ -224,6 +255,7 @@ INTENT_TO_MENU = {
     "dn_lookup": "1", "dn_status": "1", "dn_history": "1", "dn_summary": "1",
     "dealer_dashboard": "2", "dealer_revenue": "2", "dealer_pending": "2", "top_dealers": "2", "dealer_comparison": "2",
     "city_dashboard": "3", "city_revenue": "3", "city_pending": "3", "top_cities": "3", "city_comparison": "3",
+    "city_menu": "3",
     "warehouse_dashboard": "4", "warehouse_revenue": "4", "warehouse_pending": "4", "top_warehouses": "4",
     "product_dashboard": "5", "top_products": "5",
     "national_kpi": "6", "national_revenue": "6", "national_units": "6",
@@ -248,6 +280,7 @@ ROUTE_UTTERANCES: Dict[str, List[str]] = {
     "city_pending": ["city pending", "pending deliveries by city"],
     "top_cities": ["top cities", "best cities", "city ranking"],
     "city_comparison": ["compare cities", "city comparison", "city versus city"],
+    "city_menu": ["city menu", "show city menu", "city options"],
     "warehouse_dashboard": ["warehouse dashboard", "warehouse performance", "show warehouse"],
     "warehouse_revenue": ["warehouse revenue", "warehouse sales"],
     "warehouse_pending": ["warehouse pending", "pending by warehouse"],
@@ -469,6 +502,19 @@ def _format_dn_message(dn: str) -> str:
 
 
 # =====================================================================================================================
+# CITY MENU STATE MANAGEMENT
+# =====================================================================================================================
+
+class CityMenuSessionState:
+    """Track city menu state per session"""
+    def __init__(self):
+        self.is_active = False
+        self.session_id = "default"
+        self.last_response = ""
+        self.last_input = ""
+
+
+# =====================================================================================================================
 # MAIN AI PROVIDER SERVICE
 # =====================================================================================================================
 
@@ -490,7 +536,7 @@ class AIProviderService:
         # Only mark initialized after all mandatory state exists.
         self.dn_service = DNAnalysisService()
         self.dealer_service = DealerAnalyticsService()
-        self.city_service = CityAnalyticsService()
+        self.city_service = CityAnalyticsService() if CITY_SERVICE_AVAILABLE else None
         self.product_service = ProductService()
         self.national_kpi_service = NationalKPIService()
         self.groq_service = GroqService()
@@ -499,6 +545,8 @@ class AIProviderService:
         self._router_lock = threading.Lock()
         self._cache: Dict[str, tuple[float, RoutingDecision]] = {}
         self._cache_ttl = 300.0
+        self._city_menu_states: Dict[str, CityMenuSessionState] = {}
+        self._city_menu_lock = threading.Lock()
         self._initialized = True
         
         # Try to get bootstrap resources
@@ -511,6 +559,7 @@ class AIProviderService:
                 logger.warning(f"⚠️ Failed to connect to Bootstrap Service: {e}")
         
         logger.info("AIProviderService initialized; semantic router will load lazily")
+        logger.info(f"City Menu Service: {'✅' if CITY_SERVICE_AVAILABLE else '❌'}")
 
     def _ensure_semantic_router(self) -> None:
         if self._router is not None or self._router_init_attempted:
@@ -643,18 +692,50 @@ class AIProviderService:
             (r"\bwarehouse\s+(?:service|services|dashboard|analytics|performance)\b", "warehouse_dashboard"),
             (r"\bproduct\s+(?:service|services|dashboard|analytics|performance)\b", "product_dashboard"),
             (r"\b(?:national kpi|overall performance|executive dashboard)\b", "national_kpi"),
+            (r"\b(?:city menu|show city menu|city options)\b", "city_menu"),
         )
         for pattern, intent in rules:
             if re.search(pattern, text):
                 return intent
         return None
 
-    def _make_routing_decision(self, message: str) -> RoutingDecision:
+    def _get_city_menu_state(self, session_id: str) -> CityMenuSessionState:
+        """Get or create city menu state for session"""
+        with self._city_menu_lock:
+            if session_id not in self._city_menu_states:
+                self._city_menu_states[session_id] = CityMenuSessionState()
+                self._city_menu_states[session_id].session_id = session_id
+            return self._city_menu_states[session_id]
+
+    def _make_routing_decision(self, message: str, session_id: str = "default") -> RoutingDecision:
         normalized = message.strip()
-        cache_key = normalized.casefold()
+        cache_key = f"{session_id}:{normalized.casefold()}"
         cached = self._cache.get(cache_key)
         if cached and time.monotonic() - cached[0] < self._cache_ttl:
             return cached[1]
+
+        # Check if we're in city menu mode
+        state = self._get_city_menu_state(session_id)
+        if state.is_active:
+            # Process as city menu input
+            if normalized.casefold() in {"menu", "main menu", "start", "back", "home", "0"}:
+                state.is_active = False
+                decision = self._decision_for_menu("0", message, reason="Exiting city menu")
+            else:
+                decision = RoutingDecision(
+                    intent="city_menu_input",
+                    confidence=1.0,
+                    service_key="city_menu",
+                    service_file="city_service.py",
+                    method="process_city_menu",
+                    entity={"user_input": normalized, "session_id": session_id},
+                    requires_ai=False,
+                    reason="City menu input",
+                    original_message=message,
+                    menu_option="3",
+                )
+            self._cache[cache_key] = (time.monotonic(), decision)
+            return decision
 
         if not normalized:
             decision = self._decision_for_menu("0", message, reason="Empty message")
@@ -664,13 +745,23 @@ class AIProviderService:
         elif normalized.casefold() in {"menu", "main menu", "options", "start", "back", "home", "help"}:
             decision = self._decision_for_menu("0", message, reason="Menu keyword detected")
         elif (number := self._menu_number(normalized)) is not None:
-            decision = self._decision_for_menu(number, message, reason="Menu number selected")
+            # If number is 3, activate city menu
+            if number == "3":
+                state.is_active = True
+                decision = self._decision_for_menu("3", message, reason="City menu activated")
+            else:
+                decision = self._decision_for_menu(number, message, reason="Menu number selected")
         else:
             entities = self._extract_entities(normalized)
             
             # Check if it's a greeting
             if normalized.casefold() in {"hello", "hi", "salam", "hey", "good morning", "good evening"}:
                 return self._decision_for_menu("0", message, entities, "greeting", reason="Greeting detected")
+            
+            # Check for city menu request
+            if normalized.casefold() in {"city menu", "show city menu", "city options"}:
+                state.is_active = True
+                return self._decision_for_menu("3", message, entities, "city_menu", reason="City menu requested")
             
             # Check entity-based routing
             if "dealer" in entities or "dealer_name" in entities:
@@ -712,19 +803,22 @@ class AIProviderService:
         Process WhatsApp query and return formatted response.
         ALWAYS returns a string - never a dict.
         """
-        sender = sender or sender_id
+        sender = sender or sender_id or "default"
         if not message or not message.strip():
             return get_main_menu()
 
-        logger.info("Processing WhatsApp message from %s", sender or "unknown")
+        logger.info("Processing WhatsApp message from %s", sender)
         logger.info("Message: %s", message)
         
-        decision = self._make_routing_decision(message)
+        decision = self._make_routing_decision(message, sender)
         logger.info("Route: %s -> %s.%s (%s)", decision.intent, decision.service_file, decision.method, decision.reason)
         logger.info("Entities: %s", decision.entity)
 
         # Handle menu service
         if decision.service_key == "menu_service":
+            # Clear city menu state if active
+            state = self._get_city_menu_state(sender)
+            state.is_active = False
             return get_main_menu()
 
         # Handle greeting
@@ -736,6 +830,7 @@ class AIProviderService:
             "dn_analysis": self.dn_service,
             "dealer_analytics": self.dealer_service,
             "city_service": self.city_service,
+            "city_menu": self.city_service,  # City service handles menu
             "product_service": self.product_service,
             "national_kpi_service": self.national_kpi_service,
             "groq_service": self.groq_service,
@@ -752,7 +847,31 @@ class AIProviderService:
             # PROPER PARAMETER PASSING FOR EACH SERVICE
             # =====================================================================================================================
             
-            if decision.service_key == "dn_analysis":
+            if decision.service_key == "city_menu":
+                # City Menu Service - special handling
+                user_input = decision.entity.get("user_input", message)
+                session_id = decision.entity.get("session_id", sender)
+                
+                if not service:
+                    return "⚠️ City Analytics Menu is temporarily unavailable. Please try again later."
+                
+                # Process menu input using city_service's menu system
+                if hasattr(service, "process_menu_input"):
+                    result = service.process_menu_input(session_id, user_input)
+                    
+                    # Update city menu state based on result
+                    if result.get("exit_menu", False):
+                        state = self._get_city_menu_state(sender)
+                        state.is_active = False
+                    
+                    # Extract response
+                    response = result.get("response", get_main_menu())
+                    return response
+                else:
+                    # Fallback: use process_whatsapp_query
+                    return service.process_whatsapp_query(user_input, session_id)
+            
+            elif decision.service_key == "dn_analysis":
                 # DN Analysis methods expect specific parameters
                 if decision.method == "get_dn_dashboard":
                     # Extract DN number from entities
@@ -791,13 +910,24 @@ class AIProviderService:
                 result = await _resolve(method(dealer_name))
             
             elif decision.service_key == "city_service":
-                # City Service expects city_name (string) and optional kwargs
-                city_name = decision.entity.get("city_name") or decision.entity.get("city")
-                if not city_name:
-                    return "⚠️ Please provide a city name.\n\nExample: Lahore, Karachi, Haripur"
-                
-                # Call with proper parameters - city_name is a string, not a dict
-                result = method(city_name)
+                # City Service - check if it's a natural language question
+                question = message
+                # Use process_whatsapp_query if available (handles both menu and natural language)
+                if hasattr(service, "process_whatsapp_query"):
+                    result = service.process_whatsapp_query(question, sender)
+                    if isinstance(result, str):
+                        return result
+                    # If result is dict, extract message
+                    if isinstance(result, dict):
+                        return _extract_whatsapp_message(result)
+                else:
+                    # Fallback to dashboard
+                    city_name = decision.entity.get("city_name") or decision.entity.get("city")
+                    if not city_name:
+                        return "⚠️ Please provide a city name.\n\nExample: Lahore, Karachi, Haripur\n\nOr type 'city menu' for full menu."
+                    result = service.get_city_dashboard(city_name)
+                    response = _extract_whatsapp_message(result)
+                    return response
             
             elif decision.service_key == "product_service":
                 # Product Service expects product
@@ -834,7 +964,7 @@ class AIProviderService:
                     return f"⚠️ Dealer '{dealer_name}' not found.\n\nPlease check the dealer name and try again."
                 elif decision.service_key == "city_service":
                     city_name = decision.entity.get("city_name") or decision.entity.get("city") or message
-                    return f"⚠️ City '{city_name}' data not available.\n\nPlease try another city."
+                    return f"⚠️ City '{city_name}' data not available.\n\nPlease try another city or type 'city menu' for options."
             
             return response
             
@@ -855,9 +985,8 @@ class AIProviderService:
             elif decision.service_key == "dealer_analytics":
                 dealer_name = decision.entity.get("dealer_name") or decision.entity.get("dealer") or message
                 return f"⚠️ Dealer service error for '{dealer_name}': {str(e)[:100]}\n\nPlease check the dealer name and try again."
-            elif decision.service_key == "city_service":
-                city_name = decision.entity.get("city_name") or decision.entity.get("city") or message
-                return f"⚠️ City service error for '{city_name}': {str(e)[:100]}\n\nPlease try another city."
+            elif decision.service_key == "city_service" or decision.service_key == "city_menu":
+                return f"⚠️ City service error: {str(e)[:100]}\n\nPlease try again or type 'city menu' for options."
             
             return f"⚠️ {MENU_OPTIONS[decision.menu_option or '0']['name']} is temporarily unavailable. Please try again."
 
