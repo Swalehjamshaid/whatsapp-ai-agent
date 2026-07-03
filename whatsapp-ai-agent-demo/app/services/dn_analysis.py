@@ -1,10 +1,11 @@
 """
 File: app/services/dn_analysis.py
-Version: 20.0 - COMPLETE DN DOMAIN AI EXPERT - ALL DN QUESTIONS ANSWERED HERE
+Version: 21.0 - COMPLETE DN DOMAIN AI EXPERT - FULLY INDEPENDENT
 
 Purpose: Answer ALL DN-related business questions through a single entry point
          PostgreSQL is the ONLY source of truth.
-         
+         STAYS IN DN MENU UNTIL "99" IS PRESSED
+
 THIS FILE HANDLES EVERYTHING DN-RELATED:
 - ✅ All DN menu options (1-19)
 - ✅ Natural language DN queries
@@ -25,6 +26,9 @@ FIXED:
 - ✅ No dependency on ai_provider_service
 - ✅ Clean singleton pattern
 - ✅ Proper error handling
+- ✅ Graceful database fallback
+- ✅ "99" returns to main menu
+- ✅ Stays in DN menu until "99"
 
 Status: ENTERPRISE READY - ALL DN QUESTIONS GO THROUGH THIS FILE
 """
@@ -46,22 +50,59 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Optional, Dict, List, Tuple, Union, Set, Callable, Mapping, Sequence
 
-# ============================================================
-# CORE DEPENDENCIES - No circular imports
-# ============================================================
-
-from cachetools import TTLCache
-from sqlalchemy import and_, case, distinct, func, or_, text, desc, asc
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
-
-from app.database import SessionLocal
-from app.models import DeliveryReport
-
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# OPTIONAL AI IMPORTS - Graceful fallbacks
+# BLOCK 1A: CORE DEPENDENCIES - No circular imports with fallback
+# ============================================================
+
+try:
+    from cachetools import TTLCache
+except ImportError:
+    # Fallback if cachetools not installed
+    class TTLCache:
+        def __init__(self, maxsize, ttl):
+            self.maxsize = maxsize
+            self.ttl = ttl
+            self._cache = {}
+        def get(self, key):
+            return self._cache.get(key)
+        def set(self, key, value):
+            if len(self._cache) >= self.maxsize:
+                self._cache.pop(next(iter(self._cache)))
+            self._cache[key] = value
+        def __contains__(self, key):
+            return key in self._cache
+        def __getitem__(self, key):
+            return self._cache[key]
+        def __setitem__(self, key, value):
+            self.set(key, value)
+
+try:
+    from sqlalchemy import and_, case, distinct, func, or_, text, desc, asc
+    from sqlalchemy.exc import SQLAlchemyError
+    from sqlalchemy.orm import Session
+    SQLALCHEMY_AVAILABLE = True
+except ImportError:
+    SQLALCHEMY_AVAILABLE = False
+    logger.warning("⚠️ SQLAlchemy not available - DN service will run in fallback mode")
+
+try:
+    from app.database import SessionLocal
+    DATABASE_AVAILABLE = True
+except ImportError:
+    DATABASE_AVAILABLE = False
+    logger.warning("⚠️ Database module not available - DN service will run in fallback mode")
+
+try:
+    from app.models import DeliveryReport
+    MODELS_AVAILABLE = True
+except ImportError:
+    MODELS_AVAILABLE = False
+    logger.warning("⚠️ Models not available - DN service will run in fallback mode")
+
+# ============================================================
+# BLOCK 1B: OPTIONAL AI IMPORTS - Graceful fallbacks
 # ============================================================
 
 try:
@@ -100,7 +141,7 @@ except ImportError:
     Nominatim = None
 
 # ============================================================
-# CONFIGURATION
+# BLOCK 2A: CONFIGURATION
 # ============================================================
 
 CACHE_TTL = max(60, int(os.getenv("DN_ANALYTICS_CACHE_TTL", "300")))
@@ -110,9 +151,13 @@ DN_DELAY_THRESHOLD_DAYS = int(os.getenv("DN_DELAY_THRESHOLD_DAYS", "7"))
 SLA_TARGET_DAYS = int(os.getenv("DN_SLA_TARGET_DAYS", "3"))
 TABLE: str = "delivery_reports"
 SEPARATOR: str = "────────────────────"
+FALLBACK_MODE = not (SQLALCHEMY_AVAILABLE and DATABASE_AVAILABLE and MODELS_AVAILABLE)
+
+if FALLBACK_MODE:
+    logger.warning("⚠️ DN Service running in FALLBACK MODE - Database not available")
 
 # ============================================================
-# CONSTANTS
+# BLOCK 2B: CONSTANTS
 # ============================================================
 
 BUSINESS_COLUMNS: tuple[str, ...] = (
@@ -151,7 +196,7 @@ DN_ALIASES: dict[str, str] = {
 }
 
 # ============================================================
-# ENUMS
+# BLOCK 3: ENUMS
 # ============================================================
 
 class IntentType(Enum):
@@ -209,7 +254,7 @@ class ResponseFormat(Enum):
     TIMELINE = "timeline"
 
 # ============================================================
-# DATACLASSES
+# BLOCK 4: DATACLASSES
 # ============================================================
 
 @dataclass
@@ -248,7 +293,7 @@ class DNContext:
         self.search_results = None
 
 # ============================================================
-# UTILITY FUNCTIONS
+# BLOCK 5: UTILITY FUNCTIONS
 # ============================================================
 
 def _text(value: Any, default: str = "Unknown") -> str:
@@ -343,7 +388,7 @@ def _is_valid_dn(dn: str) -> bool:
     return cleaned.isdigit() and 8 <= len(cleaned) <= 12
 
 # ============================================================
-# MENU RENDERER
+# BLOCK 6: MENU RENDERER
 # ============================================================
 
 class DNMenuRenderer:
@@ -839,7 +884,7 @@ class DNMenuRenderer:
         return "\n".join(lines)
 
 # ============================================================
-# INTENT ENGINE
+# BLOCK 7: INTENT ENGINE
 # ============================================================
 
 class IntentEngine:
@@ -1131,7 +1176,7 @@ class IntentEngine:
         return best_intent, best_score
 
 # ============================================================
-# ENTITY ENGINE
+# BLOCK 8: ENTITY ENGINE
 # ============================================================
 
 class EntityEngine:
@@ -1280,7 +1325,7 @@ class EntityEngine:
         return None
 
 # ============================================================
-# DISTANCE SERVICE
+# BLOCK 9: DISTANCE SERVICE
 # ============================================================
 
 class DistanceService:
@@ -1361,7 +1406,7 @@ class DistanceService:
         return f"{whole_hours} Hours {minutes} Minutes" if minutes else f"{whole_hours} Hours"
 
 # ============================================================
-# DN DASHBOARD BUILDER
+# BLOCK 10: DN DASHBOARD BUILDER
 # ============================================================
 
 class DNDashboardBuilder:
@@ -1375,6 +1420,9 @@ class DNDashboardBuilder:
     
     def build(self, dn_no: str) -> Optional[Dict[str, Any]]:
         """Build dashboard for DN"""
+        if FALLBACK_MODE:
+            return self._build_fallback(dn_no)
+        
         cache_key = dn_no.lower()
         
         with self._lock:
@@ -1502,7 +1550,46 @@ class DNDashboardBuilder:
             
         except Exception as e:
             logger.error(f"Failed to build dashboard for DN {dn_no}: {e}")
-            return None
+            return self._build_fallback(dn_no)
+    
+    def _build_fallback(self, dn_no: str) -> Dict[str, Any]:
+        """Build fallback dashboard when database is unavailable"""
+        return {
+            "dn_no": dn_no,
+            "customer_name": "Unknown (Database Unavailable)",
+            "dealer_code": "N/A",
+            "warehouse": "N/A",
+            "warehouse_code": "N/A",
+            "sales_office": "N/A",
+            "sales_manager": "N/A",
+            "division": "N/A",
+            "ship_to_city": "N/A",
+            "delivery_location": "N/A",
+            "total_units": 0,
+            "total_revenue": 0.0,
+            "dn_create_date": None,
+            "good_issue_date": None,
+            "pod_date": None,
+            "delivery_status": "Unknown",
+            "pgi_status": "Unknown",
+            "pod_status": "Unknown",
+            "pending_flag": True,
+            "material_count": 0,
+            "model_count": 0,
+            "pgi_aging": None,
+            "pod_aging": None,
+            "delivery_aging": None,
+            "distance_km": None,
+            "estimated_delivery_time": None,
+            "distance_source": None,
+            "computed_delivery_status": "Unknown",
+            "dn_age": None,
+            "transit_days": None,
+            "delivery_days": None,
+            "sla_compliant": True,
+            "insights": ["⚠️ Database is currently unavailable. Please check your connection."],
+            "recommendations": ["Check database connection and try again."],
+        }
     
     def _compute_status(self, query: Any, dn_date: date, issue: date, pod: date, today: date) -> str:
         delivery = str(query.delivery_status or "").casefold()
@@ -1604,7 +1691,7 @@ class DNDashboardBuilder:
         return recommendations
 
 # ============================================================
-# MAIN DN ANALYTICS SERVICE - ALL DN ANSWERS HERE
+# BLOCK 11: MAIN DN ANALYTICS SERVICE
 # ============================================================
 
 class DNAnalysisService:
@@ -1634,7 +1721,7 @@ class DNAnalysisService:
         
         self._initialized = True
         self._service_name = "dn_analysis"
-        self._version = "20.0.0-menu"
+        self._version = "21.0.0-menu"
         self._startup_time = datetime.utcnow().isoformat()
         
         # Initialize engines
@@ -1658,18 +1745,26 @@ class DNAnalysisService:
         logger.info(f"   Source of Truth: PostgreSQL")
         logger.info(f"   ALL DN Questions go through this file")
         logger.info(f"   No circular imports: ✅")
+        if FALLBACK_MODE:
+            logger.warning(f"   ⚠️ Running in FALLBACK MODE - Database not available")
     
     @staticmethod
     def _session() -> Session:
         """Get database session"""
-        return SessionLocal()
+        if FALLBACK_MODE:
+            return None
+        try:
+            return SessionLocal()
+        except Exception as e:
+            logger.error(f"Failed to get database session: {e}")
+            return None
     
     def get_main_menu(self) -> str:
         """Get the main DN menu"""
         return self._menu_renderer.render_main_menu()
     
     # ============================================================
-    # MAIN PROCESSING - ALL DN QUERIES ENTER HERE
+    # BLOCK 11A: MAIN PROCESSING - ALL DN QUERIES ENTER HERE
     # ============================================================
     
     def process_whatsapp_query(self, message: str, sender: str = "default", **kwargs: Any) -> str:
@@ -1714,7 +1809,19 @@ class DNAnalysisService:
         user_input = user_input.strip()
         
         # ============================================================
-        # STEP 1: Check for DN number (auto-detect)
+        # STEP 1: Check for "99" - Return to main menu (HIGHEST PRIORITY)
+        # ============================================================
+        if user_input == "99":
+            return self._handle_main_menu_return(context)
+        
+        # ============================================================
+        # STEP 2: Check for "0" - Return to main menu
+        # ============================================================
+        if user_input == "0":
+            return self._handle_main_menu_return(context)
+        
+        # ============================================================
+        # STEP 3: Check for DN number (auto-detect)
         # ============================================================
         dns = _extract_dn_numbers(user_input)
         if dns and len(dns) == 1:
@@ -1732,7 +1839,7 @@ class DNAnalysisService:
             return result
         
         # ============================================================
-        # STEP 2: Check for natural language queries
+        # STEP 4: Check for natural language queries
         # ============================================================
         intent, confidence = self._intent_engine.detect_intent(user_input)
         entities = self._entity_engine.extract_entities(user_input)
@@ -1846,16 +1953,9 @@ class DNAnalysisService:
             return result
         
         # ============================================================
-        # STEP 3: Handle menu navigation (0, 99, 1-19)
+        # STEP 5: Handle menu options based on state
         # ============================================================
         
-        # Handle main menu navigation
-        if user_input == "0":
-            return self._handle_main_menu_return(context)
-        elif user_input == "99":
-            return self._handle_main_menu_return(context)
-        
-        # Handle menu options based on state
         if context.menu_state == MenuState.MAIN:
             return self._handle_main_menu_option(context, user_input)
         elif context.menu_state == MenuState.DN_SELECTION:
@@ -1864,7 +1964,7 @@ class DNAnalysisService:
             return self._handle_comparison_selection(context, user_input)
         
         # ============================================================
-        # STEP 4: Unknown query - show help
+        # STEP 6: Unknown query - show help
         # ============================================================
         return {
             "response": "\n".join([
@@ -1891,7 +1991,7 @@ class DNAnalysisService:
         }
     
     # ============================================================
-    # MENU HANDLING METHODS
+    # BLOCK 11B: MENU HANDLING METHODS
     # ============================================================
     
     def _handle_main_menu_return(self, context: DNContext) -> Dict[str, Any]:
@@ -2114,1034 +2214,984 @@ class DNAnalysisService:
             return self._contexts[session_id]
     
     # ============================================================
-    # DN OPERATIONS - ALL DATA FROM POSTGRESQL
+    # BLOCK 11C: DN OPERATIONS - ALL DATA FROM POSTGRESQL
     # ============================================================
     
     def _get_dn_dashboard(self, context: DNContext, dn_no: str) -> Dict[str, Any]:
         """Get DN dashboard"""
         try:
-            with self._session() as session:
-                builder = DNDashboardBuilder(session)
-                dashboard = builder.build(dn_no)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ DN '{dn_no}' not found.\n\nPlease check the DN number and try again.\n\n0. Main Menu",
-                        "menu_type": "dn_menu",
-                        "action": "dashboard",
-                        "data": {"dn": dn_no, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                response = self._menu_renderer.render_dn_dashboard(dn_no, dashboard)
-                
-                # Add insights if available
-                insights = dashboard.get('insights', [])
-                if insights:
-                    response += "\n\n💡 *Insights*\n" + "\n".join(f"• {i}" for i in insights[:3])
-                
-                recommendations = dashboard.get('recommendations', [])
-                if recommendations:
-                    response += "\n\n🎯 *Recommendations*\n" + "\n".join(f"• {r}" for r in recommendations[:2])
-                
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response(f"DN '{dn_no}'", "Database unavailable")
+            
+            builder = DNDashboardBuilder(session)
+            dashboard = builder.build(dn_no)
+            
+            if not dashboard:
                 return {
-                    "response": response,
+                    "response": f"⚠️ DN '{dn_no}' not found.\n\nPlease check the DN number and try again.\n\n0. Main Menu",
                     "menu_type": "dn_menu",
                     "action": "dashboard",
-                    "data": {"dn": dn_no, "dashboard": dashboard},
+                    "data": {"dn": dn_no, "error": "not_found"},
                     "exit_menu": False
                 }
-        except Exception as e:
-            logger.error(f"Dashboard error: {e}")
+            
+            response = self._menu_renderer.render_dn_dashboard(dn_no, dashboard)
+            
+            # Add insights if available
+            insights = dashboard.get('insights', [])
+            if insights:
+                response += "\n\n💡 *Insights*\n" + "\n".join(f"• {i}" for i in insights[:3])
+            
+            recommendations = dashboard.get('recommendations', [])
+            if recommendations:
+                response += "\n\n🎯 *Recommendations*\n" + "\n".join(f"• {r}" for r in recommendations[:2])
+            
             return {
-                "response": f"⚠️ Service error for DN {dn_no}: {str(e)[:100]}\n\n0. Main Menu",
+                "response": response,
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "dashboard",
+                "data": {"dn": dn_no, "dashboard": dashboard},
                 "exit_menu": False
             }
+        except Exception as e:
+            logger.error(f"Dashboard error: {e}")
+            return self._get_fallback_response(f"DN '{dn_no}'", str(e))
+    
+    def _get_fallback_response(self, entity: str, error: str) -> Dict[str, Any]:
+        """Get fallback response when database is unavailable"""
+        return {
+            "response": f"⚠️ {entity} - Database connection error.\n\nError: {error[:100]}\n\nPlease check your database connection and try again.\n\n0. Main Menu\n99. Back",
+            "menu_type": "dn_menu",
+            "action": "error",
+            "data": {"error": error},
+            "exit_menu": False
+        }
     
     def _get_dn_status(self, context: DNContext, dn_no: str) -> Dict[str, Any]:
         """Get DN status"""
         try:
-            with self._session() as session:
-                builder = DNDashboardBuilder(session)
-                dashboard = builder.build(dn_no)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu",
-                        "menu_type": "dn_menu",
-                        "action": "status_error",
-                        "data": {"dn": dn_no, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response(f"DN '{dn_no}'", "Database unavailable")
+            
+            builder = DNDashboardBuilder(session)
+            dashboard = builder.build(dn_no)
+            
+            if not dashboard:
                 return {
-                    "response": self._menu_renderer.render_dn_status(dn_no, dashboard),
+                    "response": f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu",
                     "menu_type": "dn_menu",
-                    "action": "status",
-                    "data": {"dn": dn_no, "status": dashboard},
+                    "action": "status_error",
+                    "data": {"dn": dn_no, "error": "not_found"},
                     "exit_menu": False
                 }
-        except Exception as e:
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_dn_status(dn_no, dashboard),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "status",
+                "data": {"dn": dn_no, "status": dashboard},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response(f"DN '{dn_no}'", str(e))
     
     def _get_dn_history(self, context: DNContext, dn_no: str) -> Dict[str, Any]:
         """Get DN history"""
         try:
-            with self._session() as session:
-                builder = DNDashboardBuilder(session)
-                dashboard = builder.build(dn_no)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu",
-                        "menu_type": "dn_menu",
-                        "action": "history_error",
-                        "data": {"dn": dn_no, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                events = []
-                if dashboard.get("dn_create_date"):
-                    events.append({
-                        "timestamp": _format_date(dashboard.get("dn_create_date")),
-                        "status": "Created",
-                        "description": f"DN {dn_no} created for {dashboard.get('customer_name', 'N/A')}"
-                    })
-                
-                if dashboard.get("good_issue_date"):
-                    events.append({
-                        "timestamp": _format_date(dashboard.get("good_issue_date")),
-                        "status": "PGI Created",
-                        "description": "Goods Issue created at warehouse"
-                    })
-                
-                if dashboard.get("pod_date"):
-                    events.append({
-                        "timestamp": _format_date(dashboard.get("pod_date")),
-                        "status": "Delivered",
-                        "description": "Proof of Delivery received"
-                    })
-                
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response(f"DN '{dn_no}'", "Database unavailable")
+            
+            builder = DNDashboardBuilder(session)
+            dashboard = builder.build(dn_no)
+            
+            if not dashboard:
                 return {
-                    "response": self._menu_renderer.render_dn_history(dn_no, events),
+                    "response": f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu",
                     "menu_type": "dn_menu",
-                    "action": "history",
-                    "data": {"dn": dn_no, "events": events},
+                    "action": "history_error",
+                    "data": {"dn": dn_no, "error": "not_found"},
                     "exit_menu": False
                 }
-        except Exception as e:
+            
+            events = []
+            if dashboard.get("dn_create_date"):
+                events.append({
+                    "timestamp": _format_date(dashboard.get("dn_create_date")),
+                    "status": "Created",
+                    "description": f"DN {dn_no} created for {dashboard.get('customer_name', 'N/A')}"
+                })
+            
+            if dashboard.get("good_issue_date"):
+                events.append({
+                    "timestamp": _format_date(dashboard.get("good_issue_date")),
+                    "status": "PGI Created",
+                    "description": "Goods Issue created at warehouse"
+                })
+            
+            if dashboard.get("pod_date"):
+                events.append({
+                    "timestamp": _format_date(dashboard.get("pod_date")),
+                    "status": "Delivered",
+                    "description": "Proof of Delivery received"
+                })
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_dn_history(dn_no, events),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "history",
+                "data": {"dn": dn_no, "events": events},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response(f"DN '{dn_no}'", str(e))
     
     def _get_dn_timeline(self, context: DNContext, dn_no: str) -> Dict[str, Any]:
         """Get DN timeline"""
         try:
-            with self._session() as session:
-                builder = DNDashboardBuilder(session)
-                dashboard = builder.build(dn_no)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu",
-                        "menu_type": "dn_menu",
-                        "action": "timeline_error",
-                        "data": {"dn": dn_no, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                events = []
-                if dashboard.get("dn_create_date"):
-                    events.append({
-                        "timestamp": _format_date(dashboard.get("dn_create_date")),
-                        "status": "Created",
-                        "description": f"DN {dn_no} created"
-                    })
-                
-                if dashboard.get("good_issue_date"):
-                    events.append({
-                        "timestamp": _format_date(dashboard.get("good_issue_date")),
-                        "status": "PGI Created",
-                        "description": "Goods issued from warehouse"
-                    })
-                
-                if dashboard.get("pod_date"):
-                    events.append({
-                        "timestamp": _format_date(dashboard.get("pod_date")),
-                        "status": "Delivered",
-                        "description": "Delivery completed"
-                    })
-                
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response(f"DN '{dn_no}'", "Database unavailable")
+            
+            builder = DNDashboardBuilder(session)
+            dashboard = builder.build(dn_no)
+            
+            if not dashboard:
                 return {
-                    "response": self._menu_renderer.render_dn_timeline(dn_no, events),
+                    "response": f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu",
                     "menu_type": "dn_menu",
-                    "action": "timeline",
-                    "data": {"dn": dn_no, "events": events},
+                    "action": "timeline_error",
+                    "data": {"dn": dn_no, "error": "not_found"},
                     "exit_menu": False
                 }
-        except Exception as e:
+            
+            events = []
+            if dashboard.get("dn_create_date"):
+                events.append({
+                    "timestamp": _format_date(dashboard.get("dn_create_date")),
+                    "status": "Created",
+                    "description": f"DN {dn_no} created"
+                })
+            
+            if dashboard.get("good_issue_date"):
+                events.append({
+                    "timestamp": _format_date(dashboard.get("good_issue_date")),
+                    "status": "PGI Created",
+                    "description": "Goods issued from warehouse"
+                })
+            
+            if dashboard.get("pod_date"):
+                events.append({
+                    "timestamp": _format_date(dashboard.get("pod_date")),
+                    "status": "Delivered",
+                    "description": "Delivery completed"
+                })
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_dn_timeline(dn_no, events),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "timeline",
+                "data": {"dn": dn_no, "events": events},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response(f"DN '{dn_no}'", str(e))
     
     def _get_transit_analysis(self, context: DNContext, dn_no: str) -> Dict[str, Any]:
         """Get transit analysis for DN"""
         try:
-            with self._session() as session:
-                builder = DNDashboardBuilder(session)
-                dashboard = builder.build(dn_no)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu",
-                        "menu_type": "dn_menu",
-                        "action": "transit_error",
-                        "data": {"dn": dn_no, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response(f"DN '{dn_no}'", "Database unavailable")
+            
+            builder = DNDashboardBuilder(session)
+            dashboard = builder.build(dn_no)
+            
+            if not dashboard:
                 return {
-                    "response": self._menu_renderer.render_transit_analysis(dn_no, dashboard),
+                    "response": f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu",
                     "menu_type": "dn_menu",
-                    "action": "transit",
-                    "data": {"dn": dn_no, "transit": dashboard},
+                    "action": "transit_error",
+                    "data": {"dn": dn_no, "error": "not_found"},
                     "exit_menu": False
                 }
-        except Exception as e:
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_transit_analysis(dn_no, dashboard),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "transit",
+                "data": {"dn": dn_no, "transit": dashboard},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response(f"DN '{dn_no}'", str(e))
     
     # ============================================================
-    # LIST/REPORT METHODS
+    # BLOCK 11D: LIST/REPORT METHODS
     # ============================================================
     
     def _get_pending_dns(self, context: DNContext) -> Dict[str, Any]:
         """Get pending DNs"""
         try:
-            with self._session() as session:
-                results = session.query(
-                    DeliveryReport.dn_no,
-                    DeliveryReport.customer_name,
-                    DeliveryReport.dn_create_date,
-                ).filter(
-                    or_(
-                        DeliveryReport.pending_flag.is_(True),
-                        DeliveryReport.pod_date.is_(None)
-                    )
-                ).order_by(
-                    DeliveryReport.dn_create_date.desc()
-                ).limit(20).all()
-                
-                dns = []
-                for row in results:
-                    dns.append({
-                        "dn_no": _text(row.dn_no),
-                        "customer_name": _text(row.customer_name),
-                        "dn_create_date": row.dn_create_date,
-                        "computed_delivery_status": "Pending",
-                    })
-                
-                return {
-                    "response": self._menu_renderer.render_pending_list("📋 Pending DNs", dns),
-                    "menu_type": "dn_menu",
-                    "action": "pending",
-                    "data": {"dns": dns},
-                    "exit_menu": False
-                }
-        except Exception as e:
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response("Pending DNs", "Database unavailable")
+            
+            results = session.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.customer_name,
+                DeliveryReport.dn_create_date,
+            ).filter(
+                or_(
+                    DeliveryReport.pending_flag.is_(True),
+                    DeliveryReport.pod_date.is_(None)
+                )
+            ).order_by(
+                DeliveryReport.dn_create_date.desc()
+            ).limit(20).all()
+            
+            dns = []
+            for row in results:
+                dns.append({
+                    "dn_no": _text(row.dn_no),
+                    "customer_name": _text(row.customer_name),
+                    "dn_create_date": row.dn_create_date,
+                    "computed_delivery_status": "Pending",
+                })
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_pending_list("📋 Pending DNs", dns),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "pending",
+                "data": {"dns": dns},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response("Pending DNs", str(e))
     
     def _get_pending_pgi(self, context: DNContext) -> Dict[str, Any]:
         """Get pending PGI"""
         try:
-            with self._session() as session:
-                results = session.query(
-                    DeliveryReport.dn_no,
-                    DeliveryReport.customer_name,
-                    DeliveryReport.dn_create_date,
-                ).filter(
-                    DeliveryReport.good_issue_date.is_(None)
-                ).order_by(
-                    DeliveryReport.dn_create_date.desc()
-                ).limit(20).all()
-                
-                dns = []
-                for row in results:
-                    dns.append({
-                        "dn_no": _text(row.dn_no),
-                        "customer_name": _text(row.customer_name),
-                        "dn_create_date": row.dn_create_date,
-                        "computed_delivery_status": "Pending PGI",
-                    })
-                
-                return {
-                    "response": self._menu_renderer.render_pending_list("⏳ Pending PGI", dns),
-                    "menu_type": "dn_menu",
-                    "action": "pgi",
-                    "data": {"dns": dns},
-                    "exit_menu": False
-                }
-        except Exception as e:
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response("Pending PGI", "Database unavailable")
+            
+            results = session.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.customer_name,
+                DeliveryReport.dn_create_date,
+            ).filter(
+                DeliveryReport.good_issue_date.is_(None)
+            ).order_by(
+                DeliveryReport.dn_create_date.desc()
+            ).limit(20).all()
+            
+            dns = []
+            for row in results:
+                dns.append({
+                    "dn_no": _text(row.dn_no),
+                    "customer_name": _text(row.customer_name),
+                    "dn_create_date": row.dn_create_date,
+                    "computed_delivery_status": "Pending PGI",
+                })
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_pending_list("⏳ Pending PGI", dns),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "pgi",
+                "data": {"dns": dns},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response("Pending PGI", str(e))
     
     def _get_pending_pod(self, context: DNContext) -> Dict[str, Any]:
         """Get pending POD"""
         try:
-            with self._session() as session:
-                results = session.query(
-                    DeliveryReport.dn_no,
-                    DeliveryReport.customer_name,
-                    DeliveryReport.dn_create_date,
-                    DeliveryReport.good_issue_date,
-                ).filter(
-                    DeliveryReport.good_issue_date.isnot(None),
-                    DeliveryReport.pod_date.is_(None)
-                ).order_by(
-                    DeliveryReport.dn_create_date.desc()
-                ).limit(20).all()
-                
-                dns = []
-                for row in results:
-                    dns.append({
-                        "dn_no": _text(row.dn_no),
-                        "customer_name": _text(row.customer_name),
-                        "dn_create_date": row.dn_create_date,
-                        "computed_delivery_status": "Pending POD",
-                    })
-                
-                return {
-                    "response": self._menu_renderer.render_pending_list("📋 Pending POD", dns),
-                    "menu_type": "dn_menu",
-                    "action": "pod",
-                    "data": {"dns": dns},
-                    "exit_menu": False
-                }
-        except Exception as e:
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response("Pending POD", "Database unavailable")
+            
+            results = session.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.customer_name,
+                DeliveryReport.dn_create_date,
+                DeliveryReport.good_issue_date,
+            ).filter(
+                DeliveryReport.good_issue_date.isnot(None),
+                DeliveryReport.pod_date.is_(None)
+            ).order_by(
+                DeliveryReport.dn_create_date.desc()
+            ).limit(20).all()
+            
+            dns = []
+            for row in results:
+                dns.append({
+                    "dn_no": _text(row.dn_no),
+                    "customer_name": _text(row.customer_name),
+                    "dn_create_date": row.dn_create_date,
+                    "computed_delivery_status": "Pending POD",
+                })
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_pending_list("📋 Pending POD", dns),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "pod",
+                "data": {"dns": dns},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response("Pending POD", str(e))
     
     def _get_delayed_dns(self, context: DNContext) -> Dict[str, Any]:
         """Get delayed DNs"""
         try:
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response("Delayed DNs", "Database unavailable")
+            
             threshold = datetime.now().date() - timedelta(days=DN_DELAY_THRESHOLD_DAYS)
             
-            with self._session() as session:
-                results = session.query(
-                    DeliveryReport.dn_no,
-                    DeliveryReport.customer_name,
-                    DeliveryReport.dn_create_date,
-                    DeliveryReport.good_issue_date,
-                    DeliveryReport.pod_date,
-                ).filter(
-                    DeliveryReport.good_issue_date.isnot(None),
-                    DeliveryReport.good_issue_date < threshold,
-                    DeliveryReport.pod_date.is_(None)
-                ).order_by(
-                    DeliveryReport.good_issue_date.asc()
-                ).limit(20).all()
-                
-                dns = []
-                for row in results:
-                    dns.append({
-                        "dn_no": _text(row.dn_no),
-                        "customer_name": _text(row.customer_name),
-                        "dn_create_date": row.dn_create_date,
-                        "computed_delivery_status": "Delayed",
-                    })
-                
-                return {
-                    "response": self._menu_renderer.render_pending_list(f"⚠️ Delayed DNs (>{DN_DELAY_THRESHOLD_DAYS} days)", dns),
-                    "menu_type": "dn_menu",
-                    "action": "delayed",
-                    "data": {"dns": dns},
-                    "exit_menu": False
-                }
-        except Exception as e:
+            results = session.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.customer_name,
+                DeliveryReport.dn_create_date,
+                DeliveryReport.good_issue_date,
+                DeliveryReport.pod_date,
+            ).filter(
+                DeliveryReport.good_issue_date.isnot(None),
+                DeliveryReport.good_issue_date < threshold,
+                DeliveryReport.pod_date.is_(None)
+            ).order_by(
+                DeliveryReport.good_issue_date.asc()
+            ).limit(20).all()
+            
+            dns = []
+            for row in results:
+                dns.append({
+                    "dn_no": _text(row.dn_no),
+                    "customer_name": _text(row.customer_name),
+                    "dn_create_date": row.dn_create_date,
+                    "computed_delivery_status": "Delayed",
+                })
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_pending_list(f"⚠️ Delayed DNs (>{DN_DELAY_THRESHOLD_DAYS} days)", dns),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "delayed",
+                "data": {"dns": dns},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response("Delayed DNs", str(e))
     
     def _get_recent_dns(self, context: DNContext) -> Dict[str, Any]:
         """Get recent DNs"""
         try:
-            with self._session() as session:
-                results = session.query(
-                    DeliveryReport.dn_no,
-                    DeliveryReport.customer_name,
-                    DeliveryReport.dn_create_date,
-                ).order_by(
-                    DeliveryReport.dn_create_date.desc()
-                ).limit(20).all()
-                
-                dns = []
-                for row in results:
-                    dns.append({
-                        "dn_no": _text(row.dn_no),
-                        "customer_name": _text(row.customer_name),
-                        "dn_create_date": row.dn_create_date,
-                        "computed_delivery_status": "Recent",
-                    })
-                
-                return {
-                    "response": self._menu_renderer.render_pending_list("🔄 Recent DNs", dns),
-                    "menu_type": "dn_menu",
-                    "action": "recent",
-                    "data": {"dns": dns},
-                    "exit_menu": False
-                }
-        except Exception as e:
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response("Recent DNs", "Database unavailable")
+            
+            results = session.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.customer_name,
+                DeliveryReport.dn_create_date,
+            ).order_by(
+                DeliveryReport.dn_create_date.desc()
+            ).limit(20).all()
+            
+            dns = []
+            for row in results:
+                dns.append({
+                    "dn_no": _text(row.dn_no),
+                    "customer_name": _text(row.customer_name),
+                    "dn_create_date": row.dn_create_date,
+                    "computed_delivery_status": "Recent",
+                })
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_pending_list("🔄 Recent DNs", dns),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "recent",
+                "data": {"dns": dns},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response("Recent DNs", str(e))
     
     def _search_dns(self, context: DNContext, query: str) -> Dict[str, Any]:
         """Search DNs"""
         try:
-            with self._session() as session:
-                search_pattern = f"%{query}%"
-                results = session.query(
-                    DeliveryReport.dn_no,
-                    DeliveryReport.customer_name,
-                    DeliveryReport.warehouse,
-                    DeliveryReport.dn_create_date,
-                ).filter(
-                    or_(
-                        DeliveryReport.dn_no.ilike(search_pattern),
-                        DeliveryReport.customer_name.ilike(search_pattern),
-                        DeliveryReport.warehouse.ilike(search_pattern),
-                        DeliveryReport.sales_office.ilike(search_pattern),
-                    )
-                ).order_by(
-                    DeliveryReport.dn_create_date.desc()
-                ).limit(20).all()
-                
-                dns = []
-                for row in results:
-                    dns.append({
-                        "dn_no": _text(row.dn_no),
-                        "customer_name": _text(row.customer_name),
-                        "warehouse": _text(row.warehouse),
-                        "dn_create_date": row.dn_create_date,
-                    })
-                
-                if not dns:
-                    return {
-                        "response": f"🔍 No results found for '{query}'\n\n0. Main Menu",
-                        "menu_type": "dn_menu",
-                        "action": "search",
-                        "data": {"query": query, "dns": []},
-                        "exit_menu": False
-                    }
-                
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response(f"Search for '{query}'", "Database unavailable")
+            
+            search_pattern = f"%{query}%"
+            results = session.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.customer_name,
+                DeliveryReport.warehouse,
+                DeliveryReport.dn_create_date,
+            ).filter(
+                or_(
+                    DeliveryReport.dn_no.ilike(search_pattern),
+                    DeliveryReport.customer_name.ilike(search_pattern),
+                    DeliveryReport.warehouse.ilike(search_pattern),
+                    DeliveryReport.sales_office.ilike(search_pattern),
+                )
+            ).order_by(
+                DeliveryReport.dn_create_date.desc()
+            ).limit(20).all()
+            
+            dns = []
+            for row in results:
+                dns.append({
+                    "dn_no": _text(row.dn_no),
+                    "customer_name": _text(row.customer_name),
+                    "warehouse": _text(row.warehouse),
+                    "dn_create_date": row.dn_create_date,
+                })
+            
+            if not dns:
                 return {
-                    "response": self._menu_renderer.render_pending_list(f"🔍 Search Results for '{query}'", dns),
+                    "response": f"🔍 No results found for '{query}'\n\n0. Main Menu",
                     "menu_type": "dn_menu",
                     "action": "search",
-                    "data": {"query": query, "dns": dns},
+                    "data": {"query": query, "dns": []},
                     "exit_menu": False
                 }
-        except Exception as e:
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_pending_list(f"🔍 Search Results for '{query}'", dns),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "search",
+                "data": {"query": query, "dns": dns},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response(f"Search for '{query}'", str(e))
     
     def _perform_comparison(self, context: DNContext, dn1: str, dn2: str) -> Dict[str, Any]:
         """Perform DN comparison"""
         try:
-            with self._session() as session:
-                builder = DNDashboardBuilder(session)
-                dash1 = builder.build(dn1)
-                dash2 = builder.build(dn2)
-                
-                if not dash1 or not dash2:
-                    return {
-                        "response": "⚠️ One or both DNs not found.\n\n0. Main Menu",
-                        "menu_type": "dn_menu",
-                        "action": "comparison_error",
-                        "data": {"error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                metrics = {}
-                
-                metrics[f"{dn1}_metrics"] = {
-                    "Customer": dash1.get('customer_name', 'N/A'),
-                    "Status": dash1.get('computed_delivery_status', 'N/A'),
-                    "Units": f"{dash1.get('total_units', 0):,}",
-                    "Revenue": f"PKR {float(dash1.get('total_revenue', 0)):,.2f}",
-                    "Warehouse": dash1.get('warehouse', 'N/A'),
-                    "Age": f"{dash1.get('dn_age', 0)} Days",
-                    "Transit": f"{dash1.get('transit_days', 'N/A')} Days",
-                    "Distance": f"{dash1.get('distance_km', 'N/A')} KM",
-                }
-                
-                metrics[f"{dn2}_metrics"] = {
-                    "Customer": dash2.get('customer_name', 'N/A'),
-                    "Status": dash2.get('computed_delivery_status', 'N/A'),
-                    "Units": f"{dash2.get('total_units', 0):,}",
-                    "Revenue": f"PKR {float(dash2.get('total_revenue', 0)):,.2f}",
-                    "Warehouse": dash2.get('warehouse', 'N/A'),
-                    "Age": f"{dash2.get('dn_age', 0)} Days",
-                    "Transit": f"{dash2.get('transit_days', 'N/A')} Days",
-                    "Distance": f"{dash2.get('distance_km', 'N/A')} KM",
-                }
-                
-                revenue1 = float(dash1.get('total_revenue', 0))
-                revenue2 = float(dash2.get('total_revenue', 0))
-                
-                if revenue1 > revenue2:
-                    explanation = f"DN {dn1} has higher revenue than DN {dn2}"
-                elif revenue2 > revenue1:
-                    explanation = f"DN {dn2} has higher revenue than DN {dn1}"
-                else:
-                    explanation = f"DN {dn1} and DN {dn2} have similar revenue"
-                
-                metrics["explanation"] = explanation
-                
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response(f"Comparison of {dn1} vs {dn2}", "Database unavailable")
+            
+            builder = DNDashboardBuilder(session)
+            dash1 = builder.build(dn1)
+            dash2 = builder.build(dn2)
+            
+            if not dash1 or not dash2:
                 return {
-                    "response": self._menu_renderer.render_comparison_result(dn1, dn2, metrics),
+                    "response": "⚠️ One or both DNs not found.\n\n0. Main Menu",
                     "menu_type": "dn_menu",
-                    "action": "comparison",
-                    "data": {"dn1": dn1, "dn2": dn2, "metrics": metrics},
+                    "action": "comparison_error",
+                    "data": {"error": "not_found"},
                     "exit_menu": False
                 }
-        except Exception as e:
+            
+            metrics = {}
+            
+            metrics[f"{dn1}_metrics"] = {
+                "Customer": dash1.get('customer_name', 'N/A'),
+                "Status": dash1.get('computed_delivery_status', 'N/A'),
+                "Units": f"{dash1.get('total_units', 0):,}",
+                "Revenue": f"PKR {float(dash1.get('total_revenue', 0)):,.2f}",
+                "Warehouse": dash1.get('warehouse', 'N/A'),
+                "Age": f"{dash1.get('dn_age', 0)} Days",
+                "Transit": f"{dash1.get('transit_days', 'N/A')} Days",
+                "Distance": f"{dash1.get('distance_km', 'N/A')} KM",
+            }
+            
+            metrics[f"{dn2}_metrics"] = {
+                "Customer": dash2.get('customer_name', 'N/A'),
+                "Status": dash2.get('computed_delivery_status', 'N/A'),
+                "Units": f"{dash2.get('total_units', 0):,}",
+                "Revenue": f"PKR {float(dash2.get('total_revenue', 0)):,.2f}",
+                "Warehouse": dash2.get('warehouse', 'N/A'),
+                "Age": f"{dash2.get('dn_age', 0)} Days",
+                "Transit": f"{dash2.get('transit_days', 'N/A')} Days",
+                "Distance": f"{dash2.get('distance_km', 'N/A')} KM",
+            }
+            
+            revenue1 = float(dash1.get('total_revenue', 0))
+            revenue2 = float(dash2.get('total_revenue', 0))
+            
+            if revenue1 > revenue2:
+                explanation = f"DN {dn1} has higher revenue than DN {dn2}"
+            elif revenue2 > revenue1:
+                explanation = f"DN {dn2} has higher revenue than DN {dn1}"
+            else:
+                explanation = f"DN {dn1} and DN {dn2} have similar revenue"
+            
+            metrics["explanation"] = explanation
+            
             return {
-                "response": f"⚠️ Comparison error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_comparison_result(dn1, dn2, metrics),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "comparison",
+                "data": {"dn1": dn1, "dn2": dn2, "metrics": metrics},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response(f"Comparison of {dn1} vs {dn2}", str(e))
     
     def _get_ranking(self, context: DNContext) -> Dict[str, Any]:
         """Get DN rankings"""
         try:
-            with self._session() as session:
-                results = session.query(
-                    DeliveryReport.dn_no,
-                    func.sum(DeliveryReport.dn_amount).label("revenue"),
-                    func.sum(DeliveryReport.dn_qty).label("units"),
-                ).group_by(
-                    DeliveryReport.dn_no
-                ).order_by(
-                    func.sum(DeliveryReport.dn_amount).desc()
-                ).limit(10).all()
-                
-                ranking = []
-                for row in results:
-                    ranking.append({
-                        "dn_no": _text(row.dn_no),
-                        "value": f"PKR {float(row.revenue or 0):,.2f}",
-                        "units": int(row.units or 0),
-                    })
-                
-                return {
-                    "response": self._menu_renderer.render_ranking(ranking, "Revenue", 10),
-                    "menu_type": "dn_menu",
-                    "action": "ranking",
-                    "data": {"ranking": ranking},
-                    "exit_menu": False
-                }
-        except Exception as e:
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response("DN Rankings", "Database unavailable")
+            
+            results = session.query(
+                DeliveryReport.dn_no,
+                func.sum(DeliveryReport.dn_amount).label("revenue"),
+                func.sum(DeliveryReport.dn_qty).label("units"),
+            ).group_by(
+                DeliveryReport.dn_no
+            ).order_by(
+                func.sum(DeliveryReport.dn_amount).desc()
+            ).limit(10).all()
+            
+            ranking = []
+            for row in results:
+                ranking.append({
+                    "dn_no": _text(row.dn_no),
+                    "value": f"PKR {float(row.revenue or 0):,.2f}",
+                    "units": int(row.units or 0),
+                })
+            
             return {
-                "response": f"⚠️ Ranking error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_ranking(ranking, "Revenue", 10),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "ranking",
+                "data": {"ranking": ranking},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response("DN Rankings", str(e))
     
     def _get_insights(self, context: DNContext) -> Dict[str, Any]:
         """Get DN insights"""
         try:
-            with self._session() as session:
-                stats = session.query(
-                    func.count(DeliveryReport.dn_no).label("total"),
-                    func.count(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no))).label("delivered"),
-                    func.count(case((or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no))).label("pending"),
-                    func.avg(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.pod_date - DeliveryReport.dn_create_date))).label("avg_delivery_days"),
-                    func.sum(DeliveryReport.dn_amount).label("total_revenue"),
-                    func.avg(DeliveryReport.dn_qty).label("avg_units"),
-                ).first()
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response("DN Insights", "Database unavailable")
+            
+            stats = session.query(
+                func.count(DeliveryReport.dn_no).label("total"),
+                func.count(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no))).label("delivered"),
+                func.count(case((or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no))).label("pending"),
+                func.avg(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.pod_date - DeliveryReport.dn_create_date))).label("avg_delivery_days"),
+                func.sum(DeliveryReport.dn_amount).label("total_revenue"),
+                func.avg(DeliveryReport.dn_qty).label("avg_units"),
+            ).first()
+            
+            insights = []
+            total = int(stats.total or 0)
+            delivered = int(stats.delivered or 0)
+            pending = int(stats.pending or 0)
+            avg_days = float(stats.avg_delivery_days or 0)
+            total_revenue = float(stats.total_revenue or 0)
+            avg_units = float(stats.avg_units or 0)
+            
+            if total > 0:
+                insights.append(f"📊 Total DNs: {total:,}")
+                insights.append(f"✅ Delivered: {delivered:,} ({_percent(delivered, total):.1f}%)")
+                insights.append(f"⏳ Pending: {pending:,} ({_percent(pending, total):.1f}%)")
                 
-                insights = []
-                total = int(stats.total or 0)
-                delivered = int(stats.delivered or 0)
-                pending = int(stats.pending or 0)
-                avg_days = float(stats.avg_delivery_days or 0)
-                total_revenue = float(stats.total_revenue or 0)
-                avg_units = float(stats.avg_units or 0)
+                if avg_days > 0:
+                    insights.append(f"📅 Average Delivery: {avg_days:.1f} Days")
                 
-                if total > 0:
-                    insights.append(f"📊 Total DNs: {total:,}")
-                    insights.append(f"✅ Delivered: {delivered:,} ({_percent(delivered, total):.1f}%)")
-                    insights.append(f"⏳ Pending: {pending:,} ({_percent(pending, total):.1f}%)")
-                    
-                    if avg_days > 0:
-                        insights.append(f"📅 Average Delivery: {avg_days:.1f} Days")
-                    
-                    if total_revenue > 0:
-                        insights.append(f"💰 Total Revenue: PKR {total_revenue:,.2f}")
-                    
-                    if avg_units > 0:
-                        insights.append(f"📦 Average Units: {avg_units:.1f}")
+                if total_revenue > 0:
+                    insights.append(f"💰 Total Revenue: PKR {total_revenue:,.2f}")
                 
-                recommendations = []
-                if pending > 10:
-                    recommendations.append(f"🚨 High pending DNs: {pending}. Focus on resolution.")
-                if avg_days > SLA_TARGET_DAYS:
-                    recommendations.append(f"⏱️ Delivery time ({avg_days:.1f} days) exceeds SLA ({SLA_TARGET_DAYS} days).")
-                
-                return {
-                    "response": self._menu_renderer.render_insights(insights, recommendations),
-                    "menu_type": "dn_menu",
-                    "action": "insights",
-                    "data": {"insights": insights, "recommendations": recommendations},
-                    "exit_menu": False
-                }
-        except Exception as e:
+                if avg_units > 0:
+                    insights.append(f"📦 Average Units: {avg_units:.1f}")
+            
+            recommendations = []
+            if pending > 10:
+                recommendations.append(f"🚨 High pending DNs: {pending}. Focus on resolution.")
+            if avg_days > SLA_TARGET_DAYS:
+                recommendations.append(f"⏱️ Delivery time ({avg_days:.1f} days) exceeds SLA ({SLA_TARGET_DAYS} days).")
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_insights(insights, recommendations),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "insights",
+                "data": {"insights": insights, "recommendations": recommendations},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response("DN Insights", str(e))
     
     def _get_sla_report(self, context: DNContext) -> Dict[str, Any]:
         """Get SLA compliance report"""
         try:
-            with self._session() as session:
-                results = session.query(
-                    DeliveryReport.dn_no,
-                    DeliveryReport.customer_name,
-                    DeliveryReport.dn_create_date,
-                    DeliveryReport.pod_date,
-                ).order_by(
-                    DeliveryReport.dn_create_date.desc()
-                ).limit(50).all()
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response("SLA Report", "Database unavailable")
+            
+            results = session.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.customer_name,
+                DeliveryReport.dn_create_date,
+                DeliveryReport.pod_date,
+            ).order_by(
+                DeliveryReport.dn_create_date.desc()
+            ).limit(50).all()
+            
+            dns = []
+            for row in results:
+                dn_date = row.dn_create_date
+                pod_date = row.pod_date
+                status = "Delivered" if pod_date else "Pending"
+                days = (pod_date - dn_date).days if pod_date and dn_date else None
                 
-                dns = []
-                for row in results:
-                    dn_date = row.dn_create_date
-                    pod_date = row.pod_date
-                    status = "Delivered" if pod_date else "Pending"
-                    days = (pod_date - dn_date).days if pod_date and dn_date else None
-                    
-                    dns.append({
-                        "dn_no": _text(row.dn_no),
-                        "customer_name": _text(row.customer_name),
-                        "computed_delivery_status": status,
-                        "delivery_days": days,
-                        "sla_compliant": days is not None and days <= SLA_TARGET_DAYS if days is not None else False,
-                    })
-                
-                return {
-                    "response": self._menu_renderer.render_sla_report(dns),
-                    "menu_type": "dn_menu",
-                    "action": "sla",
-                    "data": {"dns": dns},
-                    "exit_menu": False
-                }
-        except Exception as e:
+                dns.append({
+                    "dn_no": _text(row.dn_no),
+                    "customer_name": _text(row.customer_name),
+                    "computed_delivery_status": status,
+                    "delivery_days": days,
+                    "sla_compliant": days is not None and days <= SLA_TARGET_DAYS if days is not None else False,
+                })
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_sla_report(dns),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "sla",
+                "data": {"dns": dns},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response("SLA Report", str(e))
     
     def _get_aging_report(self, context: DNContext) -> Dict[str, Any]:
         """Get aging report"""
         try:
-            with self._session() as session:
-                today = date.today()
-                results = session.query(
-                    DeliveryReport.dn_no,
-                    DeliveryReport.dn_create_date,
-                    DeliveryReport.pod_date,
-                ).filter(
-                    DeliveryReport.pod_date.is_(None)
-                ).all()
-                
-                age_groups = {
-                    "0-3 Days": 0,
-                    "4-7 Days": 0,
-                    "8-15 Days": 0,
-                    "16-30 Days": 0,
-                    "30+ Days": 0,
-                }
-                
-                ages = []
-                for row in results:
-                    if row.dn_create_date:
-                        age = (today - row.dn_create_date).days
-                        ages.append(age)
-                        
-                        if age <= 3:
-                            age_groups["0-3 Days"] += 1
-                        elif age <= 7:
-                            age_groups["4-7 Days"] += 1
-                        elif age <= 15:
-                            age_groups["8-15 Days"] += 1
-                        elif age <= 30:
-                            age_groups["16-30 Days"] += 1
-                        else:
-                            age_groups["30+ Days"] += 1
-                
-                data = {
-                    "age_groups": age_groups,
-                    "total": len(ages),
-                    "average_age": sum(ages) / len(ages) if ages else 0,
-                    "max_age": max(ages) if ages else 0,
-                    "min_age": min(ages) if ages else 0,
-                }
-                
-                return {
-                    "response": self._menu_renderer.render_aging_report(data),
-                    "menu_type": "dn_menu",
-                    "action": "aging",
-                    "data": {"aging": data},
-                    "exit_menu": False
-                }
-        except Exception as e:
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response("Aging Report", "Database unavailable")
+            
+            today = date.today()
+            results = session.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.dn_create_date,
+                DeliveryReport.pod_date,
+            ).filter(
+                DeliveryReport.pod_date.is_(None)
+            ).all()
+            
+            age_groups = {
+                "0-3 Days": 0,
+                "4-7 Days": 0,
+                "8-15 Days": 0,
+                "16-30 Days": 0,
+                "30+ Days": 0,
+            }
+            
+            ages = []
+            for row in results:
+                if row.dn_create_date:
+                    age = (today - row.dn_create_date).days
+                    ages.append(age)
+                    
+                    if age <= 3:
+                        age_groups["0-3 Days"] += 1
+                    elif age <= 7:
+                        age_groups["4-7 Days"] += 1
+                    elif age <= 15:
+                        age_groups["8-15 Days"] += 1
+                    elif age <= 30:
+                        age_groups["16-30 Days"] += 1
+                    else:
+                        age_groups["30+ Days"] += 1
+            
+            data = {
+                "age_groups": age_groups,
+                "total": len(ages),
+                "average_age": sum(ages) / len(ages) if ages else 0,
+                "max_age": max(ages) if ages else 0,
+                "min_age": min(ages) if ages else 0,
+            }
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_aging_report(data),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "aging",
+                "data": {"aging": data},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response("Aging Report", str(e))
     
     def _get_trends(self, context: DNContext) -> Dict[str, Any]:
         """Get DN trends"""
         try:
-            with self._session() as session:
-                daily = session.query(
-                    func.date(DeliveryReport.dn_create_date).label("date"),
-                    func.count(DeliveryReport.dn_no).label("count"),
-                    func.sum(DeliveryReport.dn_amount).label("revenue"),
-                ).filter(
-                    DeliveryReport.dn_create_date >= date.today() - timedelta(days=7)
-                ).group_by(
-                    func.date(DeliveryReport.dn_create_date)
-                ).order_by(
-                    func.date(DeliveryReport.dn_create_date).desc()
-                ).all()
-                
-                weekly = session.query(
-                    func.extract('week', DeliveryReport.dn_create_date).label("week"),
-                    func.count(DeliveryReport.dn_no).label("count"),
-                    func.sum(DeliveryReport.dn_amount).label("revenue"),
-                ).filter(
-                    DeliveryReport.dn_create_date >= date.today() - timedelta(days=30)
-                ).group_by(
-                    func.extract('week', DeliveryReport.dn_create_date)
-                ).order_by(
-                    func.extract('week', DeliveryReport.dn_create_date).desc()
-                ).limit(4).all()
-                
-                if len(daily) >= 2:
-                    current = daily[0].count if daily[0].count else 0
-                    previous = daily[1].count if daily[1].count else 0
-                    growth = _growth(current, previous)
-                else:
-                    growth = 0
-                
-                trend_data = {
-                    "daily": [{"date": _format_date(d.date), "count": d.count or 0, "revenue": float(d.revenue or 0)} for d in daily],
-                    "weekly": [{"week": f"Week {int(w.week)}", "count": w.count or 0, "revenue": float(w.revenue or 0)} for w in weekly],
-                    "growth": growth,
-                }
-                
-                return {
-                    "response": self._menu_renderer.render_trends(trend_data),
-                    "menu_type": "dn_menu",
-                    "action": "trends",
-                    "data": {"trends": trend_data},
-                    "exit_menu": False
-                }
-        except Exception as e:
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response("DN Trends", "Database unavailable")
+            
+            daily = session.query(
+                func.date(DeliveryReport.dn_create_date).label("date"),
+                func.count(DeliveryReport.dn_no).label("count"),
+                func.sum(DeliveryReport.dn_amount).label("revenue"),
+            ).filter(
+                DeliveryReport.dn_create_date >= date.today() - timedelta(days=7)
+            ).group_by(
+                func.date(DeliveryReport.dn_create_date)
+            ).order_by(
+                func.date(DeliveryReport.dn_create_date).desc()
+            ).all()
+            
+            weekly = session.query(
+                func.extract('week', DeliveryReport.dn_create_date).label("week"),
+                func.count(DeliveryReport.dn_no).label("count"),
+                func.sum(DeliveryReport.dn_amount).label("revenue"),
+            ).filter(
+                DeliveryReport.dn_create_date >= date.today() - timedelta(days=30)
+            ).group_by(
+                func.extract('week', DeliveryReport.dn_create_date)
+            ).order_by(
+                func.extract('week', DeliveryReport.dn_create_date).desc()
+            ).limit(4).all()
+            
+            if len(daily) >= 2:
+                current = daily[0].count if daily[0].count else 0
+                previous = daily[1].count if daily[1].count else 0
+                growth = _growth(current, previous)
+            else:
+                growth = 0
+            
+            trend_data = {
+                "daily": [{"date": _format_date(d.date), "count": d.count or 0, "revenue": float(d.revenue or 0)} for d in daily],
+                "weekly": [{"week": f"Week {int(w.week)}", "count": w.count or 0, "revenue": float(w.revenue or 0)} for w in weekly],
+                "growth": growth,
+            }
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_trends(trend_data),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "trends",
+                "data": {"trends": trend_data},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response("DN Trends", str(e))
     
     def _get_forecast(self, context: DNContext) -> Dict[str, Any]:
         """Get DN forecast"""
         try:
-            with self._session() as session:
-                results = session.query(
-                    func.date(DeliveryReport.dn_create_date).label("date"),
-                    func.count(DeliveryReport.dn_no).label("count"),
-                    func.sum(DeliveryReport.dn_amount).label("revenue"),
-                    func.sum(DeliveryReport.dn_qty).label("units"),
-                ).filter(
-                    DeliveryReport.dn_create_date >= date.today() - timedelta(days=30)
-                ).group_by(
-                    func.date(DeliveryReport.dn_create_date)
-                ).order_by(
-                    func.date(DeliveryReport.dn_create_date).asc()
-                ).all()
-                
-                if len(results) < 7:
-                    return {
-                        "response": "🔮 Insufficient data for forecast. Need at least 7 days of data.",
-                        "menu_type": "dn_menu",
-                        "action": "forecast",
-                        "data": {},
-                        "exit_menu": False
-                    }
-                
-                avg_count = sum(r.count or 0 for r in results[-7:]) / 7
-                avg_revenue = sum(float(r.revenue or 0) for r in results[-7:]) / 7
-                avg_units = sum(r.units or 0 for r in results[-7:]) / 7
-                
-                forecast_data = {
-                    "expected_count": int(avg_count * 1.1),
-                    "expected_revenue": avg_revenue * 1.1,
-                    "expected_units": int(avg_units * 1.1),
-                    "lower_bound": int(avg_count * 0.9),
-                    "upper_bound": int(avg_count * 1.3),
-                    "confidence": 0.85,
-                }
-                
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response("DN Forecast", "Database unavailable")
+            
+            results = session.query(
+                func.date(DeliveryReport.dn_create_date).label("date"),
+                func.count(DeliveryReport.dn_no).label("count"),
+                func.sum(DeliveryReport.dn_amount).label("revenue"),
+                func.sum(DeliveryReport.dn_qty).label("units"),
+            ).filter(
+                DeliveryReport.dn_create_date >= date.today() - timedelta(days=30)
+            ).group_by(
+                func.date(DeliveryReport.dn_create_date)
+            ).order_by(
+                func.date(DeliveryReport.dn_create_date).asc()
+            ).all()
+            
+            if len(results) < 7:
                 return {
-                    "response": self._menu_renderer.render_forecast(forecast_data),
+                    "response": "🔮 Insufficient data for forecast. Need at least 7 days of data.",
                     "menu_type": "dn_menu",
                     "action": "forecast",
-                    "data": {"forecast": forecast_data},
+                    "data": {},
                     "exit_menu": False
                 }
-        except Exception as e:
+            
+            avg_count = sum(r.count or 0 for r in results[-7:]) / 7
+            avg_revenue = sum(float(r.revenue or 0) for r in results[-7:]) / 7
+            avg_units = sum(r.units or 0 for r in results[-7:]) / 7
+            
+            forecast_data = {
+                "expected_count": int(avg_count * 1.1),
+                "expected_revenue": avg_revenue * 1.1,
+                "expected_units": int(avg_units * 1.1),
+                "lower_bound": int(avg_count * 0.9),
+                "upper_bound": int(avg_count * 1.3),
+                "confidence": 0.85,
+            }
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_forecast(forecast_data),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "forecast",
+                "data": {"forecast": forecast_data},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response("DN Forecast", str(e))
     
     def _get_recommendations(self, context: DNContext) -> Dict[str, Any]:
         """Get DN recommendations"""
         try:
-            with self._session() as session:
-                pending_count = session.query(
-                    func.count(DeliveryReport.dn_no)
-                ).filter(
-                    or_(
-                        DeliveryReport.pending_flag.is_(True),
-                        DeliveryReport.pod_date.is_(None)
-                    )
-                ).scalar() or 0
-                
-                threshold = datetime.now().date() - timedelta(days=DN_DELAY_THRESHOLD_DAYS)
-                delayed_count = session.query(
-                    func.count(DeliveryReport.dn_no)
-                ).filter(
-                    DeliveryReport.good_issue_date.isnot(None),
-                    DeliveryReport.good_issue_date < threshold,
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response("DN Recommendations", "Database unavailable")
+            
+            pending_count = session.query(
+                func.count(DeliveryReport.dn_no)
+            ).filter(
+                or_(
+                    DeliveryReport.pending_flag.is_(True),
                     DeliveryReport.pod_date.is_(None)
-                ).scalar() or 0
-                
-                recommendations = []
-                
-                if pending_count > 10:
-                    recommendations.append(f"🚨 Action Required: {pending_count} pending DNs need resolution")
-                elif pending_count > 5:
-                    recommendations.append(f"📋 Review {pending_count} pending DNs for timely closure")
-                
-                if delayed_count > 5:
-                    recommendations.append(f"⏰ Priority: {delayed_count} DNs are delayed beyond {DN_DELAY_THRESHOLD_DAYS} days")
-                
-                if not recommendations:
-                    recommendations.append("✅ Current DN performance is good. Continue monitoring.")
-                    recommendations.append("📊 Consider periodic DN audits")
-                
-                return {
-                    "response": self._menu_renderer.render_insights([], recommendations),
-                    "menu_type": "dn_menu",
-                    "action": "recommendations",
-                    "data": {"recommendations": recommendations},
-                    "exit_menu": False
-                }
-        except Exception as e:
+                )
+            ).scalar() or 0
+            
+            threshold = datetime.now().date() - timedelta(days=DN_DELAY_THRESHOLD_DAYS)
+            delayed_count = session.query(
+                func.count(DeliveryReport.dn_no)
+            ).filter(
+                DeliveryReport.good_issue_date.isnot(None),
+                DeliveryReport.good_issue_date < threshold,
+                DeliveryReport.pod_date.is_(None)
+            ).scalar() or 0
+            
+            recommendations = []
+            
+            if pending_count > 10:
+                recommendations.append(f"🚨 Action Required: {pending_count} pending DNs need resolution")
+            elif pending_count > 5:
+                recommendations.append(f"📋 Review {pending_count} pending DNs for timely closure")
+            
+            if delayed_count > 5:
+                recommendations.append(f"⏰ Priority: {delayed_count} DNs are delayed beyond {DN_DELAY_THRESHOLD_DAYS} days")
+            
+            if not recommendations:
+                recommendations.append("✅ Current DN performance is good. Continue monitoring.")
+                recommendations.append("📊 Consider periodic DN audits")
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": self._menu_renderer.render_insights([], recommendations),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "recommendations",
+                "data": {"recommendations": recommendations},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response("DN Recommendations", str(e))
     
     def _get_root_cause(self, context: DNContext, dn_no: str) -> Dict[str, Any]:
         """Get root cause analysis for a DN"""
         try:
-            with self._session() as session:
-                builder = DNDashboardBuilder(session)
-                dashboard = builder.build(dn_no)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu",
-                        "menu_type": "dn_menu",
-                        "action": "root_cause_error",
-                        "data": {"dn": dn_no, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                status = dashboard.get('computed_delivery_status', '')
-                lines = [
-                    f"🔍 *Root Cause Analysis - DN {dn_no}*",
-                    "",
-                    f"Current Status: {status}",
-                    "",
-                ]
-                
-                if status == "Pending PGI":
-                    lines.extend([
-                        "📋 *Analysis:*",
-                        "• PGI is pending at warehouse",
-                        "• Possible causes:",
-                        "  - Warehouse capacity issue",
-                        "  - Inventory availability",
-                        "  - Documentation pending",
-                        "",
-                        "🎯 *Recommendations:*",
-                        "• Contact warehouse for status",
-                        "• Expedite PGI processing",
-                        "• Check inventory availability",
-                    ])
-                elif status == "Pending POD":
-                    lines.extend([
-                        "📋 *Analysis:*",
-                        "• POD is pending from customer",
-                        "• Possible causes:",
-                        "  - Customer not available",
-                        "  - Delivery confirmation pending",
-                        "  - POD document missing",
-                        "",
-                        "🎯 *Recommendations:*",
-                        "• Follow up with customer",
-                        "• Send POD reminder",
-                        "• Escalate to sales team",
-                    ])
-                elif status == "Delayed":
-                    lines.extend([
-                        "📋 *Analysis:*",
-                        f"• DN is delayed by {dashboard.get('dn_age', 0)} days",
-                        "• Possible causes:",
-                        "  - Transit delay",
-                        "  - Weather conditions",
-                        "  - Route congestion",
-                        "",
-                        "🎯 *Recommendations:*",
-                        "• Expedite delivery",
-                        "• Consider alternate route",
-                        "• Communicate with customer",
-                    ])
-                elif status == "Delivered" or status == "Completed":
-                    lines.extend([
-                        "✅ *Analysis:*",
-                        "• DN is successfully delivered",
-                        "• No issues identified",
-                        "",
-                        "🎯 *Recommendations:*",
-                        "• Close the DN",
-                        "• Update records",
-                        "• Process payment",
-                    ])
-                else:
-                    lines.extend([
-                        "📋 *Analysis:*",
-                        "• Status: In Transit",
-                        "• DN is on track",
-                        "",
-                        "🎯 *Recommendations:*",
-                        "• Continue monitoring",
-                        "• Track delivery progress",
-                    ])
-                
-                lines.extend([
-                    "",
-                    "0. Main Menu",
-                    "99. Back"
-                ])
-                
+            session = self._session()
+            if session is None:
+                return self._get_fallback_response(f"Root Cause for DN '{dn_no}'", "Database unavailable")
+            
+            builder = DNDashboardBuilder(session)
+            dashboard = builder.build(dn_no)
+            
+            if not dashboard:
                 return {
-                    "response": "\n".join(lines),
+                    "response": f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu",
                     "menu_type": "dn_menu",
-                    "action": "root_cause",
-                    "data": {"dn": dn_no, "root_cause": dashboard},
+                    "action": "root_cause_error",
+                    "data": {"dn": dn_no, "error": "not_found"},
                     "exit_menu": False
                 }
-        except Exception as e:
+            
+            status = dashboard.get('computed_delivery_status', '')
+            lines = [
+                f"🔍 *Root Cause Analysis - DN {dn_no}*",
+                "",
+                f"Current Status: {status}",
+                "",
+            ]
+            
+            if status == "Pending PGI":
+                lines.extend([
+                    "📋 *Analysis:*",
+                    "• PGI is pending at warehouse",
+                    "• Possible causes:",
+                    "  - Warehouse capacity issue",
+                    "  - Inventory availability",
+                    "  - Documentation pending",
+                    "",
+                    "🎯 *Recommendations:*",
+                    "• Contact warehouse for status",
+                    "• Expedite PGI processing",
+                    "• Check inventory availability",
+                ])
+            elif status == "Pending POD":
+                lines.extend([
+                    "📋 *Analysis:*",
+                    "• POD is pending from customer",
+                    "• Possible causes:",
+                    "  - Customer not available",
+                    "  - Delivery confirmation pending",
+                    "  - POD document missing",
+                    "",
+                    "🎯 *Recommendations:*",
+                    "• Follow up with customer",
+                    "• Send POD reminder",
+                    "• Escalate to sales team",
+                ])
+            elif status == "Delayed":
+                lines.extend([
+                    "📋 *Analysis:*",
+                    f"• DN is delayed by {dashboard.get('dn_age', 0)} days",
+                    "• Possible causes:",
+                    "  - Transit delay",
+                    "  - Weather conditions",
+                    "  - Route congestion",
+                    "",
+                    "🎯 *Recommendations:*",
+                    "• Expedite delivery",
+                    "• Consider alternate route",
+                    "• Communicate with customer",
+                ])
+            elif status == "Delivered" or status == "Completed":
+                lines.extend([
+                    "✅ *Analysis:*",
+                    "• DN is successfully delivered",
+                    "• No issues identified",
+                    "",
+                    "🎯 *Recommendations:*",
+                    "• Close the DN",
+                    "• Update records",
+                    "• Process payment",
+                ])
+            else:
+                lines.extend([
+                    "📋 *Analysis:*",
+                    "• Status: In Transit",
+                    "• DN is on track",
+                    "",
+                    "🎯 *Recommendations:*",
+                    "• Continue monitoring",
+                    "• Track delivery progress",
+                ])
+            
+            lines.extend([
+                "",
+                "0. Main Menu",
+                "99. Back"
+            ])
+            
             return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "response": "\n".join(lines),
                 "menu_type": "dn_menu",
-                "action": "error",
-                "data": {"error": str(e)},
+                "action": "root_cause",
+                "data": {"dn": dn_no, "root_cause": dashboard},
                 "exit_menu": False
             }
+        except Exception as e:
+            return self._get_fallback_response(f"Root Cause for DN '{dn_no}'", str(e))
     
     # ============================================================
-    # LEGACY METHODS - BACKWARD COMPATIBILITY
+    # BLOCK 11E: LEGACY METHODS - BACKWARD COMPATIBILITY
     # ============================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
@@ -3177,8 +3227,21 @@ class DNAnalysisService:
     def health_check(self) -> Dict[str, Any]:
         """Health check for service"""
         try:
-            with self._session() as session:
-                rows = session.query(func.count(DeliveryReport.id)).scalar() or 0
+            session = self._session()
+            if session is None:
+                return {
+                    "healthy": False,
+                    "service": self._service_name,
+                    "version": self._version,
+                    "database": "disconnected",
+                    "error": "Database session unavailable",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "source": "Fallback Mode",
+                    "menu_enabled": True,
+                    "no_circular_imports": True,
+                }
+            
+            rows = session.query(func.count(DeliveryReport.id)).scalar() or 0
             
             return {
                 "healthy": True,
@@ -3202,7 +3265,7 @@ class DNAnalysisService:
             }
 
 # ============================================================
-# SERVICE SINGLETON
+# BLOCK 12: SERVICE SINGLETON
 # ============================================================
 
 _service: Optional[DNAnalysisService] = None
@@ -3228,7 +3291,7 @@ def get_dn_main_menu() -> str:
     return service.get_main_menu()
 
 # ============================================================
-# EXPORTS
+# BLOCK 13: EXPORTS
 # ============================================================
 
 __all__ = [
