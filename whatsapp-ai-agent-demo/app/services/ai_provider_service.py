@@ -1,11 +1,11 @@
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 36.0 - FULLY FIXED WITH PROPER MENU SYSTEM
+# VERSION: 37.0 - COMPLETE ROUTER WITH PROPER MENU SYSTEM
 # ============================================================
 
 """
 File: app/services/ai_provider_service.py
-Version: 36.0 - ENTERPRISE AI ROUTER - FULLY FIXED
+Version: 37.0 - ENTERPRISE AI ROUTER - FULLY FIXED
 
 CRITICAL FIXES:
 - ✅ Syntax error at line 890 fixed (missing def keyword)
@@ -27,10 +27,7 @@ ROUTING FLOW:
 
 Status: ENTERPRISE READY - 100% FUNCTIONAL
 """
-# At the top of the file, after imports
-logger.setLevel(logging.DEBUG)
 
-# In _init_service_registry, add more detailed logging
 # ============================================================
 # BLOCK 1: IMPORTS AND SETUP
 # ============================================================
@@ -910,7 +907,7 @@ class AIProviderService:
         self._menu_sessions: Dict[str, str] = {}  # session_id -> service_key
         
         logger.info("=" * 60)
-        logger.info("🚀 AI Provider Service v36.0 initialized")
+        logger.info("🚀 AI Provider Service v37.0 initialized")
         logger.info(f"📦 Services: {', '.join(self.service_registry.keys())}")
         logger.info("📊 Monitoring: Enabled" if self.metrics.is_enabled() else "📊 Monitoring: Disabled")
         logger.info("✅ DN Service: 100% FIXED")
@@ -918,9 +915,6 @@ class AIProviderService:
         logger.info("=" * 60)
     
     # ============================================================
-    # BLOCK 11: SERVICE REGISTRY - 100% DN SERVICE FIX
-    # ============================================================
-        # ============================================================
     # BLOCK 11: SERVICE REGISTRY - 100% DN SERVICE FIX
     # ============================================================
 
@@ -1127,13 +1121,8 @@ class AIProviderService:
         logger.info("=" * 60)
         logger.info("🚀 DN Service Status: LOADED" if self.service_registry.get("dn") is not None else "🚀 DN Service Status: FALLBACK")
         logger.info("=" * 60)
-
-
     
     # ============================================================
-    # BLOCK 12: DN SERVICE FALLBACK
-    # ============================================================
-       # ============================================================
     # BLOCK 12: DN SERVICE FALLBACK
     # ============================================================
     
@@ -1194,6 +1183,7 @@ class AIProviderService:
                 }
         
         return DNAnalysisFallback()
+    
     # ============================================================
     # BLOCK 13: MAIN PROCESSING PIPELINE
     # ============================================================
@@ -1376,9 +1366,6 @@ class AIProviderService:
     # ============================================================
     # BLOCK 14: MENU HANDLING
     # ============================================================
-       # ============================================================
-    # BLOCK 14: MENU HANDLING
-    # ============================================================
     
     def _handle_return_to_main_menu(self, sender: str) -> str:
         """Handle '99' - Return to main menu from any service"""
@@ -1495,6 +1482,7 @@ class AIProviderService:
             "national": MenuState.NATIONAL,
         }
         return mapping.get(service_key, MenuState.MAIN)
+    
     # ============================================================
     # BLOCK 15: ROUTING AND EXECUTION
     # ============================================================
@@ -1875,7 +1863,7 @@ Keep response concise and WhatsApp-friendly with emojis and bullet points."""
         
         return {
             "service": "ai_provider_service",
-            "version": "36.0",
+            "version": "37.0",
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
             "components": {
