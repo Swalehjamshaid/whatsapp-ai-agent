@@ -1,23 +1,12 @@
 """
 File: app/services/ai_provider_service.py
-Version: 34.0 - ENTERPRISE AI ROUTER WITH COMPLETE DOMAIN MENU INTEGRATION
+Version: 34.1 - ENTERPRISE AI ROUTER WITH FIXED DN SERVICE
 
-Single entry point for the WhatsApp AI agent with full domain menu support.
-Each domain service (DN, Dealer, City, Warehouse, Product, National KPI)
-has its own complete menu system. The router delegates to these services
-and handles natural language queries, context management, and AI fallback.
-
-ROUTING FLOW:
-1. Menu Number (0-9) → Route to domain menu
-2. Natural Language → Intent + Entity → Route to domain service
-3. Context → Maintain session state
-4. AI Fallback → Only when needed
-
-CRITICAL: 
-- ALL DN-related queries go to dn_analysis.py
-- DN service handles its own menu, state, and responses
-- Router only delegates to DN service, never intercepts DN responses
-- "99" from DN service returns to main menu via exit_menu flag
+Fixed:
+- ✅ DN service import and registration
+- ✅ Proper error handling for service registration
+- ✅ Fallback mechanism when service fails
+- ✅ Comprehensive logging for debugging
 
 Status: ENTERPRISE READY
 """
@@ -769,7 +758,6 @@ class EntityEngine:
         dn_matches = re.findall(r'(?<!\d)(\d{8,12})(?!\d)', message)
         for dn in dn_matches:
             entities.append(Entity(type=EntityType.DN, value=dn, confidence=0.98))
-            # If DN found, still check for other entities but DN takes priority
         
         # 2. Cities
         for city in self.KNOWN_CITIES:
@@ -848,7 +836,7 @@ class EntityEngine:
         return unique_entities
 
 # =====================================================================================================================
-# MAIN AI PROVIDER SERVICE
+# MAIN AI PROVIDER SERVICE - WITH FIXED DN SERVICE
 # =====================================================================================================================
 
 class AIProviderService:
@@ -857,8 +845,6 @@ class AIProviderService:
     Routes to domain services and handles natural language queries.
     
     CRITICAL: ALL DN-related queries are delegated to dn_analysis.py
-    The DN service handles its own menu, state, and responses.
-    The router only checks the exit_menu flag to determine if user wants to go back to main menu.
     """
     
     _instance = None
@@ -895,7 +881,7 @@ class AIProviderService:
         self._menu_sessions: Dict[str, str] = {}  # session_id -> service_key
         
         logger.info("=" * 60)
-        logger.info("🚀 AI Provider Service v34.0 initialized")
+        logger.info("🚀 AI Provider Service v34.1 initialized")
         logger.info(f"📦 Services: {', '.join(self.service_registry.keys())}")
         logger.info("📊 Monitoring: Enabled" if self.metrics.is_enabled() else "📊 Monitoring: Disabled")
         logger.info("=" * 60)
@@ -904,16 +890,26 @@ class AIProviderService:
         """Initialize service registry with all domain services"""
         self.service_registry = {}
         
+        # ============================================================
         # DN Service - Menu 1, 7, 8 - ALL DN queries go here
+        # ============================================================
         try:
+            logger.info("📦 Attempting to import DNAnalysisService...")
             from app.services.dn_analysis import DNAnalysisService
             self.service_registry["dn"] = DNAnalysisService()
             logger.info("✅ Registered DN service (Menu 1, 7, 8) - ALL DN queries")
+        except ImportError as e:
+            logger.error(f"❌ DN Service import error: {e}")
+            self.service_registry["dn"] = self._create_dn_fallback()
         except Exception as e:
-            logger.warning(f"⚠️ Failed to register DN service: {e}")
-            self.service_registry["dn"] = None
+            logger.error(f"❌ DN Service initialization error: {e}")
+            import traceback
+            traceback.print_exc()
+            self.service_registry["dn"] = self._create_dn_fallback()
         
+        # ============================================================
         # Dealer Service - Menu 2
+        # ============================================================
         try:
             from app.services.dealer_analytics_service import DealerAnalyticsService
             self.service_registry["dealer"] = DealerAnalyticsService()
@@ -922,7 +918,9 @@ class AIProviderService:
             logger.warning(f"⚠️ Failed to register Dealer service: {e}")
             self.service_registry["dealer"] = None
         
+        # ============================================================
         # City Service - Menu 3
+        # ============================================================
         try:
             from app.services.city_service import CityAnalyticsService
             self.service_registry["city"] = CityAnalyticsService()
@@ -931,7 +929,9 @@ class AIProviderService:
             logger.warning(f"⚠️ Failed to register City service: {e}")
             self.service_registry["city"] = None
         
+        # ============================================================
         # Warehouse Service - Menu 4
+        # ============================================================
         try:
             from app.services.warehouse_service import WarehouseAnalyticsService
             self.service_registry["warehouse"] = WarehouseAnalyticsService()
@@ -940,7 +940,9 @@ class AIProviderService:
             logger.warning(f"⚠️ Failed to register Warehouse service: {e}")
             self.service_registry["warehouse"] = None
         
+        # ============================================================
         # Product Service - Menu 5
+        # ============================================================
         try:
             from app.services.product_service import ProductAnalyticsService
             self.service_registry["product"] = ProductAnalyticsService()
@@ -949,7 +951,9 @@ class AIProviderService:
             logger.warning(f"⚠️ Failed to register Product service: {e}")
             self.service_registry["product"] = None
         
+        # ============================================================
         # National KPI Service - Menu 6
+        # ============================================================
         try:
             from app.services.national_kpi_service import NationalKPIService
             self.service_registry["national"] = NationalKPIService()
@@ -957,6 +961,69 @@ class AIProviderService:
         except Exception as e:
             logger.warning(f"⚠️ Failed to register National KPI service: {e}")
             self.service_registry["national"] = None
+    
+    def _create_dn_fallback(self):
+        """Create DN service fallback with proper error messages"""
+        class DNAnalysisFallback:
+            def __init__(self):
+                logger.warning("⚠️ Using DNAnalysisFallback - DN service unavailable")
+            
+            def get_main_menu(self):
+                return "\n".join([
+                    "📦 *DN ANALYTICS MENU*",
+                    "",
+                    "⚠️ DN service is currently unavailable.",
+                    "",
+                    "0. Main Menu",
+                    "99. Back",
+                    "",
+                    "Please try again later or contact support."
+                ])
+            
+            def process_whatsapp_query(self, message, sender):
+                return "⚠️ DN service is currently unavailable. Please try again later."
+            
+            def process_menu_input(self, session_id, user_input):
+                return {
+                    "response": "⚠️ DN service is currently unavailable.\n\n0. Main Menu\n99. Back",
+                    "menu_type": "dn_menu",
+                    "action": "error",
+                    "data": {},
+                    "exit_menu": True
+                }
+            
+            def get_dn_dashboard(self, dn_no):
+                return {
+                    "success": False,
+                    "whatsapp_message": f"⚠️ DN service is currently unavailable.\n\nPlease try again later.\n\n0. Main Menu"
+                }
+            
+            def get_dn_status(self, dn_no):
+                return {
+                    "success": False,
+                    "whatsapp_message": "⚠️ DN service is currently unavailable."
+                }
+            
+            def get_pending_dns(self, limit=20):
+                return {
+                    "success": False,
+                    "whatsapp_message": "⚠️ DN service is currently unavailable."
+                }
+            
+            def get_top_performers(self, limit=10):
+                return {
+                    "success": False,
+                    "whatsapp_message": "⚠️ DN service is currently unavailable."
+                }
+            
+            def health_check(self):
+                return {
+                    "healthy": False,
+                    "service": "dn_analysis",
+                    "error": "Service unavailable - fallback mode"
+                }
+        
+        return DNAnalysisFallback()
     
     # =====================================================================================================================
     # MAIN PROCESSING PIPELINE
@@ -1094,14 +1161,14 @@ class AIProviderService:
         """Handle menu number selection (0-9)"""
         menu_map = {
             0: ("main", None),
-            1: ("dn", "process_whatsapp_query"),  # DN service handles its own menu
+            1: ("dn", "process_whatsapp_query"),
             2: ("dealer", "get_main_menu"),
             3: ("city", "get_main_menu"),
             4: ("warehouse", "get_main_menu"),
             5: ("product", "get_main_menu"),
             6: ("national", "get_main_menu"),
-            7: ("dn", "process_whatsapp_query"),  # DN service handles pending
-            8: ("dn", "process_whatsapp_query"),  # DN service handles top performers
+            7: ("dn", "process_whatsapp_query"),
+            8: ("dn", "process_whatsapp_query"),
             9: ("ai", None),
         }
         
@@ -1130,10 +1197,7 @@ class AIProviderService:
         
         # DN service - pass the menu number as a message
         if service_key == "dn":
-            # DN service handles its own menu and all DN queries
-            # Just pass the number as a message
             result = service.process_whatsapp_query(str(number), sender)
-            # DN service returns a string directly
             return result
         
         # Other services - get their main menu
@@ -1174,14 +1238,12 @@ class AIProviderService:
         active_menu = self._menu_sessions.get(sender, "main")
         
         if active_menu == "dn":
-            # User is in DN menu - route to DN service
             service = self.service_registry.get("dn")
             if service:
                 result = service.process_whatsapp_query(message, sender)
                 return self._extract_response(result)
         
         if active_menu not in ["main", "ai"]:
-            # User is in a domain menu - route to the active service
             service = self.service_registry.get(active_menu)
             if service:
                 if hasattr(service, "process_whatsapp_query"):
@@ -1470,9 +1532,26 @@ Keep response concise and WhatsApp-friendly with emojis and bullet points."""
     
     def health_check(self) -> Dict[str, Any]:
         """Comprehensive health check"""
+        dn_status = "healthy"
+        dn_error = None
+        
+        dn_service = self.service_registry.get("dn")
+        if dn_service:
+            try:
+                if hasattr(dn_service, "health_check"):
+                    dn_health = dn_service.health_check()
+                    if not dn_health.get("healthy", False):
+                        dn_status = "unhealthy"
+                        dn_error = dn_health.get("error", "Unknown error")
+            except Exception as e:
+                dn_status = "error"
+                dn_error = str(e)
+        else:
+            dn_status = "not_registered"
+        
         return {
             "service": "ai_provider_service",
-            "version": "34.0",
+            "version": "34.1",
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
             "components": {
@@ -1482,6 +1561,10 @@ Keep response concise and WhatsApp-friendly with emojis and bullet points."""
                 "monitoring": self.metrics.is_enabled(),
             },
             "services": list(self.service_registry.keys()),
+            "dn_service": {
+                "status": dn_status,
+                "error": dn_error,
+            },
             "metrics": {
                 "cache_size": len(self._cache),
                 "active_sessions": len(self.context_manager._contexts),
