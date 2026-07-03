@@ -917,6 +917,9 @@ class AIProviderService:
     # ============================================================
     # BLOCK 11: SERVICE REGISTRY - 100% DN SERVICE FIX
     # ============================================================
+        # ============================================================
+    # BLOCK 11: SERVICE REGISTRY - 100% DN SERVICE FIX
+    # ============================================================
 
     def _init_service_registry(self):
         """
@@ -1121,8 +1124,13 @@ class AIProviderService:
         logger.info("=" * 60)
         logger.info("🚀 DN Service Status: LOADED" if self.service_registry.get("dn") is not None else "🚀 DN Service Status: FALLBACK")
         logger.info("=" * 60)
+
+
     
     # ============================================================
+    # BLOCK 12: DN SERVICE FALLBACK
+    # ============================================================
+       # ============================================================
     # BLOCK 12: DN SERVICE FALLBACK
     # ============================================================
     
@@ -1183,7 +1191,6 @@ class AIProviderService:
                 }
         
         return DNAnalysisFallback()
-    
     # ============================================================
     # BLOCK 13: MAIN PROCESSING PIPELINE
     # ============================================================
@@ -1366,6 +1373,9 @@ class AIProviderService:
     # ============================================================
     # BLOCK 14: MENU HANDLING
     # ============================================================
+       # ============================================================
+    # BLOCK 14: MENU HANDLING
+    # ============================================================
     
     def _handle_return_to_main_menu(self, sender: str) -> str:
         """Handle '99' - Return to main menu from any service"""
@@ -1482,7 +1492,6 @@ class AIProviderService:
             "national": MenuState.NATIONAL,
         }
         return mapping.get(service_key, MenuState.MAIN)
-    
     # ============================================================
     # BLOCK 15: ROUTING AND EXECUTION
     # ============================================================
