@@ -1,6 +1,5 @@
 # ==========================================================
 # WhatsApp AI Agent - Enterprise Dockerfile
-# Version : 3.0
 # Optimized for Railway
 # Python 3.12
 # ==========================================================
@@ -16,8 +15,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONFAULTHANDLER=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DEFAULT_TIMEOUT=120 \
-    PIP_PROGRESS_BAR=off
+    PIP_DEFAULT_TIMEOUT=120
 
 # ==========================================================
 # Working Directory
@@ -33,48 +31,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
     g++ \
+    libpq-dev \
     curl \
     git \
-    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # ==========================================================
 # Upgrade pip
 # ==========================================================
 
-RUN python -m pip install --upgrade \
-    pip \
-    setuptools \
-    wheel
+RUN python -m pip install --upgrade pip setuptools wheel
 
 # ==========================================================
-# Copy Requirements First
-# (Improves Docker Layer Cache)
+# Copy only dependency files
 # ==========================================================
 
 COPY requirements/ ./requirements/
 
 # ==========================================================
-# Install Python Dependencies
+# Install Python dependencies
 # ==========================================================
 
 RUN pip install \
     --prefer-binary \
-    --only-binary=:all: \
     --no-cache-dir \
     -r requirements/requirements-all.txt
 
 # ==========================================================
-# Copy Application
+# Copy application
 # ==========================================================
 
-COPY app ./app
-
-COPY railway.toml ./
-COPY README.md ./
-
-# Copy other project files if they exist
-COPY migrate_upload_batch_id.py ./
+COPY . .
 
 # ==========================================================
 # Expose Port
@@ -94,7 +81,7 @@ HEALTHCHECK \
 CMD curl -fs http://localhost:${PORT:-8000}/health || exit 1
 
 # ==========================================================
-# Start Application
+# Start FastAPI
 # ==========================================================
 
 CMD ["sh","-c","uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
