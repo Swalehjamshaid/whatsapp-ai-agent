@@ -1,6 +1,6 @@
 """
 File: app/services/ai_provider_service.py
-Version: 25.0 - COMPLETE SERVICE INTEGRATION WITH CITY MENU FIX
+Version: 26.0 - COMPLETE SERVICE INTEGRATION WITH NATIONAL KPI MENU
 
 Single entry point for the WhatsApp AI agent. Deterministic requests (menu,
 menu numbers, DN numbers and obvious entities) never depend on an AI provider.
@@ -11,9 +11,9 @@ ROUTING FLOW (Priority Order):
 2. DN Number (8-12 digits) → DN Analysis (dn_analysis.py)
 3. City Name → City Dashboard (city_service.py)
 4. Dealer Name → Dealer Dashboard (dealer_analytics_service.py)
-5. Warehouse → Warehouse Dashboard (dn_analysis.py)
+5. Warehouse → Warehouse Dashboard (warehouse_service.py)
 6. Product → Product Dashboard (product_service.py)
-7. National KPI → National KPI (national_kpi_service.py)
+7. National KPI → National KPI (national_kpi_service.py) - FULL MENU
 8. Top Performers → Top Performers (dn_analysis.py)
 9. Pending DN → Pending DN (dn_analysis.py)
 10. AI Query → Groq AI (groq_service.py)
@@ -23,22 +23,23 @@ MENU OPTIONS:
 1 → DN Delivery (dn_analysis.py)
 2 → Dealer Analytics (dealer_analytics_service.py)
 3 → City Analytics (city_service.py - Full Menu System)
-4 → Warehouse Dashboard (dn_analysis.py)
-5 → Product Analytics (product_service.py)
-6 → National KPI (national_kpi_service.py)
+4 → Warehouse Analytics (warehouse_service.py - Full Menu System)
+5 → Product Analytics (product_service.py - Full Menu System)
+6 → National KPI (national_kpi_service.py - Full Menu System)
 7 → Pending DN (dn_analysis.py)
 8 → Top Performers (dn_analysis.py)
 9 → AI Query (groq_service.py)
 
 CRITICAL FIXES - APPLIED:
-1. ✅ Menu "3" now correctly routes to city_service.get_city_menu()
-2. ✅ Menu numbers checked BEFORE entity extraction
-3. ✅ "City Analytics" text detected as menu request
-4. ✅ City names validated against CITY_NAMES list
-5. ✅ Dealer names detected with suffixes
-6. ✅ DN numbers detected (8-12 digits)
+1. ✅ Menu "3" routes to city_service.get_city_menu()
+2. ✅ Menu "4" routes to warehouse_service.get_main_menu()
+3. ✅ Menu "5" routes to product_service.get_main_menu()
+4. ✅ Menu "6" routes to national_kpi_service.get_main_menu()
+5. ✅ Menu numbers checked BEFORE entity extraction
+6. ✅ Entity extraction for all domain types
 7. ✅ ALWAYS returns string responses
 8. ✅ Bootstrap integration for AI resources
+9. ✅ National KPI service fully integrated
 """
 
 from __future__ import annotations
@@ -190,21 +191,59 @@ except Exception as exc:
             }
 
 
-# Product Service
+# Warehouse Service with Menu Support
 try:
-    from app.services.product_service import ProductService
-    PRODUCT_SERVICE_AVAILABLE = True
-    logger.info("✅ ProductService imported")
+    from app.services.warehouse_service import WarehouseAnalyticsService
+    WAREHOUSE_SERVICE_AVAILABLE = True
+    logger.info("✅ WarehouseAnalyticsService imported")
 except Exception as exc:
-    logger.exception("Unable to import ProductService: %s", exc)
+    logger.exception("Unable to import WarehouseAnalyticsService: %s", exc)
+    WAREHOUSE_SERVICE_AVAILABLE = False
+
+    class WarehouseAnalyticsService:
+        def get_warehouse_dashboard(self, warehouse_name: str = "", **kwargs: Any) -> Dict[str, Any]:
+            return {"success": False, "whatsapp_message": "⚠️ Warehouse service is temporarily unavailable.", "error": "Warehouse service unavailable"}
+        
+        def get_main_menu(self) -> str:
+            return "🏭 Warehouse Analytics Menu\n\nWarehouse service is temporarily unavailable.\n\n0. Main Menu"
+        
+        def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
+            return {
+                "response": "Warehouse service is temporarily unavailable. Please try again later.",
+                "menu_type": "warehouse_menu",
+                "action": "error",
+                "data": {},
+                "exit_menu": True
+            }
+
+
+# Product Service with Menu Support
+try:
+    from app.services.product_service import ProductAnalyticsService
+    PRODUCT_SERVICE_AVAILABLE = True
+    logger.info("✅ ProductAnalyticsService imported")
+except Exception as exc:
+    logger.exception("Unable to import ProductAnalyticsService: %s", exc)
     PRODUCT_SERVICE_AVAILABLE = False
 
-    class ProductService:
-        async def get_product_dashboard(self, product: str) -> Dict[str, Any]:
+    class ProductAnalyticsService:
+        def get_product_dashboard(self, product_name: str = "", **kwargs: Any) -> Dict[str, Any]:
             return {"success": False, "whatsapp_message": "⚠️ Product service is temporarily unavailable.", "error": "Product service unavailable"}
+        
+        def get_main_menu(self) -> str:
+            return "📦 Product Analytics Menu\n\nProduct service is temporarily unavailable.\n\n0. Main Menu"
+        
+        def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
+            return {
+                "response": "Product service is temporarily unavailable. Please try again later.",
+                "menu_type": "product_menu",
+                "action": "error",
+                "data": {},
+                "exit_menu": True
+            }
 
 
-# National KPI Service
+# National KPI Service with Menu Support
 try:
     from app.services.national_kpi_service import NationalKPIService
     NATIONAL_KPI_AVAILABLE = True
@@ -214,8 +253,20 @@ except Exception as exc:
     NATIONAL_KPI_AVAILABLE = False
 
     class NationalKPIService:
-        async def get_national_kpi(self) -> Dict[str, Any]:
+        def get_national_kpi_dashboard(self, **kwargs: Any) -> Dict[str, Any]:
             return {"success": False, "whatsapp_message": "⚠️ National KPI service is temporarily unavailable.", "error": "National KPI service unavailable"}
+        
+        def get_main_menu(self) -> str:
+            return "🇵🇰 National Logistics Intelligence Menu\n\nNational KPI service is temporarily unavailable.\n\n0. Main Menu"
+        
+        def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
+            return {
+                "response": "National KPI service is temporarily unavailable. Please try again later.",
+                "menu_type": "national_menu",
+                "action": "error",
+                "data": {},
+                "exit_menu": True
+            }
 
 
 # Groq Service
@@ -241,53 +292,100 @@ MENU_OPTIONS: Dict[str, Dict[str, Any]] = {
     "1": {"name": "DN Delivery", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_dn_dashboard", "requires_ai": False},
     "2": {"name": "Dealer Analytics", "service_key": "dealer_analytics", "service_file": "dealer_analytics_service.py", "method": "get_dealer_dashboard", "requires_ai": False},
     "3": {"name": "City Analytics", "service_key": "city_menu", "service_file": "city_service.py", "method": "get_city_menu", "requires_ai": False},
-    "4": {"name": "Warehouse Dashboard", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_warehouse_dashboard", "requires_ai": False},
-    "5": {"name": "Product Analytics", "service_key": "product_service", "service_file": "product_service.py", "method": "get_product_dashboard", "requires_ai": False},
-    "6": {"name": "National KPI", "service_key": "national_kpi_service", "service_file": "national_kpi_service.py", "method": "get_national_kpi", "requires_ai": False},
+    "4": {"name": "Warehouse Analytics", "service_key": "warehouse_menu", "service_file": "warehouse_service.py", "method": "get_main_menu", "requires_ai": False},
+    "5": {"name": "Product Analytics", "service_key": "product_menu", "service_file": "product_service.py", "method": "get_main_menu", "requires_ai": False},
+    "6": {"name": "National KPI", "service_key": "national_kpi_menu", "service_file": "national_kpi_service.py", "method": "get_main_menu", "requires_ai": False},
     "7": {"name": "Pending DN", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_pending_dns", "requires_ai": False},
     "8": {"name": "Top Performers", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_top_performers", "requires_ai": False},
     "9": {"name": "AI Query", "service_key": "groq_service", "service_file": "groq_service.py", "method": "process_query", "requires_ai": True},
 }
 
 INTENT_TO_MENU = {
+    # DN Intents
     "dn_lookup": "1", "dn_status": "1", "dn_history": "1", "dn_summary": "1",
-    "dealer_dashboard": "2", "dealer_revenue": "2", "dealer_pending": "2", "top_dealers": "2", "dealer_comparison": "2",
-    "city_dashboard": "3", "city_revenue": "3", "city_pending": "3", "top_cities": "3", "city_comparison": "3",
-    "city_menu": "3",
-    "warehouse_dashboard": "4", "warehouse_revenue": "4", "warehouse_pending": "4", "top_warehouses": "4",
-    "product_dashboard": "5", "top_products": "5",
+    
+    # Dealer Intents
+    "dealer_dashboard": "2", "dealer_revenue": "2", "dealer_pending": "2", 
+    "top_dealers": "2", "dealer_comparison": "2",
+    
+    # City Intents
+    "city_dashboard": "3", "city_revenue": "3", "city_pending": "3", 
+    "top_cities": "3", "city_comparison": "3", "city_menu": "3",
+    
+    # Warehouse Intents
+    "warehouse_dashboard": "4", "warehouse_revenue": "4", "warehouse_pending": "4", 
+    "top_warehouses": "4", "warehouse_comparison": "4", "warehouse_inventory": "4",
+    "warehouse_menu": "4",
+    
+    # Product Intents
+    "product_dashboard": "5", "top_products": "5", "product_revenue": "5", 
+    "product_units": "5", "product_dealers": "5", "product_menu": "5",
+    
+    # National KPI Intents
     "national_kpi": "6", "national_revenue": "6", "national_units": "6",
+    "national_delivery": "6", "national_pending": "6", "national_dashboard": "6",
+    "national_health": "6", "executive_summary": "6",
+    
+    # Pending & Performance
     "pending_dns": "7", "pending_pgi": "7", "pending_pod": "7",
-    "top_performers": "8", "help": "0", "menu": "0", "greeting": "0",
+    "top_performers": "8",
+    
+    # General
+    "help": "0", "menu": "0", "greeting": "0",
 }
 
 ROUTE_UTTERANCES: Dict[str, List[str]] = {
+    # DN Routes
     "dn_lookup": ["show dn", "track dn", "delivery note", "dn status", "check delivery note"],
     "dn_history": ["dn history", "delivery history", "dn timeline", "tracking history"],
     "dn_summary": ["dn summary", "total dns", "delivery summary", "dn statistics"],
     "pending_dns": ["pending dns", "pending deliveries", "undelivered dns", "delivery backlog"],
     "pending_pgi": ["pending pgi", "goods issue pending", "pgi not done"],
     "pending_pod": ["pending pod", "proof of delivery pending", "pod missing"],
+    
+    # Dealer Routes
     "dealer_dashboard": ["dealer dashboard", "dealer performance", "show dealer", "dealer details"],
     "dealer_revenue": ["dealer revenue", "dealer sales", "dealer earnings"],
     "dealer_pending": ["dealer pending", "dealer pending orders", "dealer pending dns"],
     "top_dealers": ["top dealers", "best dealers", "dealer ranking"],
     "dealer_comparison": ["compare dealers", "dealer comparison", "dealer versus dealer"],
+    
+    # City Routes
     "city_dashboard": ["city dashboard", "city performance", "show city", "city analytics"],
     "city_revenue": ["city revenue", "city sales", "revenue by city"],
     "city_pending": ["city pending", "pending deliveries by city"],
     "top_cities": ["top cities", "best cities", "city ranking"],
     "city_comparison": ["compare cities", "city comparison", "city versus city"],
     "city_menu": ["city menu", "show city menu", "city options"],
+    
+    # Warehouse Routes
     "warehouse_dashboard": ["warehouse dashboard", "warehouse performance", "show warehouse"],
     "warehouse_revenue": ["warehouse revenue", "warehouse sales"],
     "warehouse_pending": ["warehouse pending", "pending by warehouse"],
     "top_warehouses": ["top warehouses", "best warehouses", "warehouse ranking"],
+    "warehouse_comparison": ["compare warehouses", "warehouse vs warehouse"],
+    "warehouse_inventory": ["warehouse inventory", "warehouse stock", "inventory levels"],
+    "warehouse_menu": ["warehouse menu", "show warehouse menu", "warehouse options"],
+    
+    # Product Routes
     "product_dashboard": ["product dashboard", "product performance", "show product"],
     "top_products": ["top products", "best products", "top selling products"],
+    "product_revenue": ["product revenue", "product sales"],
+    "product_units": ["product units", "units sold"],
+    "product_dealers": ["product dealers", "dealers selling product"],
+    "product_menu": ["product menu", "show product menu", "product options"],
+    
+    # National KPI Routes
     "national_kpi": ["national kpi", "overall performance", "executive dashboard"],
     "national_revenue": ["national revenue", "total revenue", "overall sales"],
     "national_units": ["national units", "total units", "overall quantity"],
+    "national_delivery": ["national delivery", "delivery performance", "nationwide delivery"],
+    "national_pending": ["national pending", "overall pending", "total pending orders"],
+    "national_dashboard": ["national dashboard", "pakistan logistics", "overall dashboard"],
+    "national_health": ["national health", "overall health score", "logistics health"],
+    "executive_summary": ["executive summary", "management overview", "logistics summary"],
+    
+    # General
     "top_performers": ["top performers", "leaderboard", "best performers"],
     "greeting": ["hello", "hi", "salam", "good morning", "good evening"],
     "help": ["help", "how does this work", "what can you do", "instructions"],
@@ -299,6 +397,13 @@ CITY_NAMES = (
     "peshawar", "gilgit", "hyderabad", "islamabad", "sialkot", "gujranwala",
     "faisalabad", "bahawalpur", "sukkur", "mansehra", "haripur", "dg khan",
     "dera ghazi khan", "gwadar", "rahim yar khan"
+)
+
+WAREHOUSE_NAMES = (
+    "lahore", "karachi", "rawalpindi", "multan", "peshawar",
+    "quetta", "hyderabad", "faisalabad", "sialkot", "gujranwala",
+    "bahawalpur", "sukkur", "dg khan", "rahim yar khan",
+    "abbottabad", "gwadar", "gilgit", "islamabad"
 )
 
 DEALER_SUFFIXES = (
@@ -316,9 +421,16 @@ DEALER_SUFFIXES = (
 def get_main_menu() -> str:
     return (
         "📋 *AI LOGISTICS MENU*\n\n"
-        "0. Main Menu\n1. DN Delivery\n2. Dealer Analytics\n"
-        "3. City Analytics\n4. Warehouse Dashboard\n5. Product Analytics\n"
-        "6. National KPI\n7. Pending DN\n8. Top Performers\n9. AI Query\n\n"
+        "0. Main Menu\n"
+        "1. DN Delivery\n"
+        "2. Dealer Analytics\n"
+        "3. City Analytics\n"
+        "4. Warehouse Analytics\n"
+        "5. Product Analytics\n"
+        "6. National KPI\n"
+        "7. Pending DN\n"
+        "8. Top Performers\n"
+        "9. AI Query\n\n"
         "Reply with a number from 0 to 9."
     )
 
@@ -439,6 +551,21 @@ def _extract_city_name(text: str) -> Optional[str]:
     return None
 
 
+def _extract_warehouse_name(text: str) -> Optional[str]:
+    """Extract warehouse name from text."""
+    lowered = text.casefold()
+    
+    for warehouse in WAREHOUSE_NAMES:
+        if warehouse in lowered:
+            return warehouse.title()
+    
+    match = re.search(r'(?:warehouse|depot|hub)\s+([\w&.\'\- ]{2,})', text, re.IGNORECASE)
+    if match:
+        return match.group(1).strip().title()
+    
+    return None
+
+
 # =====================================================================================================================
 # VALIDATE DN NUMBER
 # =====================================================================================================================
@@ -458,13 +585,14 @@ def _format_dn_message(dn: str) -> str:
 
 
 # =====================================================================================================================
-# CITY MENU STATE MANAGEMENT
+# MENU STATE MANAGEMENT
 # =====================================================================================================================
 
-class CityMenuSessionState:
+class MenuSessionState:
     def __init__(self):
         self.is_active = False
         self.session_id = "default"
+        self.menu_type = "main"  # "main", "city", "warehouse", "product", "national"
         self.last_response = ""
         self.last_input = ""
 
@@ -488,11 +616,13 @@ class AIProviderService:
         if getattr(self, "_initialized", False):
             return
 
+        # Initialize all services
         self.dn_service = DNAnalysisService()
         self.dealer_service = DealerAnalyticsService()
         self.city_service = CityAnalyticsService() if CITY_SERVICE_AVAILABLE else None
-        self.product_service = ProductService()
-        self.national_kpi_service = NationalKPIService()
+        self.warehouse_service = WarehouseAnalyticsService() if WAREHOUSE_SERVICE_AVAILABLE else None
+        self.product_service = ProductAnalyticsService() if PRODUCT_SERVICE_AVAILABLE else None
+        self.national_kpi_service = NationalKPIService() if NATIONAL_KPI_AVAILABLE else None
         self.groq_service = GroqService()
         
         self._router: Any = None
@@ -500,8 +630,8 @@ class AIProviderService:
         self._router_lock = threading.Lock()
         self._cache: Dict[str, tuple[float, RoutingDecision]] = {}
         self._cache_ttl = 300.0
-        self._city_menu_states: Dict[str, CityMenuSessionState] = {}
-        self._city_menu_lock = threading.Lock()
+        self._menu_states: Dict[str, MenuSessionState] = {}
+        self._menu_lock = threading.Lock()
         self._initialized = True
         
         if BOOTSTRAP_AVAILABLE:
@@ -516,9 +646,9 @@ class AIProviderService:
         logger.info("  Menu 1 → DN Analysis (dn_analysis.py)")
         logger.info("  Menu 2 → Dealer Analytics (dealer_analytics_service.py)")
         logger.info("  Menu 3 → City Analytics (city_service.py - FULL MENU)")
-        logger.info("  Menu 4 → Warehouse Dashboard (dn_analysis.py)")
-        logger.info("  Menu 5 → Product Analytics (product_service.py)")
-        logger.info("  Menu 6 → National KPI (national_kpi_service.py)")
+        logger.info("  Menu 4 → Warehouse Analytics (warehouse_service.py - FULL MENU)")
+        logger.info("  Menu 5 → Product Analytics (product_service.py - FULL MENU)")
+        logger.info("  Menu 6 → National KPI (national_kpi_service.py - FULL MENU)")
         logger.info("  Menu 7 → Pending DN (dn_analysis.py)")
         logger.info("  Menu 8 → Top Performers (dn_analysis.py)")
         logger.info("  Menu 9 → AI Query (groq_service.py)")
@@ -590,13 +720,17 @@ class AIProviderService:
         if dealer:
             entities.update({"dealer": dealer, "dealer_name": dealer})
 
-        warehouse = re.search(r"(?:warehouse|depot|\bwh\b)\s+([\w&.'\- ]{2,})", text, re.IGNORECASE)
+        warehouse = _extract_warehouse_name(text)
         if warehouse:
-            entities["warehouse"] = warehouse.group(1).strip()
+            entities["warehouse"] = warehouse
 
         product = re.search(r"(?:product|model|material|item)\s+([\w&.'\- ]{2,})", text, re.IGNORECASE)
         if product:
             entities["product"] = product.group(1).strip()
+        
+        # Check for national KPI keywords
+        if any(keyword in text.lower() for keyword in ["national", "overall", "pakistan", "executive", "kpi", "dashboard"]):
+            entities["national_kpi"] = True
         
         return entities
 
@@ -633,6 +767,10 @@ class AIProviderService:
     def _rule_intent(message: str) -> Optional[str]:
         text = message.casefold()
         rules = (
+            (r"\b(?:national|overall|pakistan)\s+(?:kpi|dashboard|performance|health|score)\b", "national_kpi"),
+            (r"\b(?:executive|management)\s+summary\b", "executive_summary"),
+            (r"\b(?:warehouse|depot)\s+(?:menu|options)\b", "warehouse_menu"),
+            (r"\b(?:product|item)\s+(?:menu|options)\b", "product_menu"),
             (r"\b(?:pending\s+pod|proof of delivery pending)\b", "pending_pod"),
             (r"\b(?:pending\s+pgi|goods issue pending)\b", "pending_pgi"),
             (r"\b(?:pending\s+dn|pending deliveries)\b", "pending_dns"),
@@ -642,7 +780,6 @@ class AIProviderService:
             (r"\bcit(?:y|ies)\s+(?:service|services|dashboard|analytics|performance)\b", "city_dashboard"),
             (r"\bwarehouse\s+(?:service|services|dashboard|analytics|performance)\b", "warehouse_dashboard"),
             (r"\bproduct\s+(?:service|services|dashboard|analytics|performance)\b", "product_dashboard"),
-            (r"\b(?:national kpi|overall performance|executive dashboard)\b", "national_kpi"),
             (r"\b(?:city menu|show city menu|city options)\b", "city_menu"),
         )
         for pattern, intent in rules:
@@ -650,12 +787,12 @@ class AIProviderService:
                 return intent
         return None
 
-    def _get_city_menu_state(self, session_id: str) -> CityMenuSessionState:
-        with self._city_menu_lock:
-            if session_id not in self._city_menu_states:
-                self._city_menu_states[session_id] = CityMenuSessionState()
-                self._city_menu_states[session_id].session_id = session_id
-            return self._city_menu_states[session_id]
+    def _get_menu_state(self, session_id: str) -> MenuSessionState:
+        with self._menu_lock:
+            if session_id not in self._menu_states:
+                self._menu_states[session_id] = MenuSessionState()
+                self._menu_states[session_id].session_id = session_id
+            return self._menu_states[session_id]
 
     def _make_routing_decision(self, message: str, session_id: str = "default") -> RoutingDecision:
         normalized = message.strip()
@@ -664,25 +801,82 @@ class AIProviderService:
         if cached and time.monotonic() - cached[0] < self._cache_ttl:
             return cached[1]
 
-        # Check if we're in city menu mode
-        state = self._get_city_menu_state(session_id)
-        if state.is_active:
-            if normalized.casefold() in {"menu", "main menu", "start", "back", "home", "0"}:
-                state.is_active = False
-                decision = self._decision_for_menu("0", message, reason="Exiting city menu")
-            else:
-                decision = RoutingDecision(
-                    intent="city_menu_input",
-                    confidence=1.0,
-                    service_key="city_menu",
-                    service_file="city_service.py",
-                    method="process_city_menu_input",
-                    entity={"user_input": normalized, "session_id": session_id},
-                    requires_ai=False,
-                    reason="City menu input",
-                    original_message=message,
-                    menu_option="3",
-                )
+        # Check if we're in any menu mode
+        state = self._get_menu_state(session_id)
+        
+        # Handle menu exit
+        if state.is_active and normalized.casefold() in {"menu", "main menu", "start", "back", "home", "0"}:
+            state.is_active = False
+            state.menu_type = "main"
+            decision = self._decision_for_menu("0", message, reason=f"Exiting {state.menu_type} menu")
+            self._cache[cache_key] = (time.monotonic(), decision)
+            return decision
+
+        # If in city menu, route to city service
+        if state.is_active and state.menu_type == "city":
+            decision = RoutingDecision(
+                intent="city_menu_input",
+                confidence=1.0,
+                service_key="city_menu",
+                service_file="city_service.py",
+                method="process_city_menu_input",
+                entity={"user_input": normalized, "session_id": session_id},
+                requires_ai=False,
+                reason="City menu input",
+                original_message=message,
+                menu_option="3",
+            )
+            self._cache[cache_key] = (time.monotonic(), decision)
+            return decision
+
+        # If in warehouse menu, route to warehouse service
+        if state.is_active and state.menu_type == "warehouse":
+            decision = RoutingDecision(
+                intent="warehouse_menu_input",
+                confidence=1.0,
+                service_key="warehouse_menu",
+                service_file="warehouse_service.py",
+                method="process_menu_input",
+                entity={"user_input": normalized, "session_id": session_id},
+                requires_ai=False,
+                reason="Warehouse menu input",
+                original_message=message,
+                menu_option="4",
+            )
+            self._cache[cache_key] = (time.monotonic(), decision)
+            return decision
+
+        # If in product menu, route to product service
+        if state.is_active and state.menu_type == "product":
+            decision = RoutingDecision(
+                intent="product_menu_input",
+                confidence=1.0,
+                service_key="product_menu",
+                service_file="product_service.py",
+                method="process_menu_input",
+                entity={"user_input": normalized, "session_id": session_id},
+                requires_ai=False,
+                reason="Product menu input",
+                original_message=message,
+                menu_option="5",
+            )
+            self._cache[cache_key] = (time.monotonic(), decision)
+            return decision
+
+        # If in national menu, route to national KPI service
+        if state.is_active and state.menu_type == "national":
+            decision = RoutingDecision(
+                intent="national_menu_input",
+                confidence=1.0,
+                service_key="national_kpi_menu",
+                service_file="national_kpi_service.py",
+                method="process_menu_input",
+                entity={"user_input": normalized, "session_id": session_id},
+                requires_ai=False,
+                reason="National KPI menu input",
+                original_message=message,
+                menu_option="6",
+            )
             self._cache[cache_key] = (time.monotonic(), decision)
             return decision
 
@@ -696,34 +890,48 @@ class AIProviderService:
             self._cache[cache_key] = (time.monotonic(), decision)
             return decision
 
-        # 2. EXACT "City Analytics" → Show City Menu (CRITICAL FIX)
-        if normalized.casefold() == "city analytics":
-            state.is_active = True
-            decision = RoutingDecision(
-                intent="city_menu",
-                confidence=1.0,
-                service_key="city_menu",
-                service_file="city_service.py",
-                method="get_city_menu",
-                entity={},
-                requires_ai=False,
-                reason="Exact 'City Analytics' text detected",
-                original_message=message,
-                menu_option="3",
-            )
-            self._cache[cache_key] = (time.monotonic(), decision)
-            return decision
-
-        # 3. EXACT menu keywords → Show main menu
+        # 2. EXACT menu keywords → Show main menu
         if normalized.casefold() in {"menu", "main menu", "options", "help"}:
             decision = self._decision_for_menu("0", message, reason="Menu keyword detected")
             self._cache[cache_key] = (time.monotonic(), decision)
             return decision
 
+        # 3. EXACT domain menu keywords → Show specific domain menu
+        domain_menus = {
+            "city analytics": ("city_menu", "3"),
+            "warehouse analytics": ("warehouse_menu", "4"),
+            "product analytics": ("product_menu", "5"),
+            "national kpi": ("national_kpi_menu", "6"),
+            "city menu": ("city_menu", "3"),
+            "warehouse menu": ("warehouse_menu", "4"),
+            "product menu": ("product_menu", "5"),
+            "national menu": ("national_kpi_menu", "6"),
+        }
+        
+        for keyword, (service_key, menu_option) in domain_menus.items():
+            if normalized.casefold() == keyword or normalized.casefold().startswith(keyword):
+                state.is_active = True
+                state.menu_type = keyword.split()[0]
+                decision = RoutingDecision(
+                    intent=f"{state.menu_type}_menu",
+                    confidence=1.0,
+                    service_key=service_key,
+                    service_file="",  # Will be set by service
+                    method="get_main_menu",
+                    entity={},
+                    requires_ai=False,
+                    reason=f"Exact '{keyword}' text detected",
+                    original_message=message,
+                    menu_option=menu_option,
+                )
+                self._cache[cache_key] = (time.monotonic(), decision)
+                return decision
+
         # 4. Menu Number (0-9) → Direct to specific service (HIGHEST PRIORITY)
         if (number := self._menu_number(normalized)) is not None:
             if number == "3":
                 state.is_active = True
+                state.menu_type = "city"
                 decision = RoutingDecision(
                     intent="city_menu",
                     confidence=1.0,
@@ -735,6 +943,51 @@ class AIProviderService:
                     reason="Menu number 3 selected - City Menu",
                     original_message=message,
                     menu_option="3",
+                )
+            elif number == "4":
+                state.is_active = True
+                state.menu_type = "warehouse"
+                decision = RoutingDecision(
+                    intent="warehouse_menu",
+                    confidence=1.0,
+                    service_key="warehouse_menu",
+                    service_file="warehouse_service.py",
+                    method="get_main_menu",
+                    entity={},
+                    requires_ai=False,
+                    reason="Menu number 4 selected - Warehouse Menu",
+                    original_message=message,
+                    menu_option="4",
+                )
+            elif number == "5":
+                state.is_active = True
+                state.menu_type = "product"
+                decision = RoutingDecision(
+                    intent="product_menu",
+                    confidence=1.0,
+                    service_key="product_menu",
+                    service_file="product_service.py",
+                    method="get_main_menu",
+                    entity={},
+                    requires_ai=False,
+                    reason="Menu number 5 selected - Product Menu",
+                    original_message=message,
+                    menu_option="5",
+                )
+            elif number == "6":
+                state.is_active = True
+                state.menu_type = "national"
+                decision = RoutingDecision(
+                    intent="national_menu",
+                    confidence=1.0,
+                    service_key="national_kpi_menu",
+                    service_file="national_kpi_service.py",
+                    method="get_main_menu",
+                    entity={},
+                    requires_ai=False,
+                    reason="Menu number 6 selected - National KPI Menu",
+                    original_message=message,
+                    menu_option="6",
                 )
             else:
                 decision = self._decision_for_menu(number, message, reason=f"Menu number {number} selected")
@@ -757,35 +1010,31 @@ class AIProviderService:
             self._cache[cache_key] = (time.monotonic(), decision)
             return decision
 
-        # 8. City menu request
-        if normalized.casefold() in {"city menu", "show city menu", "city options"}:
+        # 8. Entity-based routing (NATURAL LANGUAGE)
+        if "national_kpi" in entities or any(kw in normalized.lower() for kw in ["national", "overall", "pakistan", "executive"]):
             state.is_active = True
+            state.menu_type = "national"
             decision = RoutingDecision(
-                intent="city_menu",
-                confidence=1.0,
-                service_key="city_menu",
-                service_file="city_service.py",
-                method="get_city_menu",
+                intent="national_dashboard",
+                confidence=0.9,
+                service_key="national_kpi_menu",
+                service_file="national_kpi_service.py",
+                method="process_whatsapp_query",
                 entity=entities,
                 requires_ai=False,
-                reason="City menu keyword detected",
+                reason="National KPI entity detected",
                 original_message=message,
-                menu_option="3",
+                menu_option="6",
             )
-            self._cache[cache_key] = (time.monotonic(), decision)
-            return decision
-
-        # 9. Entity-based routing (NATURAL LANGUAGE)
-        if "dealer" in entities or "dealer_name" in entities:
+        elif "dealer" in entities or "dealer_name" in entities:
             decision = self._decision_for_menu("2", message, entities, "dealer_dashboard", reason="Dealer entity detected")
         elif "city" in entities or "city_name" in entities:
             city_name = entities.get("city_name") or entities.get("city")
-            # Validate it's a real city name
             if city_name and city_name.lower() in [c.lower() for c in CITY_NAMES]:
                 decision = self._decision_for_menu("3", message, entities, "city_dashboard", reason="Valid city name detected")
             else:
-                # If it's just "City" without a valid name, show menu
                 state.is_active = True
+                state.menu_type = "city"
                 decision = RoutingDecision(
                     intent="city_menu",
                     confidence=0.8,
@@ -799,11 +1048,28 @@ class AIProviderService:
                     menu_option="3",
                 )
         elif "warehouse" in entities:
-            decision = self._decision_for_menu("4", message, entities, "warehouse_dashboard", reason="Warehouse entity detected")
+            warehouse_name = entities.get("warehouse")
+            if warehouse_name and warehouse_name.lower() in [w.lower() for w in WAREHOUSE_NAMES]:
+                decision = self._decision_for_menu("4", message, entities, "warehouse_dashboard", reason="Warehouse entity detected")
+            else:
+                state.is_active = True
+                state.menu_type = "warehouse"
+                decision = RoutingDecision(
+                    intent="warehouse_menu",
+                    confidence=0.8,
+                    service_key="warehouse_menu",
+                    service_file="warehouse_service.py",
+                    method="get_main_menu",
+                    entity=entities,
+                    requires_ai=False,
+                    reason="Warehouse keyword without valid warehouse name - showing menu",
+                    original_message=message,
+                    menu_option="4",
+                )
         elif "product" in entities:
             decision = self._decision_for_menu("5", message, entities, "product_dashboard", reason="Product entity detected")
         else:
-            # 10. Semantic routing fallback
+            # 9. Semantic routing fallback
             intent = self._rule_intent(normalized)
             confidence = 1.0 if intent else 0.0
             if intent is None:
@@ -812,7 +1078,7 @@ class AIProviderService:
             if menu_option and confidence >= 0.30:
                 decision = self._decision_for_menu(menu_option, message, entities, intent, confidence, "Semantic route matched")
             else:
-                # 11. AI Query as last resort
+                # 10. AI Query as last resort
                 decision = self._decision_for_menu("9", message, entities or {"message": message}, "general_ai", max(confidence, 0.30), "AI fallback")
 
         self._cache[cache_key] = (time.monotonic(), decision)
@@ -843,8 +1109,9 @@ class AIProviderService:
 
         # Menu Service
         if decision.service_key == "menu_service":
-            state = self._get_city_menu_state(sender)
+            state = self._get_menu_state(sender)
             state.is_active = False
+            state.menu_type = "main"
             return get_main_menu()
 
         # Greeting
@@ -859,9 +1126,11 @@ class AIProviderService:
             service = self.dealer_service
         elif decision.service_key in ["city_menu", "city_service"]:
             service = self.city_service
-        elif decision.service_key == "product_service":
+        elif decision.service_key in ["warehouse_menu", "warehouse_service"]:
+            service = self.warehouse_service
+        elif decision.service_key in ["product_menu", "product_service"]:
             service = self.product_service
-        elif decision.service_key == "national_kpi_service":
+        elif decision.service_key in ["national_kpi_menu", "national_kpi_service"]:
             service = self.national_kpi_service
         elif decision.service_key == "groq_service":
             service = self.groq_service
@@ -871,6 +1140,7 @@ class AIProviderService:
             return get_invalid_selection_message()
 
         try:
+            # Get the method from service
             method = getattr(service, decision.method)
             
             # =====================================================================================================================
@@ -881,25 +1151,97 @@ class AIProviderService:
                     # Show the full City Analytics Menu
                     if hasattr(service, "get_city_menu"):
                         menu = service.get_city_menu()
-                        # Ensure menu is displayed
                         if not menu or menu.strip() == "":
-                            return "🏙️ City Analytics Menu\n\n0. Main Menu\n1. City Dashboard\n2. City Revenue\n3. City Units\n4. City Pending\n5. City Delivery\n6. Compare Cities\n7. City Rankings\n8. Top Products\n9. Business Score\n10. Distance Info\n11. Growth Analytics\n12. City Summary\n99. Back to Main"
+                            return self._get_city_menu_default()
                         return menu
-                    return "🏙️ City Analytics Menu\n\n0. Main Menu\n1. City Dashboard\n2. City Revenue\n3. City Units\n4. City Pending\n5. City Delivery\n6. Compare Cities\n7. City Rankings\n8. Top Products\n9. Business Score\n10. Distance Info\n11. Growth Analytics\n12. City Summary\n99. Back to Main"
+                    return self._get_city_menu_default()
                 else:
-                    # Process city menu input (sub-menu navigation)
+                    # Process city menu input
                     user_input = decision.entity.get("user_input", message)
                     session_id = decision.entity.get("session_id", sender)
                     if hasattr(service, "process_city_menu_input"):
                         result = service.process_city_menu_input(session_id, user_input)
                         if result.get("exit_menu", False):
-                            state = self._get_city_menu_state(sender)
+                            state = self._get_menu_state(sender)
                             state.is_active = False
+                            state.menu_type = "main"
                         return result.get("response", get_main_menu())
-                    return service.get_city_menu() if hasattr(service, "get_city_menu") else "🏙️ City Analytics Menu\n\n0. Main Menu"
+                    return service.get_city_menu() if hasattr(service, "get_city_menu") else self._get_city_menu_default()
 
             # =====================================================================================================================
-            # DN ANALYSIS (dn_analysis.py) - Menu 1, 4, 7, 8
+            # WAREHOUSE MENU (warehouse_service.py) - Press 4 or type "warehouse menu"
+            # =====================================================================================================================
+            elif decision.service_key == "warehouse_menu":
+                if decision.method == "get_main_menu":
+                    if hasattr(service, "get_main_menu"):
+                        menu = service.get_main_menu()
+                        if not menu or menu.strip() == "":
+                            return self._get_warehouse_menu_default()
+                        return menu
+                    return self._get_warehouse_menu_default()
+                else:
+                    # Process warehouse menu input
+                    user_input = decision.entity.get("user_input", message)
+                    session_id = decision.entity.get("session_id", sender)
+                    if hasattr(service, "process_menu_input"):
+                        result = service.process_menu_input(session_id, user_input)
+                        if result.get("exit_menu", False):
+                            state = self._get_menu_state(sender)
+                            state.is_active = False
+                            state.menu_type = "main"
+                        return result.get("response", get_main_menu())
+                    return service.get_main_menu() if hasattr(service, "get_main_menu") else self._get_warehouse_menu_default()
+
+            # =====================================================================================================================
+            # PRODUCT MENU (product_service.py) - Press 5 or type "product menu"
+            # =====================================================================================================================
+            elif decision.service_key == "product_menu":
+                if decision.method == "get_main_menu":
+                    if hasattr(service, "get_main_menu"):
+                        menu = service.get_main_menu()
+                        if not menu or menu.strip() == "":
+                            return self._get_product_menu_default()
+                        return menu
+                    return self._get_product_menu_default()
+                else:
+                    # Process product menu input
+                    user_input = decision.entity.get("user_input", message)
+                    session_id = decision.entity.get("session_id", sender)
+                    if hasattr(service, "process_menu_input"):
+                        result = service.process_menu_input(session_id, user_input)
+                        if result.get("exit_menu", False):
+                            state = self._get_menu_state(sender)
+                            state.is_active = False
+                            state.menu_type = "main"
+                        return result.get("response", get_main_menu())
+                    return service.get_main_menu() if hasattr(service, "get_main_menu") else self._get_product_menu_default()
+
+            # =====================================================================================================================
+            # NATIONAL KPI MENU (national_kpi_service.py) - Press 6 or type "national kpi"
+            # =====================================================================================================================
+            elif decision.service_key == "national_kpi_menu":
+                if decision.method == "get_main_menu":
+                    if hasattr(service, "get_main_menu"):
+                        menu = service.get_main_menu()
+                        if not menu or menu.strip() == "":
+                            return self._get_national_menu_default()
+                        return menu
+                    return self._get_national_menu_default()
+                else:
+                    # Process national KPI menu input
+                    user_input = decision.entity.get("user_input", message)
+                    session_id = decision.entity.get("session_id", sender)
+                    if hasattr(service, "process_menu_input"):
+                        result = service.process_menu_input(session_id, user_input)
+                        if result.get("exit_menu", False):
+                            state = self._get_menu_state(sender)
+                            state.is_active = False
+                            state.menu_type = "main"
+                        return result.get("response", get_main_menu())
+                    return service.get_main_menu() if hasattr(service, "get_main_menu") else self._get_national_menu_default()
+
+            # =====================================================================================================================
+            # DN ANALYSIS (dn_analysis.py) - Menu 1, 7, 8
             # =====================================================================================================================
             elif decision.service_key == "dn_analysis":
                 if decision.method == "get_dn_dashboard":
@@ -914,9 +1256,7 @@ class AIProviderService:
                     if not warehouse:
                         return "⚠️ Please provide a warehouse name."
                     result = method(warehouse)
-                elif decision.method == "get_pending_dns":
-                    result = method()
-                elif decision.method == "get_top_performers":
+                elif decision.method in ["get_pending_dns", "get_top_performers"]:
                     result = method()
                 else:
                     result = method(decision.entity)
@@ -950,21 +1290,37 @@ class AIProviderService:
                     return _extract_whatsapp_message(result)
 
             # =====================================================================================================================
-            # PRODUCT SERVICE (product_service.py) - Menu 5
+            # WAREHOUSE SERVICE (warehouse_service.py) - Natural Language Queries
             # =====================================================================================================================
-            elif decision.service_key == "product_service":
-                product = decision.entity.get("product")
-                if not product:
-                    return "⚠️ Please provide a product name or code."
-                result = await _resolve(method(product))
-                return _extract_whatsapp_message(result)
+            elif decision.service_key == "warehouse_service":
+                if hasattr(service, "process_whatsapp_query"):
+                    result = service.process_whatsapp_query(message, sender)
+                    if isinstance(result, str):
+                        return result
+                    if isinstance(result, dict):
+                        return _extract_whatsapp_message(result)
 
             # =====================================================================================================================
-            # NATIONAL KPI (national_kpi_service.py) - Menu 6
+            # PRODUCT SERVICE (product_service.py) - Natural Language Queries
+            # =====================================================================================================================
+            elif decision.service_key == "product_service":
+                if hasattr(service, "process_whatsapp_query"):
+                    result = service.process_whatsapp_query(message, sender)
+                    if isinstance(result, str):
+                        return result
+                    if isinstance(result, dict):
+                        return _extract_whatsapp_message(result)
+
+            # =====================================================================================================================
+            # NATIONAL KPI SERVICE (national_kpi_service.py) - Natural Language Queries
             # =====================================================================================================================
             elif decision.service_key == "national_kpi_service":
-                result = await _resolve(method())
-                return _extract_whatsapp_message(result)
+                if hasattr(service, "process_whatsapp_query"):
+                    result = service.process_whatsapp_query(message, sender)
+                    if isinstance(result, str):
+                        return result
+                    if isinstance(result, dict):
+                        return _extract_whatsapp_message(result)
 
             # =====================================================================================================================
             # AI QUERY (groq_service.py) - Menu 9
@@ -995,8 +1351,126 @@ class AIProviderService:
                 return f"⚠️ Dealer service error: {str(e)[:100]}\n\nPlease check the dealer name and try again."
             elif decision.service_key in ["city_service", "city_menu"]:
                 return f"⚠️ City service error: {str(e)[:100]}\n\nPlease try again or type 'city menu' for options."
+            elif decision.service_key in ["warehouse_service", "warehouse_menu"]:
+                return f"⚠️ Warehouse service error: {str(e)[:100]}\n\nPlease try again or type 'warehouse menu' for options."
+            elif decision.service_key in ["product_service", "product_menu"]:
+                return f"⚠️ Product service error: {str(e)[:100]}\n\nPlease try again or type 'product menu' for options."
+            elif decision.service_key in ["national_kpi_service", "national_kpi_menu"]:
+                return f"⚠️ National KPI service error: {str(e)[:100]}\n\nPlease try again or type 'national kpi' for options."
             
             return f"⚠️ {MENU_OPTIONS[decision.menu_option or '0']['name']} is temporarily unavailable. Please try again."
+
+    # =====================================================================================================================
+    # DEFAULT MENU HELPERS
+    # =====================================================================================================================
+
+    def _get_city_menu_default(self) -> str:
+        return "\n".join([
+            "🏙️ *CITY ANALYTICS MENU*",
+            "",
+            "0. Main Menu",
+            "1. City Dashboard",
+            "2. City Revenue",
+            "3. City Units",
+            "4. City Pending",
+            "5. City Delivery",
+            "6. Compare Cities",
+            "7. City Rankings",
+            "8. Top Products",
+            "9. Business Score",
+            "10. Distance Info",
+            "11. Growth Analytics",
+            "12. City Summary",
+            "99. Back to Main",
+            "",
+            "Reply with a number or city name:"
+        ])
+
+    def _get_warehouse_menu_default(self) -> str:
+        return "\n".join([
+            "🏭 *WAREHOUSE ANALYTICS MENU*",
+            "",
+            "0. Main Menu",
+            "1. Warehouse Dashboard",
+            "2. Warehouse Inventory",
+            "3. Warehouse Revenue",
+            "4. Warehouse Units",
+            "5. Pending DN",
+            "6. Pending PGI",
+            "7. Pending POD",
+            "8. Delivery Performance",
+            "9. Warehouse Ranking",
+            "10. Warehouse Comparison",
+            "11. Top Products",
+            "12. Dealer Distribution",
+            "13. City Distribution",
+            "14. Storage Utilization",
+            "15. Transit Analysis",
+            "16. Delivery Aging",
+            "17. Warehouse KPIs",
+            "18. Warehouse AI Summary",
+            "99. Back to Main",
+            "",
+            "Reply with a number or warehouse name:"
+        ])
+
+    def _get_product_menu_default(self) -> str:
+        return "\n".join([
+            "📦 *PRODUCT ANALYTICS MENU*",
+            "",
+            "0. Main Menu",
+            "1. Product Dashboard",
+            "2. Product Revenue",
+            "3. Product Units",
+            "4. Product Dealers",
+            "5. Product Warehouses",
+            "6. Product Cities",
+            "7. Pending DN",
+            "8. Pending PGI",
+            "9. Pending POD",
+            "10. Product Comparison",
+            "11. Product Ranking",
+            "12. Monthly Trend",
+            "13. Executive Summary",
+            "14. AI Insights",
+            "15. Recommendations",
+            "16. Product Life Cycle",
+            "17. Product Performance",
+            "18. Smart Search",
+            "99. Back to Main",
+            "",
+            "Reply with a number or product name:"
+        ])
+
+    def _get_national_menu_default(self) -> str:
+        return "\n".join([
+            "🇵🇰 *NATIONAL LOGISTICS INTELLIGENCE MENU*",
+            "",
+            "0. Main Menu",
+            "1. National Dashboard",
+            "2. Warehouse Dashboard",
+            "3. Warehouse Ranking",
+            "4. Warehouse Comparison",
+            "5. National Revenue",
+            "6. National Units",
+            "7. National Delivery",
+            "8. Pending Dashboard",
+            "9. POD Dashboard",
+            "10. PGI Dashboard",
+            "11. Dealer Coverage",
+            "12. City Analytics",
+            "13. Product Distribution",
+            "14. SLA Compliance",
+            "15. Executive Summary",
+            "16. AI Insights",
+            "17. Recommendations",
+            "18. National Health Score",
+            "19. Monthly Trend",
+            "20. National Forecast",
+            "99. Back to Main",
+            "",
+            "Reply with a number or command:"
+        ])
 
 
 # =====================================================================================================================
