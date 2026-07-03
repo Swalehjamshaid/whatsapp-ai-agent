@@ -1,13 +1,14 @@
 # ==========================================================
-# WhatsApp AI Agent - Enterprise Dockerfile
-# Optimized for Railway
+# WhatsApp AI Agent - Enterprise Production Dockerfile
+# Railway Optimized
 # Python 3.12
+# Version 4.0
 # ==========================================================
 
 FROM python:3.12-slim
 
 # ==========================================================
-# Environment
+# Environment Variables
 # ==========================================================
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -24,7 +25,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # ==========================================================
-# Install Linux Packages
+# Install System Dependencies
 # ==========================================================
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -43,10 +44,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python -m pip install --upgrade pip setuptools wheel
 
 # ==========================================================
-# Copy only dependency files
+# Copy ONLY dependency files first
+# (This preserves Docker cache)
 # ==========================================================
 
-COPY requirements/ ./requirements/
+COPY requirements*.txt ./
 
 # ==========================================================
 # Install Python dependencies
@@ -55,10 +57,10 @@ COPY requirements/ ./requirements/
 RUN pip install \
     --prefer-binary \
     --no-cache-dir \
-    -r requirements/requirements-all.txt
+    -r requirements-all.txt
 
 # ==========================================================
-# Copy application
+# Copy Application
 # ==========================================================
 
 COPY . .
