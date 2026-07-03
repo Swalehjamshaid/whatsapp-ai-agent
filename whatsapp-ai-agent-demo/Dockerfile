@@ -1,6 +1,6 @@
-
 # ==========================================================
-# WhatsApp AI Agent - Production Dockerfile
+# WhatsApp AI Agent - Enterprise Dockerfile
+# Version : 3.0
 # Optimized for Railway
 # Python 3.12
 # ==========================================================
@@ -13,8 +13,11 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONFAULTHANDLER=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_PROGRESS_BAR=off
 
 # ==========================================================
 # Working Directory
@@ -23,39 +26,55 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # ==========================================================
-# System Packages
+# Install Linux Packages
 # ==========================================================
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     gcc \
     g++ \
-    build-essential \
-    libpq-dev \
     curl \
+    git \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # ==========================================================
 # Upgrade pip
 # ==========================================================
 
-RUN python -m pip install --upgrade pip setuptools wheel
+RUN python -m pip install --upgrade \
+    pip \
+    setuptools \
+    wheel
+
+# ==========================================================
+# Copy Requirements First
+# (Improves Docker Layer Cache)
+# ==========================================================
+
+COPY requirements/ ./requirements/
 
 # ==========================================================
 # Install Python Dependencies
 # ==========================================================
 
-COPY requirements.txt .
-
 RUN pip install \
     --prefer-binary \
+    --only-binary=:all: \
     --no-cache-dir \
-    -r requirements.txt
+    -r requirements/requirements-all.txt
 
 # ==========================================================
 # Copy Application
 # ==========================================================
 
-COPY . .
+COPY app ./app
+
+COPY railway.toml ./
+COPY README.md ./
+
+# Copy other project files if they exist
+COPY migrate_upload_batch_id.py ./
 
 # ==========================================================
 # Expose Port
@@ -67,11 +86,15 @@ EXPOSE 8000
 # Health Check
 # ==========================================================
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
+HEALTHCHECK \
+    --interval=30s \
+    --timeout=10s \
+    --start-period=30s \
+    --retries=3 \
+CMD curl -fs http://localhost:${PORT:-8000}/health || exit 1
 
 # ==========================================================
-# Start FastAPI
+# Start Application
 # ==========================================================
 
 CMD ["sh","-c","uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
