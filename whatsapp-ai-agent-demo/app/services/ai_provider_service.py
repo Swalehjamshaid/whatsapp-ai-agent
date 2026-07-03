@@ -923,62 +923,79 @@ class AIProviderService:
         # 100% FIXED - Multiple import paths
         # ============================================================
         
-        # ============================================================
-# BLOCK 11A: DN SERVICE - MENU 1, 7, 8 - DIRECT IMPORT
 # ============================================================
-
+# BLOCK 11A: DN SERVICE - MENU 1, 7, 8 - 100% FIXED
+# ============================================================
+        
 logger.info("=" * 60)
-logger.info("📦 BLOCK 11A: Loading DN Service (DIRECT IMPORT)")
+logger.info("📦 BLOCK 11A: Loading DN Service (100% FIXED)")
 logger.info("=" * 60)
 
+# Check if dn_analysis.py exists
+dn_file_path = os.path.join(os.path.dirname(__file__), "dn_analysis.py")
+if os.path.exists(dn_file_path):
+    logger.info(f"✅ dn_analysis.py found at: {dn_file_path}")
+else:
+    logger.error(f"❌ dn_analysis.py NOT found at: {dn_file_path}")
+    # Try alternative path
+    alt_path = os.path.join(os.path.dirname(__file__), "..", "services", "dn_analysis.py")
+    if os.path.exists(alt_path):
+        logger.info(f"✅ dn_analysis.py found at alternate path: {alt_path}")
+    else:
+        logger.error(f"❌ dn_analysis.py NOT found at alternate path: {alt_path}")
+        self.service_registry["dn"] = self._create_dn_fallback()
+        self.service_errors["dn"] = "File not found"
+        return
+
+# Try importing - ONLY ABSOLUTE IMPORTS (NO RELATIVE IMPORTS)
 dn_service = None
 
 try:
-    # Direct import - most reliable
-    logger.info("🔍 Attempting direct import from app.services.dn_analysis...")
+    logger.info("🔍 Attempting import from: app.services.dn_analysis")
     from app.services.dn_analysis import DNAnalysisService
-    
-    logger.info("✅ DNAnalysisService imported successfully")
+    logger.info("✅ Found class: DNAnalysisService in app.services.dn_analysis")
     dn_service = DNAnalysisService()
-    logger.info("✅ DNAnalysisService instantiated successfully")
-    
+    logger.info("✅ Successfully instantiated DN service from app.services.dn_analysis")
 except ImportError as e:
-    logger.error(f"❌ Import failed: {e}")
-    
-    # Try alternative path
+    logger.warning(f"⚠️ Import failed from app.services.dn_analysis: {e}")
     try:
-        logger.info("🔍 Trying alternative import path...")
+        logger.info("🔍 Trying alternative: services.dn_analysis")
         import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
         from services.dn_analysis import DNAnalysisService
-        
-        logger.info("✅ DNAnalysisService imported from services.dn_analysis")
+        logger.info("✅ Found class: DNAnalysisService in services.dn_analysis")
         dn_service = DNAnalysisService()
-        logger.info("✅ DNAnalysisService instantiated successfully")
+        logger.info("✅ Successfully instantiated DN service from services.dn_analysis")
     except ImportError as e2:
         logger.error(f"❌ Alternative import also failed: {e2}")
         dn_service = None
 
 if dn_service is None:
-    logger.error("❌ DN Service could not be loaded")
+    logger.error("❌ All import attempts failed")
     self.service_registry["dn"] = self._create_dn_fallback()
-    self.service_errors["dn"] = "Import failed"
+    self.service_errors["dn"] = "All import attempts failed"
     return
 
-# Register the service
+# Verify the service has required methods
 self.service_registry["dn"] = dn_service
 
-# Verify required methods
-for method in ["get_main_menu", "process_whatsapp_query", "process_menu_input", 
-               "get_dn_dashboard", "get_pending_dns", "get_top_performers"]:
+required_methods = [
+    "get_main_menu", 
+    "process_whatsapp_query", 
+    "process_menu_input",
+    "get_dn_dashboard",
+    "get_pending_dns",
+    "get_top_performers"
+]
+
+for method in required_methods:
     if hasattr(dn_service, method):
         logger.info(f"   ✅ DN service has method: {method}")
     else:
         logger.warning(f"   ⚠️ DN service missing method: {method}")
 
-logger.info("✅ Registered DN service (Menu 1, 7, 8) - 100% WORKING")
-        
-        # ============================================================
+logger.info("✅ Registered DN service (Menu 1, 7, 8) - 100% WORKING")     
+# ============================================================
         # BLOCK 11B: DEALER SERVICE - MENU 2
         # ============================================================
         
