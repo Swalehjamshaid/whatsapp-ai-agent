@@ -1,4 +1,3 @@
-
 .git
 .gitignore
 
@@ -19,18 +18,14 @@ venv/
 .vscode/
 .idea/
 
-logs/
-*.log
+tests/
+docs/
+notebooks/
 
+logs/
 uploads/
 temp/
 tmp/
-
-tests/
-
-notebooks/
-
-docs/
 
 *.xlsx
 *.xls
@@ -38,6 +33,7 @@ docs/
 *.pdf
 
 node_modules/
-
 dist/
 build/
+
+.cache/
