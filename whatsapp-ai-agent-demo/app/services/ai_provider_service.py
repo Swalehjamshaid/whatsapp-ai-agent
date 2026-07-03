@@ -1,17 +1,17 @@
 """
 File: app/services/ai_provider_service.py
-Version: 32.0 - ENTERPRISE AI ROUTER WITH FIXES
+Version: 33.0 - ENTERPRISE AI ROUTER WITH DOMAIN MENU INTEGRATION
 
-CRITICAL FIXES:
-1. ✅ Prometheus Duplicate Metrics - Singleton registration
-2. ✅ Double Initialization Prevention - Thread-safe singleton
-3. ✅ Lazy Loading - Load only when needed
-4. ✅ Intelligent Routing Pipeline
-5. ✅ Service Registry Pattern
-6. ✅ Analytics First Routing
-7. ✅ Context Menu Management
-8. ✅ Error Recovery
-9. ✅ 4096 Character Split for WhatsApp
+Single entry point for the WhatsApp AI agent with full domain menu support.
+Each domain service (DN, Dealer, City, Warehouse, Product, National KPI)
+has its own complete menu system. The router delegates to these services
+and handles natural language queries, context management, and AI fallback.
+
+ROUTING FLOW:
+1. Menu Number (0-9) → Route to domain menu
+2. Natural Language → Intent + Entity → Route to domain service
+3. Context → Maintain session state
+4. AI Fallback → Only when needed
 
 Status: ENTERPRISE READY
 """
@@ -33,6 +33,8 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Union, Set, Tuple, Callable
 from functools import lru_cache, wraps
 
+from cachetools import TTLCache
+
 logger = logging.getLogger(__name__)
 
 # =====================================================================================================================
@@ -45,7 +47,6 @@ CACHE_TTL = int(os.getenv("ROUTER_CACHE_TTL", "300"))
 ENABLE_AI_FALLBACK = os.getenv("ENABLE_AI_FALLBACK", "true").lower() == "true"
 DEFAULT_LLM = os.getenv("DEFAULT_LLM", "groq")
 ENABLE_REDIS = os.getenv("ENABLE_REDIS", "false").lower() == "true"
-ENABLE_RATE_LIMITING = os.getenv("ENABLE_RATE_LIMITING", "true").lower() == "true"
 ENABLE_MONITORING = os.getenv("ENABLE_MONITORING", "true").lower() == "true"
 
 # =====================================================================================================================
@@ -167,165 +168,6 @@ class LazyLoader:
         return cls._instances["flashrank"]
 
 # =====================================================================================================================
-# PROMETHEUS METRICS - SINGLETON REGISTRATION
-# =====================================================================================================================
-
-class MetricsRegistry:
-    """Singleton metrics registry to prevent duplicate registration"""
-    
-    _instance = None
-    _lock = threading.Lock()
-    _initialized = False
-    
-    def __new__(cls):
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-        return cls._instance
-    
-    def __init__(self):
-        if MetricsRegistry._initialized:
-            return
-        
-        self._initialized = True
-        self._metrics = {}
-        self._enabled = False
-        
-        try:
-            from prometheus_client import Counter, Histogram, Gauge, Summary, Info, REGISTRY
-            self.REGISTRY = REGISTRY
-            self.Counter = Counter
-            self.Histogram = Histogram
-            self.Gauge = Gauge
-            self.Summary = Summary
-            self.Info = Info
-            self._enabled = True
-            
-            # Initialize metrics with duplicate protection
-            self._init_metrics()
-            logger.info("✅ Prometheus metrics initialized (singleton)")
-        except ImportError:
-            logger.info("ℹ️ Prometheus not available")
-    
-    def _init_metrics(self):
-        """Initialize metrics with duplicate protection"""
-        if not self._enabled:
-            return
-        
-        # Check if metrics already exist in registry
-        existing_metrics = set(self.REGISTRY._names_to_collectors.keys())
-        
-        # Request Counter
-        if "ai_provider_requests_total" not in existing_metrics:
-            self._metrics["requests"] = self.Counter(
-                'ai_provider_requests_total',
-                'Total number of requests',
-                ['service', 'intent', 'status']
-            )
-        else:
-            self._metrics["requests"] = self.REGISTRY._names_to_collectors["ai_provider_requests_total"]
-        
-        # Request Duration Histogram
-        if "ai_provider_request_duration_seconds" not in existing_metrics:
-            self._metrics["duration"] = self.Histogram(
-                'ai_provider_request_duration_seconds',
-                'Request duration in seconds',
-                ['service', 'intent'],
-                buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
-            )
-        else:
-            self._metrics["duration"] = self.REGISTRY._names_to_collectors["ai_provider_request_duration_seconds"]
-        
-        # Cache Hits
-        if "ai_provider_cache_hits_total" not in existing_metrics:
-            self._metrics["cache_hits"] = self.Counter(
-                'ai_provider_cache_hits_total',
-                'Total cache hits',
-                ['cache_type']
-            )
-        else:
-            self._metrics["cache_hits"] = self.REGISTRY._names_to_collectors["ai_provider_cache_hits_total"]
-        
-        # Cache Misses
-        if "ai_provider_cache_misses_total" not in existing_metrics:
-            self._metrics["cache_misses"] = self.Counter(
-                'ai_provider_cache_misses_total',
-                'Total cache misses',
-                ['cache_type']
-            )
-        else:
-            self._metrics["cache_misses"] = self.REGISTRY._names_to_collectors["ai_provider_cache_misses_total"]
-        
-        # Active Sessions
-        if "ai_provider_active_sessions" not in existing_metrics:
-            self._metrics["sessions"] = self.Gauge(
-                'ai_provider_active_sessions',
-                'Number of active sessions'
-            )
-        else:
-            self._metrics["sessions"] = self.REGISTRY._names_to_collectors["ai_provider_active_sessions"]
-        
-        # Routing Confidence
-        if "ai_provider_routing_confidence" not in existing_metrics:
-            self._metrics["confidence"] = self.Histogram(
-                'ai_provider_routing_confidence',
-                'Routing confidence scores',
-                buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
-            )
-        else:
-            self._metrics["confidence"] = self.REGISTRY._names_to_collectors["ai_provider_routing_confidence"]
-        
-        # Errors
-        if "ai_provider_errors_total" not in existing_metrics:
-            self._metrics["errors"] = self.Counter(
-                'ai_provider_errors_total',
-                'Total errors',
-                ['service', 'error_type']
-            )
-        else:
-            self._metrics["errors"] = self.REGISTRY._names_to_collectors["ai_provider_errors_total"]
-        
-        # AI Calls
-        if "ai_provider_ai_calls_total" not in existing_metrics:
-            self._metrics["ai_calls"] = self.Counter(
-                'ai_provider_ai_calls_total',
-                'Total AI calls',
-                ['provider', 'model']
-            )
-        else:
-            self._metrics["ai_calls"] = self.REGISTRY._names_to_collectors["ai_provider_ai_calls_total"]
-        
-        # Database Time
-        if "ai_provider_database_time_seconds" not in existing_metrics:
-            self._metrics["db_time"] = self.Histogram(
-                'ai_provider_database_time_seconds',
-                'Database query time in seconds',
-                ['service'],
-                buckets=(0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0)
-            )
-        else:
-            self._metrics["db_time"] = self.REGISTRY._names_to_collectors["ai_provider_database_time_seconds"]
-        
-        # Response Size
-        if "ai_provider_response_size_bytes" not in existing_metrics:
-            self._metrics["response_size"] = self.Histogram(
-                'ai_provider_response_size_bytes',
-                'Response size in bytes',
-                buckets=(100, 500, 1000, 2000, 4000, 8000, 16000)
-            )
-        else:
-            self._metrics["response_size"] = self.REGISTRY._names_to_collectors["ai_provider_response_size_bytes"]
-    
-    def get(self, name: str):
-        """Get a metric by name"""
-        return self._metrics.get(name)
-    
-    def is_enabled(self) -> bool:
-        """Check if monitoring is enabled"""
-        return self._enabled
-
-# =====================================================================================================================
 # ENUMS
 # =====================================================================================================================
 
@@ -433,6 +275,143 @@ class SessionContext:
     last_activity: datetime = field(default_factory=datetime.now)
 
 # =====================================================================================================================
+# PROMETHEUS METRICS - SINGLETON REGISTRATION
+# =====================================================================================================================
+
+class MetricsRegistry:
+    """Singleton metrics registry to prevent duplicate registration"""
+    
+    _instance = None
+    _lock = threading.Lock()
+    _initialized = False
+    
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def __init__(self):
+        if MetricsRegistry._initialized:
+            return
+        
+        self._initialized = True
+        self._metrics = {}
+        self._enabled = False
+        
+        try:
+            from prometheus_client import Counter, Histogram, Gauge, Summary, Info, REGISTRY
+            self.REGISTRY = REGISTRY
+            self.Counter = Counter
+            self.Histogram = Histogram
+            self.Gauge = Gauge
+            self.Summary = Summary
+            self.Info = Info
+            self._enabled = True
+            
+            # Initialize metrics with duplicate protection
+            self._init_metrics()
+            logger.info("✅ Prometheus metrics initialized (singleton)")
+        except ImportError:
+            logger.info("ℹ️ Prometheus not available")
+    
+    def _init_metrics(self):
+        """Initialize metrics with duplicate protection"""
+        if not self._enabled:
+            return
+        
+        existing_metrics = set(self.REGISTRY._names_to_collectors.keys())
+        
+        # Request Counter
+        if "ai_provider_requests_total" not in existing_metrics:
+            self._metrics["requests"] = self.Counter(
+                'ai_provider_requests_total',
+                'Total number of requests',
+                ['service', 'intent', 'status']
+            )
+        else:
+            self._metrics["requests"] = self.REGISTRY._names_to_collectors["ai_provider_requests_total"]
+        
+        # Request Duration
+        if "ai_provider_request_duration_seconds" not in existing_metrics:
+            self._metrics["duration"] = self.Histogram(
+                'ai_provider_request_duration_seconds',
+                'Request duration in seconds',
+                ['service', 'intent'],
+                buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
+            )
+        else:
+            self._metrics["duration"] = self.REGISTRY._names_to_collectors["ai_provider_request_duration_seconds"]
+        
+        # Cache Hits
+        if "ai_provider_cache_hits_total" not in existing_metrics:
+            self._metrics["cache_hits"] = self.Counter(
+                'ai_provider_cache_hits_total',
+                'Total cache hits',
+                ['cache_type']
+            )
+        else:
+            self._metrics["cache_hits"] = self.REGISTRY._names_to_collectors["ai_provider_cache_hits_total"]
+        
+        # Cache Misses
+        if "ai_provider_cache_misses_total" not in existing_metrics:
+            self._metrics["cache_misses"] = self.Counter(
+                'ai_provider_cache_misses_total',
+                'Total cache misses',
+                ['cache_type']
+            )
+        else:
+            self._metrics["cache_misses"] = self.REGISTRY._names_to_collectors["ai_provider_cache_misses_total"]
+        
+        # Active Sessions
+        if "ai_provider_active_sessions" not in existing_metrics:
+            self._metrics["sessions"] = self.Gauge(
+                'ai_provider_active_sessions',
+                'Number of active sessions'
+            )
+        else:
+            self._metrics["sessions"] = self.REGISTRY._names_to_collectors["ai_provider_active_sessions"]
+        
+        # Routing Confidence
+        if "ai_provider_routing_confidence" not in existing_metrics:
+            self._metrics["confidence"] = self.Histogram(
+                'ai_provider_routing_confidence',
+                'Routing confidence scores',
+                buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+            )
+        else:
+            self._metrics["confidence"] = self.REGISTRY._names_to_collectors["ai_provider_routing_confidence"]
+        
+        # Errors
+        if "ai_provider_errors_total" not in existing_metrics:
+            self._metrics["errors"] = self.Counter(
+                'ai_provider_errors_total',
+                'Total errors',
+                ['service', 'error_type']
+            )
+        else:
+            self._metrics["errors"] = self.REGISTRY._names_to_collectors["ai_provider_errors_total"]
+        
+        # AI Calls
+        if "ai_provider_ai_calls_total" not in existing_metrics:
+            self._metrics["ai_calls"] = self.Counter(
+                'ai_provider_ai_calls_total',
+                'Total AI calls',
+                ['provider', 'model']
+            )
+        else:
+            self._metrics["ai_calls"] = self.REGISTRY._names_to_collectors["ai_provider_ai_calls_total"]
+    
+    def get(self, name: str):
+        """Get a metric by name"""
+        return self._metrics.get(name)
+    
+    def is_enabled(self) -> bool:
+        """Check if monitoring is enabled"""
+        return self._enabled
+
+# =====================================================================================================================
 # CONTEXT MANAGER
 # =====================================================================================================================
 
@@ -468,14 +447,6 @@ class ContextManager:
                 self._contexts[session_id] = SessionContext(session_id=session_id)
             context = self._contexts[session_id]
             context.last_activity = datetime.now()
-            
-            # Update metrics
-            metrics = MetricsRegistry()
-            if metrics.is_enabled():
-                sessions = metrics.get("sessions")
-                if sessions:
-                    sessions.set(len(self._contexts))
-            
             return context
     
     def update_context(self, session_id: str, updates: Dict[str, Any]) -> None:
@@ -503,7 +474,6 @@ class ContextManager:
         if context.current_city:
             suggestions.append(f"Revenue in {context.current_city}")
             suggestions.append(f"Pending in {context.current_city}")
-            suggestions.append(f"Compare {context.current_city} with another")
         
         if context.current_dealer:
             suggestions.append(f"Compare {context.current_dealer} with another")
@@ -559,125 +529,59 @@ class IntentEngine:
         
         self._initialized = True
         
-        # Intent patterns with priority
+        # Intent patterns
         self.INTENT_PATTERNS = {
             IntentType.MENU: {
-                "patterns": [
-                    r"^(?:menu|help|options|show menu|main menu)$",
-                    r"^(?:0|menu|help|options)",
-                ],
+                "patterns": [r"^(?:menu|help|options|show menu|main menu)$", r"^(?:0|menu|help|options)"],
                 "priority": 1
             },
             IntentType.GREETING: {
-                "patterns": [
-                    r"^(?:hi|hello|hey|salam|good morning|good evening|howdy)$",
-                    r"^(?:hi|hello|hey|salam).*",
-                ],
+                "patterns": [r"^(?:hi|hello|hey|salam|good morning|good evening|howdy)$"],
                 "priority": 1
             },
             IntentType.DASHBOARD: {
                 "patterns": [
                     r"(?:show|display|get|view).*(?:dashboard|overview|details|performance)",
-                    r"(?:how is|what about|tell me about).*(?:city|dealer|warehouse|product)",
                     r"^([\w\s]+)$",
                 ],
                 "priority": 2
             },
             IntentType.REVENUE: {
-                "patterns": [
-                    r"(?:revenue|sales|income|turnover|earnings)",
-                    r"(?:how much|what(?:'s)?).*(?:revenue|sales)",
-                    r"(?:total|overall).*(?:revenue|sales)",
-                ],
+                "patterns": [r"(?:revenue|sales|income|turnover)", r"(?:how much|what(?:'s)?).*(?:revenue|sales)"],
                 "priority": 2
             },
             IntentType.UNITS: {
-                "patterns": [
-                    r"(?:units|quantity|volume|pieces|items)",
-                    r"(?:how many|number of).*(?:units|items)",
-                ],
+                "patterns": [r"(?:units|quantity|volume|pieces|items)", r"(?:how many|number of).*(?:units|items)"],
                 "priority": 2
             },
             IntentType.PENDING: {
-                "patterns": [
-                    r"(?:pending|outstanding|backlog|overdue).*(?:dn|delivery|order)",
-                    r"(?:undelivered|unfulfilled).*(?:orders|dns)",
-                ],
+                "patterns": [r"(?:pending|outstanding|backlog|overdue).*(?:dn|delivery|order)"],
                 "priority": 2
             },
             IntentType.DELIVERY: {
-                "patterns": [
-                    r"(?:delivery|dispatch|shipping|transit).*(?:performance|time|days)",
-                    r"(?:average|fastest|slowest).*(?:delivery|transit)",
-                    r"delivery (?:success|failure|rate)",
-                ],
+                "patterns": [r"(?:delivery|dispatch|shipping|transit).*(?:performance|time|days)"],
                 "priority": 2
             },
             IntentType.COMPARISON: {
                 "patterns": [
                     r"compare\s+([\w\s]+)\s+(?:and|vs|versus)\s+([\w\s]+)",
                     r"([\w\s]+)\s+(?:vs|versus|compared to)\s+([\w\s]+)",
-                    r"difference between\s+([\w\s]+)\s+(?:and|vs)\s+([\w\s]+)",
                 ],
                 "priority": 1
             },
             IntentType.RANKING: {
                 "patterns": [
                     r"(?:top|best|highest|leading).*(?:dealers?|warehouses?|cities?|products?)",
-                    r"(?:ranking|rank|leaderboard).*(?:dealers?|warehouses?|cities?|products?)",
+                    r"(?:ranking|rank|leaderboard)",
                 ],
                 "priority": 2
-            },
-            IntentType.FORECAST: {
-                "patterns": [
-                    r"(?:forecast|predict|project|estimate).*(?:sales|revenue|delivery|volume)",
-                    r"what (?:will|would) be the (?:sales|revenue|delivery)",
-                    r"next (?:month|quarter|year).*(?:forecast|prediction)",
-                ],
-                "priority": 2
-            },
-            IntentType.RECOMMENDATION: {
-                "patterns": [
-                    r"(?:recommend|suggest|advice|improve|optimize)",
-                    r"what (?:should|can|could) (?:i|we) (?:do|improve|fix)",
-                    r"how to (?:improve|fix|optimize)\s+([\w\s]+)",
-                ],
-                "priority": 2
-            },
-            IntentType.ROOT_CAUSE: {
-                "patterns": [
-                    r"why (?:is|are|was|were)\s+([\w\s]+?)\s+(?:slow|delayed|late|underperforming|declining)",
-                    r"(?:reason|cause|why).*(?:delay|issue|problem)",
-                    r"what (?:caused|causes|is causing).*(?:problem|issue|delay)",
-                ],
-                "priority": 2
-            },
-            IntentType.EXECUTIVE: {
-                "patterns": [
-                    r"(?:executive|management|leadership).*(?:dashboard|summary|overview|insight)",
-                    r"what(?:'s)? (?:going on|happening|the situation)",
-                ],
-                "priority": 1
             },
             IntentType.NATIONAL: {
-                "patterns": [
-                    r"(?:national|overall|pakistan).*(?:kpi|performance|score|health|dashboard)",
-                    r"^(?:national|overall|pakistan)$",
-                ],
+                "patterns": [r"(?:national|overall|pakistan).*(?:kpi|performance|score|health|dashboard)"],
                 "priority": 1
             },
-            IntentType.DISTANCE: {
-                "patterns": [
-                    r"(?:distance|how far|travel|driving).*(?:from|between)",
-                    r"nearest (?:warehouse|dealer|city)",
-                ],
-                "priority": 2
-            },
             IntentType.HELP: {
-                "patterns": [
-                    r"(?:help|assist|support|guide|how to)",
-                    r"what can you (?:do|help with)",
-                ],
+                "patterns": [r"(?:help|assist|support|guide|how to)", r"what can you (?:do|help with)"],
                 "priority": 1
             },
         }
@@ -713,7 +617,6 @@ class IntentEngine:
                 match = pattern.search(message_lower)
                 if match:
                     matches += 1
-                    # Check for metric in groups
                     if match.groups():
                         for group in match.groups():
                             if group and len(group.strip()) > 2:
@@ -764,7 +667,6 @@ class IntentEngine:
             if model is None:
                 return 0.0
             
-            # Pre-compute embeddings for common intents
             intent_examples = {
                 IntentType.DASHBOARD: ["show dashboard", "display overview", "view status"],
                 IntentType.REVENUE: ["show revenue", "display sales", "view income"],
@@ -866,7 +768,7 @@ class EntityEngine:
             if warehouse in message_lower:
                 entities.append(Entity(type=EntityType.WAREHOUSE, value=warehouse.title(), confidence=0.95))
         
-        # 4. Dealers (with suffix detection)
+        # 4. Dealers
         for pattern in self._dealer_patterns:
             match = pattern.search(message)
             if match:
@@ -888,46 +790,30 @@ class EntityEngine:
         # 6. Fuzzy matching with RapidFuzz
         fuzz, process = LazyLoader.get_rapidfuzz()
         if fuzz and process:
-            # City fuzzy matches
             city_matches = process.extract(message_lower, self.KNOWN_CITIES, scorer=fuzz.WRatio, limit=3)
             for match, score, _ in city_matches:
                 if score >= 85:
                     if not any(e.type == EntityType.CITY and e.value.lower() == match for e in entities):
                         entities.append(Entity(type=EntityType.CITY, value=match.title(), confidence=score/100))
             
-            # Warehouse fuzzy matches
             wh_matches = process.extract(message_lower, self.KNOWN_WAREHOUSES, scorer=fuzz.WRatio, limit=3)
             for match, score, _ in wh_matches:
                 if score >= 85:
                     if not any(e.type == EntityType.WAREHOUSE and e.value.lower() == match for e in entities):
                         entities.append(Entity(type=EntityType.WAREHOUSE, value=match.title(), confidence=score/100))
         
-        # 7. Dates
-        date_patterns = [
-            r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
-            r"(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4})",
-        ]
-        for pattern in date_patterns:
-            matches = re.findall(pattern, message, re.IGNORECASE)
-            for date_str in matches:
-                entities.append(Entity(type=EntityType.DATE, value=date_str, confidence=0.80))
-        
-        # 8. spaCy NER (lazy load)
+        # 7. spaCy NER (lazy load)
         nlp = LazyLoader.get_spacy()
         if nlp:
             try:
                 doc = nlp(message)
                 for ent in doc.ents:
-                    if ent.label_ in ["GPE", "LOC"]:
-                        if ent.text.lower() in self.KNOWN_CITIES:
-                            if not any(e.type == EntityType.CITY and e.value.lower() == ent.text.lower() for e in entities):
-                                entities.append(Entity(type=EntityType.CITY, value=ent.text, confidence=0.90))
+                    if ent.label_ in ["GPE", "LOC"] and ent.text.lower() in self.KNOWN_CITIES:
+                        if not any(e.type == EntityType.CITY and e.value.lower() == ent.text.lower() for e in entities):
+                            entities.append(Entity(type=EntityType.CITY, value=ent.text, confidence=0.90))
                     elif ent.label_ == "ORG":
                         if not any(e.type == EntityType.DEALER and e.value.lower() == ent.text.lower() for e in entities):
                             entities.append(Entity(type=EntityType.DEALER, value=ent.text, confidence=0.85))
-                    elif ent.label_ == "DATE":
-                        if not any(e.type == EntityType.DATE and e.value.lower() == ent.text.lower() for e in entities):
-                            entities.append(Entity(type=EntityType.DATE, value=ent.text, confidence=0.90))
             except Exception:
                 pass
         
@@ -943,180 +829,13 @@ class EntityEngine:
         return unique_entities
 
 # =====================================================================================================================
-# DISTANCE SERVICE
-# =====================================================================================================================
-
-class DistanceService:
-    """Distance calculation service"""
-    
-    _instance = None
-    _lock = threading.Lock()
-    _initialized = False
-    
-    def __new__(cls):
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-        return cls._instance
-    
-    def __init__(self):
-        if DistanceService._initialized:
-            return
-        
-        self._initialized = True
-        self._cache = {}
-        self._cache_lock = threading.RLock()
-        
-        # Lazy load geopy
-        self._geopy_available = False
-        self._geocoder = None
-        
-        try:
-            from geopy.distance import great_circle, geodesic
-            from geopy.geocoders import Nominatim
-            self._geopy_available = True
-            self._geocoder = Nominatim(user_agent="hpk-logistics-ai", timeout=5)
-            logger.info("✅ Geopy loaded")
-        except ImportError:
-            logger.info("ℹ️ Geopy not available")
-        
-        # Lazy load openrouteservice
-        self._ors_available = False
-        self._ors_client = None
-        
-        try:
-            import openrouteservice
-            self._ors_available = True
-            ORS_API_KEY = os.getenv("OPENROUTESERVICE_API_KEY")
-            if ORS_API_KEY:
-                self._ors_client = openrouteservice.Client(key=ORS_API_KEY, timeout=10)
-                logger.info("✅ OpenRouteService loaded")
-        except ImportError:
-            logger.info("ℹ️ OpenRouteService not available")
-        
-        logger.info("✅ DistanceService initialized")
-    
-    def calculate_distance(self, origin: str, destination: str) -> Dict[str, Any]:
-        """Calculate distance between two locations"""
-        cache_key = f"{origin.lower()}|{destination.lower()}"
-        
-        with self._cache_lock:
-            if cache_key in self._cache:
-                return self._cache[cache_key]
-        
-        result = {
-            "distance_km": None,
-            "driving_time": None,
-            "estimated_delivery": None,
-            "source": "unavailable"
-        }
-        
-        # Try OpenRouteService first
-        if self._ors_available and self._ors_client:
-            try:
-                coords = self._geocode_locations(origin, destination)
-                if coords:
-                    route = self._ors_client.directions(
-                        coords,
-                        profile="driving-car",
-                        format="geojson"
-                    )
-                    if route and "features" in route and route["features"]:
-                        distance = route["features"][0]["properties"]["segments"][0]["distance"] / 1000
-                        duration = route["features"][0]["properties"]["segments"][0]["duration"] / 3600
-                        result["distance_km"] = round(distance, 1)
-                        result["driving_time"] = self._format_duration(duration)
-                        result["source"] = "openrouteservice"
-            except Exception:
-                pass
-        
-        # Fallback to geopy
-        if result["distance_km"] is None and self._geopy_available:
-            try:
-                origin_coords = self._get_coordinates(origin)
-                dest_coords = self._get_coordinates(destination)
-                if origin_coords and dest_coords:
-                    from geopy.distance import great_circle
-                    distance = great_circle(origin_coords, dest_coords).kilometers
-                    result["distance_km"] = round(distance, 1)
-                    result["driving_time"] = self._format_duration(distance / 50)
-                    result["source"] = "geopy"
-            except Exception:
-                pass
-        
-        # Calculate estimated delivery
-        if result["distance_km"]:
-            if result["distance_km"] <= 80:
-                result["estimated_delivery"] = "Same Day"
-            elif result["distance_km"] <= 200:
-                result["estimated_delivery"] = "Next Day"
-            elif result["distance_km"] <= 400:
-                result["estimated_delivery"] = "1-2 Days"
-            elif result["distance_km"] <= 700:
-                result["estimated_delivery"] = "2-3 Days"
-            else:
-                result["estimated_delivery"] = "3-5 Days"
-        
-        with self._cache_lock:
-            self._cache[cache_key] = result
-        
-        return result
-    
-    def _geocode_locations(self, origin: str, destination: str) -> Optional[List]:
-        """Geocode locations for routing"""
-        if not self._geopy_available or not self._geocoder:
-            return None
-        
-        try:
-            origin_coords = self._get_coordinates(origin)
-            dest_coords = self._get_coordinates(destination)
-            if origin_coords and dest_coords:
-                return [[origin_coords[1], origin_coords[0]], [dest_coords[1], dest_coords[0]]]
-        except Exception:
-            pass
-        
-        return None
-    
-    def _get_coordinates(self, location: str) -> Optional[Tuple[float, float]]:
-        """Get coordinates for a location"""
-        if not self._geopy_available or not self._geocoder:
-            return None
-        
-        cache_key = f"coord:{location.lower()}"
-        with self._cache_lock:
-            if cache_key in self._cache:
-                return self._cache[cache_key]
-        
-        try:
-            geo = self._geocoder.geocode(location, exactly_one=True)
-            if geo:
-                coords = (geo.latitude, geo.longitude)
-                with self._cache_lock:
-                    self._cache[cache_key] = coords
-                return coords
-        except Exception:
-            pass
-        
-        return None
-    
-    def _format_duration(self, hours: float) -> str:
-        """Format duration in hours and minutes"""
-        if hours < 1:
-            minutes = int(hours * 60)
-            return f"{minutes} Minutes"
-        else:
-            h = int(hours)
-            m = int((hours - h) * 60)
-            return f"{h} Hours {m} Minutes" if m > 0 else f"{h} Hours"
-
-# =====================================================================================================================
 # MAIN AI PROVIDER SERVICE
 # =====================================================================================================================
 
 class AIProviderService:
     """
-    Enterprise AI Orchestrator with all features
+    Enterprise AI Orchestrator with full domain menu integration.
+    Routes to domain services and handles natural language queries.
     """
     
     _instance = None
@@ -1136,11 +855,10 @@ class AIProviderService:
         
         self._initialized = True
         
-        # Initialize core components (singletons)
+        # Initialize core components
         self.context_manager = ContextManager()
         self.intent_engine = IntentEngine()
         self.entity_engine = EntityEngine()
-        self.distance_service = DistanceService()
         self.metrics = MetricsRegistry()
         
         # Initialize service registry
@@ -1150,55 +868,64 @@ class AIProviderService:
         self._cache = {}
         self._cache_lock = threading.RLock()
         
+        # Track active menu sessions
+        self._menu_sessions: Dict[str, str] = {}  # session_id -> service_key
+        
         logger.info("=" * 60)
-        logger.info("🚀 AI Provider Service v32.0 initialized")
+        logger.info("🚀 AI Provider Service v33.0 initialized")
         logger.info(f"📦 Services: {', '.join(self.service_registry.keys())}")
-        logger.info(f"📊 Monitoring: {'Enabled' if self.metrics.is_enabled() else 'Disabled'}")
+        logger.info("📊 Monitoring: Enabled" if self.metrics.is_enabled() else "📊 Monitoring: Disabled")
         logger.info("=" * 60)
     
     def _init_service_registry(self):
-        """Initialize service registry"""
+        """Initialize service registry with all domain services"""
         self.service_registry = {}
         
+        # DN Service - Menu 1, 7, 8
         try:
             from app.services.dn_analysis import DNAnalysisService
             self.service_registry["dn"] = DNAnalysisService()
-            logger.info("✅ Registered DN service")
+            logger.info("✅ Registered DN service (Menu 1, 7, 8)")
         except Exception as e:
             logger.warning(f"⚠️ Failed to register DN service: {e}")
         
+        # Dealer Service - Menu 2
         try:
             from app.services.dealer_analytics_service import DealerAnalyticsService
             self.service_registry["dealer"] = DealerAnalyticsService()
-            logger.info("✅ Registered Dealer service")
+            logger.info("✅ Registered Dealer service (Menu 2)")
         except Exception as e:
             logger.warning(f"⚠️ Failed to register Dealer service: {e}")
         
+        # City Service - Menu 3
         try:
             from app.services.city_service import CityAnalyticsService
             self.service_registry["city"] = CityAnalyticsService()
-            logger.info("✅ Registered City service")
+            logger.info("✅ Registered City service (Menu 3)")
         except Exception as e:
             logger.warning(f"⚠️ Failed to register City service: {e}")
         
+        # Warehouse Service - Menu 4
         try:
             from app.services.warehouse_service import WarehouseAnalyticsService
             self.service_registry["warehouse"] = WarehouseAnalyticsService()
-            logger.info("✅ Registered Warehouse service")
+            logger.info("✅ Registered Warehouse service (Menu 4)")
         except Exception as e:
             logger.warning(f"⚠️ Failed to register Warehouse service: {e}")
         
+        # Product Service - Menu 5
         try:
             from app.services.product_service import ProductAnalyticsService
             self.service_registry["product"] = ProductAnalyticsService()
-            logger.info("✅ Registered Product service")
+            logger.info("✅ Registered Product service (Menu 5)")
         except Exception as e:
             logger.warning(f"⚠️ Failed to register Product service: {e}")
         
+        # National KPI Service - Menu 6
         try:
             from app.services.national_kpi_service import NationalKPIService
             self.service_registry["national"] = NationalKPIService()
-            logger.info("✅ Registered National KPI service")
+            logger.info("✅ Registered National KPI service (Menu 6)")
         except Exception as e:
             logger.warning(f"⚠️ Failed to register National KPI service: {e}")
     
@@ -1214,7 +941,8 @@ class AIProviderService:
         **kwargs: Any,
     ) -> str:
         """
-        Main processing pipeline
+        Main processing pipeline.
+        Routes to domain services based on intent and entities.
         """
         start_time = time.perf_counter()
         sender = sender or sender_id or "default"
@@ -1233,18 +961,27 @@ class AIProviderService:
                 return self._cache[cache_key]
         
         try:
-            # 1. Extract entities
+            # 1. Check if it's a menu command
+            if message_clean.lower() in ["menu", "help", "options", "show menu", "main menu"]:
+                return self._handle_menu_command(sender)
+            
+            # 2. Check if it's a menu number (0-9)
+            menu_number = self._parse_menu_number(message_clean)
+            if menu_number is not None:
+                return await self._handle_menu_number(sender, menu_number)
+            
+            # 3. Extract entities
             entities = self.entity_engine.extract_entities(message_clean)
             logger.info(f"🔍 Entities: {[(e.type.value, e.value, e.confidence) for e in entities]}")
             
-            # 2. Detect intent
+            # 4. Detect intent
             intent, confidence = self.intent_engine.detect_intent(message_clean, entities)
             logger.info(f"🎯 Intent: {intent.type.value} (confidence: {confidence:.2f})")
             
-            # 3. Get context
+            # 5. Get context
             context = self.context_manager.get_context(sender)
             
-            # 4. Update context with entities
+            # 6. Update context with entities
             for entity in entities:
                 if entity.type == EntityType.CITY:
                     context.current_city = entity.value
@@ -1254,6 +991,8 @@ class AIProviderService:
                     context.current_warehouse = entity.value
                 elif entity.type == EntityType.PRODUCT:
                     context.current_product = entity.value
+                elif entity.type == EntityType.DN:
+                    context.current_dn = entity.value
             
             context.last_intent = intent.type
             if entities:
@@ -1267,47 +1006,35 @@ class AIProviderService:
                 "timestamp": datetime.now().isoformat()
             })
             
-            # 5. Route the request
-            decision = self._build_routing_decision(message_clean, intent, entities, context)
+            # 7. Route the request
+            response = await self._route_and_execute(sender, message_clean, intent, entities, context)
             
-            # 6. Execute
-            response = await self._execute_decision(sender, decision, context)
-            
-            # 7. Cache response
+            # 8. Cache response
             with self._cache_lock:
                 self._cache[cache_key] = response
                 if len(self._cache) > 1000:
-                    # Remove oldest entries
                     keys = list(self._cache.keys())[:100]
                     for key in keys:
                         del self._cache[key]
             
-            # 8. Add follow-ups
+            # 9. Add follow-ups
             follow_ups = self.context_manager.get_follow_ups(sender)
             if follow_ups and len(response) < 3500:
                 response = self._add_follow_ups(response, follow_ups)
             
-            # 9. Split if too long (WhatsApp limit: 4096)
+            # 10. Split if too long
             if len(response) > 4000:
                 response = self._split_response(response)
             
-            # 10. Record metrics
+            # 11. Record metrics
             elapsed_ms = (time.perf_counter() - start_time) * 1000
             if self.metrics.is_enabled():
                 duration_metric = self.metrics.get("duration")
                 if duration_metric:
                     duration_metric.labels(
-                        service=decision.service_key,
+                        service=context.current_service or "unknown",
                         intent=intent.type.value
                     ).observe(elapsed_ms / 1000)
-                
-                requests_metric = self.metrics.get("requests")
-                if requests_metric:
-                    requests_metric.labels(
-                        service=decision.service_key,
-                        intent=intent.type.value,
-                        status="success"
-                    ).inc()
             
             logger.info(f"⏱️ Response time: {elapsed_ms:.2f}ms")
             return response
@@ -1315,7 +1042,6 @@ class AIProviderService:
         except Exception as e:
             logger.exception(f"❌ Error processing message: {e}")
             
-            # Record error
             if self.metrics.is_enabled():
                 errors_metric = self.metrics.get("errors")
                 if errors_metric:
@@ -1326,266 +1052,195 @@ class AIProviderService:
             
             return f"⚠️ Service error: {str(e)[:200]}\n\nPlease try again or type 'menu' for options."
     
-    def _build_routing_decision(
+    # =====================================================================================================================
+    # MENU HANDLING
+    # =====================================================================================================================
+    
+    def _handle_menu_command(self, sender: str) -> str:
+        """Handle menu command - show main menu"""
+        # Reset any active menu session
+        self._menu_sessions[sender] = "main"
+        return self._get_main_menu()
+    
+    async def _handle_menu_number(self, sender: str, number: int) -> str:
+        """Handle menu number selection (0-9)"""
+        # Map menu numbers to service keys
+        menu_map = {
+            0: ("main", None),
+            1: ("dn", "get_main_menu"),
+            2: ("dealer", "get_main_menu"),
+            3: ("city", "get_main_menu"),
+            4: ("warehouse", "get_main_menu"),
+            5: ("product", "get_main_menu"),
+            6: ("national", "get_main_menu"),
+            7: ("dn", "get_pending_dns"),
+            8: ("dn", "get_top_performers"),
+            9: ("ai", None),
+        }
+        
+        if number not in menu_map:
+            return self._get_invalid_selection()
+        
+        service_key, method = menu_map[number]
+        
+        # Special handling for main menu
+        if number == 0:
+            self._menu_sessions[sender] = "main"
+            return self._get_main_menu()
+        
+        # Special handling for AI query (menu 9)
+        if number == 9:
+            self._menu_sessions[sender] = "ai"
+            return "🤖 *AI Query*\n\nType your question and I'll help you find the answer."
+        
+        # Get service
+        service = self.service_registry.get(service_key)
+        if not service:
+            return f"⚠️ {service_key.title()} service is currently unavailable."
+        
+        # Store active menu session
+        self._menu_sessions[sender] = service_key
+        
+        # Get the menu from the service
+        if hasattr(service, "get_main_menu"):
+            return service.get_main_menu()
+        elif hasattr(service, "get_menu"):
+            return service.get_menu()
+        else:
+            # Fallback: return a generic menu
+            return f"📋 *{service_key.title()} ANALYTICS MENU*\n\nService menu is being loaded...\n\n0. Main Menu\n99. Back"
+    
+    # =====================================================================================================================
+    # ROUTING AND EXECUTION
+    # =====================================================================================================================
+    
+    async def _route_and_execute(
         self,
+        sender: str,
         message: str,
         intent: Intent,
         entities: List[Entity],
         context: SessionContext
-    ) -> RoutingDecision:
-        """Build routing decision"""
+    ) -> str:
+        """Route and execute the request"""
         
-        # Check if in menu
-        if context.current_menu != MenuState.MAIN and intent.type == IntentType.MENU:
-            context.current_menu = MenuState.MAIN
-            return RoutingDecision(
-                intent=intent,
-                service_key="menu_service",
-                method="show_main_menu",
-                entity={},
-                confidence=1.0,
-                reason="Menu exit",
-                original_message=message
-            )
+        # Check if user is in a menu session
+        active_menu = self._menu_sessions.get(sender, "main")
         
-        # Menu number in menu
-        menu_number = self._parse_menu_number(message)
-        if menu_number is not None and context.current_menu != MenuState.MAIN:
-            return self._handle_menu_selection(context, menu_number)
+        if active_menu != "main":
+            # User is in a menu - route to the active service
+            service = self.service_registry.get(active_menu)
+            if service:
+                if hasattr(service, "process_whatsapp_query"):
+                    result = service.process_whatsapp_query(message, sender)
+                    if isinstance(result, str):
+                        return result
+                    if isinstance(result, dict):
+                        return self._extract_response(result)
+                elif hasattr(service, "process_menu_input"):
+                    result = service.process_menu_input(sender, message)
+                    if isinstance(result, dict):
+                        return result.get("response", "No response from service.")
         
-        # Special intents
-        if intent.type == IntentType.MENU:
-            return RoutingDecision(
-                intent=intent,
-                service_key="menu_service",
-                method="show_menu",
-                entity={"menu_type": context.current_menu.value},
-                confidence=1.0,
-                reason="Menu request",
-                original_message=message
-            )
+        # Not in a menu - use intent/entity routing
+        return await self._route_natural_language(sender, message, intent, entities, context)
+    
+    async def _route_natural_language(
+        self,
+        sender: str,
+        message: str,
+        intent: Intent,
+        entities: List[Entity],
+        context: SessionContext
+    ) -> str:
+        """Route natural language queries to the appropriate service"""
         
-        if intent.type == IntentType.GREETING:
-            return RoutingDecision(
-                intent=intent,
-                service_key="greeting_service",
-                method="handle_greeting",
-                entity={},
-                confidence=1.0,
-                reason="Greeting",
-                original_message=message
-            )
+        # 1. Check for DN number first (highest priority)
+        for entity in entities:
+            if entity.type == EntityType.DN:
+                service = self.service_registry.get("dn")
+                if service and hasattr(service, "get_dn_dashboard"):
+                    result = service.get_dn_dashboard(entity.value)
+                    return self._extract_response(result)
         
-        if intent.type == IntentType.HELP:
-            return RoutingDecision(
-                intent=intent,
-                service_key="help_service",
-                method="handle_help",
-                entity={},
-                confidence=1.0,
-                reason="Help request",
-                original_message=message
-            )
-        
-        # Get primary entity
+        # 2. Check for entity-based routing
         primary_entity = None
-        entity_value = None
-        
-        entity_priority = [EntityType.CITY, EntityType.DEALER, EntityType.WAREHOUSE, EntityType.PRODUCT, EntityType.DN]
+        entity_priority = [EntityType.CITY, EntityType.DEALER, EntityType.WAREHOUSE, EntityType.PRODUCT]
         for entity_type in entity_priority:
             for entity in entities:
                 if entity.type == entity_type:
                     primary_entity = entity
-                    entity_value = entity.value
                     break
             if primary_entity:
                 break
         
-        # Determine service
-        service_key = None
-        method = "process_whatsapp_query"
-        reason = ""
-        
         if primary_entity:
-            if primary_entity.type == EntityType.CITY:
-                service_key = "city"
-                reason = f"City: {entity_value}"
-                # Use existing city if already in context
-                if entity_value and entity_value.lower() in [c.lower() for c in self.entity_engine.KNOWN_CITIES]:
-                    pass
-            elif primary_entity.type == EntityType.DEALER:
-                service_key = "dealer"
-                reason = f"Dealer: {entity_value}"
-            elif primary_entity.type == EntityType.WAREHOUSE:
-                service_key = "warehouse"
-                reason = f"Warehouse: {entity_value}"
-            elif primary_entity.type == EntityType.PRODUCT:
-                service_key = "product"
-                reason = f"Product: {entity_value}"
-            elif primary_entity.type == EntityType.DN:
-                service_key = "dn"
-                method = "get_dn_dashboard"
-                reason = f"DN: {entity_value}"
-        elif intent.type in [IntentType.NATIONAL, IntentType.EXECUTIVE]:
-            service_key = "national"
-            reason = f"{intent.type.value} intent"
-        elif intent.type == IntentType.RANKING:
-            service_key = self._get_ranking_service(message)
-            reason = "Ranking request"
-        elif intent.type == IntentType.COMPARISON:
-            service_key = self._get_comparison_service(message, entities)
-            reason = "Comparison request"
-        elif intent.type == IntentType.DISTANCE:
-            service_key = "city"
-            reason = "Distance request"
-        else:
-            # AI fallback
-            service_key = "groq_service"
-            method = "process_query"
-            reason = "AI fallback"
-            intent.requires_ai = True
-        
-        # Build entity dict
-        entity_dict = {
-            "message": message,
-            "intent": intent.type.value,
-            "metric": intent.metric,
-            "confidence": intent.confidence,
-        }
-        
-        for entity in entities:
-            entity_dict[entity.type.value] = entity.value
-        
-        # Add context
-        if context.current_city and "city" not in entity_dict:
-            entity_dict["city"] = context.current_city
-        if context.current_dealer and "dealer" not in entity_dict:
-            entity_dict["dealer"] = context.current_dealer
-        if context.current_warehouse and "warehouse" not in entity_dict:
-            entity_dict["warehouse"] = context.current_warehouse
-        if context.current_product and "product" not in entity_dict:
-            entity_dict["product"] = context.current_product
-        
-        # Update context
-        if service_key:
-            context.current_service = service_key
-        
-        return RoutingDecision(
-            intent=intent,
-            service_key=service_key,
-            method=method,
-            entity=entity_dict,
-            confidence=intent.confidence,
-            requires_ai=intent.requires_ai,
-            reason=reason,
-            original_message=message,
-            context={
-                "current_city": context.current_city,
-                "current_dealer": context.current_dealer,
-                "current_warehouse": context.current_warehouse,
-                "current_product": context.current_product,
+            service_map = {
+                EntityType.CITY: "city",
+                EntityType.DEALER: "dealer",
+                EntityType.WAREHOUSE: "warehouse",
+                EntityType.PRODUCT: "product",
             }
-        )
-    
-    async def _execute_decision(self, sender: str, decision: RoutingDecision, context: SessionContext) -> str:
-        """Execute routing decision"""
-        # Menu service
-        if decision.service_key == "menu_service":
-            if decision.method == "show_menu":
-                return self._get_sub_menu(context.current_menu)
-            return self._get_main_menu()
+            
+            service_key = service_map.get(primary_entity.type)
+            if service_key:
+                service = self.service_registry.get(service_key)
+                if service:
+                    if hasattr(service, "process_whatsapp_query"):
+                        # Build a contextual query
+                        metric = intent.metric or "dashboard"
+                        query = f"{primary_entity.value} {metric}"
+                        result = service.process_whatsapp_query(query, sender)
+                        if isinstance(result, str):
+                            return result
+                        if isinstance(result, dict):
+                            return self._extract_response(result)
         
-        # Greeting service
-        if decision.service_key == "greeting_service":
+        # 3. Check for national/executive intent
+        if intent.type in [IntentType.NATIONAL, IntentType.EXECUTIVE]:
+            service = self.service_registry.get("national")
+            if service and hasattr(service, "process_whatsapp_query"):
+                result = service.process_whatsapp_query(message, sender)
+                if isinstance(result, str):
+                    return result
+                if isinstance(result, dict):
+                    return self._extract_response(result)
+        
+        # 4. Check for ranking
+        if intent.type == IntentType.RANKING:
+            service_key = self._get_ranking_service(message)
+            service = self.service_registry.get(service_key)
+            if service and hasattr(service, "process_whatsapp_query"):
+                result = service.process_whatsapp_query(message, sender)
+                if isinstance(result, str):
+                    return result
+                if isinstance(result, dict):
+                    return self._extract_response(result)
+        
+        # 5. Check for comparison
+        if intent.type == IntentType.COMPARISON:
+            service_key = self._get_comparison_service(message, entities)
+            service = self.service_registry.get(service_key)
+            if service and hasattr(service, "process_whatsapp_query"):
+                result = service.process_whatsapp_query(message, sender)
+                if isinstance(result, str):
+                    return result
+                if isinstance(result, dict):
+                    return self._extract_response(result)
+        
+        # 6. Check for greeting
+        if intent.type == IntentType.GREETING:
             return "👋 Hello! Welcome to HPK Logistics 🏪. How can I assist you today? 📦"
         
-        # Help service
-        if decision.service_key == "help_service":
+        # 7. Check for help
+        if intent.type == IntentType.HELP:
             return self._get_help_response()
         
-        # Get service
-        service = self.service_registry.get(decision.service_key)
-        if not service:
-            return self._ai_fallback(decision.original_message, decision.intent, [], context)
-        
-        # Get method
-        method = getattr(service, decision.method, None)
-        if not method:
-            return self._ai_fallback(decision.original_message, decision.intent, [], context)
-        
-        try:
-            # Prepare arguments
-            if decision.method == "process_whatsapp_query":
-                result = method(decision.original_message, sender)
-            elif decision.method == "get_dn_dashboard":
-                dn = decision.entity.get("dn")
-                result = method(dn) if dn else "⚠️ Please provide a DN number."
-            else:
-                result = method()
-            
-            # Handle async
-            if inspect.isawaitable(result):
-                result = await result
-            
-            # Extract message
-            return self._extract_response(result)
-            
-        except Exception as e:
-            logger.exception(f"Service execution error: {e}")
-            return self._ai_fallback(decision.original_message, decision.intent, [], context)
-    
-    def _parse_menu_number(self, message: str) -> Optional[int]:
-        """Parse menu number"""
-        match = re.fullmatch(r"\s*([0-9]+)\s*", message)
-        if match:
-            return int(match.group(1))
-        return None
-    
-    def _handle_menu_selection(self, context: SessionContext, number: int) -> RoutingDecision:
-        """Handle menu selection"""
-        menu_map = {
-            1: ("city", "City Dashboard", "get_city_dashboard"),
-            2: ("city", "City Revenue", "get_city_metric"),
-            3: ("city", "City Units", "get_city_metric"),
-            4: ("city", "City Pending", "get_city_pending"),
-            5: ("city", "City Delivery", "get_city_delivery"),
-            6: ("city", "Compare Cities", "compare_cities"),
-            7: ("city", "City Rankings", "get_city_ranking"),
-            8: ("city", "Top Products", "get_city_top_products"),
-            9: ("city", "Business Score", "get_city_business_score"),
-            10: ("city", "Distance Info", "get_city_distance"),
-            11: ("city", "Growth Analytics", "get_city_growth"),
-            12: ("city", "Warehouse Distribution", "get_warehouse_distribution"),
-            13: ("city", "City Summary", "get_city_summary"),
-            99: ("menu", "Back to Main", "show_main_menu"),
-        }
-        
-        if number in menu_map:
-            service_key, name, method = menu_map[number]
-            if number == 99:
-                context.current_menu = MenuState.MAIN
-            return RoutingDecision(
-                intent=Intent(type=IntentType.MENU, confidence=1.0),
-                service_key=service_key,
-                method=method,
-                entity={"menu_number": number, "menu_name": name},
-                confidence=1.0,
-                reason=f"Menu selection: {name}",
-                original_message=str(number),
-                menu_option=str(number)
-            )
-        
-        return RoutingDecision(
-            intent=Intent(type=IntentType.UNKNOWN, confidence=0.0),
-            service_key="menu_service",
-            method="show_invalid",
-            entity={},
-            confidence=0.0,
-            reason="Invalid menu selection"
-        )
+        # 8. AI Fallback
+        return await self._ai_fallback(sender, message, intent, entities, context)
     
     def _get_ranking_service(self, message: str) -> str:
-        """Get service for ranking"""
+        """Get service for ranking based on message"""
         message_lower = message.lower()
         if "warehouse" in message_lower:
             return "warehouse"
@@ -1598,7 +1253,7 @@ class AIProviderService:
         return "national"
     
     def _get_comparison_service(self, message: str, entities: List[Entity]) -> str:
-        """Get service for comparison"""
+        """Get service for comparison based on entities"""
         entity_types = [e.type for e in entities]
         if EntityType.CITY in entity_types:
             return "city"
@@ -1610,26 +1265,11 @@ class AIProviderService:
             return "product"
         return "national"
     
-    def _extract_response(self, result: Any) -> str:
-        """Extract WhatsApp message from result"""
-        if isinstance(result, str):
-            return result
-        
-        if isinstance(result, dict):
-            if result.get("whatsapp_message"):
-                return str(result["whatsapp_message"])
-            if result.get("formatted_response"):
-                return str(result["formatted_response"])
-            if result.get("message"):
-                return str(result["message"])
-            if result.get("response"):
-                return str(result["response"])
-            if result.get("error"):
-                return f"⚠️ {result['error']}"
-        
-        return str(result) if result else "No response from service."
+    # =====================================================================================================================
+    # AI FALLBACK
+    # =====================================================================================================================
     
-    def _ai_fallback(self, message: str, intent: Intent, entities: List[Entity], context: SessionContext) -> str:
+    async def _ai_fallback(self, sender: str, message: str, intent: Intent, entities: List[Entity], context: SessionContext) -> str:
         """AI fallback for unanswered queries"""
         if not ENABLE_AI_FALLBACK:
             return self._get_help_response()
@@ -1640,13 +1280,11 @@ class AIProviderService:
                 return self._get_help_response()
             
             entity_str = ", ".join([f"{e.type.value}: {e.value}" for e in entities]) if entities else "None"
-            context_str = f"Current city: {context.current_city or 'None'}, Dealer: {context.current_dealer or 'None'}"
             
             prompt = f"""You are HPK Logistics AI Assistant. The user asked: "{message}"
 
 Detected intent: {intent.type.value} (confidence: {intent.confidence:.2f})
 Entities: {entity_str}
-Context: {context_str}
 
 Provide a helpful response. If you don't know, suggest logistics topics they can ask about.
 
@@ -1673,7 +1311,6 @@ Keep response concise and WhatsApp-friendly with emojis and bullet points."""
             
             ai_response = response.choices[0].message.content.strip()
             
-            # Record AI call metric
             if self.metrics.is_enabled():
                 ai_calls_metric = self.metrics.get("ai_calls")
                 if ai_calls_metric:
@@ -1684,6 +1321,29 @@ Keep response concise and WhatsApp-friendly with emojis and bullet points."""
         except Exception as e:
             logger.error(f"AI fallback failed: {e}")
             return self._get_help_response()
+    
+    # =====================================================================================================================
+    # RESPONSE HELPERS
+    # =====================================================================================================================
+    
+    def _extract_response(self, result: Any) -> str:
+        """Extract WhatsApp message from result"""
+        if isinstance(result, str):
+            return result
+        
+        if isinstance(result, dict):
+            if result.get("whatsapp_message"):
+                return str(result["whatsapp_message"])
+            if result.get("formatted_response"):
+                return str(result["formatted_response"])
+            if result.get("message"):
+                return str(result["message"])
+            if result.get("response"):
+                return str(result["response"])
+            if result.get("error"):
+                return f"⚠️ {result['error']}"
+        
+        return str(result) if result else "No response from service."
     
     def _add_follow_ups(self, response: str, follow_ups: List[str]) -> str:
         """Add follow-up suggestions"""
@@ -1719,8 +1379,15 @@ Keep response concise and WhatsApp-friendly with emojis and bullet points."""
         
         return "\n\n---\n\n".join([f"📱 *Part {i+1}/{len(parts)}*\n{part}" for i, part in enumerate(parts)])
     
+    def _parse_menu_number(self, message: str) -> Optional[int]:
+        """Parse menu number from message"""
+        match = re.fullmatch(r"\s*([0-9]+)\s*", message)
+        if match:
+            return int(match.group(1))
+        return None
+    
     # =====================================================================================================================
-    # MENU METHODS
+    # MENU GENERATORS
     # =====================================================================================================================
     
     def _get_main_menu(self) -> str:
@@ -1739,180 +1406,8 @@ Keep response concise and WhatsApp-friendly with emojis and bullet points."""
             "Reply with a number from 0 to 9."
         )
     
-    def _get_sub_menu(self, menu_state: MenuState) -> str:
-        """Get sub-menu based on state"""
-        if menu_state == MenuState.CITY:
-            return self._get_city_menu()
-        elif menu_state == MenuState.WAREHOUSE:
-            return self._get_warehouse_menu()
-        elif menu_state == MenuState.DEALER:
-            return self._get_dealer_menu()
-        elif menu_state == MenuState.PRODUCT:
-            return self._get_product_menu()
-        elif menu_state == MenuState.NATIONAL:
-            return self._get_national_menu()
-        elif menu_state == MenuState.DN:
-            return self._get_dn_menu()
-        return self._get_main_menu()
-    
-    def _get_city_menu(self) -> str:
-        return "\n".join([
-            "🏙️ *CITY ANALYTICS MENU*",
-            "",
-            "0. Main Menu",
-            "1. City Dashboard",
-            "2. City Revenue",
-            "3. City Units",
-            "4. City Pending",
-            "5. City Delivery",
-            "6. Compare Cities",
-            "7. City Rankings",
-            "8. Top Products",
-            "9. Business Score",
-            "10. Distance Info",
-            "11. Growth Analytics",
-            "12. Warehouse Distribution",
-            "13. City Summary",
-            "99. Back to Main",
-            "",
-            "Reply with a number:"
-        ])
-    
-    def _get_warehouse_menu(self) -> str:
-        return "\n".join([
-            "🏭 *WAREHOUSE ANALYTICS MENU*",
-            "",
-            "0. Main Menu",
-            "1. Warehouse Dashboard",
-            "2. Warehouse Inventory",
-            "3. Warehouse Revenue",
-            "4. Warehouse Units",
-            "5. Pending DN",
-            "6. Pending PGI",
-            "7. Pending POD",
-            "8. Delivery Performance",
-            "9. Warehouse Ranking",
-            "10. Warehouse Comparison",
-            "11. Top Products",
-            "12. Dealer Distribution",
-            "13. City Distribution",
-            "14. Storage Utilization",
-            "15. Transit Analysis",
-            "16. Delivery Aging",
-            "17. Warehouse KPIs",
-            "18. Warehouse AI Summary",
-            "99. Back to Main",
-            "",
-            "Reply with a number:"
-        ])
-    
-    def _get_dealer_menu(self) -> str:
-        return "\n".join([
-            "🏪 *DEALER ANALYTICS MENU*",
-            "",
-            "0. Main Menu",
-            "1. Dealer Dashboard",
-            "2. Dealer Revenue",
-            "3. Dealer Units",
-            "4. Dealer Products",
-            "5. Dealer Performance",
-            "6. Pending DN",
-            "7. Pending PGI",
-            "8. Pending POD",
-            "9. Dealer Delivery",
-            "10. Dealer Ranking",
-            "11. Dealer Comparison",
-            "12. Dealer History",
-            "13. Dealer Search",
-            "14. Dealer Cities",
-            "15. Dealer Distance",
-            "16. Dealer Trends",
-            "17. Dealer Forecast",
-            "18. Dealer AI Summary",
-            "99. Back to Main",
-            "",
-            "Reply with a number:"
-        ])
-    
-    def _get_product_menu(self) -> str:
-        return "\n".join([
-            "📦 *PRODUCT ANALYTICS MENU*",
-            "",
-            "0. Main Menu",
-            "1. Product Dashboard",
-            "2. Product Revenue",
-            "3. Product Units",
-            "4. Product Dealers",
-            "5. Product Warehouses",
-            "6. Product Cities",
-            "7. Pending DN",
-            "8. Pending PGI",
-            "9. Pending POD",
-            "10. Product Comparison",
-            "11. Product Ranking",
-            "12. Monthly Trend",
-            "13. Executive Summary",
-            "14. AI Insights",
-            "15. Recommendations",
-            "16. Product Life Cycle",
-            "17. Product Performance",
-            "18. Smart Search",
-            "99. Back to Main",
-            "",
-            "Reply with a number:"
-        ])
-    
-    def _get_national_menu(self) -> str:
-        return "\n".join([
-            "🇵🇰 *NATIONAL KPI MENU*",
-            "",
-            "0. Main Menu",
-            "1. National Dashboard",
-            "2. Warehouse Dashboard",
-            "3. Warehouse Ranking",
-            "4. Warehouse Comparison",
-            "5. National Revenue",
-            "6. National Units",
-            "7. National Delivery",
-            "8. Pending Dashboard",
-            "9. POD Dashboard",
-            "10. PGI Dashboard",
-            "11. Dealer Coverage",
-            "12. City Analytics",
-            "13. Product Distribution",
-            "14. SLA Compliance",
-            "15. Executive Summary",
-            "16. AI Insights",
-            "17. Recommendations",
-            "18. National Health Score",
-            "19. Monthly Trend",
-            "20. National Forecast",
-            "99. Back to Main",
-            "",
-            "Reply with a number:"
-        ])
-    
-    def _get_dn_menu(self) -> str:
-        return "\n".join([
-            "📦 *DN DELIVERY MENU*",
-            "",
-            "0. Main Menu",
-            "1. DN Dashboard",
-            "2. DN Status",
-            "3. DN History",
-            "4. DN Timeline",
-            "5. Transit Analysis",
-            "6. Pending DN",
-            "7. Pending PGI",
-            "8. Pending POD",
-            "9. Delayed DN",
-            "10. Recent DN",
-            "11. Search DN",
-            "12. Compare DN",
-            "99. Back to Main",
-            "",
-            "Reply with a number:"
-        ])
+    def _get_invalid_selection(self) -> str:
+        return "Invalid selection. Please enter a valid number.\n\n" + self._get_main_menu()
     
     def _get_help_response(self) -> str:
         return "\n".join([
@@ -1931,38 +1426,6 @@ Keep response concise and WhatsApp-friendly with emojis and bullet points."""
         ])
     
     # =====================================================================================================================
-    # SHOW MENU METHODS
-    # =====================================================================================================================
-    
-    def show_main_menu(self) -> str:
-        return self._get_main_menu()
-    
-    def show_menu(self, menu_type: str = None) -> str:
-        """Show menu based on type"""
-        if menu_type == "city":
-            return self._get_city_menu()
-        elif menu_type == "warehouse":
-            return self._get_warehouse_menu()
-        elif menu_type == "dealer":
-            return self._get_dealer_menu()
-        elif menu_type == "product":
-            return self._get_product_menu()
-        elif menu_type == "national":
-            return self._get_national_menu()
-        elif menu_type == "dn":
-            return self._get_dn_menu()
-        return self._get_main_menu()
-    
-    def show_invalid(self) -> str:
-        return "Invalid selection. Please enter a valid number.\n\n" + self._get_main_menu()
-    
-    def handle_greeting(self) -> str:
-        return "👋 Hello! Welcome to HPK Logistics 🏪. How can I assist you today? 📦"
-    
-    def handle_help(self) -> str:
-        return self._get_help_response()
-    
-    # =====================================================================================================================
     # HEALTH CHECK
     # =====================================================================================================================
     
@@ -1970,14 +1433,13 @@ Keep response concise and WhatsApp-friendly with emojis and bullet points."""
         """Comprehensive health check"""
         return {
             "service": "ai_provider_service",
-            "version": "32.0",
+            "version": "33.0",
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
             "components": {
                 "context_manager": True,
                 "intent_engine": True,
                 "entity_engine": True,
-                "distance_service": True,
                 "monitoring": self.metrics.is_enabled(),
             },
             "services": list(self.service_registry.keys()),
@@ -1985,13 +1447,6 @@ Keep response concise and WhatsApp-friendly with emojis and bullet points."""
                 "cache_size": len(self._cache),
                 "active_sessions": len(self.context_manager._contexts),
             },
-            "lazy_loaded": {
-                "spacy": LazyLoader.get_spacy() is not None,
-                "sentence_transformer": LazyLoader.get_sentence_transformer() is not None,
-                "groq": LazyLoader.get_groq() is not None,
-                "rapidfuzz": LazyLoader.get_rapidfuzz()[0] is not None,
-                "flashrank": LazyLoader.get_flashrank() is not None,
-            }
         }
 
 # =====================================================================================================================
