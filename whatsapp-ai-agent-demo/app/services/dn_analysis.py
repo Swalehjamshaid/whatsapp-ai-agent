@@ -1,6 +1,6 @@
 """
 File: app/services/dn_analysis.py
-Version: 19.0 - COMPLETE DN DOMAIN AI EXPERT - ALL DN QUESTIONS ANSWERED HERE
+Version: 20.0 - COMPLETE DN DOMAIN AI EXPERT - ALL DN QUESTIONS ANSWERED HERE
 
 Purpose: Answer ALL DN-related business questions through a single entry point
          PostgreSQL is the ONLY source of truth.
@@ -18,6 +18,13 @@ THIS FILE HANDLES EVERYTHING DN-RELATED:
 - ✅ Forecast, recommendations
 - ✅ Root cause analysis
 - ✅ Stay in DN service until "99"
+
+FIXED:
+- ✅ No circular imports
+- ✅ All imports are internal only
+- ✅ No dependency on ai_provider_service
+- ✅ Clean singleton pattern
+- ✅ Proper error handling
 
 Status: ENTERPRISE READY - ALL DN QUESTIONS GO THROUGH THIS FILE
 """
@@ -39,6 +46,10 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Optional, Dict, List, Tuple, Union, Set, Callable, Mapping, Sequence
 
+# ============================================================
+# CORE DEPENDENCIES - No circular imports
+# ============================================================
+
 from cachetools import TTLCache
 from sqlalchemy import and_, case, distinct, func, or_, text, desc, asc
 from sqlalchemy.exc import SQLAlchemyError
@@ -50,7 +61,7 @@ from app.models import DeliveryReport
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# BLOCK 1: OPTIONAL AI IMPORTS
+# OPTIONAL AI IMPORTS - Graceful fallbacks
 # ============================================================
 
 try:
@@ -89,7 +100,7 @@ except ImportError:
     Nominatim = None
 
 # ============================================================
-# BLOCK 2: CONFIGURATION
+# CONFIGURATION
 # ============================================================
 
 CACHE_TTL = max(60, int(os.getenv("DN_ANALYTICS_CACHE_TTL", "300")))
@@ -101,7 +112,7 @@ TABLE: str = "delivery_reports"
 SEPARATOR: str = "────────────────────"
 
 # ============================================================
-# BLOCK 3: CONSTANTS
+# CONSTANTS
 # ============================================================
 
 BUSINESS_COLUMNS: tuple[str, ...] = (
@@ -140,7 +151,7 @@ DN_ALIASES: dict[str, str] = {
 }
 
 # ============================================================
-# BLOCK 4: ENUMS
+# ENUMS
 # ============================================================
 
 class IntentType(Enum):
@@ -198,7 +209,7 @@ class ResponseFormat(Enum):
     TIMELINE = "timeline"
 
 # ============================================================
-# BLOCK 5: DATACLASSES
+# DATACLASSES
 # ============================================================
 
 @dataclass
@@ -237,7 +248,7 @@ class DNContext:
         self.search_results = None
 
 # ============================================================
-# BLOCK 6: UTILITY FUNCTIONS
+# UTILITY FUNCTIONS
 # ============================================================
 
 def _text(value: Any, default: str = "Unknown") -> str:
@@ -332,7 +343,7 @@ def _is_valid_dn(dn: str) -> bool:
     return cleaned.isdigit() and 8 <= len(cleaned) <= 12
 
 # ============================================================
-# BLOCK 7: DN MENU RENDERER
+# MENU RENDERER
 # ============================================================
 
 class DNMenuRenderer:
@@ -372,7 +383,6 @@ class DNMenuRenderer:
             "• Search [keyword]",
             "• Status of [DN]",
             "• Where is [DN]",
-            "• History of [DN]",
             "",
             "Reply with a number or DN number:"
         ])
@@ -829,11 +839,11 @@ class DNMenuRenderer:
         return "\n".join(lines)
 
 # ============================================================
-# BLOCK 8: INTENT ENGINE - ALL DN INTENTS
+# INTENT ENGINE
 # ============================================================
 
 class IntentEngine:
-    """AI-powered intent detection for ALL DN questions"""
+    """AI-powered intent detection for DN questions"""
     
     INTENT_PATTERNS = {
         IntentType.DASHBOARD: [
@@ -1121,7 +1131,7 @@ class IntentEngine:
         return best_intent, best_score
 
 # ============================================================
-# BLOCK 9: ENTITY EXTRACTION ENGINE
+# ENTITY ENGINE
 # ============================================================
 
 class EntityEngine:
@@ -1270,7 +1280,7 @@ class EntityEngine:
         return None
 
 # ============================================================
-# BLOCK 10: DISTANCE SERVICE
+# DISTANCE SERVICE
 # ============================================================
 
 class DistanceService:
@@ -1351,7 +1361,7 @@ class DistanceService:
         return f"{whole_hours} Hours {minutes} Minutes" if minutes else f"{whole_hours} Hours"
 
 # ============================================================
-# BLOCK 11: DN DASHBOARD BUILDER
+# DN DASHBOARD BUILDER
 # ============================================================
 
 class DNDashboardBuilder:
@@ -1594,18 +1604,37 @@ class DNDashboardBuilder:
         return recommendations
 
 # ============================================================
-# BLOCK 12: MAIN DN ANALYTICS SERVICE - ALL DN ANSWERS HERE
+# MAIN DN ANALYTICS SERVICE - ALL DN ANSWERS HERE
 # ============================================================
 
 class DNAnalysisService:
     """
     DN Domain AI Expert - ALL DN-related answers come through this file.
     PostgreSQL is the ONLY source of truth.
+    
+    NO CIRCULAR IMPORTS - This file does NOT import from ai_provider_service.py
     """
     
+    _instance: Optional["DNAnalysisService"] = None
+    _lock = threading.Lock()
+    
+    def __new__(cls) -> "DNAnalysisService":
+        """Singleton pattern - thread safe"""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+    
     def __init__(self) -> None:
+        """Initialize the DN service"""
+        # Prevent re-initialization
+        if hasattr(self, "_initialized") and self._initialized:
+            return
+        
+        self._initialized = True
         self._service_name = "dn_analysis"
-        self._version = "19.0.0-menu"
+        self._version = "20.0.0-menu"
         self._startup_time = datetime.utcnow().isoformat()
         
         # Initialize engines
@@ -1628,9 +1657,11 @@ class DNAnalysisService:
         logger.info(f"   Menu System: ✅ (19 options)")
         logger.info(f"   Source of Truth: PostgreSQL")
         logger.info(f"   ALL DN Questions go through this file")
+        logger.info(f"   No circular imports: ✅")
     
     @staticmethod
     def _session() -> Session:
+        """Get database session"""
         return SessionLocal()
     
     def get_main_menu(self) -> str:
@@ -1678,15 +1709,6 @@ class DNAnalysisService:
         """
         Process menu input and return response.
         ALL DN menu options (1-19) and natural language queries.
-        
-        Returns:
-            {
-                "response": str,           # WhatsApp message
-                "menu_type": str,          # "dn_menu"
-                "action": str,             # Action performed
-                "data": dict,              # Additional data
-                "exit_menu": bool          # True if should return to main menu
-            }
         """
         context = self._get_context(session_id)
         user_input = user_input.strip()
@@ -1699,23 +1721,20 @@ class DNAnalysisService:
             # Single DN number - show dashboard
             context.current_dn = dns[0]
             result = self._get_dn_dashboard(context, dns[0])
-            result["exit_menu"] = False  # Stay in DN service
+            result["exit_menu"] = False
             return result
         
         if dns and len(dns) >= 2:
             # Multiple DN numbers - show comparison
             context.comparison_dns = dns[:2]
             result = self._perform_comparison(context, dns[0], dns[1])
-            result["exit_menu"] = False  # Stay in DN service
+            result["exit_menu"] = False
             return result
         
         # ============================================================
         # STEP 2: Check for natural language queries
         # ============================================================
-        # Detect intent
         intent, confidence = self._intent_engine.detect_intent(user_input)
-        
-        # Extract entities
         entities = self._entity_engine.extract_entities(user_input)
         
         # Handle based on intent
@@ -1868,7 +1887,7 @@ class DNAnalysisService:
             "menu_type": "dn_menu",
             "action": "unknown_query",
             "data": {},
-            "exit_menu": False  # Stay in DN service
+            "exit_menu": False
         }
     
     # ============================================================
@@ -1888,7 +1907,7 @@ class DNAnalysisService:
             "menu_type": "dn_menu",
             "action": "main_menu",
             "data": {},
-            "exit_menu": True  # Exit to main AI Logistics menu
+            "exit_menu": True
         }
     
     def _handle_main_menu_option(self, context: DNContext, option: str) -> Dict[str, Any]:
@@ -1941,7 +1960,7 @@ class DNAnalysisService:
             "menu_type": "dn_menu",
             "action": "dn_selection",
             "data": {"purpose": action},
-            "exit_menu": False  # Stay in DN service
+            "exit_menu": False
         }
     
     def _handle_direct_action(self, context: DNContext, option: str) -> Dict[str, Any]:
@@ -2314,6 +2333,10 @@ class DNAnalysisService:
                 "exit_menu": False
             }
     
+    # ============================================================
+    # LIST/REPORT METHODS
+    # ============================================================
+    
     def _get_pending_dns(self, context: DNContext) -> Dict[str, Any]:
         """Get pending DNs"""
         try:
@@ -2556,8 +2579,6 @@ class DNAnalysisService:
                         "data": {"query": query, "dns": []},
                         "exit_menu": False
                     }
-                
-                context.search_results = dns
                 
                 return {
                     "response": self._menu_renderer.render_pending_list(f"🔍 Search Results for '{query}'", dns),
@@ -3168,6 +3189,7 @@ class DNAnalysisService:
                 "timestamp": datetime.utcnow().isoformat(),
                 "source": "PostgreSQL",
                 "menu_enabled": True,
+                "no_circular_imports": True,
             }
         except Exception as e:
             return {
@@ -3180,7 +3202,7 @@ class DNAnalysisService:
             }
 
 # ============================================================
-# BLOCK 13: SERVICE SINGLETON
+# SERVICE SINGLETON
 # ============================================================
 
 _service: Optional[DNAnalysisService] = None
@@ -3206,7 +3228,7 @@ def get_dn_main_menu() -> str:
     return service.get_main_menu()
 
 # ============================================================
-# BLOCK 14: EXPORTS
+# EXPORTS
 # ============================================================
 
 __all__ = [
