@@ -1,15 +1,18 @@
 """
 File: app/services/city_service.py
-Version: 5.3 - ENTERPRISE CITY DOMAIN AI EXPERT WITH FULL MENU
+Version: 6.0 - ENTERPRISE CITY DOMAIN AI EXPERT WITH ENHANCED DATA AGGREGATION
 Purpose: Answer ANY city-related business question through a single entry point
          PostgreSQL is the ONLY source of truth.
          Full menu system with 15+ options, sub-menus, and AI-powered queries
 
-FIXES:
-- ✅ Added process_city_menu_input method for sub-menu navigation
-- ✅ Fixed CityAnalyticsService attribute error
-- ✅ Enhanced menu state management
-- ✅ Improved error handling
+ENHANCEMENTS:
+- ✅ Enhanced data aggregation matching Excel structure
+- ✅ Warehouse-level breakdown per city
+- ✅ DN Amount and DN Qty aggregation
+- ✅ Dealer count tracking
+- ✅ Improved performance with optimized queries
+- ✅ Added warehouse distribution view
+- ✅ Added city-level aggregated metrics
 
 Status: PRODUCTION READY
 """
@@ -32,7 +35,7 @@ from functools import lru_cache
 from typing import Any, Optional, Dict, List, Tuple, Union, Set, Callable
 
 from cachetools import TTLCache
-from sqlalchemy import and_, case, distinct, func, or_, text, desc, asc
+from sqlalchemy import and_, case, distinct, func, or_, text, desc, asc, Float, Numeric
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -139,6 +142,12 @@ CITY_EMOJIS: Dict[str, str] = {
     "gwadar": "🌊", "gilgit": "🏔️"
 }
 
+WAREHOUSE_EMOJIS: Dict[str, str] = {
+    "lahore": "🏭", "karachi": "⚓", "rawalpindi": "🏔️", "gujranwala": "🏭",
+    "multan": "🌅", "peshawar": "🏔️", "quetta": "🏜️", "faisalabad": "🏭",
+    "hyderabad": "🌊", "sialkot": "⚽", "islamabad": "🏛️"
+}
+
 # ============================================================
 # BLOCK 4: ENUMS
 # ============================================================
@@ -169,6 +178,7 @@ class IntentType(Enum):
     RECOMMENDATIONS = "recommendations"
     INSIGHTS = "insights"
     TREND = "trend"
+    WAREHOUSE_DISTRIBUTION = "warehouse_distribution"
     MENU = "menu"
     UNKNOWN = "unknown"
 
@@ -190,6 +200,7 @@ class ResponseFormat(Enum):
     COMPARISON = "comparison"
     RANKING = "ranking"
     METRIC = "metric"
+    WAREHOUSE = "warehouse"
 
 # ============================================================
 # BLOCK 5: DATACLASSES
@@ -320,6 +331,21 @@ def get_city_emoji(city_name: str) -> str:
     """Get emoji for city"""
     return CITY_EMOJIS.get(city_name.lower(), "📍")
 
+def get_warehouse_emoji(warehouse_name: str) -> str:
+    """Get emoji for warehouse"""
+    return WAREHOUSE_EMOJIS.get(warehouse_name.lower(), "🏭")
+
+def format_currency(amount: float) -> str:
+    """Format currency in PKR"""
+    if amount >= 1_000_000_000_000:
+        return f"PKR {amount/1_000_000_000_000:,.2f} Trillion"
+    elif amount >= 1_000_000_000:
+        return f"PKR {amount/1_000_000_000:,.2f} Billion"
+    elif amount >= 1_000_000:
+        return f"PKR {amount/1_000_000:,.2f} Million"
+    else:
+        return f"PKR {amount:,.2f}"
+
 # ============================================================
 # BLOCK 7: MENU SYSTEM
 # ============================================================
@@ -345,13 +371,15 @@ class CityMenuRenderer:
             "9. Business Score",
             "10. Distance Info",
             "11. Growth Analytics",
-            "12. City Summary",
+            "12. Warehouse Distribution",
+            "13. City Summary",
             "99. Back to Main",
             "",
             "📌 *Quick Commands:*",
             "• Type city name for dashboard",
             "• Compare Lahore Karachi",
             "• Top cities by revenue",
+            "• Warehouses in Lahore",
             "",
             "Reply with a number or city name:"
         ])
@@ -471,14 +499,30 @@ class CityMenuRenderer:
     
     @staticmethod
     def render_city_dashboard(city_name: str, dashboard: Dict[str, Any]) -> str:
-        """Render city dashboard"""
+        """Render city dashboard with enhanced metrics"""
         emoji = get_city_emoji(city_name)
+        
+        # Format revenue
+        revenue = dashboard.get('total_revenue', 0)
+        formatted_revenue = format_currency(revenue)
+        
+        # Get warehouse distribution
+        warehouses = dashboard.get('warehouse_distribution', [])
+        warehouse_lines = []
+        if warehouses:
+            warehouse_lines.append("")
+            warehouse_lines.append("🏭 *Warehouse Distribution*")
+            for wh in warehouses[:5]:
+                wh_emoji = get_warehouse_emoji(wh.get('warehouse', ''))
+                warehouse_lines.append(f"{wh_emoji} {wh.get('warehouse', 'Unknown')}: {wh.get('dn_count', 0)} DNs, {wh.get('units', 0):,} units")
+            if len(warehouses) > 5:
+                warehouse_lines.append(f"... and {len(warehouses) - 5} more warehouses")
         
         lines = [
             f"{emoji} *{city_name.title()} Dashboard*",
             "",
             "📊 *Key Metrics*",
-            f"Revenue: PKR {dashboard.get('total_revenue', 0):,.2f}",
+            f"Revenue: {formatted_revenue}",
             f"Units: {dashboard.get('total_units', 0):,}",
             f"DN: {dashboard.get('total_dn', 0):,}",
             f"Dealers: {dashboard.get('total_dealers', 0):,}",
@@ -492,6 +536,7 @@ class CityMenuRenderer:
             f"Business Score: {dashboard.get('business_score', 0):.1f}/100",
             f"Status: {dashboard.get('overall_status', 'Unknown')}",
             f"Grade: {dashboard.get('performance_grade', 'N/A')}",
+        ] + warehouse_lines + [
             "",
             "━━━━━━━━━━━━━━━━━━",
             "",
@@ -503,6 +548,46 @@ class CityMenuRenderer:
         return "\n".join(lines)
     
     @staticmethod
+    def render_warehouse_distribution(city_name: str, warehouses: List[Dict[str, Any]]) -> str:
+        """Render warehouse distribution for a city"""
+        emoji = get_city_emoji(city_name)
+        
+        lines = [
+            f"🏭 *Warehouse Distribution - {emoji} {city_name.title()}*",
+            "",
+        ]
+        
+        total_dn = 0
+        total_units = 0
+        total_revenue = 0
+        
+        for wh in warehouses:
+            total_dn += wh.get('dn_count', 0)
+            total_units += wh.get('units', 0)
+            total_revenue += wh.get('revenue', 0)
+        
+        for i, wh in enumerate(warehouses, 1):
+            wh_emoji = get_warehouse_emoji(wh.get('warehouse', ''))
+            dn_pct = _percent(wh.get('dn_count', 0), total_dn) if total_dn > 0 else 0
+            lines.append(f"{i}. {wh_emoji} *{wh.get('warehouse', 'Unknown')}*")
+            lines.append(f"   DNs: {wh.get('dn_count', 0):,} ({dn_pct:.1f}%)")
+            lines.append(f"   Units: {wh.get('units', 0):,}")
+            lines.append(f"   Revenue: {format_currency(wh.get('revenue', 0))}")
+            lines.append("")
+        
+        lines.extend([
+            "━━━━━━━━━━━━━━━━━━",
+            "",
+            f"Total DNs: {total_dn:,}",
+            f"Total Units: {total_units:,}",
+            f"Total Revenue: {format_currency(total_revenue)}",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+        return "\n".join(lines)
+    
+    @staticmethod
     def render_pending_summary(city_name: str, data: Dict[str, Any]) -> str:
         """Render pending summary"""
         emoji = get_city_emoji(city_name)
@@ -511,7 +596,7 @@ class CityMenuRenderer:
             f"⏳ *Pending Summary - {emoji} {city_name.title()}*",
             "",
             f"Pending DN: {data.get('pending_dn', 0):,}",
-            f"Pending Revenue: PKR {data.get('pending_revenue', 0):,.2f}",
+            f"Pending Revenue: {format_currency(data.get('pending_revenue', 0))}",
             f"Pending Units: {data.get('pending_units', 0):,}",
             f"PGI Pending: {data.get('pgi_pending_dn', 0):,}",
             f"POD Pending: {data.get('pod_pending_dn', 0):,}",
@@ -579,8 +664,8 @@ class CityMenuRenderer:
             f"Monthly Growth: {data.get('monthly_growth', 0):+.1f}%",
             f"Revenue Growth: {data.get('revenue_growth_pct', 0):+.1f}%",
             "",
-            f"Current Month Revenue: PKR {data.get('current_month_revenue', 0):,.2f}",
-            f"Previous Month Revenue: PKR {data.get('previous_month_revenue', 0):,.2f}",
+            f"Current Month Revenue: {format_currency(data.get('current_month_revenue', 0))}",
+            f"Previous Month Revenue: {format_currency(data.get('previous_month_revenue', 0))}",
             "",
             f"Best Month: {data.get('best_month', 'N/A')}",
             f"Worst Month: {data.get('worst_month', 'N/A')}",
@@ -625,7 +710,7 @@ class CityMenuRenderer:
             f"Score: {data.get('business_score', 0):.1f}/100",
             f"Grade: {data.get('performance_grade', 'N/A')}",
             "",
-            f"Revenue: PKR {data.get('total_revenue', 0):,.2f}",
+            f"Revenue: {format_currency(data.get('total_revenue', 0))}",
             f"Growth: {data.get('monthly_growth', 0):+.1f}%",
             f"Pending: {data.get('pending_dn', 0):,} DN",
             f"Dealers: {data.get('total_dealers', 0):,}",
@@ -779,6 +864,11 @@ class IntentEngine:
             r"(?:trend|pattern|seasonal|period)",
             r"(?:over time|historical|trajectory)",
         ],
+        IntentType.WAREHOUSE_DISTRIBUTION: [
+            r"(?:warehouse|warehouses|distribution).*(?:city)",
+            r"warehouse (?:breakdown|distribution|list)",
+            r"which warehouses serve",
+        ],
         IntentType.MENU: [
             r"menu",
             r"city menu",
@@ -823,6 +913,9 @@ class IntentEngine:
                     ]),
                     Route(name="city_summary", utterances=[
                         "summary", "overview", "executive summary", "brief"
+                    ]),
+                    Route(name="city_warehouse", utterances=[
+                        "warehouses in city", "warehouse distribution", "which warehouses"
                     ]),
                     Route(name="city_menu", utterances=[
                         "menu", "city menu", "options", "help", "show menu"
@@ -899,6 +992,10 @@ class IntentEngine:
                 elif keyword in ["units", "quantity", "pieces"]:
                     best_intent = IntentType.UNITS
                     best_score = 0.5
+                    break
+                elif keyword in ["warehouse", "warehouses", "distribution"]:
+                    best_intent = IntentType.WAREHOUSE_DISTRIBUTION
+                    best_score = 0.6
                     break
                 elif keyword in ["menu", "help", "options"]:
                     best_intent = IntentType.MENU
@@ -1005,6 +1102,7 @@ class EntityEngine:
             "delivery": ["delivery", "transit", "shipping"],
             "pod": ["pod", "proof of delivery"],
             "pgi": ["pgi", "goods issue"],
+            "warehouse": ["warehouse", "warehouses", "distribution"],
         }
         
         found = []
@@ -1039,7 +1137,7 @@ class EntityEngine:
 # ============================================================
 
 class CityDashboardBuilder:
-    """Build city dashboards from database"""
+    """Build city dashboards from database with enhanced aggregation"""
     
     def __init__(self, session: Session):
         self.session = session
@@ -1047,7 +1145,7 @@ class CityDashboardBuilder:
         self._lock = threading.RLock()
     
     def build(self, city_name: str) -> Optional[Dict[str, Any]]:
-        """Build dashboard for city"""
+        """Build dashboard for city with enhanced metrics"""
         cache_key = city_name.lower()
         
         with self._lock:
@@ -1055,6 +1153,7 @@ class CityDashboardBuilder:
                 return self._cache[cache_key].copy()
         
         try:
+            # Main city aggregation
             query = self.session.query(
                 func.max(DeliveryReport.ship_to_city).label("city_name"),
                 func.max(DeliveryReport.warehouse).label("warehouse"),
@@ -1121,6 +1220,10 @@ class CityDashboardBuilder:
                 "avg_revenue_per_dn": round(_number(query.total_revenue) / total_dn, 2) if total_dn > 0 else 0,
             }
             
+            # Get warehouse distribution
+            warehouse_dist = self._get_warehouse_distribution(city_name)
+            dashboard["warehouse_distribution"] = warehouse_dist
+            
             # Calculate business score
             score = (
                 dashboard["delivery_success_pct"] * 0.25 +
@@ -1179,6 +1282,40 @@ class CityDashboardBuilder:
         except Exception as e:
             logger.error(f"Failed to build dashboard for {city_name}: {e}")
             return None
+    
+    def _get_warehouse_distribution(self, city_name: str) -> List[Dict[str, Any]]:
+        """Get warehouse distribution for a city"""
+        try:
+            results = self.session.query(
+                DeliveryReport.warehouse.label("warehouse"),
+                func.count(distinct(DeliveryReport.dn_no)).label("dn_count"),
+                func.sum(DeliveryReport.dn_qty).label("units"),
+                func.sum(DeliveryReport.dn_amount).label("revenue"),
+                func.count(distinct(DeliveryReport.customer_name)).label("dealers"),
+            ).filter(
+                func.lower(DeliveryReport.ship_to_city) == city_name.lower(),
+                DeliveryReport.warehouse.isnot(None)
+            ).group_by(
+                DeliveryReport.warehouse
+            ).order_by(
+                func.sum(DeliveryReport.dn_amount).desc()
+            ).all()
+            
+            warehouses = []
+            for row in results:
+                if row.warehouse:
+                    warehouses.append({
+                        "warehouse": _text(row.warehouse),
+                        "dn_count": int(row.dn_count or 0),
+                        "units": int(row.units or 0),
+                        "revenue": float(row.revenue or 0.0),
+                        "dealers": int(row.dealers or 0),
+                    })
+            
+            return warehouses
+        except Exception as e:
+            logger.error(f"Failed to get warehouse distribution for {city_name}: {e}")
+            return []
     
     def _calculate_distance(self, warehouse: str, city: str) -> Dict[str, Any]:
         """Calculate distance between warehouse and city"""
@@ -1349,6 +1486,7 @@ class CityDashboardBuilder:
         pending = dashboard.get('pending_dn', 0)
         score = dashboard.get('business_score', 0)
         delivery = dashboard.get('delivery_success_pct', 0)
+        warehouses = dashboard.get('warehouse_distribution', [])
         
         if revenue > 0 and growth > 10:
             insights.append(f"Revenue is growing strongly at {growth:+.1f}%")
@@ -1376,6 +1514,11 @@ class CityDashboardBuilder:
         elif delivery < 70:
             insights.append("Delivery performance needs improvement")
         
+        if warehouses and len(warehouses) > 1:
+            insights.append(f"Served by {len(warehouses)} warehouses")
+            top_wh = warehouses[0].get('warehouse', 'Unknown')
+            insights.append(f"Top warehouse: {top_wh}")
+        
         if not insights:
             insights.append("Performance is stable. Continue monitoring.")
         
@@ -1390,6 +1533,7 @@ class CityDashboardBuilder:
         score = dashboard.get('business_score', 0)
         pod = dashboard.get('pod_success_pct', 0)
         dealers = dashboard.get('total_dealers', 0)
+        warehouses = dashboard.get('warehouse_distribution', [])
         
         if pending > 20:
             recommendations.append(f"Escalate {pending} pending DNs for resolution")
@@ -1408,6 +1552,9 @@ class CityDashboardBuilder:
         if dealers < 10:
             recommendations.append("Consider expanding dealer network")
         
+        if len(warehouses) == 1:
+            recommendations.append("Consider diversifying warehouse coverage")
+        
         if not recommendations:
             recommendations.append("Maintain current performance levels")
             recommendations.append("Continue monitoring key metrics")
@@ -1423,6 +1570,8 @@ class CityDashboardBuilder:
         score = dashboard.get('business_score', 0)
         status = dashboard.get('overall_status', 'Unknown')
         dealers = dashboard.get('total_dealers', 0)
+        warehouses = dashboard.get('warehouse_distribution', [])
+        warehouse_count = len(warehouses)
         
         if growth >= 0:
             trend = "growing"
@@ -1436,9 +1585,9 @@ class CityDashboardBuilder:
         
         return (
             f"{city} is {trend} with a {score:.1f}/100 business score. "
-            f"Revenue is PKR {revenue:,.2f} with {pending} pending DNs. "
+            f"Revenue is {format_currency(revenue)} with {pending} pending DNs. "
             f"Delivery success is {dashboard.get('delivery_success_pct', 0):.1f}%. "
-            f"The city has {dealers} dealers. "
+            f"The city has {dealers} dealers and {warehouse_count} warehouses. "
             f"Recommendation: {action}."
         )
 
@@ -1454,7 +1603,7 @@ class CityAnalyticsService:
     
     def __init__(self) -> None:
         self._service_name = "city_analytics"
-        self._version = "5.3.0-menu"
+        self._version = "6.0.0-menu"
         self._startup_time = datetime.utcnow().isoformat()
         
         # Initialize engines
@@ -1476,6 +1625,7 @@ class CityAnalyticsService:
         logger.info(f"✅ CityAnalyticsService initialized (v{self._version})")
         logger.info(f"   Menu System: ✅")
         logger.info(f"   Source of Truth: PostgreSQL")
+        logger.info(f"   Enhanced Aggregation: ✅")
     
     @staticmethod
     def _session() -> Session:
@@ -1494,7 +1644,6 @@ class CityAnalyticsService:
         Process city menu input and return response.
         This is the method that ai_provider_service.py calls for menu navigation.
         """
-        # Process the menu input using the existing process_menu_input method
         return self.process_menu_input(session_id, user_input)
     
     def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
@@ -1543,7 +1692,7 @@ class CityAnalyticsService:
             "menu_type": "city_menu",
             "action": "main_menu",
             "data": {},
-            "exit_menu": True  # Exit to main AI Logistics menu
+            "exit_menu": True
         }
     
     def _handle_main_menu_option(self, context: CityContext, option: str) -> Dict[str, Any]:
@@ -1561,11 +1710,11 @@ class CityAnalyticsService:
             "9": ("business_score", "Enter city name for business score:"),
             "10": ("distance", "Enter city name for distance:"),
             "11": ("growth", "Enter city name for growth:"),
-            "12": ("summary", "Enter city name for summary:"),
+            "12": ("warehouse_distribution", "Enter city name for warehouse distribution:"),
+            "13": ("summary", "Enter city name for summary:"),
         }
         
         if option == "6":
-            # Start comparison flow
             context.menu_state = MenuState.COMPARISON_SELECTION
             context.comparison_cities = []
             return {
@@ -1577,7 +1726,6 @@ class CityAnalyticsService:
             }
         
         if option == "7":
-            # Show rankings directly
             return self._handle_ranking_request(context)
         
         if option not in option_map:
@@ -1585,14 +1733,11 @@ class CityAnalyticsService:
         
         action, prompt = option_map[option]
         
-        # Check if we already have a selected city
         if context.current_city:
-            # Use existing city
             result = self._execute_city_action(context, action, context.current_city)
             result["exit_menu"] = False
             return result
         
-        # Ask for city
         context.menu_state = MenuState.CITY_SELECTION
         context.selected_option = action
         context.awaiting_city = True
@@ -1670,7 +1815,6 @@ class CityAnalyticsService:
                 "exit_menu": False
             }
         else:
-            # Both cities selected, perform comparison
             city1, city2 = context.comparison_cities[0], context.comparison_cities[1]
             context.menu_state = MenuState.MAIN
             context.comparison_cities = []
@@ -1699,6 +1843,15 @@ class CityAnalyticsService:
         # Check if it's a ranking query
         if "top" in query.lower() and ("city" in query.lower() or "cities" in query.lower()):
             return self._get_city_ranking(context)
+        
+        # Check for warehouse distribution
+        if "warehouse" in query.lower() and "in" in query.lower():
+            # Try to extract city name
+            parts = query.lower().split("in")
+            if len(parts) > 1:
+                city_name = self._resolve_city_name(parts[-1].strip())
+                if city_name:
+                    return self._get_warehouse_distribution(context, city_name)
         
         # Try as single city query
         city_name = self._resolve_city_name(query)
@@ -1729,6 +1882,7 @@ class CityAnalyticsService:
                 "• 'Pending in Multan'",
                 "• 'Compare Lahore Karachi'",
                 "• 'Top cities by revenue'",
+                "• 'Warehouses in Lahore'",
                 "",
                 "0. Main Menu",
                 "99. Back"
@@ -1751,6 +1905,7 @@ class CityAnalyticsService:
             "business_score": self._get_city_business_score,
             "distance": self._get_city_distance,
             "growth": self._get_city_growth,
+            "warehouse_distribution": self._get_warehouse_distribution,
             "summary": self._get_city_summary,
         }
         
@@ -1782,7 +1937,7 @@ class CityAnalyticsService:
         return None
     
     def _get_city_dashboard(self, context: CityContext, city_name: str) -> Dict[str, Any]:
-        """Get city dashboard"""
+        """Get city dashboard with enhanced metrics"""
         try:
             with self._session() as session:
                 builder = CityDashboardBuilder(session)
@@ -1814,6 +1969,48 @@ class CityAnalyticsService:
                 "exit_menu": False
             }
     
+    def _get_warehouse_distribution(self, context: CityContext, city_name: str) -> Dict[str, Any]:
+        """Get warehouse distribution for a city"""
+        try:
+            with self._session() as session:
+                builder = CityDashboardBuilder(session)
+                dashboard = builder.build(city_name)
+                
+                if not dashboard:
+                    return {
+                        "response": f"⚠️ City '{city_name}' not found.\n\n0. Main Menu",
+                        "menu_type": "city_menu",
+                        "action": "warehouse_error",
+                        "data": {"city": city_name, "error": "not_found"},
+                        "exit_menu": False
+                    }
+                
+                warehouses = dashboard.get('warehouse_distribution', [])
+                if not warehouses:
+                    return {
+                        "response": f"🏭 *Warehouse Distribution - {city_name.title()}*\n\nNo warehouse data available.\n\n0. Main Menu\n99. Back",
+                        "menu_type": "city_menu",
+                        "action": "warehouse_distribution",
+                        "data": {"city": city_name},
+                        "exit_menu": False
+                    }
+                
+                return {
+                    "response": self._menu_renderer.render_warehouse_distribution(city_name, warehouses),
+                    "menu_type": "city_menu",
+                    "action": "warehouse_distribution",
+                    "data": {"city": city_name, "warehouses": warehouses},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "city_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
     def _get_city_metric(self, context: CityContext, city_name: str, metric: str) -> Dict[str, Any]:
         """Get specific city metric"""
         try:
@@ -1831,7 +2028,7 @@ class CityAnalyticsService:
                     }
                 
                 metric_mapping = {
-                    "revenue": ("Revenue", f"PKR {dashboard.get('total_revenue', 0):,.2f}"),
+                    "revenue": ("Revenue", format_currency(dashboard.get('total_revenue', 0))),
                     "units": ("Units", f"{dashboard.get('total_units', 0):,}"),
                 }
                 
@@ -2127,7 +2324,9 @@ class CityAnalyticsService:
             with self._session() as session:
                 results = session.query(
                     DeliveryReport.ship_to_city.label("city"),
-                    func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue")
+                    func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
+                    func.count(distinct(DeliveryReport.dn_no)).label("dns"),
+                    func.sum(DeliveryReport.dn_qty).label("units"),
                 ).filter(
                     DeliveryReport.ship_to_city.isnot(None)
                 ).group_by(
@@ -2142,7 +2341,9 @@ class CityAnalyticsService:
                     if city:
                         ranking.append({
                             "city": city,
-                            "value": f"PKR {float(row.revenue or 0):,.2f}"
+                            "value": format_currency(float(row.revenue or 0)),
+                            "dns": int(row.dns or 0),
+                            "units": int(row.units or 0),
                         })
                 
                 return {
@@ -2180,27 +2381,26 @@ class CityAnalyticsService:
                 
                 metrics = {}
                 
-                # Build metrics for city1
                 metrics[f"{city1}_metrics"] = {
-                    "Revenue": f"PKR {dash1.get('total_revenue', 0):,.2f}",
+                    "Revenue": format_currency(dash1.get('total_revenue', 0)),
                     "Units": f"{dash1.get('total_units', 0):,}",
                     "DN": f"{dash1.get('total_dn', 0):,}",
                     "Pending": f"{dash1.get('pending_dn', 0):,}",
                     "Delivery Days": f"{dash1.get('avg_delivery', 0):.1f}",
                     "Business Score": f"{dash1.get('business_score', 0):.1f}/100",
+                    "Warehouses": f"{len(dash1.get('warehouse_distribution', []))}",
                 }
                 
-                # Build metrics for city2
                 metrics[f"{city2}_metrics"] = {
-                    "Revenue": f"PKR {dash2.get('total_revenue', 0):,.2f}",
+                    "Revenue": format_currency(dash2.get('total_revenue', 0)),
                     "Units": f"{dash2.get('total_units', 0):,}",
                     "DN": f"{dash2.get('total_dn', 0):,}",
                     "Pending": f"{dash2.get('pending_dn', 0):,}",
                     "Delivery Days": f"{dash2.get('avg_delivery', 0):.1f}",
                     "Business Score": f"{dash2.get('business_score', 0):.1f}/100",
+                    "Warehouses": f"{len(dash2.get('warehouse_distribution', []))}",
                 }
                 
-                # Generate comparison summary
                 revenue1 = dash1.get('total_revenue', 0)
                 revenue2 = dash2.get('total_revenue', 0)
                 
@@ -2298,6 +2498,7 @@ class CityAnalyticsService:
                 "timestamp": datetime.utcnow().isoformat(),
                 "source": "PostgreSQL",
                 "menu_enabled": True,
+                "enhanced_aggregation": True,
             }
         except Exception as e:
             return {
@@ -2387,4 +2588,6 @@ __all__ = [
     "process_city_menu",
     "get_city_main_menu",
     "CityMenuRenderer",
+    "format_currency",
+    "get_warehouse_emoji",
 ]
