@@ -27,7 +27,10 @@ ROUTING FLOW:
 
 Status: ENTERPRISE READY - 100% FUNCTIONAL
 """
+# At the top of the file, after imports
+logger.setLevel(logging.DEBUG)
 
+# In _init_service_registry, add more detailed logging
 # ============================================================
 # BLOCK 1: IMPORTS AND SETUP
 # ============================================================
