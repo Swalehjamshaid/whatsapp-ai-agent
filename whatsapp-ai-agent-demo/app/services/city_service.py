@@ -1,23 +1,21 @@
 """
 File: app/services/city_service.py
-Version: 4.0 - CITY DOMAIN AI EXPERT
+Version: 5.2 - ENTERPRISE CITY DOMAIN AI EXPERT WITH FULL MENU
 Purpose: Answer ANY city-related business question through a single entry point
          PostgreSQL is the ONLY source of truth.
-         Architecture: Intent → Entity → Planner → Handler → Formatter
+         Full menu system with 15+ options, sub-menus, and AI-powered queries
 
 NEW FEATURES:
-- ✅ Single Entry Point: answer_city_question()
-- ✅ Intent Engine with 15+ intent types
-- ✅ Entity Extraction (cities, metrics, timeframes, etc.)
-- ✅ Query Planner for complex questions
-- ✅ 10+ Metric Handlers (Revenue, Units, Pending, Delivery, etc.)
-- ✅ Multi-Question Support
-- ✅ Context Memory (session-based)
-- ✅ Dynamic Formatter (compact, executive, detailed, KPI-only)
-- ✅ AI Reasoning with Groq (optional)
-- ✅ Confidence Engine
-- ✅ Plugin-Based Metrics Registry
-- ✅ Performance Optimized (<300ms response)
+- ✅ Complete Menu System (press 3 from main menu)
+- ✅ 15+ City Analytics Options with sub-menus
+- ✅ City Selection Prompts
+- ✅ Comparison Flow (2 cities)
+- ✅ Ranking Display with Medals
+- ✅ Quick Commands Support
+- ✅ Context Memory
+- ✅ Dynamic Menu Rendering
+- ✅ WhatsApp-Optimized Formatting
+- ✅ AI-Powered Natural Language Queries
 
 Status: PRODUCTION READY
 """
@@ -40,7 +38,6 @@ from functools import lru_cache
 from typing import Any, Optional, Dict, List, Tuple, Union, Set, Callable
 
 from cachetools import TTLCache
-from rapidfuzz import fuzz, process
 from sqlalchemy import and_, case, distinct, func, or_, text, desc, asc
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -51,22 +48,49 @@ from app.models import DeliveryReport
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# BLOCK 1: CONFIGURATION
+# BLOCK 1: OPTIONAL AI IMPORTS
+# ============================================================
+
+try:
+    from rapidfuzz import fuzz, process
+    RAPIDFUZZ_AVAILABLE = True
+except ImportError:
+    RAPIDFUZZ_AVAILABLE = False
+
+try:
+    from sentence_transformers import SentenceTransformer
+    SEMANTIC_AVAILABLE = True
+except ImportError:
+    SEMANTIC_AVAILABLE = False
+
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+
+try:
+    from semantic_router import Route, Router
+    from semantic_router.encoders import HuggingFaceEncoder
+    SEMANTIC_ROUTER_AVAILABLE = True
+except ImportError:
+    SEMANTIC_ROUTER_AVAILABLE = False
+
+# ============================================================
+# BLOCK 2: CONFIGURATION
 # ============================================================
 
 CACHE_TTL = max(60, int(os.getenv("CITY_ANALYTICS_CACHE_TTL", "300")))
 USE_SEMANTIC_SEARCH = os.getenv("USE_SEMANTIC_SEARCH", "true").lower() == "true"
 USE_AI_EXPLANATION = os.getenv("USE_AI_EXPLANATION", "true").lower() == "true"
 DN_DELAY_THRESHOLD_DAYS = int(os.getenv("DN_DELAY_THRESHOLD_DAYS", "7"))
-
-# ============================================================
-# BLOCK 2: CONSTANTS
-# ============================================================
-
 TABLE: str = "delivery_reports"
 SEPARATOR: str = "────────────────────"
 
-# Business columns
+# ============================================================
+# BLOCK 3: CONSTANTS
+# ============================================================
+
 BUSINESS_COLUMNS: tuple[str, ...] = (
     "dn_no", "division", "customer_code", "dealer_code", "customer_name",
     "customer_model", "material_no", "sales_office", "sales_manager",
@@ -75,7 +99,6 @@ BUSINESS_COLUMNS: tuple[str, ...] = (
     "delivery_status", "pgi_status", "pod_status", "pending_flag",
 )
 
-# Warehouse coordinates
 WAREHOUSE_COORDINATES: dict[str, tuple[float, float]] = {
     "rawalpindi": (33.5651, 73.0169),
     "lahore": (31.5204, 74.3587),
@@ -97,7 +120,6 @@ WAREHOUSE_COORDINATES: dict[str, tuple[float, float]] = {
     "islamabad": (33.6844, 73.0479),
 }
 
-# City aliases
 CITY_ALIASES: dict[str, str] = {
     "rwp": "rawalpindi",
     "isb": "islamabad",
@@ -106,9 +128,6 @@ CITY_ALIASES: dict[str, str] = {
     "fsd": "faisalabad",
     "hyd": "hyderabad",
     "ryk": "rahim yar khan",
-    "dik": "dera ismail khan",
-    "gilgit": "gilgit",
-    "skd": "skardu",
 }
 
 CITY_NAMES: list[str] = [
@@ -118,8 +137,16 @@ CITY_NAMES: list[str] = [
     "dg khan", "rahim yar khan", "gwadar"
 ]
 
+CITY_EMOJIS: Dict[str, str] = {
+    "lahore": "🏛️", "karachi": "🌊", "rawalpindi": "🏔️", "islamabad": "🏛️",
+    "multan": "🌅", "peshawar": "🏔️", "quetta": "🏜️", "faisalabad": "🏭",
+    "hyderabad": "🌊", "sialkot": "⚽", "gujranwala": "🏭", "bahawalpur": "🌴",
+    "sukkur": "🌊", "dg khan": "🏔️", "rahim yar khan": "🌾", "abbottabad": "🏔️",
+    "gwadar": "🌊", "gilgit": "🏔️"
+}
+
 # ============================================================
-# BLOCK 3: ENUMS
+# BLOCK 4: ENUMS
 # ============================================================
 
 class IntentType(Enum):
@@ -133,6 +160,7 @@ class IntentType(Enum):
     PGI = "pgi"
     TOP_PRODUCT = "top_product"
     TOP_MODEL = "top_model"
+    TOP_DEALER = "top_dealer"
     GROWTH = "growth"
     COMPARISON = "comparison"
     RANK = "rank"
@@ -142,37 +170,20 @@ class IntentType(Enum):
     BUSINESS_SCORE = "business_score"
     RISK_SCORE = "risk_score"
     DEALERS = "dealers"
-    TOP_DEALER = "top_dealer"
     AVERAGE = "average"
     RANKING = "ranking"
+    RECOMMENDATIONS = "recommendations"
+    INSIGHTS = "insights"
+    TREND = "trend"
+    MENU = "menu"
     UNKNOWN = "unknown"
 
-class MetricType(Enum):
-    """Supported metrics"""
-    REVENUE = "revenue"
-    UNITS = "units"
-    DN = "dn"
-    DEALERS = "dealers"
-    PENDING_DN = "pending_dn"
-    PENDING_REVENUE = "pending_revenue"
-    PENDING_UNITS = "pending_units"
-    DELIVERY_DAYS = "delivery_days"
-    POD_DAYS = "pod_days"
-    CYCLE_TIME = "cycle_time"
-    DELIVERY_SUCCESS = "delivery_success"
-    POD_SUCCESS = "pod_success"
-    PGI_SUCCESS = "pgi_success"
-    PENDING_PCT = "pending_pct"
-    BUSINESS_SCORE = "business_score"
-    RISK_SCORE = "risk_score"
-    REVENUE_PER_DEALER = "revenue_per_dealer"
-    REVENUE_PER_DN = "revenue_per_dn"
-    REVENUE_PER_UNIT = "revenue_per_unit"
-    UNITS_PER_DN = "units_per_dn"
-    GROWTH_PCT = "growth_pct"
-    AVERAGE_ORDER_VALUE = "average_order_value"
-    DISTANCE_KM = "distance_km"
-    DRIVING_TIME = "driving_time"
+class MenuState(Enum):
+    """Menu navigation states"""
+    MAIN = "main"
+    CITY_SELECTION = "city_selection"
+    COMPARISON_SELECTION = "comparison_selection"
+    EXECUTING = "executing"
 
 class ResponseFormat(Enum):
     """Response format types"""
@@ -184,16 +195,10 @@ class ResponseFormat(Enum):
     JSON = "json"
     COMPARISON = "comparison"
     RANKING = "ranking"
-
-class ConfidenceLevel(Enum):
-    """Confidence levels for answers"""
-    HIGH = "high"      # 90-100% - Exact match or direct calculation
-    MEDIUM = "medium"  # 70-89%  - Semantic match or derived calculation
-    LOW = "low"        # 50-69%  - AI-generated or inferred
-    UNKNOWN = "unknown" # <50%   - Fallback or uncertain
+    METRIC = "metric"
 
 # ============================================================
-# BLOCK 4: DATACLASSES
+# BLOCK 5: DATACLASSES
 # ============================================================
 
 @dataclass
@@ -202,7 +207,14 @@ class CityContext:
     current_city: Optional[str] = None
     last_question: Optional[str] = None
     last_intent: Optional[IntentType] = None
+    last_metrics: List[str] = field(default_factory=list)
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)
+    session_start: datetime = field(default_factory=datetime.now)
+    menu_state: MenuState = MenuState.MAIN
+    selected_option: Optional[str] = None
+    comparison_cities: List[str] = field(default_factory=list)
+    awaiting_city: bool = False
+    awaiting_comparison: bool = False
     
     def set_city(self, city: str) -> None:
         self.current_city = city
@@ -214,6 +226,13 @@ class CityContext:
         self.current_city = None
         self.last_question = None
         self.last_intent = None
+        self.last_metrics = []
+        self.conversation_history = []
+        self.menu_state = MenuState.MAIN
+        self.selected_option = None
+        self.comparison_cities = []
+        self.awaiting_city = False
+        self.awaiting_comparison = False
 
 @dataclass
 class QueryPlan:
@@ -221,30 +240,24 @@ class QueryPlan:
     intent: IntentType
     city: Optional[str] = None
     cities: List[str] = field(default_factory=list)
-    metrics: List[MetricType] = field(default_factory=list)
+    metrics: List[str] = field(default_factory=list)
     timeframe: Optional[str] = None
     limit: int = 10
     sort_by: Optional[str] = None
     order: str = "desc"
-    format: ResponseFormat = ResponseFormat.STANDARD
+    format: str = "standard"
     confidence: float = 1.0
-    
-    def add_metric(self, metric: MetricType) -> None:
-        if metric not in self.metrics:
-            self.metrics.append(metric)
-    
-    def has_metric(self, metric: MetricType) -> bool:
-        return metric in self.metrics
+    requires_ai: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
         return {
             "intent": self.intent.value,
             "city": self.city,
             "cities": self.cities,
-            "metrics": [m.value for m in self.metrics],
+            "metrics": self.metrics,
             "timeframe": self.timeframe,
             "limit": self.limit,
-            "format": self.format.value,
+            "format": self.format,
             "confidence": self.confidence,
         }
 
@@ -254,31 +267,20 @@ class CityAnswer:
     question: str
     intent: IntentType
     plan: QueryPlan
-    dashboard: Optional[Any] = None
+    dashboard: Optional[Dict[str, Any]] = None
     metrics: Dict[str, Any] = field(default_factory=dict)
     explanation: str = ""
+    recommendations: List[str] = field(default_factory=list)
+    insights: List[str] = field(default_factory=list)
     formatted_response: str = ""
     confidence: float = 1.0
     execution_time_ms: float = 0.0
     source: str = "PostgreSQL"
     ai_enhanced: bool = False
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "question": self.question,
-            "intent": self.intent.value,
-            "plan": self.plan.to_dict() if self.plan else None,
-            "metrics": self.metrics,
-            "explanation": self.explanation,
-            "formatted_response": self.formatted_response,
-            "confidence": self.confidence,
-            "execution_time_ms": self.execution_time_ms,
-            "source": self.source,
-            "ai_enhanced": self.ai_enhanced,
-        }
+    context_used: bool = False
 
 # ============================================================
-# BLOCK 5: UTILITY FUNCTIONS
+# BLOCK 6: UTILITY FUNCTIONS
 # ============================================================
 
 def _text(value: Any, default: str = "Unknown") -> str:
@@ -317,17 +319,369 @@ def _growth(current: float, previous: float) -> float:
         return 100.0 if current > 0 else 0.0
     return round(((current - previous) / previous) * 100, 2)
 
+def _flag(value: Any) -> bool:
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "pending"}
+
+def get_city_emoji(city_name: str) -> str:
+    """Get emoji for city"""
+    return CITY_EMOJIS.get(city_name.lower(), "📍")
+
 # ============================================================
-# BLOCK 6: INTENT ENGINE
+# BLOCK 7: MENU SYSTEM
+# ============================================================
+
+class CityMenuRenderer:
+    """Render city analytics menus in WhatsApp format"""
+    
+    @staticmethod
+    def render_main_menu() -> str:
+        """Render main city menu"""
+        return "\n".join([
+            "🏙️ *CITY ANALYTICS MENU*",
+            "",
+            "0. Main Menu",
+            "1. City Dashboard",
+            "2. City Revenue",
+            "3. City Units",
+            "4. City Pending",
+            "5. City Delivery",
+            "6. Compare Cities",
+            "7. City Rankings",
+            "8. Top Products",
+            "9. Business Score",
+            "10. Distance Info",
+            "11. Growth Analytics",
+            "12. City Summary",
+            "99. Back to Main",
+            "",
+            "📌 *Quick Commands:*",
+            "• Type city name for dashboard",
+            "• Compare Lahore Karachi",
+            "• Top cities by revenue",
+            "",
+            "Reply with a number or city name:"
+        ])
+    
+    @staticmethod
+    def render_city_selection(prompt: str = "Enter city name:") -> str:
+        """Render city selection prompt"""
+        return "\n".join([
+            "🏙️ *City Selection*",
+            "",
+            prompt,
+            "",
+            "💡 *Available Cities:*",
+            "Lahore, Karachi, Rawalpindi, Islamabad, Multan",
+            "Peshawar, Quetta, Faisalabad, Hyderabad, Sialkot",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+    
+    @staticmethod
+    def render_comparison_selection() -> str:
+        """Render comparison city selection"""
+        return "\n".join([
+            "🔄 *Compare Cities*",
+            "",
+            "Enter first city name:",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+    
+    @staticmethod
+    def render_ranking(ranking: List[Dict[str, Any]], metric: str = "revenue", limit: int = 10) -> str:
+        """Render city rankings"""
+        lines = [
+            f"🏆 *City Rankings by {metric.title()}*",
+            "",
+        ]
+        
+        for i, item in enumerate(ranking[:limit], 1):
+            city = item.get('city', 'Unknown')
+            value = item.get('value', 'N/A')
+            emoji = get_city_emoji(city)
+            
+            if i == 1:
+                medal = "🥇"
+            elif i == 2:
+                medal = "🥈"
+            elif i == 3:
+                medal = "🥉"
+            else:
+                medal = f"{i}."
+            
+            lines.append(f"{medal} {emoji} {city.title()}: {value}")
+        
+        lines.extend([
+            "",
+            "━━━━━━━━━━━━━━━━━━",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+        return "\n".join(lines)
+    
+    @staticmethod
+    def render_comparison_result(city1: str, city2: str, metrics: Dict[str, Any]) -> str:
+        """Render comparison result"""
+        emoji1 = get_city_emoji(city1)
+        emoji2 = get_city_emoji(city2)
+        
+        lines = [
+            f"🔄 *Comparison: {emoji1} {city1.title()} vs {emoji2} {city2.title()}*",
+            "",
+            "───────────────────",
+            "",
+        ]
+        
+        # Get metrics for both cities
+        metrics1 = metrics.get(f"{city1}_metrics", {})
+        metrics2 = metrics.get(f"{city2}_metrics", {})
+        
+        all_keys = set(metrics1.keys()) | set(metrics2.keys())
+        
+        for key in sorted(all_keys):
+            v1 = metrics1.get(key, "N/A")
+            v2 = metrics2.get(key, "N/A")
+            
+            # Determine winner
+            if isinstance(v1, str) and isinstance(v2, str):
+                # Try to extract numeric values for comparison
+                try:
+                    num1 = float(re.sub(r'[^\d.]', '', v1))
+                    num2 = float(re.sub(r'[^\d.]', '', v2))
+                    if key.lower() in ['pending', 'pending dn', 'delivery days']:
+                        winner = "✅" if num1 < num2 else "❌" if num1 > num2 else "➖"
+                    else:
+                        winner = "✅" if num1 > num2 else "❌" if num1 < num2 else "➖"
+                    lines.append(f"{key}: {v1} vs {v2} {winner}")
+                except:
+                    lines.append(f"{key}: {v1} vs {v2}")
+            else:
+                lines.append(f"{key}: {v1} vs {v2}")
+        
+        # Add summary
+        lines.extend([
+            "",
+            "───────────────────",
+            "",
+            "💡 *Summary*",
+            metrics.get('explanation', 'Comparison complete.'),
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+        return "\n".join(lines)
+    
+    @staticmethod
+    def render_city_dashboard(city_name: str, dashboard: Dict[str, Any]) -> str:
+        """Render city dashboard"""
+        emoji = get_city_emoji(city_name)
+        
+        lines = [
+            f"{emoji} *{city_name.title()} Dashboard*",
+            "",
+            "📊 *Key Metrics*",
+            f"Revenue: PKR {dashboard.get('total_revenue', 0):,.2f}",
+            f"Units: {dashboard.get('total_units', 0):,}",
+            f"DN: {dashboard.get('total_dn', 0):,}",
+            f"Dealers: {dashboard.get('total_dealers', 0):,}",
+            f"Pending DN: {dashboard.get('pending_dn', 0):,}",
+            "",
+            "🚚 *Delivery*",
+            f"Success Rate: {dashboard.get('delivery_success_pct', 0):.1f}%",
+            f"Average Days: {dashboard.get('avg_delivery', 0):.1f}",
+            "",
+            "📈 *Performance*",
+            f"Business Score: {dashboard.get('business_score', 0):.1f}/100",
+            f"Status: {dashboard.get('overall_status', 'Unknown')}",
+            f"Grade: {dashboard.get('performance_grade', 'N/A')}",
+            "",
+            "━━━━━━━━━━━━━━━━━━",
+            "",
+            "0. Main Menu",
+            "99. Back to Main",
+            "",
+            "📌 *Try:* 'Revenue in [city]' or 'Pending in [city]'"
+        ]
+        return "\n".join(lines)
+    
+    @staticmethod
+    def render_pending_summary(city_name: str, data: Dict[str, Any]) -> str:
+        """Render pending summary"""
+        emoji = get_city_emoji(city_name)
+        
+        return "\n".join([
+            f"⏳ *Pending Summary - {emoji} {city_name.title()}*",
+            "",
+            f"Pending DN: {data.get('pending_dn', 0):,}",
+            f"Pending Revenue: PKR {data.get('pending_revenue', 0):,.2f}",
+            f"Pending Units: {data.get('pending_units', 0):,}",
+            f"PGI Pending: {data.get('pgi_pending_dn', 0):,}",
+            f"POD Pending: {data.get('pod_pending_dn', 0):,}",
+            "",
+            f"Avg Pending Days: {data.get('pending_average_days', 0):.1f}",
+            f"Critical (>7 days): {data.get('critical_pending', 0):,}",
+            f"Overdue (>14 days): {data.get('overdue_pending', 0):,}",
+            f"Oldest Pending DN: {data.get('oldest_pending_dn', 'N/A')}",
+            f"Oldest Pending Days: {data.get('oldest_pending_days', 0):,}",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+    
+    @staticmethod
+    def render_delivery_summary(city_name: str, data: Dict[str, Any]) -> str:
+        """Render delivery summary"""
+        emoji = get_city_emoji(city_name)
+        
+        return "\n".join([
+            f"🚚 *Delivery Summary - {emoji} {city_name.title()}*",
+            "",
+            f"Success Rate: {data.get('delivery_success_pct', 0):.1f}%",
+            f"Average Days: {data.get('avg_delivery', 0):.1f}",
+            f"Fastest: {data.get('fastest_delivery', 0):.1f} Days",
+            f"Slowest: {data.get('slowest_delivery', 0):.1f} Days",
+            f"Same Day: {data.get('same_day_deliveries', 0):,}",
+            f"Next Day: {data.get('next_day_deliveries', 0):,}",
+            "",
+            f"POD Success: {data.get('pod_success_pct', 0):.1f}%",
+            f"POD Average: {data.get('avg_pod', 0):.1f} Days",
+            f"Cycle Time: {data.get('avg_cycle', 0):.1f} Days",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+    
+    @staticmethod
+    def render_distance_info(city_name: str, distance_data: Dict[str, Any]) -> str:
+        """Render distance information"""
+        emoji = get_city_emoji(city_name)
+        warehouse = distance_data.get('warehouse', 'Unknown')
+        
+        return "\n".join([
+            f"📍 *Distance Info - {emoji} {city_name.title()}*",
+            "",
+            f"Warehouse: {warehouse}",
+            f"Distance: {distance_data.get('distance_km', 'N/A')} KM",
+            f"Driving Time: {distance_data.get('driving_time', 'N/A')}",
+            f"Est. Delivery: {distance_data.get('estimated_delivery', 'N/A')}",
+            f"Source: {distance_data.get('source', 'N/A')}",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+    
+    @staticmethod
+    def render_growth_summary(city_name: str, data: Dict[str, Any]) -> str:
+        """Render growth summary"""
+        emoji = get_city_emoji(city_name)
+        
+        return "\n".join([
+            f"📈 *Growth Analytics - {emoji} {city_name.title()}*",
+            "",
+            f"Monthly Growth: {data.get('monthly_growth', 0):+.1f}%",
+            f"Revenue Growth: {data.get('revenue_growth_pct', 0):+.1f}%",
+            "",
+            f"Current Month Revenue: PKR {data.get('current_month_revenue', 0):,.2f}",
+            f"Previous Month Revenue: PKR {data.get('previous_month_revenue', 0):,.2f}",
+            "",
+            f"Best Month: {data.get('best_month', 'N/A')}",
+            f"Worst Month: {data.get('worst_month', 'N/A')}",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+    
+    @staticmethod
+    def render_business_score(city_name: str, data: Dict[str, Any]) -> str:
+        """Render business score"""
+        emoji = get_city_emoji(city_name)
+        
+        return "\n".join([
+            f"📈 *Business Score - {emoji} {city_name.title()}*",
+            "",
+            f"Score: {data.get('business_score', 0):.1f}/100",
+            f"Status: {data.get('overall_status', 'Unknown')}",
+            f"Grade: {data.get('performance_grade', 'N/A')}",
+            f"Risk Score: {data.get('risk_score', 0):.1f}/100",
+            "",
+            f"Strengths: {len(data.get('strengths', []))} identified",
+            f"Weaknesses: {len(data.get('weaknesses', []))} identified",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+    
+    @staticmethod
+    def render_summary(city_name: str, data: Dict[str, Any]) -> str:
+        """Render executive summary"""
+        emoji = get_city_emoji(city_name)
+        
+        lines = [
+            f"📋 *Executive Summary - {emoji} {city_name.title()}*",
+            "",
+            data.get('executive_summary', 'Summary not available.'),
+            "",
+            "━━━━━━━━━━━━━━━━━━",
+            "",
+            f"Status: {data.get('overall_status', 'Unknown')}",
+            f"Score: {data.get('business_score', 0):.1f}/100",
+            f"Grade: {data.get('performance_grade', 'N/A')}",
+            "",
+            f"Revenue: PKR {data.get('total_revenue', 0):,.2f}",
+            f"Growth: {data.get('monthly_growth', 0):+.1f}%",
+            f"Pending: {data.get('pending_dn', 0):,} DN",
+            f"Dealers: {data.get('total_dealers', 0):,}",
+        ]
+        
+        insights = data.get('insights', [])
+        if insights:
+            lines.append("")
+            lines.append("💡 *Key Insights*")
+            for insight in insights[:3]:
+                lines.append(f"• {insight}")
+        
+        recommendations = data.get('recommendations', [])
+        if recommendations:
+            lines.append("")
+            lines.append("🎯 *Recommendations*")
+            for rec in recommendations[:3]:
+                lines.append(f"• {rec}")
+        
+        lines.extend([
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+        return "\n".join(lines)
+    
+    @staticmethod
+    def render_top_products(city_name: str, data: Dict[str, Any]) -> str:
+        """Render top products"""
+        emoji = get_city_emoji(city_name)
+        
+        return "\n".join([
+            f"🏷️ *Top Products - {emoji} {city_name.title()}*",
+            "",
+            f"Top Product: {data.get('top_product', 'N/A')}",
+            f"Top Model: {data.get('top_model', 'N/A')}",
+            f"Top Division: {data.get('top_division', 'N/A')}",
+            f"Top Material: {data.get('top_material', 'N/A')}",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+
+# ============================================================
+# BLOCK 8: INTENT ENGINE
 # ============================================================
 
 class IntentEngine:
-    """
-    Intent detection for city questions
-    Supports 15+ intent types with pattern matching and semantic routing
-    """
+    """AI-powered intent detection for city questions"""
     
-    # Intent patterns with priority
     INTENT_PATTERNS = {
         IntentType.DASHBOARD: [
             r"(?:show|display|tell|get).*(?:city|dashboard|profile)",
@@ -336,25 +690,28 @@ class IntentEngine:
             r"tell me about (?:city|dashboard)",
         ],
         IntentType.REVENUE: [
-            r"(?:revenue|sales|income|turnover|collection)",
+            r"(?:revenue|sales|income|turnover|collection|earnings)",
             r"(?:how much|what is).*(?:revenue|sale|income)",
             r"revenue (?:by|in|for|from)",
             r"total (?:revenue|sales)",
+            r"(?:highest|lowest|top|bottom).*(?:revenue|sales)",
         ],
         IntentType.UNITS: [
-            r"(?:units|quantity|qty|volume|pieces)",
+            r"(?:units|quantity|qty|volume|pieces|items)",
             r"(?:how many|number of).*(?:units|quantity|pieces)",
             r"units (?:sold|delivered|shipped)",
         ],
         IntentType.PENDING: [
-            r"(?:pending|outstanding|backlog|overdue)",
+            r"(?:pending|outstanding|backlog|overdue|delayed)",
             r"(?:delayed|unfulfilled).*(?:dn|order)",
             r"pending (?:dn|order|delivery)",
+            r"(?:critical|urgent).*(?:pending|overdue)",
         ],
         IntentType.DELIVERY: [
-            r"(?:delivery|dispatch|shipping)",
+            r"(?:delivery|dispatch|shipping|transit)",
             r"(?:delivery|dispatch) (?:time|duration|days|performance)",
             r"average delivery",
+            r"(?:fastest|slowest|same day|next day).*(?:delivery)",
         ],
         IntentType.POD: [
             r"pod",
@@ -367,8 +724,9 @@ class IntentEngine:
             r"pgi (?:rate|status|pending)",
         ],
         IntentType.TOP_PRODUCT: [
-            r"top (?:product|material|model|item)",
+            r"top (?:product|material|model|item|product)",
             r"(?:best|leading|highest).*(?:product|material|model)",
+            r"what is the top (?:product|model)",
         ],
         IntentType.GROWTH: [
             r"(?:growth|trend|increase|decrease|change)",
@@ -384,6 +742,7 @@ class IntentEngine:
             r"(?:rank|ranking|position|standing|order)",
             r"(?:top|best|highest|lowest|worst)",
             r"ranked|ranking by",
+            r"(?:top|bottom)\s+(\d+)\s+(?:cities|city)",
         ],
         IntentType.DISTANCE: [
             r"(?:distance|travel|driving|route)",
@@ -412,6 +771,26 @@ class IntentEngine:
             r"(?:summary|overview|brief|condense)",
             r"executive (?:summary|overview)",
         ],
+        IntentType.RECOMMENDATIONS: [
+            r"(?:recommendation|suggest|advice|improve)",
+            r"what should (?:i|we) (?:do|improve)",
+            r"(?:how to|way to) improve",
+        ],
+        IntentType.INSIGHTS: [
+            r"(?:insight|key insight|analysis|observation)",
+            r"what (?:does|is) (?:the|this) (?:mean|tell)",
+            r"(?:why|explain)",
+        ],
+        IntentType.TREND: [
+            r"(?:trend|pattern|seasonal|period)",
+            r"(?:over time|historical|trajectory)",
+        ],
+        IntentType.MENU: [
+            r"menu",
+            r"city menu",
+            r"options",
+            r"help",
+        ],
     }
     
     def __init__(self):
@@ -419,56 +798,64 @@ class IntentEngine:
             intent: [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
             for intent, patterns in self.INTENT_PATTERNS.items()
         }
-        self._cache: TTLCache[str, IntentType] = TTLCache(maxsize=1024, ttl=3600)
+        self._cache: TTLCache[str, Tuple[IntentType, float]] = TTLCache(maxsize=1024, ttl=3600)
         self._lock = threading.RLock()
         
-        # Semantic router for fallback
+        # Semantic router
         self._semantic_router = None
         if SEMANTIC_ROUTER_AVAILABLE:
             try:
-                from semantic_router import Route, Router
-                from semantic_router.encoders import HuggingFaceEncoder
-                
                 routes = [
                     Route(name="city_dashboard", utterances=[
                         "show city", "city dashboard", "how is city", "city performance"
                     ]),
                     Route(name="city_revenue", utterances=[
-                        "city revenue", "sales in city", "how much revenue"
+                        "city revenue", "sales in city", "how much revenue", "city income"
                     ]),
                     Route(name="city_pending", utterances=[
-                        "pending in city", "overdue orders", "backlog"
+                        "pending in city", "overdue orders", "backlog", "pending delivery"
                     ]),
                     Route(name="city_comparison", utterances=[
-                        "compare cities", "city vs city", "comparison"
+                        "compare cities", "city vs city", "comparison", "versus"
+                    ]),
+                    Route(name="city_units", utterances=[
+                        "units sold", "quantity", "pieces", "volume"
+                    ]),
+                    Route(name="city_delivery", utterances=[
+                        "delivery time", "delivery days", "transit", "shipping"
+                    ]),
+                    Route(name="city_growth", utterances=[
+                        "growth", "trend", "increase", "decrease", "change"
+                    ]),
+                    Route(name="city_summary", utterances=[
+                        "summary", "overview", "executive summary", "brief"
+                    ]),
+                    Route(name="city_menu", utterances=[
+                        "menu", "city menu", "options", "help", "show menu"
                     ]),
                 ]
                 self._semantic_router = Router(routes=routes, encoder=HuggingFaceEncoder())
-                logger.info("✅ Semantic router initialized for intent detection")
+                logger.info("✅ Semantic router initialized")
             except Exception as e:
                 logger.warning(f"⚠️ Semantic router init failed: {e}")
     
     def detect_intent(self, question: str) -> Tuple[IntentType, float]:
-        """
-        Detect intent from question with confidence score
-        
-        Returns:
-            (IntentType, confidence_score)
-        """
+        """Detect intent with confidence score"""
         question_lower = question.lower()
         cache_key = question_lower[:200]
         
-        # Check cache
         with self._lock:
             if cache_key in self._cache:
-                cached_intent = self._cache[cache_key]
-                return cached_intent, 0.95
+                return self._cache[cache_key]
         
-        # Check each intent pattern
         best_intent = IntentType.UNKNOWN
         best_score = 0.0
-        best_pattern_count = 0
         
+        # Check for menu commands first
+        if question_lower in ["menu", "city menu", "options", "help", "show menu"]:
+            return IntentType.MENU, 1.0
+        
+        # Pattern matching
         for intent, patterns in self._patterns.items():
             matches = 0
             for pattern in patterns:
@@ -476,14 +863,12 @@ class IntentEngine:
                     matches += 1
             
             if matches > 0:
-                # Score based on number of matches
-                score = min(1.0, matches / len(patterns) * 2)
+                score = min(1.0, matches / max(1, len(patterns)) * 2)
                 if score > best_score:
                     best_score = score
                     best_intent = intent
-                    best_pattern_count = matches
         
-        # If no pattern matched, try semantic router
+        # Semantic router fallback
         if best_intent == IntentType.UNKNOWN and self._semantic_router:
             try:
                 result = self._semantic_router.route(question_lower)
@@ -497,7 +882,7 @@ class IntentEngine:
             except Exception:
                 pass
         
-        # If still unknown, use keyword analysis
+        # Keyword fallback
         if best_intent == IntentType.UNKNOWN:
             keywords = question_lower.split()
             for keyword in keywords:
@@ -509,7 +894,7 @@ class IntentEngine:
                     best_intent = IntentType.PENDING
                     best_score = 0.5
                     break
-                elif keyword in ["delivery", "delivered"]:
+                elif keyword in ["delivery", "delivered", "transit"]:
                     best_intent = IntentType.DELIVERY
                     best_score = 0.5
                     break
@@ -517,50 +902,26 @@ class IntentEngine:
                     best_intent = IntentType.COMPARISON
                     best_score = 0.6
                     break
+                elif keyword in ["units", "quantity", "pieces"]:
+                    best_intent = IntentType.UNITS
+                    best_score = 0.5
+                    break
+                elif keyword in ["menu", "help", "options"]:
+                    best_intent = IntentType.MENU
+                    best_score = 0.8
+                    break
         
-        # Cache result
         with self._lock:
-            self._cache[cache_key] = best_intent
+            self._cache[cache_key] = (best_intent, best_score)
         
         return best_intent, best_score
 
 # ============================================================
-# BLOCK 7: ENTITY EXTRACTION ENGINE
+# BLOCK 9: ENTITY EXTRACTION ENGINE
 # ============================================================
 
 class EntityEngine:
-    """
-    Entity extraction from city questions
-    Extracts: cities, metrics, timeframes, limits, sort orders
-    """
-    
-    # Metric keywords
-    METRIC_KEYWORDS = {
-        MetricType.REVENUE: ["revenue", "sales", "income", "turnover", "collection"],
-        MetricType.UNITS: ["units", "quantity", "qty", "volume", "pieces"],
-        MetricType.DN: ["dn", "delivery note", "order"],
-        MetricType.DEALERS: ["dealer", "dealers", "customer", "customers"],
-        MetricType.PENDING_DN: ["pending dn", "pending orders", "unfulfilled"],
-        MetricType.DELIVERY_DAYS: ["delivery days", "delivery time", "delivery duration"],
-        MetricType.POD_DAYS: ["pod days", "pod time", "pod duration"],
-        MetricType.BUSINESS_SCORE: ["business score", "performance score", "health score"],
-        MetricType.RISK_SCORE: ["risk score", "risk level", "risk assessment"],
-        MetricType.GROWTH_PCT: ["growth", "change", "trend", "increase", "decrease"],
-        MetricType.DISTANCE_KM: ["distance", "how far"],
-        MetricType.DRIVING_TIME: ["driving", "travel time"],
-    }
-    
-    # Timeframe keywords
-    TIMEFRAME_KEYWORDS = {
-        "today": r"(?:today|current day)",
-        "this_week": r"(?:this week|current week)",
-        "this_month": r"(?:this month|current month)",
-        "last_month": r"(?:last month|previous month)",
-        "this_quarter": r"(?:this quarter|current quarter)",
-        "last_quarter": r"(?:last quarter|previous quarter)",
-        "this_year": r"(?:this year|current year|ytd)",
-        "last_year": r"(?:last year|previous year)",
-    }
+    """Entity extraction for city questions"""
     
     def __init__(self):
         self._cache: TTLCache[str, Dict[str, Any]] = TTLCache(maxsize=1024, ttl=3600)
@@ -583,6 +944,7 @@ class EntityEngine:
             "sort_by": None,
             "order": "desc",
             "comparison_cities": [],
+            "requires_comparison": False,
         }
         
         # Extract cities
@@ -595,11 +957,6 @@ class EntityEngine:
         if metrics:
             entities["metrics"] = metrics
         
-        # Extract timeframe
-        timeframe = self._extract_timeframe(question_lower)
-        if timeframe:
-            entities["timeframe"] = timeframe
-        
         # Extract limit
         limit = self._extract_limit(question_lower)
         if limit:
@@ -607,10 +964,16 @@ class EntityEngine:
         
         # Check for comparison
         if "compare" in question_lower or "vs" in question_lower or "versus" in question_lower:
+            entities["requires_comparison"] = True
             if len(entities["cities"]) >= 2:
                 entities["comparison_cities"] = entities["cities"][:2]
         
-        # Cache result
+        # Extract sort order
+        if "highest" in question_lower or "top" in question_lower:
+            entities["order"] = "desc"
+        elif "lowest" in question_lower or "bottom" in question_lower:
+            entities["order"] = "asc"
+        
         with self._lock:
             self._cache[cache_key] = entities.copy()
         
@@ -631,35 +994,36 @@ class EntityEngine:
                 found.append(city)
         
         # Fuzzy match for partials
-        if not found:
+        if not found and RAPIDFUZZ_AVAILABLE:
             for city in CITY_NAMES:
-                if len(city) >= 3 and city[:3] in text:
-                    found.append(city)
+                if len(city) >= 3:
+                    if city[:3] in text or city[:4] in text:
+                        found.append(city)
         
         return list(dict.fromkeys(found))
     
-    def _extract_metrics(self, text: str) -> List[MetricType]:
+    def _extract_metrics(self, text: str) -> List[str]:
         """Extract metrics from text"""
-        found = []
+        metric_keywords = {
+            "revenue": ["revenue", "sales", "income", "turnover"],
+            "units": ["units", "quantity", "qty", "volume", "pieces"],
+            "pending": ["pending", "backlog", "overdue"],
+            "delivery": ["delivery", "transit", "shipping"],
+            "pod": ["pod", "proof of delivery"],
+            "pgi": ["pgi", "goods issue"],
+        }
         
-        for metric, keywords in self.METRIC_KEYWORDS.items():
+        found = []
+        for metric, keywords in metric_keywords.items():
             for keyword in keywords:
                 if keyword in text:
                     found.append(metric)
                     break
         
-        return list(dict.fromkeys(found))
-    
-    def _extract_timeframe(self, text: str) -> Optional[str]:
-        """Extract timeframe from text"""
-        for timeframe, pattern in self.TIMEFRAME_KEYWORDS.items():
-            if re.search(pattern, text, re.IGNORECASE):
-                return timeframe
-        return None
+        return found
     
     def _extract_limit(self, text: str) -> Optional[int]:
         """Extract numeric limit from text"""
-        # Pattern: "top X", "first X", "limit X"
         patterns = [
             r"top\s+(\d+)",
             r"first\s+(\d+)",
@@ -677,358 +1041,7 @@ class EntityEngine:
         return None
 
 # ============================================================
-# BLOCK 8: METRIC HANDLERS (PLUGIN-BASED)
-# ============================================================
-
-class MetricHandler:
-    """Base class for metric handlers"""
-    
-    def __init__(self, metric_type: MetricType):
-        self.metric_type = metric_type
-        self.name = metric_type.value
-    
-    def calculate(self, dashboard: Any) -> Any:
-        """Calculate metric from dashboard"""
-        raise NotImplementedError
-    
-    def format(self, value: Any) -> str:
-        """Format metric value for display"""
-        return str(value)
-
-class RevenueMetric(MetricHandler):
-    """Revenue metric handler"""
-    
-    def __init__(self):
-        super().__init__(MetricType.REVENUE)
-    
-    def calculate(self, dashboard) -> float:
-        return dashboard.total_revenue
-    
-    def format(self, value: float) -> str:
-        return f"PKR {value:,.2f}"
-
-class UnitsMetric(MetricHandler):
-    """Units metric handler"""
-    
-    def __init__(self):
-        super().__init__(MetricType.UNITS)
-    
-    def calculate(self, dashboard) -> int:
-        return dashboard.total_units
-    
-    def format(self, value: int) -> str:
-        return f"{value:,}"
-
-class PendingDNMetric(MetricHandler):
-    """Pending DN metric handler"""
-    
-    def __init__(self):
-        super().__init__(MetricType.PENDING_DN)
-    
-    def calculate(self, dashboard) -> int:
-        return dashboard.pending_dn
-    
-    def format(self, value: int) -> str:
-        return f"{value:,}"
-
-class DeliveryDaysMetric(MetricHandler):
-    """Delivery days metric handler"""
-    
-    def __init__(self):
-        super().__init__(MetricType.DELIVERY_DAYS)
-    
-    def calculate(self, dashboard) -> float:
-        return dashboard.average_delivery_days
-    
-    def format(self, value: float) -> str:
-        return f"{value:.1f} Days"
-
-class BusinessScoreMetric(MetricHandler):
-    """Business score metric handler"""
-    
-    def __init__(self):
-        super().__init__(MetricType.BUSINESS_SCORE)
-    
-    def calculate(self, dashboard) -> float:
-        return dashboard.business_score
-    
-    def format(self, value: float) -> str:
-        return f"{value:.1f}/100"
-
-class GrowthMetric(MetricHandler):
-    """Growth metric handler"""
-    
-    def __init__(self):
-        super().__init__(MetricType.GROWTH_PCT)
-    
-    def calculate(self, dashboard) -> float:
-        return dashboard.monthly_growth
-    
-    def format(self, value: float) -> str:
-        return f"{value:+.1f}%"
-
-class DistanceMetric(MetricHandler):
-    """Distance metric handler"""
-    
-    def __init__(self):
-        super().__init__(MetricType.DISTANCE_KM)
-    
-    def calculate(self, dashboard) -> Optional[float]:
-        return dashboard.distance.distance_km
-    
-    def format(self, value: Optional[float]) -> str:
-        if value is None:
-            return "Unknown"
-        return f"{value:,.1f} KM"
-
-# Metric registry
-METRIC_REGISTRY: Dict[MetricType, MetricHandler] = {
-    MetricType.REVENUE: RevenueMetric(),
-    MetricType.UNITS: UnitsMetric(),
-    MetricType.PENDING_DN: PendingDNMetric(),
-    MetricType.DELIVERY_DAYS: DeliveryDaysMetric(),
-    MetricType.BUSINESS_SCORE: BusinessScoreMetric(),
-    MetricType.GROWTH_PCT: GrowthMetric(),
-    MetricType.DISTANCE_KM: DistanceMetric(),
-}
-
-# ============================================================
-# BLOCK 9: QUERY PLANNER
-# ============================================================
-
-class QueryPlanner:
-    """
-    Query planner for city questions
-    Creates execution plan based on intent and entities
-    """
-    
-    def __init__(self):
-        self._cache: TTLCache[str, QueryPlan] = TTLCache(maxsize=512, ttl=3600)
-        self._lock = threading.RLock()
-    
-    def plan(self, question: str, intent: IntentType, entities: Dict[str, Any]) -> QueryPlan:
-        """Create execution plan"""
-        plan = QueryPlan(intent=intent)
-        
-        # Set cities
-        if entities.get("cities"):
-            plan.city = entities["cities"][0]
-            plan.cities = entities["cities"]
-        
-        # Set metrics based on intent
-        plan.metrics = self._get_metrics_for_intent(intent, entities)
-        
-        # Set timeframe
-        if entities.get("timeframe"):
-            plan.timeframe = entities["timeframe"]
-        
-        # Set limit
-        if entities.get("limit"):
-            plan.limit = entities["limit"]
-        
-        # Set comparison cities
-        if entities.get("comparison_cities"):
-            plan.cities = entities["comparison_cities"]
-        
-        # Set format based on intent
-        plan.format = self._get_format_for_intent(intent)
-        
-        # Calculate confidence
-        plan.confidence = self._calculate_confidence(intent, entities)
-        
-        return plan
-    
-    def _get_metrics_for_intent(self, intent: IntentType, entities: Dict) -> List[MetricType]:
-        """Get metrics for intent"""
-        # Use extracted metrics if available
-        if entities.get("metrics"):
-            return entities["metrics"]
-        
-        # Default metrics by intent
-        intent_metrics = {
-            IntentType.DASHBOARD: [
-                MetricType.REVENUE, MetricType.UNITS, MetricType.DN,
-                MetricType.DEALERS, MetricType.PENDING_DN, MetricType.BUSINESS_SCORE
-            ],
-            IntentType.REVENUE: [MetricType.REVENUE, MetricType.GROWTH_PCT],
-            IntentType.UNITS: [MetricType.UNITS],
-            IntentType.PENDING: [MetricType.PENDING_DN, MetricType.PENDING_REVENUE],
-            IntentType.DELIVERY: [MetricType.DELIVERY_DAYS, MetricType.DELIVERY_SUCCESS],
-            IntentType.POD: [MetricType.POD_DAYS, MetricType.POD_SUCCESS],
-            IntentType.GROWTH: [MetricType.GROWTH_PCT],
-            IntentType.BUSINESS_SCORE: [MetricType.BUSINESS_SCORE],
-            IntentType.RISK_SCORE: [MetricType.RISK_SCORE],
-            IntentType.DISTANCE: [MetricType.DISTANCE_KM, MetricType.DRIVING_TIME],
-            IntentType.COMPARISON: [
-                MetricType.REVENUE, MetricType.UNITS, MetricType.DN,
-                MetricType.PENDING_DN, MetricType.DELIVERY_DAYS
-            ],
-            IntentType.RANK: [MetricType.REVENUE, MetricType.UNITS, MetricType.DN],
-            IntentType.AVERAGE: [
-                MetricType.REVENUE_PER_DEALER, MetricType.REVENUE_PER_DN,
-                MetricType.UNITS_PER_DN
-            ],
-        }
-        
-        return intent_metrics.get(intent, [MetricType.REVENUE])
-    
-    def _get_format_for_intent(self, intent: IntentType) -> ResponseFormat:
-        """Get response format for intent"""
-        intent_formats = {
-            IntentType.DASHBOARD: ResponseFormat.STANDARD,
-            IntentType.REVENUE: ResponseFormat.KPI_ONLY,
-            IntentType.UNITS: ResponseFormat.KPI_ONLY,
-            IntentType.PENDING: ResponseFormat.KPI_ONLY,
-            IntentType.COMPARISON: ResponseFormat.COMPARISON,
-            IntentType.RANK: ResponseFormat.RANKING,
-            IntentType.SUMMARY: ResponseFormat.EXECUTIVE,
-        }
-        return intent_formats.get(intent, ResponseFormat.STANDARD)
-    
-    def _calculate_confidence(self, intent: IntentType, entities: Dict) -> float:
-        """Calculate confidence score for plan"""
-        score = 0.0
-        
-        # Intent confidence (max 0.5)
-        if intent != IntentType.UNKNOWN:
-            score += 0.5
-        
-        # Entity confidence (max 0.5)
-        if entities.get("cities"):
-            score += 0.3
-        if entities.get("metrics"):
-            score += 0.2
-        
-        return min(1.0, score)
-
-# ============================================================
-# BLOCK 10: CITY SEARCH ENGINE (SIMPLIFIED)
-# ============================================================
-
-class CitySearchEngine:
-    """City search and resolution"""
-    
-    def __init__(self):
-        self._cache: TTLCache[str, Optional[str]] = TTLCache(maxsize=4096, ttl=CACHE_TTL)
-        self._lock = threading.RLock()
-    
-    def search(self, session: Session, query: str) -> Optional[str]:
-        """Search for city with fuzzy matching"""
-        query_lower = query.lower().strip()
-        cache_key = query_lower
-        
-        with self._lock:
-            if cache_key in self._cache:
-                return self._cache[cache_key]
-        
-        # Direct match
-        if query_lower in [c.lower() for c in CITY_NAMES]:
-            city = query_lower
-            with self._lock:
-                self._cache[cache_key] = city
-            return city
-        
-        # Alias match
-        if query_lower in CITY_ALIASES:
-            city = CITY_ALIASES[query_lower]
-            with self._lock:
-                self._cache[cache_key] = city
-            return city
-        
-        # Fuzzy match
-        best_match = None
-        best_score = 0
-        
-        for city in CITY_NAMES:
-            score = fuzz.WRatio(query_lower, city.lower())
-            if score > best_score and score >= 80:
-                best_score = score
-                best_match = city
-        
-        if best_match:
-            with self._lock:
-                self._cache[cache_key] = best_match
-            return best_match
-        
-        # Check database for exact match
-        try:
-            result = session.query(
-                distinct(DeliveryReport.ship_to_city)
-            ).filter(
-                func.lower(DeliveryReport.ship_to_city) == query_lower
-            ).first()
-            
-            if result:
-                city = _text(result[0])
-                with self._lock:
-                    self._cache[cache_key] = city
-                return city
-        except Exception:
-            pass
-        
-        with self._lock:
-            self._cache[cache_key] = None
-        return None
-
-# ============================================================
-# BLOCK 11: DISTANCE SERVICE
-# ============================================================
-
-class DistanceService:
-    """Distance calculation service"""
-    
-    def __init__(self):
-        self._cache: TTLCache[str, Dict[str, Any]] = TTLCache(maxsize=2048, ttl=CACHE_TTL)
-        self._lock = threading.RLock()
-    
-    def calculate(self, warehouse: str, city: str) -> Dict[str, Any]:
-        """Calculate distance between warehouse and city"""
-        key = f"{warehouse.lower()}|{city.lower()}"
-        
-        with self._lock:
-            if key in self._cache:
-                return self._cache[key].copy()
-        
-        # Get coordinates
-        warehouse_coord = WAREHOUSE_COORDINATES.get(warehouse.lower())
-        city_coord = WAREHOUSE_COORDINATES.get(city.lower())
-        
-        result = {
-            "distance_km": None,
-            "driving_time": "Unknown",
-            "source": "unavailable"
-        }
-        
-        if warehouse_coord and city_coord:
-            # Calculate distance using haversine
-            lat1, lon1 = warehouse_coord
-            lat2, lon2 = city_coord
-            
-            # Simple distance calculation
-            R = 6371  # Earth's radius in km
-            dlat = math.radians(lat2 - lat1)
-            dlon = math.radians(lon2 - lon1)
-            a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
-            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-            distance = R * c
-            
-            result["distance_km"] = round(distance, 1)
-            result["source"] = "haversine"
-            
-            # Estimate driving time (average 50 km/h)
-            hours = distance / 50
-            if hours < 1:
-                result["driving_time"] = f"{int(hours * 60)} Minutes"
-            else:
-                result["driving_time"] = f"{int(hours)} Hours {int((hours % 1) * 60)} Minutes"
-        
-        with self._lock:
-            self._cache[key] = result.copy()
-        
-        return result
-
-# ============================================================
-# BLOCK 12: CITY DASHBOARD BUILDER
+# BLOCK 10: CITY DASHBOARD BUILDER
 # ============================================================
 
 class CityDashboardBuilder:
@@ -1036,12 +1049,18 @@ class CityDashboardBuilder:
     
     def __init__(self, session: Session):
         self.session = session
-        self.distance_service = DistanceService()
+        self._cache: TTLCache[str, Dict[str, Any]] = TTLCache(maxsize=1024, ttl=CACHE_TTL)
+        self._lock = threading.RLock()
     
     def build(self, city_name: str) -> Optional[Dict[str, Any]]:
         """Build dashboard for city"""
+        cache_key = city_name.lower()
+        
+        with self._lock:
+            if cache_key in self._cache:
+                return self._cache[cache_key].copy()
+        
         try:
-            # Get aggregate data
             query = self.session.query(
                 func.max(DeliveryReport.ship_to_city).label("city_name"),
                 func.max(DeliveryReport.warehouse).label("warehouse"),
@@ -1076,7 +1095,6 @@ class CityDashboardBuilder:
             if not query:
                 return None
             
-            # Build dashboard
             total_dn = int(query.total_dn or 0)
             pending_dn = int(query.pending_dn or 0)
             completed_dn = int(query.completed_dn or 0)
@@ -1103,23 +1121,22 @@ class CityDashboardBuilder:
                 "avg_cycle": _days(query.avg_cycle),
                 "delivery_success_pct": _percent(completed_dn, total_dn),
                 "pending_pct": _percent(pending_dn, total_dn),
+                "pgi_success_pct": _percent(query.pgi_pending_dn or 0, total_dn) if total_dn > 0 else 0,
+                "pod_success_pct": _percent(query.pod_pending_dn or 0, total_dn) if total_dn > 0 else 0,
                 "avg_units_per_dn": round(_number(query.total_units) / total_dn, 2) if total_dn > 0 else 0,
                 "avg_revenue_per_dn": round(_number(query.total_revenue) / total_dn, 2) if total_dn > 0 else 0,
             }
-            
-            # Add distance
-            warehouse = _text(query.warehouse)
-            dashboard["distance"] = self.distance_service.calculate(warehouse, city_name)
             
             # Calculate business score
             score = (
                 dashboard["delivery_success_pct"] * 0.25 +
                 (100 - dashboard["pending_pct"]) * 0.25 +
-                min(100, dashboard["avg_units_per_dn"] * 20) * 0.15 +
+                min(100, dashboard["avg_units_per_dn"] * 10) * 0.15 +
                 min(100, dashboard["avg_revenue_per_dn"] / 1000) * 0.15 +
-                50  # Base score
+                50
             )
             dashboard["business_score"] = round(min(100, max(0, score)), 1)
+            dashboard["risk_score"] = round(100 - dashboard["business_score"], 1)
             
             # Status
             if dashboard["business_score"] >= 85:
@@ -1135,585 +1152,1076 @@ class CityDashboardBuilder:
                 dashboard["overall_status"] = "Critical"
                 dashboard["performance_grade"] = "D"
             
+            # Distance
+            warehouse = _text(query.warehouse)
+            distance = self._calculate_distance(warehouse, city_name)
+            dashboard["distance"] = distance
+            
+            # Monthly analytics
+            monthly = self._get_monthly_analytics(city_name)
+            if monthly:
+                dashboard.update(monthly)
+            
+            # Product analytics
+            products = self._get_product_analytics(city_name)
+            if products:
+                dashboard.update(products)
+            
+            # Pending analytics
+            pending = self._get_pending_analytics(city_name)
+            if pending:
+                dashboard.update(pending)
+            
+            # Generate insights and recommendations
+            dashboard["insights"] = self._generate_insights(dashboard)
+            dashboard["recommendations"] = self._generate_recommendations(dashboard)
+            dashboard["executive_summary"] = self._generate_executive_summary(dashboard)
+            
+            with self._lock:
+                self._cache[cache_key] = dashboard.copy()
+            
             return dashboard
             
         except Exception as e:
             logger.error(f"Failed to build dashboard for {city_name}: {e}")
             return None
-
-# ============================================================
-# BLOCK 13: RESPONSE FORMATTER
-# ============================================================
-
-class ResponseFormatter:
-    """Format responses for different output types"""
     
-    def format(self, answer: CityAnswer) -> str:
-        """Format answer based on plan format"""
-        if answer.plan.format == ResponseFormat.COMPACT:
-            return self._format_compact(answer)
-        elif answer.plan.format == ResponseFormat.EXECUTIVE:
-            return self._format_executive(answer)
-        elif answer.plan.format == ResponseFormat.DETAILED:
-            return self._format_detailed(answer)
-        elif answer.plan.format == ResponseFormat.KPI_ONLY:
-            return self._format_kpi_only(answer)
-        elif answer.plan.format == ResponseFormat.COMPARISON:
-            return self._format_comparison(answer)
-        elif answer.plan.format == ResponseFormat.RANKING:
-            return self._format_ranking(answer)
-        else:
-            return self._format_standard(answer)
+    def _calculate_distance(self, warehouse: str, city: str) -> Dict[str, Any]:
+        """Calculate distance between warehouse and city"""
+        result = {"distance_km": None, "driving_time": "Unknown", "source": "unavailable", "warehouse": warehouse}
+        
+        warehouse_coord = WAREHOUSE_COORDINATES.get(warehouse.lower())
+        city_coord = WAREHOUSE_COORDINATES.get(city.lower())
+        
+        if warehouse_coord and city_coord:
+            lat1, lon1 = warehouse_coord
+            lat2, lon2 = city_coord
+            R = 6371
+            dlat = math.radians(lat2 - lat1)
+            dlon = math.radians(lon2 - lon1)
+            a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+            distance = R * c
+            result["distance_km"] = round(distance, 1)
+            result["source"] = "haversine"
+            
+            # Estimate driving time
+            hours = distance / 50
+            if hours < 1:
+                result["driving_time"] = f"{int(hours * 60)} Minutes"
+            else:
+                result["driving_time"] = f"{int(hours)} Hours {int((hours % 1) * 60)} Minutes"
+            
+            if distance <= 80:
+                result["estimated_delivery"] = "Same Day"
+            elif distance <= 200:
+                result["estimated_delivery"] = "Next Day"
+            elif distance <= 400:
+                result["estimated_delivery"] = "1-2 Days"
+            elif distance <= 700:
+                result["estimated_delivery"] = "2-3 Days"
+            else:
+                result["estimated_delivery"] = "3-5 Days"
+        
+        return result
     
-    def _format_compact(self, answer: CityAnswer) -> str:
-        """Compact format"""
-        lines = []
-        city = answer.plan.city or "City"
-        lines.append(f"📊 {city.title()}")
-        lines.append("")
-        
-        for metric_name, value in answer.metrics.items():
-            lines.append(f"{metric_name}: {value}")
-        
-        return "\n".join(lines)
-    
-    def _format_standard(self, answer: CityAnswer) -> str:
-        """Standard format"""
-        lines = []
-        city = answer.plan.city or "City"
-        lines.append(f"🏙️ {city.title()} Dashboard")
-        lines.append("")
-        lines.append(SEPARATOR)
-        lines.append("")
-        
-        # Metrics
-        for i, (metric_name, value) in enumerate(answer.metrics.items()):
-            if i > 0 and i % 5 == 0:
-                lines.append("")
-                lines.append(SEPARATOR)
-                lines.append("")
-            lines.append(f"{metric_name}: {value}")
-        
-        # Explanation
-        if answer.explanation:
-            lines.append("")
-            lines.append(SEPARATOR)
-            lines.append("")
-            lines.append(answer.explanation)
-        
-        # Confidence
-        lines.append("")
-        lines.append(f"Confidence: {answer.confidence:.0%}")
-        
-        return "\n".join(lines)
-    
-    def _format_executive(self, answer: CityAnswer) -> str:
-        """Executive summary format"""
-        city = answer.plan.city or "City"
-        lines = [
-            f"📊 Executive Summary - {city.title()}",
-            "",
-            answer.explanation or "Performance summary not available.",
-            "",
-            "Key Metrics:",
-        ]
-        
-        for metric_name, value in list(answer.metrics.items())[:5]:
-            lines.append(f"• {metric_name}: {value}")
-        
-        return "\n".join(lines)
-    
-    def _format_detailed(self, answer: CityAnswer) -> str:
-        """Detailed format with all metrics"""
-        city = answer.plan.city or "City"
-        lines = [
-            f"📊 Detailed Analysis - {city.title()}",
-            "",
-            "📍 Location",
-            "─" * 40,
-        ]
-        
-        # Add location info if available
-        if answer.dashboard:
-            lines.append(f"Warehouse: {answer.dashboard.get('warehouse', 'N/A')}")
-            lines.append(f"Sales Office: {answer.dashboard.get('sales_office', 'N/A')}")
-            lines.append(f"Sales Manager: {answer.dashboard.get('sales_manager', 'N/A')}")
-        
-        lines.append("")
-        lines.append("📈 Metrics")
-        lines.append("─" * 40)
-        
-        for metric_name, value in answer.metrics.items():
-            lines.append(f"{metric_name}: {value}")
-        
-        if answer.explanation:
-            lines.append("")
-            lines.append("💡 Analysis")
-            lines.append("─" * 40)
-            lines.append(answer.explanation)
-        
-        return "\n".join(lines)
-    
-    def _format_kpi_only(self, answer: CityAnswer) -> str:
-        """KPI-only format"""
-        city = answer.plan.city or "City"
-        lines = [f"📊 {city.title()} KPIs:"]
-        
-        for metric_name, value in answer.metrics.items():
-            lines.append(f"  {metric_name}: {value}")
-        
-        return "\n".join(lines)
-    
-    def _format_comparison(self, answer: CityAnswer) -> str:
-        """Comparison format"""
-        if not answer.plan.cities or len(answer.plan.cities) < 2:
-            return "Need at least two cities to compare."
-        
-        city1, city2 = answer.plan.cities[0], answer.plan.cities[1]
-        lines = [
-            f"📊 Comparison: {city1.title()} vs {city2.title()}",
-            "",
-            f"{'Metric':<25} {city1.title():<20} {city2.title():<20}",
-            "─" * 65,
-        ]
-        
-        # Split metrics into two groups
-        metrics1 = answer.metrics.get(f"{city1}_metrics", {})
-        metrics2 = answer.metrics.get(f"{city2}_metrics", {})
-        
-        all_keys = set(metrics1.keys()) | set(metrics2.keys())
-        for key in sorted(all_keys):
-            v1 = metrics1.get(key, "N/A")
-            v2 = metrics2.get(key, "N/A")
-            lines.append(f"{key:<25} {str(v1)[:20]:<20} {str(v2)[:20]:<20}")
-        
-        # Add comparison summary
-        if answer.explanation:
-            lines.append("")
-            lines.append("💡 Summary")
-            lines.append(answer.explanation)
-        
-        return "\n".join(lines)
-    
-    def _format_ranking(self, answer: CityAnswer) -> str:
-        """Ranking format"""
-        lines = ["🏆 City Rankings"]
-        lines.append("")
-        
-        ranking_data = answer.metrics.get("ranking", [])
-        if ranking_data:
-            for i, item in enumerate(ranking_data[:answer.plan.limit], 1):
-                city = item.get("city", "Unknown")
-                value = item.get("value", 0)
-                lines.append(f"#{i}. {city.title()}: {value}")
-        
-        if answer.explanation:
-            lines.append("")
-            lines.append(answer.explanation)
-        
-        return "\n".join(lines)
-
-# ============================================================
-# BLOCK 14: AI EXPLANATION ENGINE (OPTIONAL)
-# ============================================================
-
-class AIExplanationEngine:
-    """Generate natural language explanations using AI"""
-    
-    def __init__(self):
-        self._enabled = USE_AI_EXPLANATION
-        self._groq_client = None
-        
-        if self._enabled:
-            try:
-                from groq import Groq
-                api_key = os.getenv("GROQ_API_KEY")
-                if api_key:
-                    self._groq_client = Groq(api_key=api_key)
-                    logger.info("✅ AI Explanation Engine initialized")
-            except ImportError:
-                self._enabled = False
-                logger.warning("⚠️ Groq not available, AI explanations disabled")
-    
-    def generate(self, question: str, plan: QueryPlan, metrics: Dict[str, Any]) -> str:
-        """Generate explanation using AI"""
-        if not self._enabled or not self._groq_client:
-            return self._fallback_explanation(plan, metrics)
-        
+    def _get_monthly_analytics(self, city_name: str) -> Dict[str, Any]:
+        """Get monthly analytics"""
         try:
-            prompt = self._build_prompt(question, plan, metrics)
+            condition = func.lower(DeliveryReport.ship_to_city) == city_name.lower()
             
-            response = self._groq_client.chat.completions.create(
-                model="llama3-70b-8192",
-                messages=[
-                    {"role": "system", "content": "You are a business analyst explaining city performance metrics."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.3,
-                max_tokens=200,
-            )
+            monthly = self.session.query(
+                func.to_char(DeliveryReport.dn_create_date, "YYYY-MM").label("month"),
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
+                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("units"),
+                func.count(distinct(DeliveryReport.dn_no)).label("dns"),
+            ).filter(condition, DeliveryReport.dn_create_date.isnot(None)).group_by("month").all()
             
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            logger.warning(f"AI explanation failed: {e}")
-            return self._fallback_explanation(plan, metrics)
+            if not monthly:
+                return {}
+            
+            current = date.today().strftime("%Y-%m")
+            prev_date = date.today().replace(day=1) - timedelta(days=1)
+            previous = prev_date.strftime("%Y-%m")
+            
+            current_row = next((r for r in monthly if r.month == current), None)
+            previous_row = next((r for r in monthly if r.month == previous), None)
+            
+            current_revenue = _number(current_row.revenue) if current_row else 0.0
+            previous_revenue = _number(previous_row.revenue) if previous_row else 0.0
+            
+            best = max(monthly, key=lambda r: _number(r.revenue))
+            worst = min(monthly, key=lambda r: _number(r.revenue))
+            
+            return {
+                "current_month_revenue": round(current_revenue, 2),
+                "previous_month_revenue": round(previous_revenue, 2),
+                "monthly_growth": _growth(current_revenue, previous_revenue),
+                "current_month_dn": int(current_row.dns) if current_row else 0,
+                "previous_month_dn": int(previous_row.dns) if previous_row else 0,
+                "best_month": _text(best.month),
+                "worst_month": _text(worst.month),
+                "revenue_growth_pct": _growth(current_revenue, previous_revenue),
+            }
+        except Exception:
+            return {}
     
-    def _build_prompt(self, question: str, plan: QueryPlan, metrics: Dict[str, Any]) -> str:
-        """Build prompt for AI"""
-        prompt = f"Question: {question}\n\nMetrics:\n"
-        for key, value in metrics.items():
-            prompt += f"- {key}: {value}\n"
-        
-        prompt += "\nProvide a 2-3 sentence business summary explaining these metrics and what they mean for the city."
-        return prompt
+    def _get_product_analytics(self, city_name: str) -> Dict[str, Any]:
+        """Get product analytics"""
+        try:
+            condition = func.lower(DeliveryReport.ship_to_city) == city_name.lower()
+            
+            top_model = self.session.query(
+                DeliveryReport.customer_model.label("model"),
+                func.sum(DeliveryReport.dn_amount).label("revenue")
+            ).filter(condition, DeliveryReport.customer_model.isnot(None)).group_by(
+                DeliveryReport.customer_model
+            ).order_by(func.sum(DeliveryReport.dn_amount).desc()).first()
+            
+            top_material = self.session.query(
+                DeliveryReport.material_no.label("material"),
+                func.sum(DeliveryReport.dn_amount).label("revenue")
+            ).filter(condition, DeliveryReport.material_no.isnot(None)).group_by(
+                DeliveryReport.material_no
+            ).order_by(func.sum(DeliveryReport.dn_amount).desc()).first()
+            
+            top_division = self.session.query(
+                DeliveryReport.division.label("division"),
+                func.sum(DeliveryReport.dn_amount).label("revenue")
+            ).filter(condition, DeliveryReport.division.isnot(None)).group_by(
+                DeliveryReport.division
+            ).order_by(func.sum(DeliveryReport.dn_amount).desc()).first()
+            
+            return {
+                "top_product": _text(top_model.model) if top_model else "Unknown",
+                "top_model": _text(top_model.model) if top_model else "Unknown",
+                "top_material": _text(top_material.material) if top_material else "Unknown",
+                "top_division": _text(top_division.division) if top_division else "Unknown",
+            }
+        except Exception:
+            return {}
     
-    def _fallback_explanation(self, plan: QueryPlan, metrics: Dict[str, Any]) -> str:
-        """Fallback explanation without AI"""
-        if not metrics:
-            return "No metrics available for explanation."
+    def _get_pending_analytics(self, city_name: str) -> Dict[str, Any]:
+        """Get pending analytics"""
+        try:
+            condition = func.lower(DeliveryReport.ship_to_city) == city_name.lower()
+            
+            pending_rows = self.session.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.dn_create_date,
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
+                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("units"),
+            ).filter(
+                condition,
+                or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None))
+            ).group_by(DeliveryReport.dn_no, DeliveryReport.dn_create_date).all()
+            
+            if not pending_rows:
+                return {}
+            
+            today = date.today()
+            ages = []
+            total_revenue = 0.0
+            total_units = 0
+            
+            for row in pending_rows:
+                if row.dn_create_date:
+                    age = (today - row.dn_create_date).days
+                    ages.append(age)
+                total_revenue += _number(row.revenue)
+                total_units += _number(row.units)
+            
+            oldest = min(pending_rows, key=lambda r: r.dn_create_date or date.max)
+            avg_age = sum(ages) / len(ages) if ages else 0
+            
+            return {
+                "pending_revenue": round(total_revenue, 2),
+                "pending_units": int(total_units),
+                "pending_average_days": round(avg_age, 2),
+                "critical_pending": sum(1 for age in ages if age > 7),
+                "overdue_pending": sum(1 for age in ages if age > 14),
+                "oldest_pending_dn": _text(oldest.dn_no),
+                "oldest_pending_days": max(ages) if ages else 0,
+            }
+        except Exception:
+            return {}
+    
+    def _generate_insights(self, dashboard: Dict[str, Any]) -> List[str]:
+        """Generate insights from dashboard"""
+        insights = []
         
-        parts = []
-        city = plan.city or "City"
+        revenue = dashboard.get('total_revenue', 0)
+        growth = dashboard.get('monthly_growth', 0)
+        pending = dashboard.get('pending_dn', 0)
+        score = dashboard.get('business_score', 0)
+        delivery = dashboard.get('delivery_success_pct', 0)
         
-        # Revenue
-        if "Revenue" in metrics:
-            parts.append(f"Revenue is {metrics['Revenue']}")
+        if revenue > 0 and growth > 10:
+            insights.append(f"Revenue is growing strongly at {growth:+.1f}%")
+        elif revenue > 0 and growth < -10:
+            insights.append(f"Revenue is declining at {growth:+.1f}%. Needs attention.")
         
-        # Delivery
-        if "Delivery Days" in metrics:
-            days = metrics["Delivery Days"]
-            if isinstance(days, (int, float)):
-                if days <= 1:
-                    parts.append("with very fast delivery")
-                elif days <= 3:
-                    parts.append("with good delivery speed")
-                else:
-                    parts.append("with slower delivery times")
+        if pending == 0:
+            insights.append("No pending orders - excellent operational efficiency")
+        elif pending < 10:
+            insights.append(f"Low pending orders: {pending}")
+        else:
+            insights.append(f"High pending orders: {pending}. Priority for resolution.")
         
-        # Pending
-        if "Pending DN" in metrics:
-            pending = metrics["Pending DN"]
-            if isinstance(pending, (int, float)):
-                if pending == 0:
-                    parts.append("and no pending orders")
-                elif pending < 10:
-                    parts.append(f"with {pending} pending orders")
-                else:
-                    parts.append(f"with {pending} pending orders requiring attention")
+        if score >= 85:
+            insights.append(f"Excellent business score of {score:.1f}/100")
+        elif score >= 70:
+            insights.append(f"Good business score of {score:.1f}/100")
+        elif score < 50:
+            insights.append(f"Critical business score of {score:.1f}/100. Immediate action required.")
         
-        # Business Score
-        if "Business Score" in metrics:
-            score = metrics["Business Score"]
-            if isinstance(score, (int, float)):
-                if score >= 85:
-                    parts.append("- Excellent performance")
-                elif score >= 70:
-                    parts.append("- Good performance")
-                elif score >= 50:
-                    parts.append("- Performance needs watch")
-                else:
-                    parts.append("- Critical performance issues")
+        if delivery >= 95:
+            insights.append("Outstanding delivery performance")
+        elif delivery >= 85:
+            insights.append("Good delivery performance")
+        elif delivery < 70:
+            insights.append("Delivery performance needs improvement")
         
-        if parts:
-            return f"{city}: " + " ".join(parts)
-        return f"{city}: Performance data available for review."
+        if not insights:
+            insights.append("Performance is stable. Continue monitoring.")
+        
+        return insights
+    
+    def _generate_recommendations(self, dashboard: Dict[str, Any]) -> List[str]:
+        """Generate recommendations from dashboard"""
+        recommendations = []
+        
+        pending = dashboard.get('pending_dn', 0)
+        delivery = dashboard.get('delivery_success_pct', 0)
+        score = dashboard.get('business_score', 0)
+        pod = dashboard.get('pod_success_pct', 0)
+        dealers = dashboard.get('total_dealers', 0)
+        
+        if pending > 20:
+            recommendations.append(f"Escalate {pending} pending DNs for resolution")
+        elif pending > 10:
+            recommendations.append("Review pending orders for timely closure")
+        
+        if delivery < 80:
+            recommendations.append("Improve delivery speed and reliability")
+        
+        if score < 70:
+            recommendations.append("Develop action plan to improve business score")
+        
+        if pod < 85:
+            recommendations.append("Focus on POD collection and completion")
+        
+        if dealers < 10:
+            recommendations.append("Consider expanding dealer network")
+        
+        if not recommendations:
+            recommendations.append("Maintain current performance levels")
+            recommendations.append("Continue monitoring key metrics")
+        
+        return recommendations
+    
+    def _generate_executive_summary(self, dashboard: Dict[str, Any]) -> str:
+        """Generate executive summary"""
+        city = dashboard.get('city_name', 'City')
+        revenue = dashboard.get('total_revenue', 0)
+        growth = dashboard.get('monthly_growth', 0)
+        pending = dashboard.get('pending_dn', 0)
+        score = dashboard.get('business_score', 0)
+        status = dashboard.get('overall_status', 'Unknown')
+        dealers = dashboard.get('total_dealers', 0)
+        
+        if growth >= 0:
+            trend = "growing"
+        else:
+            trend = "declining"
+        
+        if score >= 70:
+            action = "maintain current controls"
+        else:
+            action = "prioritize pending DN and POD closure"
+        
+        return (
+            f"{city} is {trend} with a {score:.1f}/100 business score. "
+            f"Revenue is PKR {revenue:,.2f} with {pending} pending DNs. "
+            f"Delivery success is {dashboard.get('delivery_success_pct', 0):.1f}%. "
+            f"The city has {dealers} dealers. "
+            f"Recommendation: {action}."
+        )
 
 # ============================================================
-# BLOCK 15: MAIN CITY ANALYTICS SERVICE
+# BLOCK 11: MAIN CITY ANALYTICS SERVICE WITH MENU
 # ============================================================
 
 class CityAnalyticsService:
     """
-    City Domain AI Expert
+    City Domain AI Expert with Full Menu System
     Single entry point for all city-related business questions
     """
     
     def __init__(self) -> None:
         self._service_name = "city_analytics"
-        self._version = "4.0.0-domain-ai"
+        self._version = "5.2.0-menu"
         self._startup_time = datetime.utcnow().isoformat()
         
         # Initialize engines
         self._intent_engine = IntentEngine()
         self._entity_engine = EntityEngine()
-        self._planner = QueryPlanner()
-        self._search_engine = CitySearchEngine()
-        self._distance_service = DistanceService()
-        self._formatter = ResponseFormatter()
-        self._ai_explainer = AIExplanationEngine()
+        self._menu_renderer = CityMenuRenderer()
         
-        # Context memory (session-based)
+        # Context memory
         self._contexts: Dict[str, CityContext] = {}
         self._context_lock = threading.RLock()
         
         # Caches
         self._dashboard_cache: TTLCache[str, Dict[str, Any]] = TTLCache(maxsize=4096, ttl=600)
-        self._answer_cache: TTLCache[str, CityAnswer] = TTLCache(maxsize=1024, ttl=300)
+        self._answer_cache: TTLCache[str, Dict[str, Any]] = TTLCache(maxsize=1024, ttl=300)
         
         self._lock = threading.RLock()
+        self._executor = ThreadPoolExecutor(max_workers=4)
         
         logger.info(f"✅ CityAnalyticsService initialized (v{self._version})")
-        logger.info(f"   AI Explanation: {'✅' if USE_AI_EXPLANATION else '❌'}")
+        logger.info(f"   Menu System: ✅")
         logger.info(f"   Source of Truth: PostgreSQL")
     
     @staticmethod
     def _session() -> Session:
         return SessionLocal()
     
-    def answer_city_question(
-        self,
-        question: str,
-        session_id: str = "default",
-        **kwargs: Any
-    ) -> Dict[str, Any]:
+    def get_main_menu(self) -> str:
+        """Get the main city menu"""
+        return self._menu_renderer.render_main_menu()
+    
+    def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
         """
-        SINGLE ENTRY POINT - Answer any city-related business question
-        
-        Args:
-            question: Natural language question
-            session_id: Session ID for context memory
-            **kwargs: Additional parameters
+        Process menu input and return response
         
         Returns:
-            Complete answer with metrics, explanation, and formatted response
+            {
+                "response": str,           # WhatsApp message
+                "menu_type": str,          # "city_menu"
+                "action": str,             # Action performed
+                "data": dict,              # Additional data
+                "exit_menu": bool          # True if should return to main menu
+            }
         """
-        start_time = time.perf_counter()
+        context = self._get_context(session_id)
+        user_input = user_input.strip()
         
-        try:
-            # Step 1: Get or create context
-            context = self._get_context(session_id)
-            
-            # Step 2: Check cache for exact question
-            cache_key = f"{session_id}:{question.lower()[:100]}"
-            with self._lock:
-                cached = self._answer_cache.get(cache_key)
-                if cached:
-                    cached.execution_time_ms = (time.perf_counter() - start_time) * 1000
-                    return self._format_response(cached)
-            
-            # Step 3: Detect intent
-            intent, intent_confidence = self._intent_engine.detect_intent(question)
-            
-            # Step 4: Extract entities
-            entities = self._entity_engine.extract_entities(question)
-            
-            # Step 5: Apply context (if city not found)
-            if not entities.get("cities") and context.get_city():
-                entities["cities"] = [context.get_city()]
-            
-            # Step 6: Create query plan
-            plan = self._planner.plan(question, intent, entities)
-            
-            # Step 7: Execute plan
-            answer = self._execute_plan(plan, context)
-            
-            # Step 8: Update context
-            if plan.city:
-                context.set_city(plan.city)
-            context.last_question = question
-            context.last_intent = intent
-            
-            # Step 9: Generate explanation (if needed)
-            if USE_AI_EXPLANATION and not answer.explanation:
-                answer.explanation = self._ai_explainer.generate(question, plan, answer.metrics)
-            
-            # Step 10: Format response
-            answer.formatted_response = self._formatter.format(answer)
-            answer.execution_time_ms = (time.perf_counter() - start_time) * 1000
-            
-            # Step 11: Cache answer
-            with self._lock:
-                self._answer_cache[cache_key] = answer
-            
-            # Step 12: Return formatted response
-            return self._format_response(answer)
-            
-        except Exception as e:
-            logger.exception(f"Failed to answer city question: {question}")
-            return {
-                "success": False,
-                "error": str(e),
-                "whatsapp_message": "Sorry, I couldn't process your question. Please try again.",
-                "question": question,
-                "execution_time_ms": (time.perf_counter() - start_time) * 1000
-            }
+        # Handle main menu navigation
+        if user_input == "0":
+            return self._handle_main_menu_return(context)
+        elif user_input == "99":
+            return self._handle_main_menu_return(context)
+        
+        # Handle menu options based on state
+        if context.menu_state == MenuState.MAIN:
+            return self._handle_main_menu_option(context, user_input)
+        elif context.menu_state == MenuState.CITY_SELECTION:
+            return self._handle_city_selection(context, user_input)
+        elif context.menu_state == MenuState.COMPARISON_SELECTION:
+            return self._handle_comparison_selection(context, user_input)
+        
+        # Default: treat as quick query
+        return self._handle_quick_query(context, user_input)
     
-    def _execute_plan(self, plan: QueryPlan, context: CityContext) -> CityAnswer:
-        """Execute query plan"""
-        answer = CityAnswer(
-            question=context.last_question or "City question",
-            intent=plan.intent,
-            plan=plan
-        )
+    def _handle_main_menu_return(self, context: CityContext) -> Dict[str, Any]:
+        """Return to main menu"""
+        context.menu_state = MenuState.MAIN
+        context.selected_option = None
+        context.comparison_cities = []
+        context.awaiting_city = False
+        context.awaiting_comparison = False
         
-        # Handle different intents
-        if plan.intent == IntentType.COMPARISON:
-            self._execute_comparison(plan, answer)
-        elif plan.intent == IntentType.RANK:
-            self._execute_ranking(plan, answer)
-        else:
-            self._execute_single_city(plan, answer)
-        
-        return answer
+        return {
+            "response": self._menu_renderer.render_main_menu(),
+            "menu_type": "city_menu",
+            "action": "main_menu",
+            "data": {},
+            "exit_menu": True  # Exit to main AI Logistics menu
+        }
     
-    def _execute_single_city(self, plan: QueryPlan, answer: CityAnswer) -> None:
-        """Execute single city query"""
-        if not plan.city:
-            answer.confidence = 0.3
-            answer.metrics = {"Error": "City not specified"}
-            answer.explanation = "Please specify a city name."
-            return
+    def _handle_main_menu_option(self, context: CityContext, option: str) -> Dict[str, Any]:
+        """Handle main menu option selection"""
         
-        # Get dashboard
-        dashboard = self._get_dashboard(plan.city)
-        if not dashboard:
-            answer.confidence = 0.3
-            answer.metrics = {"Error": f"City '{plan.city}' not found"}
-            answer.explanation = f"City '{plan.city}' could not be found in the database."
-            return
-        
-        answer.dashboard = dashboard
-        
-        # Calculate metrics
-        for metric in plan.metrics:
-            handler = METRIC_REGISTRY.get(metric)
-            if handler:
-                try:
-                    value = handler.calculate(dashboard)
-                    if value is not None:
-                        answer.metrics[handler.name.title()] = handler.format(value)
-                except Exception as e:
-                    logger.warning(f"Metric {metric.value} failed: {e}")
-        
-        # Add default metrics if none found
-        if not answer.metrics:
-            answer.metrics = {
-                "Revenue": f"PKR {dashboard.get('total_revenue', 0):,.2f}",
-                "Units": f"{dashboard.get('total_units', 0):,}",
-                "DN": f"{dashboard.get('total_dn', 0):,}",
-                "Pending": f"{dashboard.get('pending_dn', 0):,}",
-                "Business Score": f"{dashboard.get('business_score', 0):.1f}/100",
-            }
-        
-        answer.confidence = plan.confidence
-        answer.source = "PostgreSQL"
-    
-    def _execute_comparison(self, plan: QueryPlan, answer: CityAnswer) -> None:
-        """Execute comparison query"""
-        cities = plan.cities[:2] if plan.cities else []
-        if len(cities) < 2:
-            answer.confidence = 0.3
-            answer.metrics = {"Error": "Need at least two cities to compare"}
-            answer.explanation = "Please specify two cities to compare."
-            return
-        
-        city1, city2 = cities[0], cities[1]
-        dash1 = self._get_dashboard(city1)
-        dash2 = self._get_dashboard(city2)
-        
-        if not dash1 or not dash2:
-            answer.confidence = 0.3
-            answer.metrics = {"Error": "One or both cities not found"}
-            answer.explanation = f"Cities '{city1}' or '{city2}' could not be found."
-            return
-        
-        # Build comparison metrics
-        metrics1 = {}
-        metrics2 = {}
-        
-        for metric in [MetricType.REVENUE, MetricType.UNITS, MetricType.DN, 
-                       MetricType.PENDING_DN, MetricType.DELIVERY_DAYS]:
-            handler = METRIC_REGISTRY.get(metric)
-            if handler:
-                try:
-                    v1 = handler.calculate(dash1)
-                    v2 = handler.calculate(dash2)
-                    if v1 is not None and v2 is not None:
-                        metrics1[handler.name.title()] = handler.format(v1)
-                        metrics2[handler.name.title()] = handler.format(v2)
-                except Exception:
-                    pass
-        
-        answer.metrics = {
-            f"{city1}_metrics": metrics1,
-            f"{city2}_metrics": metrics2,
+        option_map = {
+            "1": ("dashboard", "Enter city name for dashboard:"),
+            "2": ("revenue", "Enter city name for revenue:"),
+            "3": ("units", "Enter city name for units:"),
+            "4": ("pending", "Enter city name for pending:"),
+            "5": ("delivery", "Enter city name for delivery:"),
+            "6": ("comparison", None),  # Special handling
+            "7": ("ranking", None),  # Special handling
+            "8": ("top_products", "Enter city name for top products:"),
+            "9": ("business_score", "Enter city name for business score:"),
+            "10": ("distance", "Enter city name for distance:"),
+            "11": ("growth", "Enter city name for growth:"),
+            "12": ("summary", "Enter city name for summary:"),
         }
         
-        # Generate comparison explanation
-        revenue1 = dash1.get('total_revenue', 0)
-        revenue2 = dash2.get('total_revenue', 0)
+        if option == "6":
+            # Start comparison flow
+            context.menu_state = MenuState.COMPARISON_SELECTION
+            context.comparison_cities = []
+            return {
+                "response": self._menu_renderer.render_comparison_selection(),
+                "menu_type": "city_menu",
+                "action": "comparison_start",
+                "data": {},
+                "exit_menu": False
+            }
         
-        if revenue1 > revenue2:
-            answer.explanation = f"{city1.title()} has higher revenue than {city2.title()}."
-        elif revenue2 > revenue1:
-            answer.explanation = f"{city2.title()} has higher revenue than {city1.title()}."
-        else:
-            answer.explanation = f"{city1.title()} and {city2.title()} have similar revenue."
+        if option == "7":
+            # Show rankings directly
+            return self._handle_ranking_request(context)
         
-        answer.confidence = 0.9
-        answer.source = "PostgreSQL"
+        if option not in option_map:
+            return self._handle_quick_query(context, option)
+        
+        action, prompt = option_map[option]
+        
+        # Check if we already have a selected city
+        if context.current_city:
+            # Use existing city
+            result = self._execute_city_action(context, action, context.current_city)
+            result["exit_menu"] = False
+            return result
+        
+        # Ask for city
+        context.menu_state = MenuState.CITY_SELECTION
+        context.selected_option = action
+        context.awaiting_city = True
+        
+        return {
+            "response": self._menu_renderer.render_city_selection(prompt),
+            "menu_type": "city_menu",
+            "action": "city_selection",
+            "data": {"purpose": action},
+            "exit_menu": False
+        }
     
-    def _execute_ranking(self, plan: QueryPlan, answer: CityAnswer) -> None:
-        """Execute ranking query"""
+    def _handle_city_selection(self, context: CityContext, city_input: str) -> Dict[str, Any]:
+        """Handle city selection response"""
+        city_name = self._resolve_city_name(city_input)
+        if not city_name:
+            return {
+                "response": "\n".join([
+                    "❌ City not found.",
+                    "",
+                    "Please try again or enter a valid city name.",
+                    "",
+                    "0. Main Menu",
+                    "99. Back"
+                ]),
+                "menu_type": "city_menu",
+                "action": "city_selection_error",
+                "data": {},
+                "exit_menu": False
+            }
+        
+        context.current_city = city_name
+        context.menu_state = MenuState.MAIN
+        context.awaiting_city = False
+        
+        action = context.selected_option or "dashboard"
+        result = self._execute_city_action(context, action, city_name)
+        result["exit_menu"] = False
+        return result
+    
+    def _handle_comparison_selection(self, context: CityContext, city_input: str) -> Dict[str, Any]:
+        """Handle comparison city selection"""
+        city_name = self._resolve_city_name(city_input)
+        if not city_name:
+            return {
+                "response": "\n".join([
+                    "❌ City not found.",
+                    "",
+                    "Please try again or enter a valid city name.",
+                    "",
+                    "0. Main Menu",
+                    "99. Back"
+                ]),
+                "menu_type": "city_menu",
+                "action": "comparison_error",
+                "data": {},
+                "exit_menu": False
+            }
+        
+        context.comparison_cities.append(city_name)
+        
+        if len(context.comparison_cities) == 1:
+            return {
+                "response": "\n".join([
+                    f"✅ First city selected: {city_name.title()}",
+                    "",
+                    "Enter second city name:",
+                    "",
+                    "0. Main Menu",
+                    "99. Back"
+                ]),
+                "menu_type": "city_menu",
+                "action": "comparison_second",
+                "data": {"first_city": city_name},
+                "exit_menu": False
+            }
+        else:
+            # Both cities selected, perform comparison
+            city1, city2 = context.comparison_cities[0], context.comparison_cities[1]
+            context.menu_state = MenuState.MAIN
+            context.comparison_cities = []
+            return self._perform_comparison(context, city1, city2)
+    
+    def _handle_ranking_request(self, context: CityContext) -> Dict[str, Any]:
+        """Handle ranking request"""
+        result = self._get_city_ranking(context)
+        result["exit_menu"] = False
+        return result
+    
+    def _handle_quick_query(self, context: CityContext, query: str) -> Dict[str, Any]:
+        """Handle quick query from main menu"""
+        # Check if it's a comparison
+        if "compare" in query.lower() or "vs" in query.lower():
+            import re
+            cities = re.findall(r'[a-zA-Z\s]+', query)
+            city_names = [c.strip() for c in cities if c.strip()]
+            
+            if len(city_names) >= 2:
+                city1 = self._resolve_city_name(city_names[0])
+                city2 = self._resolve_city_name(city_names[1])
+                if city1 and city2:
+                    return self._perform_comparison(context, city1, city2)
+        
+        # Check if it's a ranking query
+        if "top" in query.lower() and ("city" in query.lower() or "cities" in query.lower()):
+            return self._get_city_ranking(context)
+        
+        # Try as single city query
+        city_name = self._resolve_city_name(query)
+        if city_name:
+            context.current_city = city_name
+            result = self._get_city_dashboard(context, city_name)
+            result["exit_menu"] = False
+            return result
+        
+        # Check if it's asking for menu
+        if query.lower() in ["menu", "help", "options"]:
+            return {
+                "response": self._menu_renderer.render_main_menu(),
+                "menu_type": "city_menu",
+                "action": "menu",
+                "data": {},
+                "exit_menu": False
+            }
+        
+        # Default response
+        return {
+            "response": "\n".join([
+                "❌ I didn't understand that.",
+                "",
+                "💡 *Try one of these:*",
+                "• 'Lahore' - Show dashboard",
+                "• 'Revenue in Karachi'",
+                "• 'Pending in Multan'",
+                "• 'Compare Lahore Karachi'",
+                "• 'Top cities by revenue'",
+                "",
+                "0. Main Menu",
+                "99. Back"
+            ]),
+            "menu_type": "city_menu",
+            "action": "unknown_query",
+            "data": {},
+            "exit_menu": False
+        }
+    
+    def _execute_city_action(self, context: CityContext, action: str, city_name: str) -> Dict[str, Any]:
+        """Execute city action based on selected option"""
+        action_map = {
+            "dashboard": self._get_city_dashboard,
+            "revenue": self._get_city_metric,
+            "units": self._get_city_metric,
+            "pending": self._get_city_pending,
+            "delivery": self._get_city_delivery,
+            "top_products": self._get_city_top_products,
+            "business_score": self._get_city_business_score,
+            "distance": self._get_city_distance,
+            "growth": self._get_city_growth,
+            "summary": self._get_city_summary,
+        }
+        
+        handler = action_map.get(action, self._get_city_dashboard)
+        
+        if action in ["revenue", "units"]:
+            return handler(context, city_name, action)
+        else:
+            return handler(context, city_name)
+    
+    def _resolve_city_name(self, input_text: str) -> Optional[str]:
+        """Resolve city name from input"""
+        input_lower = input_text.lower().strip()
+        
+        # Direct match
+        if input_lower in CITY_NAMES:
+            return input_lower
+        
+        # Check aliases
+        if input_lower in CITY_ALIASES:
+            return CITY_ALIASES[input_lower]
+        
+        # Fuzzy match
+        for city in CITY_NAMES:
+            if len(city) >= 3:
+                if city[:3] in input_lower or input_lower in city:
+                    return city
+        
+        return None
+    
+    def _get_city_dashboard(self, context: CityContext, city_name: str) -> Dict[str, Any]:
+        """Get city dashboard"""
         try:
             with self._session() as session:
-                # Get all cities data
+                builder = CityDashboardBuilder(session)
+                dashboard = builder.build(city_name)
+                
+                if not dashboard:
+                    return {
+                        "response": f"⚠️ City '{city_name}' not found.\n\nPlease check the city name and try again.\n\n0. Main Menu",
+                        "menu_type": "city_menu",
+                        "action": "dashboard",
+                        "data": {"city": city_name, "error": "not_found"},
+                        "exit_menu": False
+                    }
+                
+                return {
+                    "response": self._menu_renderer.render_city_dashboard(city_name, dashboard),
+                    "menu_type": "city_menu",
+                    "action": "dashboard",
+                    "data": {"city": city_name, "dashboard": dashboard},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            logger.error(f"Dashboard error: {e}")
+            return {
+                "response": f"⚠️ Service error for {city_name}: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "city_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_city_metric(self, context: CityContext, city_name: str, metric: str) -> Dict[str, Any]:
+        """Get specific city metric"""
+        try:
+            with self._session() as session:
+                builder = CityDashboardBuilder(session)
+                dashboard = builder.build(city_name)
+                
+                if not dashboard:
+                    return {
+                        "response": f"⚠️ City '{city_name}' not found.\n\n0. Main Menu",
+                        "menu_type": "city_menu",
+                        "action": "metric_error",
+                        "data": {"city": city_name, "error": "not_found"},
+                        "exit_menu": False
+                    }
+                
+                metric_mapping = {
+                    "revenue": ("Revenue", f"PKR {dashboard.get('total_revenue', 0):,.2f}"),
+                    "units": ("Units", f"{dashboard.get('total_units', 0):,}"),
+                }
+                
+                label, value = metric_mapping.get(metric, ("Metric", "N/A"))
+                
+                return {
+                    "response": "\n".join([
+                        f"📊 *{city_name.title()} - {label}*",
+                        "",
+                        f"{value}",
+                        "",
+                        "0. Main Menu",
+                        "99. Back"
+                    ]),
+                    "menu_type": "city_menu",
+                    "action": f"metric_{metric}",
+                    "data": {"city": city_name, "metric": metric, "value": value},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "city_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_city_pending(self, context: CityContext, city_name: str) -> Dict[str, Any]:
+        """Get city pending summary"""
+        try:
+            with self._session() as session:
+                builder = CityDashboardBuilder(session)
+                dashboard = builder.build(city_name)
+                
+                if not dashboard:
+                    return {
+                        "response": f"⚠️ City '{city_name}' not found.\n\n0. Main Menu",
+                        "menu_type": "city_menu",
+                        "action": "pending_error",
+                        "data": {"city": city_name, "error": "not_found"},
+                        "exit_menu": False
+                    }
+                
+                pending_data = {
+                    "pending_dn": dashboard.get('pending_dn', 0),
+                    "pending_revenue": dashboard.get('pending_revenue', 0),
+                    "pending_units": dashboard.get('pending_units', 0),
+                    "pgi_pending_dn": dashboard.get('pgi_pending_dn', 0),
+                    "pod_pending_dn": dashboard.get('pod_pending_dn', 0),
+                    "pending_average_days": dashboard.get('pending_average_days', 0),
+                    "critical_pending": dashboard.get('critical_pending', 0),
+                    "overdue_pending": dashboard.get('overdue_pending', 0),
+                    "oldest_pending_dn": dashboard.get('oldest_pending_dn', 'N/A'),
+                    "oldest_pending_days": dashboard.get('oldest_pending_days', 0),
+                }
+                
+                return {
+                    "response": self._menu_renderer.render_pending_summary(city_name, pending_data),
+                    "menu_type": "city_menu",
+                    "action": "pending",
+                    "data": {"city": city_name, "pending": pending_data},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "city_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_city_delivery(self, context: CityContext, city_name: str) -> Dict[str, Any]:
+        """Get city delivery summary"""
+        try:
+            with self._session() as session:
+                builder = CityDashboardBuilder(session)
+                dashboard = builder.build(city_name)
+                
+                if not dashboard:
+                    return {
+                        "response": f"⚠️ City '{city_name}' not found.\n\n0. Main Menu",
+                        "menu_type": "city_menu",
+                        "action": "delivery_error",
+                        "data": {"city": city_name, "error": "not_found"},
+                        "exit_menu": False
+                    }
+                
+                delivery_data = {
+                    "delivery_success_pct": dashboard.get('delivery_success_pct', 0),
+                    "avg_delivery": dashboard.get('avg_delivery', 0),
+                    "fastest_delivery": dashboard.get('fastest_delivery_days', 0) or 0,
+                    "slowest_delivery": dashboard.get('slowest_delivery_days', 0) or 0,
+                    "same_day_deliveries": dashboard.get('same_day_deliveries', 0) or 0,
+                    "next_day_deliveries": dashboard.get('next_day_deliveries', 0) or 0,
+                    "pod_success_pct": dashboard.get('pod_success_pct', 0),
+                    "avg_pod": dashboard.get('avg_pod', 0),
+                    "avg_cycle": dashboard.get('avg_cycle', 0),
+                }
+                
+                return {
+                    "response": self._menu_renderer.render_delivery_summary(city_name, delivery_data),
+                    "menu_type": "city_menu",
+                    "action": "delivery",
+                    "data": {"city": city_name, "delivery": delivery_data},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "city_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_city_top_products(self, context: CityContext, city_name: str) -> Dict[str, Any]:
+        """Get city top products"""
+        try:
+            with self._session() as session:
+                builder = CityDashboardBuilder(session)
+                dashboard = builder.build(city_name)
+                
+                if not dashboard:
+                    return {
+                        "response": f"⚠️ City '{city_name}' not found.\n\n0. Main Menu",
+                        "menu_type": "city_menu",
+                        "action": "top_products_error",
+                        "data": {"city": city_name, "error": "not_found"},
+                        "exit_menu": False
+                    }
+                
+                return {
+                    "response": self._menu_renderer.render_top_products(city_name, dashboard),
+                    "menu_type": "city_menu",
+                    "action": "top_products",
+                    "data": {"city": city_name, "products": dashboard},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "city_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_city_business_score(self, context: CityContext, city_name: str) -> Dict[str, Any]:
+        """Get city business score"""
+        try:
+            with self._session() as session:
+                builder = CityDashboardBuilder(session)
+                dashboard = builder.build(city_name)
+                
+                if not dashboard:
+                    return {
+                        "response": f"⚠️ City '{city_name}' not found.\n\n0. Main Menu",
+                        "menu_type": "city_menu",
+                        "action": "business_score_error",
+                        "data": {"city": city_name, "error": "not_found"},
+                        "exit_menu": False
+                    }
+                
+                return {
+                    "response": self._menu_renderer.render_business_score(city_name, dashboard),
+                    "menu_type": "city_menu",
+                    "action": "business_score",
+                    "data": {"city": city_name, "score": dashboard.get('business_score', 0)},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "city_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_city_distance(self, context: CityContext, city_name: str) -> Dict[str, Any]:
+        """Get city distance info"""
+        try:
+            with self._session() as session:
+                builder = CityDashboardBuilder(session)
+                dashboard = builder.build(city_name)
+                
+                if not dashboard:
+                    return {
+                        "response": f"⚠️ City '{city_name}' not found.\n\n0. Main Menu",
+                        "menu_type": "city_menu",
+                        "action": "distance_error",
+                        "data": {"city": city_name, "error": "not_found"},
+                        "exit_menu": False
+                    }
+                
+                distance_data = dashboard.get('distance', {})
+                distance_data['warehouse'] = dashboard.get('warehouse', 'Unknown')
+                
+                return {
+                    "response": self._menu_renderer.render_distance_info(city_name, distance_data),
+                    "menu_type": "city_menu",
+                    "action": "distance",
+                    "data": {"city": city_name, "distance": distance_data},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "city_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_city_growth(self, context: CityContext, city_name: str) -> Dict[str, Any]:
+        """Get city growth analytics"""
+        try:
+            with self._session() as session:
+                builder = CityDashboardBuilder(session)
+                dashboard = builder.build(city_name)
+                
+                if not dashboard:
+                    return {
+                        "response": f"⚠️ City '{city_name}' not found.\n\n0. Main Menu",
+                        "menu_type": "city_menu",
+                        "action": "growth_error",
+                        "data": {"city": city_name, "error": "not_found"},
+                        "exit_menu": False
+                    }
+                
+                growth_data = {
+                    "monthly_growth": dashboard.get('monthly_growth', 0),
+                    "revenue_growth_pct": dashboard.get('revenue_growth_pct', 0),
+                    "current_month_revenue": dashboard.get('current_month_revenue', 0),
+                    "previous_month_revenue": dashboard.get('previous_month_revenue', 0),
+                    "best_month": dashboard.get('best_month', 'N/A'),
+                    "worst_month": dashboard.get('worst_month', 'N/A'),
+                }
+                
+                return {
+                    "response": self._menu_renderer.render_growth_summary(city_name, growth_data),
+                    "menu_type": "city_menu",
+                    "action": "growth",
+                    "data": {"city": city_name, "growth": growth_data},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "city_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_city_summary(self, context: CityContext, city_name: str) -> Dict[str, Any]:
+        """Get city executive summary"""
+        try:
+            with self._session() as session:
+                builder = CityDashboardBuilder(session)
+                dashboard = builder.build(city_name)
+                
+                if not dashboard:
+                    return {
+                        "response": f"⚠️ City '{city_name}' not found.\n\n0. Main Menu",
+                        "menu_type": "city_menu",
+                        "action": "summary_error",
+                        "data": {"city": city_name, "error": "not_found"},
+                        "exit_menu": False
+                    }
+                
+                return {
+                    "response": self._menu_renderer.render_summary(city_name, dashboard),
+                    "menu_type": "city_menu",
+                    "action": "summary",
+                    "data": {"city": city_name, "summary": dashboard},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "city_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_city_ranking(self, context: CityContext) -> Dict[str, Any]:
+        """Get city rankings"""
+        try:
+            with self._session() as session:
                 results = session.query(
                     DeliveryReport.ship_to_city.label("city"),
-                    func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
-                    func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("units"),
-                    func.count(distinct(DeliveryReport.dn_no)).label("dn"),
+                    func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue")
                 ).filter(
                     DeliveryReport.ship_to_city.isnot(None)
                 ).group_by(
                     DeliveryReport.ship_to_city
                 ).order_by(
                     func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).desc()
-                ).limit(plan.limit).all()
+                ).limit(10).all()
                 
                 ranking = []
                 for row in results:
-                    ranking.append({
-                        "city": _text(row.city),
-                        "value": f"PKR {float(row.revenue or 0):,.2f}" if plan.sort_by == "revenue" else _text(row.units)
-                    })
+                    city = _text(row.city)
+                    if city:
+                        ranking.append({
+                            "city": city,
+                            "value": f"PKR {float(row.revenue or 0):,.2f}"
+                        })
                 
-                answer.metrics = {"ranking": ranking}
-                
-                if ranking:
-                    answer.explanation = f"Top city: {ranking[0]['city']} with {ranking[0]['value']}"
-                else:
-                    answer.explanation = "No cities found for ranking."
-                
-                answer.confidence = 0.9
-                answer.source = "PostgreSQL"
-                
+                return {
+                    "response": self._menu_renderer.render_ranking(ranking, "Revenue", 10),
+                    "menu_type": "city_menu",
+                    "action": "ranking",
+                    "data": {"ranking": ranking},
+                    "exit_menu": False
+                }
         except Exception as e:
-            logger.error(f"Ranking failed: {e}")
-            answer.confidence = 0.3
-            answer.metrics = {"Error": "Ranking temporarily unavailable"}
+            return {
+                "response": f"⚠️ Ranking error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "city_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
     
-    def _get_dashboard(self, city_name: str) -> Optional[Dict[str, Any]]:
-        """Get dashboard with caching"""
-        cache_key = city_name.lower()
-        
-        with self._lock:
-            if cache_key in self._dashboard_cache:
-                return self._dashboard_cache[cache_key]
-        
+    def _perform_comparison(self, context: CityContext, city1: str, city2: str) -> Dict[str, Any]:
+        """Perform city comparison"""
         try:
             with self._session() as session:
                 builder = CityDashboardBuilder(session)
-                dashboard = builder.build(city_name)
+                dash1 = builder.build(city1)
+                dash2 = builder.build(city2)
                 
-                if dashboard:
-                    with self._lock:
-                        self._dashboard_cache[cache_key] = dashboard
+                if not dash1 or not dash2:
+                    return {
+                        "response": "⚠️ One or both cities not found.\n\n0. Main Menu",
+                        "menu_type": "city_menu",
+                        "action": "comparison_error",
+                        "data": {"error": "not_found"},
+                        "exit_menu": False
+                    }
                 
-                return dashboard
+                metrics = {}
+                
+                # Build metrics for city1
+                metrics[f"{city1}_metrics"] = {
+                    "Revenue": f"PKR {dash1.get('total_revenue', 0):,.2f}",
+                    "Units": f"{dash1.get('total_units', 0):,}",
+                    "DN": f"{dash1.get('total_dn', 0):,}",
+                    "Pending": f"{dash1.get('pending_dn', 0):,}",
+                    "Delivery Days": f"{dash1.get('avg_delivery', 0):.1f}",
+                    "Business Score": f"{dash1.get('business_score', 0):.1f}/100",
+                }
+                
+                # Build metrics for city2
+                metrics[f"{city2}_metrics"] = {
+                    "Revenue": f"PKR {dash2.get('total_revenue', 0):,.2f}",
+                    "Units": f"{dash2.get('total_units', 0):,}",
+                    "DN": f"{dash2.get('total_dn', 0):,}",
+                    "Pending": f"{dash2.get('pending_dn', 0):,}",
+                    "Delivery Days": f"{dash2.get('avg_delivery', 0):.1f}",
+                    "Business Score": f"{dash2.get('business_score', 0):.1f}/100",
+                }
+                
+                # Generate comparison summary
+                revenue1 = dash1.get('total_revenue', 0)
+                revenue2 = dash2.get('total_revenue', 0)
+                
+                if revenue1 > revenue2:
+                    explanation = f"{city1.title()} has higher revenue than {city2.title()}"
+                elif revenue2 > revenue1:
+                    explanation = f"{city2.title()} has higher revenue than {city1.title()}"
+                else:
+                    explanation = f"{city1.title()} and {city2.title()} have similar revenue"
+                
+                metrics["explanation"] = explanation
+                
+                return {
+                    "response": self._menu_renderer.render_comparison_result(city1, city2, metrics),
+                    "menu_type": "city_menu",
+                    "action": "comparison",
+                    "data": {"city1": city1, "city2": city2, "metrics": metrics},
+                    "exit_menu": False
+                }
         except Exception as e:
-            logger.error(f"Failed to get dashboard for {city_name}: {e}")
-            return None
+            return {
+                "response": f"⚠️ Comparison error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "city_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
     
     def _get_context(self, session_id: str) -> CityContext:
         """Get or create context for session"""
@@ -1722,31 +2230,107 @@ class CityAnalyticsService:
                 self._contexts[session_id] = CityContext()
             return self._contexts[session_id]
     
-    def _format_response(self, answer: CityAnswer) -> Dict[str, Any]:
-        """Format final response"""
+    # Legacy methods for backward compatibility
+    def get_city_dashboard(self, city_name: str = "", **kwargs: Any) -> Dict[str, Any]:
+        """Legacy method for backward compatibility"""
+        if not city_name:
+            return {
+                "success": False,
+                "whatsapp_message": "⚠️ Please provide a city name.",
+                "error": "CITY_REQUIRED"
+            }
+        
+        context = self._get_context(kwargs.get("session_id", "default"))
+        result = self._get_city_dashboard(context, city_name)
         return {
             "success": True,
-            "question": answer.question,
-            "intent": answer.intent.value,
-            "plan": answer.plan.to_dict(),
-            "metrics": answer.metrics,
-            "explanation": answer.explanation,
-            "whatsapp_message": answer.formatted_response,
-            "formatted_response": answer.formatted_response,
-            "response": answer.formatted_response,
-            "confidence": answer.confidence,
-            "execution_time_ms": answer.execution_time_ms,
-            "source": answer.source,
-            "ai_enhanced": answer.ai_enhanced,
-            "metadata": {
-                "version": self._version,
-                "source": "PostgreSQL",
-                "ai_explanation": USE_AI_EXPLANATION,
-            }
+            "data": result.get("data", {}).get("dashboard", {}),
+            "whatsapp_message": result.get("response", ""),
         }
+    
+    def get_top_cities(self, limit: int = 10, **kwargs: Any) -> Dict[str, Any]:
+        """Legacy method for backward compatibility"""
+        context = self._get_context(kwargs.get("session_id", "default"))
+        result = self._get_city_ranking(context)
+        return {
+            "success": True,
+            "data": result.get("data", {}).get("ranking", []),
+            "whatsapp_message": result.get("response", ""),
+        }
+    
+    def compare_cities(self, cities: List[str], **kwargs: Any) -> Dict[str, Any]:
+        """Legacy method for backward compatibility"""
+        if not cities or len(cities) < 2:
+            return {
+                "success": False,
+                "whatsapp_message": "⚠️ Please provide at least two cities.",
+                "error": "TWO_CITIES_REQUIRED"
+            }
+        
+        context = self._get_context(kwargs.get("session_id", "default"))
+        result = self._perform_comparison(context, cities[0], cities[1])
+        return {
+            "success": True,
+            "data": result.get("data", {}),
+            "whatsapp_message": result.get("response", ""),
+        }
+    
+    def health_check(self) -> Dict[str, Any]:
+        """Health check for service"""
+        try:
+            with self._session() as session:
+                rows = session.query(func.count(DeliveryReport.id)).scalar() or 0
+                cities = session.query(func.count(distinct(DeliveryReport.ship_to_city))).scalar() or 0
+            
+            return {
+                "healthy": True,
+                "service": self._service_name,
+                "version": self._version,
+                "database": "connected",
+                "records": int(rows),
+                "cities": int(cities),
+                "timestamp": datetime.utcnow().isoformat(),
+                "source": "PostgreSQL",
+                "menu_enabled": True,
+            }
+        except Exception as e:
+            return {
+                "healthy": False,
+                "service": self._service_name,
+                "version": self._version,
+                "database": "disconnected",
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+    
+    def process_whatsapp_query(self, message: str, sender: str = "default", **kwargs: Any) -> str:
+        """
+        Process WhatsApp query and return formatted response.
+        ALWAYS returns a string - never a dict.
+        
+        This is the main entry point for WhatsApp integration.
+        """
+        if not message or not message.strip():
+            return self.get_main_menu()
+        
+        # Check if it's a menu navigation command
+        if message.strip() in ["menu", "help", "options"]:
+            return self.get_main_menu()
+        
+        # Process as menu input
+        result = self.process_menu_input(sender, message.strip())
+        
+        # Extract response string
+        response = result.get("response", self.get_main_menu())
+        
+        # If exit_menu is True, user wants to go back to main menu
+        if result.get("exit_menu", False):
+            return response
+        
+        return response
 
 # ============================================================
-# BLOCK 16: SERVICE SINGLETON
+# BLOCK 12: SERVICE SINGLETON
 # ============================================================
 
 _service: Optional[CityAnalyticsService] = None
@@ -1763,29 +2347,37 @@ def get_city_analytics_service() -> CityAnalyticsService:
     return _service
 
 
-# ============================================================
-# BLOCK 17: QUICK ACCESS FUNCTIONS
-# ============================================================
-
 def answer_city_question(question: str, session_id: str = "default", **kwargs) -> Dict[str, Any]:
     """Quick access to answer city questions"""
     service = get_city_analytics_service()
-    return service.answer_city_question(question, session_id, **kwargs)
+    return service.process_menu_input(session_id, question)
+
+
+def process_city_menu(session_id: str, user_input: str) -> Dict[str, Any]:
+    """Process city menu input for WhatsApp integration"""
+    service = get_city_analytics_service()
+    return service.process_menu_input(session_id, user_input)
+
+
+def get_city_main_menu() -> str:
+    """Get the main city menu for WhatsApp"""
+    service = get_city_analytics_service()
+    return service.get_main_menu()
 
 
 # ============================================================
-# BLOCK 18: EXPORTS
+# BLOCK 13: EXPORTS
 # ============================================================
 
 __all__ = [
     "CityAnalyticsService",
-    "IntentType",
-    "MetricType",
-    "ResponseFormat",
-    "ConfidenceLevel",
-    "QueryPlan",
-    "CityAnswer",
     "CityContext",
+    "IntentType",
+    "MenuState",
+    "ResponseFormat",
     "get_city_analytics_service",
     "answer_city_question",
+    "process_city_menu",
+    "get_city_main_menu",
+    "CityMenuRenderer",
 ]
