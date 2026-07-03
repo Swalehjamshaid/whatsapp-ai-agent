@@ -1,26 +1,25 @@
 """
 File: app/services/dn_analysis.py
-Version: 18.0 - ENTERPRISE DN DOMAIN AI EXPERT WITH FULL QUESTION SUPPORT
+Version: 19.0 - COMPLETE DN DOMAIN AI EXPERT - ALL DN QUESTIONS ANSWERED HERE
 
-Purpose: Answer ANY DN-related business question through a single entry point
+Purpose: Answer ALL DN-related business questions through a single entry point
          PostgreSQL is the ONLY source of truth.
          
-SUPPORTS 100+ DN QUESTIONS:
-- Dashboard: Show DN, DN details, DN overview
-- Status: DN status, delivery status, PGI status, POD status
-- History: DN history, delivery history, tracking history
-- Timeline: DN timeline, chronological view
-- Transit: Transit analysis, travel time, distance
-- Pending: Pending DNs, pending PGI, pending POD
-- Delayed: Delayed DNs, overdue DNs, SLA breaches
-- Recent: Recent DNs, latest DNs
-- Search: Search DNs by number, customer, warehouse
-- Comparison: Compare DNs, DN vs DN
-- Ranking: Top DNs by revenue, units, etc.
-- Analytics: DN aging, delivery performance, trends
-- AI Insights: Recommendations, root cause analysis
+THIS FILE HANDLES EVERYTHING DN-RELATED:
+- ✅ All DN menu options (1-19)
+- ✅ Natural language DN queries
+- ✅ DN number auto-detection
+- ✅ DN status, history, timeline
+- ✅ Transit analysis, distance
+- ✅ Pending DNs, PGI, POD
+- ✅ Delayed DNs, recent DNs
+- ✅ Search, comparison, ranking
+- ✅ Insights, SLA, aging, trends
+- ✅ Forecast, recommendations
+- ✅ Root cause analysis
+- ✅ Stay in DN service until "99"
 
-Status: ENTERPRISE READY
+Status: ENTERPRISE READY - ALL DN QUESTIONS GO THROUGH THIS FILE
 """
 
 from __future__ import annotations
@@ -237,49 +236,6 @@ class DNContext:
         self.last_analytics = None
         self.search_results = None
 
-@dataclass
-class QueryPlan:
-    """Query execution plan"""
-    intent: IntentType
-    dn: Optional[str] = None
-    dns: List[str] = field(default_factory=list)
-    timeframe: Optional[str] = None
-    limit: int = 10
-    sort_by: Optional[str] = None
-    order: str = "desc"
-    format: str = "standard"
-    confidence: float = 1.0
-    requires_ai: bool = False
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "intent": self.intent.value,
-            "dn": self.dn,
-            "dns": self.dns,
-            "timeframe": self.timeframe,
-            "limit": self.limit,
-            "format": self.format,
-            "confidence": self.confidence,
-        }
-
-@dataclass
-class DNAanswer:
-    """Complete answer with metadata"""
-    question: str
-    intent: IntentType
-    plan: QueryPlan
-    dashboard: Optional[Dict[str, Any]] = None
-    metrics: Dict[str, Any] = field(default_factory=dict)
-    explanation: str = ""
-    recommendations: List[str] = field(default_factory=list)
-    insights: List[str] = field(default_factory=list)
-    formatted_response: str = ""
-    confidence: float = 1.0
-    execution_time_ms: float = 0.0
-    source: str = "PostgreSQL"
-    ai_enhanced: bool = False
-    context_used: bool = False
-
 # ============================================================
 # BLOCK 6: UTILITY FUNCTIONS
 # ============================================================
@@ -338,25 +294,6 @@ def _format_date(value: Any) -> str:
             return str(value)[:10]
     return str(value)
 
-def _serialise(value: Any) -> Any:
-    if isinstance(value, (date, datetime)):
-        return value.isoformat()
-    if isinstance(value, Decimal):
-        return float(value)
-    if isinstance(value, uuid.UUID):
-        return str(value)
-    return value
-
-def _format_duration_days(days: float) -> str:
-    """Format duration in days with proper pluralization"""
-    if days < 0:
-        return "0 Days"
-    if days == 0:
-        return "0 Days"
-    if days == 1:
-        return "1 Day"
-    return f"{int(days)} Days"
-
 def _get_status_emoji(status: str) -> str:
     """Get emoji for status"""
     status_map = {
@@ -372,8 +309,30 @@ def _get_status_emoji(status: str) -> str:
     }
     return status_map.get(status, "📊")
 
+def _get_priority_emoji(days: int) -> str:
+    """Get priority emoji based on days"""
+    if days <= 0:
+        return "🟢"
+    elif days <= 3:
+        return "🟡"
+    elif days <= 7:
+        return "🟠"
+    else:
+        return "🔴"
+
+def _extract_dn_numbers(text: str) -> List[str]:
+    """Extract DN numbers from text"""
+    return re.findall(r'(?<!\d)(\d{8,12})(?!\d)', text)
+
+def _is_valid_dn(dn: str) -> bool:
+    """Validate DN number (8-12 digits)"""
+    if not dn:
+        return False
+    cleaned = re.sub(r'[\s-]', '', dn)
+    return cleaned.isdigit() and 8 <= len(cleaned) <= 12
+
 # ============================================================
-# BLOCK 7: ENHANCED MENU SYSTEM
+# BLOCK 7: DN MENU RENDERER
 # ============================================================
 
 class DNMenuRenderer:
@@ -413,6 +372,7 @@ class DNMenuRenderer:
             "• Search [keyword]",
             "• Status of [DN]",
             "• Where is [DN]",
+            "• History of [DN]",
             "",
             "Reply with a number or DN number:"
         ])
@@ -449,11 +409,13 @@ class DNMenuRenderer:
         """Render DN dashboard"""
         status = data.get('computed_delivery_status', 'Unknown')
         status_emoji = _get_status_emoji(status)
+        dn_age = data.get('dn_age', 0)
+        priority_emoji = _get_priority_emoji(dn_age if dn_age else 0)
         
         lines = [
             f"📦 *DN Dashboard - {dn_no}*",
             "",
-            f"{status_emoji} *Status:* {status}",
+            f"{status_emoji} *Status:* {status}  {priority_emoji} Age: {dn_age} Days" if dn_age else f"{status_emoji} *Status:* {status}",
             "",
             "📊 *Key Information*",
             f"Customer: {data.get('customer_name', 'N/A')}",
@@ -575,7 +537,6 @@ class DNMenuRenderer:
                 description = event.get('description', '')
                 emoji = _get_status_emoji(status)
                 
-                # Visual timeline
                 if i == 0:
                     prefix = "🟢 START"
                 elif i == len(events) - 1:
@@ -702,12 +663,11 @@ class DNMenuRenderer:
             v1 = metrics1.get(key, "N/A")
             v2 = metrics2.get(key, "N/A")
             
-            # Determine winner
             if isinstance(v1, str) and isinstance(v2, str):
                 try:
                     num1 = float(re.sub(r'[^\d.]', '', v1))
                     num2 = float(re.sub(r'[^\d.]', '', v2))
-                    if key.lower() in ['pending', 'pending dn', 'delivery days', 'delivery days']:
+                    if key.lower() in ['pending', 'delivery days']:
                         winner = "✅" if num1 < num2 else "❌" if num1 > num2 else "➖"
                     else:
                         winner = "✅" if num1 > num2 else "❌" if num1 < num2 else "➖"
@@ -749,7 +709,6 @@ class DNMenuRenderer:
             "📊 *Status Breakdown*",
         ]
         
-        # Group by status
         status_counts = defaultdict(int)
         for dn in dns:
             status = dn.get('computed_delivery_status', 'Unknown')
@@ -826,7 +785,6 @@ class DNMenuRenderer:
             "",
         ]
         
-        # Daily trends
         daily = trend_data.get('daily', [])
         if daily:
             lines.append("📅 *Last 7 Days*")
@@ -834,7 +792,6 @@ class DNMenuRenderer:
                 lines.append(f"• {day.get('date', 'N/A')}: {day.get('count', 0)} DNs, PKR {day.get('revenue', 0):,.2f}")
             lines.append("")
         
-        # Weekly trends
         weekly = trend_data.get('weekly', [])
         if weekly:
             lines.append("📅 *Weekly Summary*")
@@ -842,7 +799,6 @@ class DNMenuRenderer:
                 lines.append(f"• Week {week.get('week', 'N/A')}: {week.get('count', 0)} DNs, PKR {week.get('revenue', 0):,.2f}")
             lines.append("")
         
-        # Growth
         growth = trend_data.get('growth', 0)
         lines.append(f"📈 *Growth Rate: {growth:+.1f}%*")
         
@@ -873,17 +829,16 @@ class DNMenuRenderer:
         return "\n".join(lines)
 
 # ============================================================
-# BLOCK 8: ENHANCED INTENT ENGINE
+# BLOCK 8: INTENT ENGINE - ALL DN INTENTS
 # ============================================================
 
 class IntentEngine:
-    """AI-powered intent detection for DN questions"""
+    """AI-powered intent detection for ALL DN questions"""
     
     INTENT_PATTERNS = {
         IntentType.DASHBOARD: [
             r"(?:show|display|get|view).*(?:dn|delivery note).*(?:dashboard|details|info)",
             r"dn\s+(\d{8,12})",
-            r"delivery note\s+(\d{8,12})",
             r"^(\d{8,12})$",
         ],
         IntentType.STATUS: [
@@ -892,11 +847,13 @@ class IntentEngine:
             r"dn status",
             r"where is dn\s+(\d{8,12})",
             r"track dn\s+(\d{8,12})",
+            r"check dn\s+(\d{8,12})",
         ],
         IntentType.HISTORY: [
-            r"(?:history|tracking|timeline).*(?:dn|delivery note)",
+            r"(?:history|tracking).*(?:dn|delivery note)",
             r"dn history",
             r"what happened to dn\s+(\d{8,12})",
+            r"history of dn\s+(\d{8,12})",
         ],
         IntentType.TIMELINE: [
             r"(?:timeline|sequence|chronology)",
@@ -908,6 +865,7 @@ class IntentEngine:
             r"transit time",
             r"travel time",
             r"how far is dn\s+(\d{8,12})",
+            r"distance of dn\s+(\d{8,12})",
         ],
         IntentType.PENDING: [
             r"(?:pending|outstanding|backlog|overdue).*(?:dn|delivery)",
@@ -1045,36 +1003,16 @@ class IntentEngine:
         if SEMANTIC_ROUTER_AVAILABLE:
             try:
                 routes = [
-                    Route(name="dn_dashboard", utterances=[
-                        "show dn", "dn dashboard", "dn details", "delivery note"
-                    ]),
-                    Route(name="dn_status", utterances=[
-                        "dn status", "status of dn", "what's the status", "where is dn"
-                    ]),
-                    Route(name="dn_history", utterances=[
-                        "dn history", "history of dn", "track dn"
-                    ]),
-                    Route(name="dn_transit", utterances=[
-                        "transit time", "travel time", "how far", "distance"
-                    ]),
-                    Route(name="pending_dns", utterances=[
-                        "pending dns", "pending deliveries", "overdue dns"
-                    ]),
-                    Route(name="dn_comparison", utterances=[
-                        "compare dns", "dn vs dn", "comparison"
-                    ]),
-                    Route(name="dn_ranking", utterances=[
-                        "top dns", "dn ranking", "best dns"
-                    ]),
-                    Route(name="dn_trends", utterances=[
-                        "dn trends", "delivery trends", "patterns"
-                    ]),
-                    Route(name="dn_insights", utterances=[
-                        "dn insights", "analysis", "key findings"
-                    ]),
-                    Route(name="dn_recommendations", utterances=[
-                        "recommendations", "suggestions", "how to improve"
-                    ]),
+                    Route(name="dn_dashboard", utterances=["show dn", "dn dashboard", "dn details"]),
+                    Route(name="dn_status", utterances=["dn status", "status of dn", "where is dn"]),
+                    Route(name="dn_history", utterances=["dn history", "history of dn", "track dn"]),
+                    Route(name="dn_transit", utterances=["transit time", "travel time", "how far"]),
+                    Route(name="pending_dns", utterances=["pending dns", "pending deliveries"]),
+                    Route(name="dn_comparison", utterances=["compare dns", "dn vs dn"]),
+                    Route(name="dn_ranking", utterances=["top dns", "dn ranking"]),
+                    Route(name="dn_trends", utterances=["dn trends", "delivery trends"]),
+                    Route(name="dn_insights", utterances=["dn insights", "analysis"]),
+                    Route(name="dn_recommendations", utterances=["recommendations", "how to improve"]),
                 ]
                 self._semantic_router = Router(routes=routes, encoder=HuggingFaceEncoder())
                 logger.info("✅ Semantic router initialized")
@@ -1156,10 +1094,6 @@ class IntentEngine:
                     best_intent = IntentType.TRANSIT
                     best_score = 0.5
                     break
-                elif keyword in ["trend", "pattern"]:
-                    best_intent = IntentType.TREND
-                    best_score = 0.5
-                    break
                 elif keyword in ["forecast", "predict"]:
                     best_intent = IntentType.FORECAST
                     best_score = 0.5
@@ -1187,7 +1121,7 @@ class IntentEngine:
         return best_intent, best_score
 
 # ============================================================
-# BLOCK 9: ENHANCED ENTITY EXTRACTION ENGINE
+# BLOCK 9: ENTITY EXTRACTION ENGINE
 # ============================================================
 
 class EntityEngine:
@@ -1219,8 +1153,8 @@ class EntityEngine:
             "requires_trend": False,
         }
         
-        # Extract DN numbers (8-12 digits)
-        dns = self._extract_dn_numbers(question_lower)
+        # Extract DN numbers
+        dns = _extract_dn_numbers(question_lower)
         if dns:
             entities["dn_numbers"] = dns
         
@@ -1256,11 +1190,11 @@ class EntityEngine:
             entities["dealer"] = dealer
         
         # Check for forecast
-        if "forecast" in question_lower or "predict" in question_lower or "project" in question_lower:
+        if "forecast" in question_lower or "predict" in question_lower:
             entities["requires_forecast"] = True
         
         # Check for trend
-        if "trend" in question_lower or "pattern" in question_lower or "change" in question_lower:
+        if "trend" in question_lower or "pattern" in question_lower:
             entities["requires_trend"] = True
         
         # Extract limit
@@ -1272,11 +1206,6 @@ class EntityEngine:
             self._cache[cache_key] = entities.copy()
         
         return entities
-    
-    def _extract_dn_numbers(self, text: str) -> List[str]:
-        """Extract DN numbers from text"""
-        matches = re.findall(r'(?<!\d)(\d{8,12})(?!\d)', text)
-        return matches
     
     def _extract_search_query(self, text: str) -> Optional[str]:
         """Extract search query from text"""
@@ -1345,7 +1274,7 @@ class EntityEngine:
 # ============================================================
 
 class DistanceService:
-    """Route distance calculation - purely for enrichment, not source of truth."""
+    """Route distance calculation"""
     
     def __init__(self) -> None:
         self._cache: TTLCache[str, tuple[float, float] | None] = TTLCache(512, 86_400)
@@ -1370,8 +1299,8 @@ class DistanceService:
                 result = self._geocoder.geocode(location, exactly_one=True)
                 if result:
                     coordinates = (float(result.latitude), float(result.longitude))
-            except Exception as exc:
-                logger.warning("Geocoding failed for {}: {}", location, exc)
+            except Exception:
+                pass
         
         self._cache[key] = coordinates
         return coordinates
@@ -1405,8 +1334,8 @@ class DistanceService:
                     "estimated_delivery_time": self._format_duration(hours),
                     "source": "openrouteservice"
                 }
-            except Exception as exc:
-                logger.warning("OpenRouteService failed: {}", exc)
+            except Exception:
+                pass
         
         kilometres = round(self._haversine(origin, destination), 1)
         return {
@@ -1422,7 +1351,7 @@ class DistanceService:
         return f"{whole_hours} Hours {minutes} Minutes" if minutes else f"{whole_hours} Hours"
 
 # ============================================================
-# BLOCK 11: ENHANCED DN DASHBOARD BUILDER
+# BLOCK 11: DN DASHBOARD BUILDER
 # ============================================================
 
 class DNDashboardBuilder:
@@ -1665,166 +1594,24 @@ class DNDashboardBuilder:
         return recommendations
 
 # ============================================================
-# BLOCK 12: ENHANCED RESPONSE FORMATTER
-# ============================================================
-
-class ResponseFormatter:
-    """Format responses for different output types"""
-    
-    def __init__(self):
-        self._menu_renderer = DNMenuRenderer()
-    
-    def format(self, answer: DNAanswer) -> str:
-        """Format answer based on plan format"""
-        if answer.plan.format == ResponseFormat.COMPACT:
-            return self._format_compact(answer)
-        elif answer.plan.format == ResponseFormat.EXECUTIVE:
-            return self._format_executive(answer)
-        elif answer.plan.format == ResponseFormat.DETAILED:
-            return self._format_detailed(answer)
-        elif answer.plan.format == ResponseFormat.KPI_ONLY:
-            return self._format_kpi_only(answer)
-        elif answer.plan.format == ResponseFormat.COMPARISON:
-            return self._format_comparison(answer)
-        elif answer.plan.format == ResponseFormat.RANKING:
-            return self._format_ranking(answer)
-        elif answer.plan.format == ResponseFormat.TIMELINE:
-            return self._format_timeline(answer)
-        else:
-            return self._format_standard(answer)
-    
-    def _format_compact(self, answer: DNAanswer) -> str:
-        """Compact format"""
-        dn = answer.plan.dn or "DN"
-        lines = [f"📊 {dn}"]
-        lines.append("")
-        
-        for metric_name, value in answer.metrics.items():
-            lines.append(f"{metric_name}: {value}")
-        
-        return "\n".join(lines)
-    
-    def _format_standard(self, answer: DNAanswer) -> str:
-        """Standard format"""
-        dn = answer.plan.dn or "DN"
-        return self._menu_renderer.render_dn_dashboard(dn, answer.dashboard or {})
-    
-    def _format_executive(self, answer: DNAanswer) -> str:
-        """Executive summary format"""
-        dn = answer.plan.dn or "DN"
-        lines = [
-            f"📋 *Executive Summary - DN {dn}*",
-            "",
-            answer.explanation or "Performance summary not available.",
-            "",
-            "📊 *Key Metrics:*",
-        ]
-        
-        for metric_name, value in list(answer.metrics.items())[:5]:
-            lines.append(f"• {metric_name}: {value}")
-        
-        if answer.insights:
-            lines.append("")
-            lines.append("💡 *Key Insights:*")
-            for insight in answer.insights[:2]:
-                lines.append(f"• {insight}")
-        
-        if answer.recommendations:
-            lines.append("")
-            lines.append("🎯 *Recommendations:*")
-            for rec in answer.recommendations[:2]:
-                lines.append(f"• {rec}")
-        
-        return "\n".join(lines)
-    
-    def _format_detailed(self, answer: DNAanswer) -> str:
-        """Detailed format"""
-        dn = answer.plan.dn or "DN"
-        lines = [
-            f"📊 *Detailed Analysis - DN {dn}*",
-            "",
-            "📋 *Information*",
-            "─" * 40,
-        ]
-        
-        if answer.dashboard:
-            lines.append(f"Customer: {answer.dashboard.get('customer_name', 'N/A')}")
-            lines.append(f"Warehouse: {answer.dashboard.get('warehouse', 'N/A')}")
-            lines.append(f"City: {answer.dashboard.get('ship_to_city', 'N/A')}")
-        
-        lines.append("")
-        lines.append("📈 *Metrics*")
-        lines.append("─" * 40)
-        
-        for metric_name, value in answer.metrics.items():
-            lines.append(f"{metric_name}: {value}")
-        
-        if answer.insights:
-            lines.append("")
-            lines.append("💡 *Insights*")
-            lines.append("─" * 40)
-            for insight in answer.insights:
-                lines.append(f"• {insight}")
-        
-        if answer.recommendations:
-            lines.append("")
-            lines.append("🎯 *Recommendations*")
-            lines.append("─" * 40)
-            for rec in answer.recommendations:
-                lines.append(f"• {rec}")
-        
-        return "\n".join(lines)
-    
-    def _format_kpi_only(self, answer: DNAanswer) -> str:
-        """KPI-only format"""
-        dn = answer.plan.dn or "DN"
-        lines = [f"📊 *DN {dn} KPIs*:"]
-        
-        for metric_name, value in answer.metrics.items():
-            lines.append(f"  {metric_name}: {value}")
-        
-        return "\n".join(lines)
-    
-    def _format_comparison(self, answer: DNAanswer) -> str:
-        """Comparison format"""
-        return self._menu_renderer.render_comparison_result(
-            answer.plan.dns[0] if answer.plan.dns else "",
-            answer.plan.dns[1] if len(answer.plan.dns) > 1 else "",
-            answer.metrics
-        )
-    
-    def _format_ranking(self, answer: DNAanswer) -> str:
-        """Ranking format"""
-        ranking_data = answer.metrics.get("ranking", [])
-        return self._menu_renderer.render_ranking(ranking_data, answer.plan.sort_by or "revenue", answer.plan.limit)
-    
-    def _format_timeline(self, answer: DNAanswer) -> str:
-        """Timeline format"""
-        dn = answer.plan.dn or "DN"
-        events = answer.dashboard.get("events", []) if answer.dashboard else []
-        return self._menu_renderer.render_dn_timeline(dn, events)
-
-# ============================================================
-# BLOCK 13: MAIN DN ANALYTICS SERVICE WITH FULL MENU
+# BLOCK 12: MAIN DN ANALYTICS SERVICE - ALL DN ANSWERS HERE
 # ============================================================
 
 class DNAnalysisService:
     """
-    DN Domain AI Expert with Full Menu System
-    Single entry point for all DN-related business questions
+    DN Domain AI Expert - ALL DN-related answers come through this file.
     PostgreSQL is the ONLY source of truth.
     """
     
     def __init__(self) -> None:
         self._service_name = "dn_analysis"
-        self._version = "18.0.0-menu"
+        self._version = "19.0.0-menu"
         self._startup_time = datetime.utcnow().isoformat()
         
         # Initialize engines
         self._intent_engine = IntentEngine()
         self._entity_engine = EntityEngine()
         self._menu_renderer = DNMenuRenderer()
-        self._formatter = ResponseFormatter()
         
         # Context memory
         self._contexts: Dict[str, DNContext] = {}
@@ -1840,7 +1627,7 @@ class DNAnalysisService:
         logger.info(f"✅ DNAnalysisService initialized (v{self._version})")
         logger.info(f"   Menu System: ✅ (19 options)")
         logger.info(f"   Source of Truth: PostgreSQL")
-        logger.info(f"   Intent Types: {len(IntentType)}")
+        logger.info(f"   ALL DN Questions go through this file")
     
     @staticmethod
     def _session() -> Session:
@@ -1850,9 +1637,47 @@ class DNAnalysisService:
         """Get the main DN menu"""
         return self._menu_renderer.render_main_menu()
     
+    # ============================================================
+    # MAIN PROCESSING - ALL DN QUERIES ENTER HERE
+    # ============================================================
+    
+    def process_whatsapp_query(self, message: str, sender: str = "default", **kwargs: Any) -> str:
+        """
+        Main entry point for ALL DN-related WhatsApp queries.
+        ALWAYS returns a string - never a dict.
+        
+        This handles:
+        - Menu navigation (1-19, 99, 0)
+        - Natural language DN queries
+        - DN number auto-detection
+        - All DN analytics
+        """
+        if not message or not message.strip():
+            return self.get_main_menu()
+        
+        message_clean = message.strip()
+        logger.info(f"📦 DN Service processing: '{message_clean}' from {sender}")
+        
+        # Check if it's a menu navigation command
+        if message_clean.lower() in ["menu", "help", "options"]:
+            return self.get_main_menu()
+        
+        # Process as menu input
+        result = self.process_menu_input(sender, message_clean)
+        
+        # Extract response string
+        response = result.get("response", self.get_main_menu())
+        
+        # If exit_menu is True, user wants to go back to main menu
+        if result.get("exit_menu", False):
+            return response
+        
+        return response
+    
     def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
         """
-        Process menu input and return response
+        Process menu input and return response.
+        ALL DN menu options (1-19) and natural language queries.
         
         Returns:
             {
@@ -1865,6 +1690,145 @@ class DNAnalysisService:
         """
         context = self._get_context(session_id)
         user_input = user_input.strip()
+        
+        # ============================================================
+        # STEP 1: Check for DN number (auto-detect)
+        # ============================================================
+        dns = _extract_dn_numbers(user_input)
+        if dns and len(dns) == 1:
+            # Single DN number - show dashboard
+            context.current_dn = dns[0]
+            result = self._get_dn_dashboard(context, dns[0])
+            result["exit_menu"] = False  # Stay in DN service
+            return result
+        
+        if dns and len(dns) >= 2:
+            # Multiple DN numbers - show comparison
+            context.comparison_dns = dns[:2]
+            result = self._perform_comparison(context, dns[0], dns[1])
+            result["exit_menu"] = False  # Stay in DN service
+            return result
+        
+        # ============================================================
+        # STEP 2: Check for natural language queries
+        # ============================================================
+        # Detect intent
+        intent, confidence = self._intent_engine.detect_intent(user_input)
+        
+        # Extract entities
+        entities = self._entity_engine.extract_entities(user_input)
+        
+        # Handle based on intent
+        if intent == IntentType.DASHBOARD and entities.get("dn_numbers"):
+            context.current_dn = entities["dn_numbers"][0]
+            result = self._get_dn_dashboard(context, entities["dn_numbers"][0])
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.STATUS and entities.get("dn_numbers"):
+            context.current_dn = entities["dn_numbers"][0]
+            result = self._get_dn_status(context, entities["dn_numbers"][0])
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.HISTORY and entities.get("dn_numbers"):
+            context.current_dn = entities["dn_numbers"][0]
+            result = self._get_dn_history(context, entities["dn_numbers"][0])
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.TIMELINE and entities.get("dn_numbers"):
+            context.current_dn = entities["dn_numbers"][0]
+            result = self._get_dn_timeline(context, entities["dn_numbers"][0])
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.TRANSIT and entities.get("dn_numbers"):
+            context.current_dn = entities["dn_numbers"][0]
+            result = self._get_transit_analysis(context, entities["dn_numbers"][0])
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.COMPARISON and entities.get("dn_numbers") and len(entities["dn_numbers"]) >= 2:
+            result = self._perform_comparison(context, entities["dn_numbers"][0], entities["dn_numbers"][1])
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.SEARCH:
+            query = entities.get("search_query") or user_input
+            result = self._search_dns(context, query)
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.PENDING:
+            result = self._get_pending_dns(context)
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.PGI:
+            result = self._get_pending_pgi(context)
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.POD:
+            result = self._get_pending_pod(context)
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.DELAYED:
+            result = self._get_delayed_dns(context)
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.RECENT:
+            result = self._get_recent_dns(context)
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.RANK:
+            result = self._get_ranking(context)
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.INSIGHTS:
+            result = self._get_insights(context)
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.SLA:
+            result = self._get_sla_report(context)
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.AGING:
+            result = self._get_aging_report(context)
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.TREND:
+            result = self._get_trends(context)
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.FORECAST:
+            result = self._get_forecast(context)
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.RECOMMENDATIONS:
+            result = self._get_recommendations(context)
+            result["exit_menu"] = False
+            return result
+        
+        if intent == IntentType.ROOT_CAUSE and entities.get("dn_numbers"):
+            context.current_dn = entities["dn_numbers"][0]
+            result = self._get_root_cause(context, entities["dn_numbers"][0])
+            result["exit_menu"] = False
+            return result
+        
+        # ============================================================
+        # STEP 3: Handle menu navigation (0, 99, 1-19)
+        # ============================================================
         
         # Handle main menu navigation
         if user_input == "0":
@@ -1880,8 +1844,36 @@ class DNAnalysisService:
         elif context.menu_state == MenuState.COMPARISON_SELECTION:
             return self._handle_comparison_selection(context, user_input)
         
-        # Default: treat as quick query
-        return self._handle_quick_query(context, user_input)
+        # ============================================================
+        # STEP 4: Unknown query - show help
+        # ============================================================
+        return {
+            "response": "\n".join([
+                "❌ I didn't understand that.",
+                "",
+                "💡 *DN Service Commands:*",
+                "• Type a DN number (8-12 digits) for dashboard",
+                "• 'Status [DN]' - Show DN status",
+                "• 'History [DN]' - Show DN history",
+                "• 'Compare [DN1] [DN2]' - Compare DNs",
+                "• 'Search [keyword]' - Search DNs",
+                "• 'Pending' - Show pending DNs",
+                "• 'Delayed' - Show delayed DNs",
+                "• 'Recent' - Show recent DNs",
+                "• 'Ranking' - Show DN rankings",
+                "",
+                "0. Main Menu",
+                "99. Back"
+            ]),
+            "menu_type": "dn_menu",
+            "action": "unknown_query",
+            "data": {},
+            "exit_menu": False  # Stay in DN service
+        }
+    
+    # ============================================================
+    # MENU HANDLING METHODS
+    # ============================================================
     
     def _handle_main_menu_return(self, context: DNContext) -> Dict[str, Any]:
         """Return to main menu"""
@@ -1896,7 +1888,7 @@ class DNAnalysisService:
             "menu_type": "dn_menu",
             "action": "main_menu",
             "data": {},
-            "exit_menu": True
+            "exit_menu": True  # Exit to main AI Logistics menu
         }
     
     def _handle_main_menu_option(self, context: DNContext, option: str) -> Dict[str, Any]:
@@ -1924,8 +1916,8 @@ class DNAnalysisService:
             "19": ("recommendations", None),
         }
         
+        # Direct actions (no DN needed)
         if option in ["6", "7", "8", "9", "10", "13", "14", "15", "16", "17", "18", "19"]:
-            # These options execute directly
             return self._handle_direct_action(context, option)
         
         if option not in option_map:
@@ -1949,29 +1941,28 @@ class DNAnalysisService:
             "menu_type": "dn_menu",
             "action": "dn_selection",
             "data": {"purpose": action},
-            "exit_menu": False
+            "exit_menu": False  # Stay in DN service
         }
     
     def _handle_direct_action(self, context: DNContext, option: str) -> Dict[str, Any]:
         """Handle direct actions that don't need DN selection"""
         action_map = {
-            "6": ("pending", self._get_pending_dns),
-            "7": ("pgi", self._get_pending_pgi),
-            "8": ("pod", self._get_pending_pod),
-            "9": ("delayed", self._get_delayed_dns),
-            "10": ("recent", self._get_recent_dns),
-            "13": ("ranking", self._get_ranking),
-            "14": ("insights", self._get_insights),
-            "15": ("sla", self._get_sla_report),
-            "16": ("aging", self._get_aging_report),
-            "17": ("trends", self._get_trends),
-            "18": ("forecast", self._get_forecast),
-            "19": ("recommendations", self._get_recommendations),
+            "6": self._get_pending_dns,
+            "7": self._get_pending_pgi,
+            "8": self._get_pending_pod,
+            "9": self._get_delayed_dns,
+            "10": self._get_recent_dns,
+            "13": self._get_ranking,
+            "14": self._get_insights,
+            "15": self._get_sla_report,
+            "16": self._get_aging_report,
+            "17": self._get_trends,
+            "18": self._get_forecast,
+            "19": self._get_recommendations,
         }
         
         if option in action_map:
-            action_name, handler = action_map[option]
-            result = handler(context)
+            result = action_map[option](context)
             result["exit_menu"] = False
             return result
         
@@ -1979,7 +1970,7 @@ class DNAnalysisService:
     
     def _handle_dn_selection(self, context: DNContext, dn_input: str) -> Dict[str, Any]:
         """Handle DN selection response"""
-        if not self._is_valid_dn(dn_input):
+        if not _is_valid_dn(dn_input):
             return {
                 "response": "\n".join([
                     "❌ Invalid DN number.",
@@ -2006,7 +1997,7 @@ class DNAnalysisService:
     
     def _handle_comparison_selection(self, context: DNContext, dn_input: str) -> Dict[str, Any]:
         """Handle comparison DN selection"""
-        if not self._is_valid_dn(dn_input):
+        if not _is_valid_dn(dn_input):
             return {
                 "response": "\n".join([
                     "❌ Invalid DN number.",
@@ -2054,7 +2045,7 @@ class DNAnalysisService:
                 return self._perform_comparison(context, dns[0], dns[1])
         
         # Check if it's a valid DN number
-        if self._is_valid_dn(query):
+        if _is_valid_dn(query):
             context.current_dn = query
             return self._get_dn_dashboard(context, query)
         
@@ -2096,13 +2087,6 @@ class DNAnalysisService:
         handler = action_map.get(action, self._get_dn_dashboard)
         return handler(context, dn_no)
     
-    def _is_valid_dn(self, dn: str) -> bool:
-        """Validate DN number (8-12 digits)"""
-        if not dn:
-            return False
-        cleaned = re.sub(r'[\s-]', '', dn)
-        return cleaned.isdigit() and 8 <= len(cleaned) <= 12
-    
     def _get_context(self, session_id: str) -> DNContext:
         """Get or create context for session"""
         with self._context_lock:
@@ -2130,16 +2114,14 @@ class DNAnalysisService:
                         "exit_menu": False
                     }
                 
-                # Generate insights and recommendations
-                insights = dashboard.get('insights', [])
-                recommendations = dashboard.get('recommendations', [])
-                
                 response = self._menu_renderer.render_dn_dashboard(dn_no, dashboard)
                 
                 # Add insights if available
+                insights = dashboard.get('insights', [])
                 if insights:
                     response += "\n\n💡 *Insights*\n" + "\n".join(f"• {i}" for i in insights[:3])
                 
+                recommendations = dashboard.get('recommendations', [])
                 if recommendations:
                     response += "\n\n🎯 *Recommendations*\n" + "\n".join(f"• {r}" for r in recommendations[:2])
                 
@@ -2340,8 +2322,6 @@ class DNAnalysisService:
                     DeliveryReport.dn_no,
                     DeliveryReport.customer_name,
                     DeliveryReport.dn_create_date,
-                    DeliveryReport.pod_date,
-                    DeliveryReport.pending_flag,
                 ).filter(
                     or_(
                         DeliveryReport.pending_flag.is_(True),
@@ -2577,7 +2557,6 @@ class DNAnalysisService:
                         "exit_menu": False
                     }
                 
-                # Store search results for follow-up
                 context.search_results = dns
                 
                 return {
@@ -2707,7 +2686,6 @@ class DNAnalysisService:
         """Get DN insights"""
         try:
             with self._session() as session:
-                # Get summary statistics
                 stats = session.query(
                     func.count(DeliveryReport.dn_no).label("total"),
                     func.count(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no))).label("delivered"),
@@ -2765,13 +2743,11 @@ class DNAnalysisService:
         """Get SLA compliance report"""
         try:
             with self._session() as session:
-                # Get DNs and check SLA
                 results = session.query(
                     DeliveryReport.dn_no,
                     DeliveryReport.customer_name,
                     DeliveryReport.dn_create_date,
                     DeliveryReport.pod_date,
-                    DeliveryReport.delivery_status,
                 ).order_by(
                     DeliveryReport.dn_create_date.desc()
                 ).limit(50).all()
@@ -2873,7 +2849,6 @@ class DNAnalysisService:
         """Get DN trends"""
         try:
             with self._session() as session:
-                # Daily trends for last 7 days
                 daily = session.query(
                     func.date(DeliveryReport.dn_create_date).label("date"),
                     func.count(DeliveryReport.dn_no).label("count"),
@@ -2886,7 +2861,6 @@ class DNAnalysisService:
                     func.date(DeliveryReport.dn_create_date).desc()
                 ).all()
                 
-                # Weekly trends
                 weekly = session.query(
                     func.extract('week', DeliveryReport.dn_create_date).label("week"),
                     func.count(DeliveryReport.dn_no).label("count"),
@@ -2899,7 +2873,6 @@ class DNAnalysisService:
                     func.extract('week', DeliveryReport.dn_create_date).desc()
                 ).limit(4).all()
                 
-                # Calculate growth
                 if len(daily) >= 2:
                     current = daily[0].count if daily[0].count else 0
                     previous = daily[1].count if daily[1].count else 0
@@ -2933,7 +2906,6 @@ class DNAnalysisService:
         """Get DN forecast"""
         try:
             with self._session() as session:
-                # Get historical data for forecasting
                 results = session.query(
                     func.date(DeliveryReport.dn_create_date).label("date"),
                     func.count(DeliveryReport.dn_no).label("count"),
@@ -2956,12 +2928,10 @@ class DNAnalysisService:
                         "exit_menu": False
                     }
                 
-                # Simple average-based forecast
                 avg_count = sum(r.count or 0 for r in results[-7:]) / 7
                 avg_revenue = sum(float(r.revenue or 0) for r in results[-7:]) / 7
                 avg_units = sum(r.units or 0 for r in results[-7:]) / 7
                 
-                # Confidence interval (simple: ±20%)
                 forecast_data = {
                     "expected_count": int(avg_count * 1.1),
                     "expected_revenue": avg_revenue * 1.1,
@@ -2991,7 +2961,6 @@ class DNAnalysisService:
         """Get DN recommendations"""
         try:
             with self._session() as session:
-                # Analyze pending DNs
                 pending_count = session.query(
                     func.count(DeliveryReport.dn_no)
                 ).filter(
@@ -3001,7 +2970,6 @@ class DNAnalysisService:
                     )
                 ).scalar() or 0
                 
-                # Analyze delayed DNs
                 threshold = datetime.now().date() - timedelta(days=DN_DELAY_THRESHOLD_DAYS)
                 delayed_count = session.query(
                     func.count(DeliveryReport.dn_no)
@@ -3010,20 +2978,6 @@ class DNAnalysisService:
                     DeliveryReport.good_issue_date < threshold,
                     DeliveryReport.pod_date.is_(None)
                 ).scalar() or 0
-                
-                # Analyze delivery performance
-                results = session.query(
-                    DeliveryReport.dn_no,
-                    DeliveryReport.dn_create_date,
-                    DeliveryReport.pod_date,
-                ).filter(
-                    DeliveryReport.pod_date.isnot(None)
-                ).limit(100).all()
-                
-                avg_days = 0
-                if results:
-                    days = [(r.pod_date - r.dn_create_date).days for r in results if r.pod_date and r.dn_create_date]
-                    avg_days = sum(days) / len(days) if days else 0
                 
                 recommendations = []
                 
@@ -3035,10 +2989,6 @@ class DNAnalysisService:
                 if delayed_count > 5:
                     recommendations.append(f"⏰ Priority: {delayed_count} DNs are delayed beyond {DN_DELAY_THRESHOLD_DAYS} days")
                 
-                if avg_days > SLA_TARGET_DAYS:
-                    recommendations.append(f"📈 Average delivery time ({avg_days:.1f} days) exceeds SLA target ({SLA_TARGET_DAYS} days)")
-                    recommendations.append("💡 Consider optimizing warehouse processes")
-                
                 if not recommendations:
                     recommendations.append("✅ Current DN performance is good. Continue monitoring.")
                     recommendations.append("📊 Consider periodic DN audits")
@@ -3048,6 +2998,116 @@ class DNAnalysisService:
                     "menu_type": "dn_menu",
                     "action": "recommendations",
                     "data": {"recommendations": recommendations},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "dn_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_root_cause(self, context: DNContext, dn_no: str) -> Dict[str, Any]:
+        """Get root cause analysis for a DN"""
+        try:
+            with self._session() as session:
+                builder = DNDashboardBuilder(session)
+                dashboard = builder.build(dn_no)
+                
+                if not dashboard:
+                    return {
+                        "response": f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu",
+                        "menu_type": "dn_menu",
+                        "action": "root_cause_error",
+                        "data": {"dn": dn_no, "error": "not_found"},
+                        "exit_menu": False
+                    }
+                
+                status = dashboard.get('computed_delivery_status', '')
+                lines = [
+                    f"🔍 *Root Cause Analysis - DN {dn_no}*",
+                    "",
+                    f"Current Status: {status}",
+                    "",
+                ]
+                
+                if status == "Pending PGI":
+                    lines.extend([
+                        "📋 *Analysis:*",
+                        "• PGI is pending at warehouse",
+                        "• Possible causes:",
+                        "  - Warehouse capacity issue",
+                        "  - Inventory availability",
+                        "  - Documentation pending",
+                        "",
+                        "🎯 *Recommendations:*",
+                        "• Contact warehouse for status",
+                        "• Expedite PGI processing",
+                        "• Check inventory availability",
+                    ])
+                elif status == "Pending POD":
+                    lines.extend([
+                        "📋 *Analysis:*",
+                        "• POD is pending from customer",
+                        "• Possible causes:",
+                        "  - Customer not available",
+                        "  - Delivery confirmation pending",
+                        "  - POD document missing",
+                        "",
+                        "🎯 *Recommendations:*",
+                        "• Follow up with customer",
+                        "• Send POD reminder",
+                        "• Escalate to sales team",
+                    ])
+                elif status == "Delayed":
+                    lines.extend([
+                        "📋 *Analysis:*",
+                        f"• DN is delayed by {dashboard.get('dn_age', 0)} days",
+                        "• Possible causes:",
+                        "  - Transit delay",
+                        "  - Weather conditions",
+                        "  - Route congestion",
+                        "",
+                        "🎯 *Recommendations:*",
+                        "• Expedite delivery",
+                        "• Consider alternate route",
+                        "• Communicate with customer",
+                    ])
+                elif status == "Delivered" or status == "Completed":
+                    lines.extend([
+                        "✅ *Analysis:*",
+                        "• DN is successfully delivered",
+                        "• No issues identified",
+                        "",
+                        "🎯 *Recommendations:*",
+                        "• Close the DN",
+                        "• Update records",
+                        "• Process payment",
+                    ])
+                else:
+                    lines.extend([
+                        "📋 *Analysis:*",
+                        "• Status: In Transit",
+                        "• DN is on track",
+                        "",
+                        "🎯 *Recommendations:*",
+                        "• Continue monitoring",
+                        "• Track delivery progress",
+                    ])
+                
+                lines.extend([
+                    "",
+                    "0. Main Menu",
+                    "99. Back"
+                ])
+                
+                return {
+                    "response": "\n".join(lines),
+                    "menu_type": "dn_menu",
+                    "action": "root_cause",
+                    "data": {"dn": dn_no, "root_cause": dashboard},
                     "exit_menu": False
                 }
         except Exception as e:
@@ -3073,16 +3133,6 @@ class DNAnalysisService:
             "whatsapp_message": result.get("response", ""),
         }
     
-    def get_dn_status(self, dn_no: str) -> Dict[str, Any]:
-        """Legacy method for backward compatibility"""
-        context = DNContext()
-        result = self._get_dn_status(context, dn_no)
-        return {
-            "success": True,
-            "data": result.get("data", {}).get("status", {}),
-            "whatsapp_message": result.get("response", ""),
-        }
-    
     def get_pending_dns(self, limit: int = 20) -> Dict[str, Any]:
         """Legacy method for backward compatibility"""
         context = DNContext()
@@ -3095,43 +3145,12 @@ class DNAnalysisService:
     
     def get_top_performers(self, limit: int = 10) -> Dict[str, Any]:
         """Legacy method for backward compatibility"""
-        try:
-            with self._session() as session:
-                results = session.query(
-                    DeliveryReport.dn_no,
-                    func.sum(DeliveryReport.dn_amount).label("revenue"),
-                    func.sum(DeliveryReport.dn_qty).label("units"),
-                ).group_by(
-                    DeliveryReport.dn_no
-                ).order_by(
-                    func.sum(DeliveryReport.dn_amount).desc()
-                ).limit(limit).all()
-                
-                ranking = []
-                for row in results:
-                    ranking.append({
-                        "dn_no": _text(row.dn_no),
-                        "value": f"PKR {float(row.revenue or 0):,.2f}"
-                    })
-                
-                return {
-                    "success": True,
-                    "data": ranking,
-                    "whatsapp_message": DNMenuRenderer.render_ranking(ranking, "Revenue", limit),
-                }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "whatsapp_message": f"⚠️ Error: {str(e)[:100]}",
-            }
-    
-    def get_warehouse_dashboard(self, warehouse: str) -> Dict[str, Any]:
-        """Legacy method for backward compatibility"""
+        context = DNContext()
+        result = self._get_ranking(context)
         return {
             "success": True,
-            "data": {"warehouse": warehouse},
-            "whatsapp_message": f"🏭 *Warehouse Dashboard - {warehouse}*\n\nComing soon...",
+            "data": result.get("data", {}).get("ranking", []),
+            "whatsapp_message": result.get("response", ""),
         }
     
     def health_check(self) -> Dict[str, Any]:
@@ -3149,7 +3168,6 @@ class DNAnalysisService:
                 "timestamp": datetime.utcnow().isoformat(),
                 "source": "PostgreSQL",
                 "menu_enabled": True,
-                "intent_types": len(IntentType),
             }
         except Exception as e:
             return {
@@ -3160,41 +3178,13 @@ class DNAnalysisService:
                 "error": str(e),
                 "timestamp": datetime.utcnow().isoformat(),
             }
-    
-    def process_whatsapp_query(self, message: str, sender: str = "default", **kwargs: Any) -> str:
-        """
-        Process WhatsApp query and return formatted response.
-        ALWAYS returns a string - never a dict.
-        
-        This is the main entry point for WhatsApp integration.
-        """
-        if not message or not message.strip():
-            return self.get_main_menu()
-        
-        # Check if it's a menu navigation command
-        if message.strip() in ["menu", "help", "options"]:
-            return self.get_main_menu()
-        
-        # Process as menu input
-        result = self.process_menu_input(sender, message.strip())
-        
-        # Extract response string
-        response = result.get("response", self.get_main_menu())
-        
-        # If exit_menu is True, user wants to go back to main menu
-        if result.get("exit_menu", False):
-            return response
-        
-        return response
-
 
 # ============================================================
-# BLOCK 14: SERVICE SINGLETON
+# BLOCK 13: SERVICE SINGLETON
 # ============================================================
 
 _service: Optional[DNAnalysisService] = None
 _service_lock = threading.Lock()
-
 
 def get_dn_analysis_service() -> DNAnalysisService:
     """Get singleton instance"""
@@ -3205,21 +3195,18 @@ def get_dn_analysis_service() -> DNAnalysisService:
                 _service = DNAnalysisService()
     return _service
 
-
 def process_dn_menu(session_id: str, user_input: str) -> Dict[str, Any]:
     """Process DN menu input for WhatsApp integration"""
     service = get_dn_analysis_service()
     return service.process_menu_input(session_id, user_input)
-
 
 def get_dn_main_menu() -> str:
     """Get the main DN menu for WhatsApp"""
     service = get_dn_analysis_service()
     return service.get_main_menu()
 
-
 # ============================================================
-# BLOCK 15: EXPORTS
+# BLOCK 14: EXPORTS
 # ============================================================
 
 __all__ = [
@@ -3237,6 +3224,5 @@ __all__ = [
     "get_dn_history",
     "get_pending_dns",
     "get_top_performers",
-    "get_warehouse_dashboard",
     "health_check",
 ]
