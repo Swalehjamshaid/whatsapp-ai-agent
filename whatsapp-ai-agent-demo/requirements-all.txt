@@ -1,9 +1,10 @@
+# ============================================================
+# File: whatsapp-ai-agent-demo/requirements-all.txt
+# Master Requirements File
+# ============================================================
+
 -r requirements-core.txt
-
 -r requirements-ai.txt
-
 -r requirements-data.txt
-
 -r requirements-integrations.txt
-
 -r requirements-enterprise.txt
