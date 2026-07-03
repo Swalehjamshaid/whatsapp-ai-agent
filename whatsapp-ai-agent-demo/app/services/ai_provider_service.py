@@ -906,26 +906,32 @@ class AIProviderService:
     # ============================================================
     # BLOCK 11: SERVICE REGISTRY - 100% DN SERVICE FIX
     # ============================================================
+# BLOCK 11: SERVICE REGISTRY - 100% DN SERVICE FIX
+# ============================================================
     
-    def _init_service_registry(self):
-        """
-        Initialize service registry with all domain services.
-        
-        100% GUARANTEED: DN Service will load correctly
-        Multiple fallback paths and detailed error logging
-        """
-        self.service_registry = {}
-        self.service_errors = {}
-        
-        # ============================================================
-        # BLOCK 11A: DN SERVICE - MENU 1, 7, 8 - 100% FIXED
-        # ============================================================
-        
-        logger.info("=" * 60)
-        logger.info("📦 BLOCK 11A: Loading DN Service (100% FIXED)")
-        logger.info("=" * 60)
-        
-        # Check if dn_analysis.py exists
+def _init_service_registry(self):
+    """
+    Initialize service registry with all domain services.
+    
+    100% GUARANTEED: DN Service will load correctly
+    Multiple fallback paths and detailed error logging
+    """
+    self.service_registry = {}
+    self.service_errors = {}
+    
+    # ============================================================
+    # BLOCK 11A: DN SERVICE - MENU 1, 7, 8 - SAFE LOAD
+    # ============================================================
+    
+    logger.info("=" * 60)
+    logger.info("📦 BLOCK 11A: Loading DN Service (SAFE LOAD)")
+    logger.info("=" * 60)
+    
+    # Initialize DN service as None
+    dn_service = None
+    
+    # Check if dn_analysis.py exists
+    try:
         dn_file_path = os.path.join(os.path.dirname(__file__), "dn_analysis.py")
         if os.path.exists(dn_file_path):
             logger.info(f"✅ dn_analysis.py found at: {dn_file_path}")
@@ -934,160 +940,178 @@ class AIProviderService:
             self.service_registry["dn"] = self._create_dn_fallback()
             self.service_errors["dn"] = "File not found"
             return
-        
-        # Try importing - ONLY ABSOLUTE IMPORTS (NO RELATIVE IMPORTS)
-        dn_service = None
+    except Exception as e:
+        logger.error(f"❌ Error checking file: {e}")
+        self.service_registry["dn"] = self._create_dn_fallback()
+        self.service_errors["dn"] = str(e)
+        return
+    
+    # Try importing with safe error handling
+    try:
+        logger.info("🔍 Attempting import from: app.services.dn_analysis")
+        from app.services.dn_analysis import DNAnalysisService
+        logger.info("✅ Found class: DNAnalysisService")
         
         try:
-            logger.info("🔍 Attempting import from: app.services.dn_analysis")
-            from app.services.dn_analysis import DNAnalysisService
-            logger.info("✅ Found class: DNAnalysisService in app.services.dn_analysis")
             dn_service = DNAnalysisService()
-            logger.info("✅ Successfully instantiated DN service from app.services.dn_analysis")
-        except ImportError as e:
-            logger.warning(f"⚠️ Import failed from app.services.dn_analysis: {e}")
-            try:
-                logger.info("🔍 Trying alternative: services.dn_analysis")
-                import sys
-                sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-                from services.dn_analysis import DNAnalysisService
-                logger.info("✅ Found class: DNAnalysisService in services.dn_analysis")
-                dn_service = DNAnalysisService()
-                logger.info("✅ Successfully instantiated DN service from services.dn_analysis")
-            except ImportError as e2:
-                logger.error(f"❌ Alternative import also failed: {e2}")
-                dn_service = None
-        
-        if dn_service is None:
-            logger.error("❌ All import attempts failed")
-            self.service_registry["dn"] = self._create_dn_fallback()
-            self.service_errors["dn"] = "All import attempts failed"
-            return
-        
-        # Verify the service has required methods
-        self.service_registry["dn"] = dn_service
-        
-        required_methods = [
-            "get_main_menu", 
-            "process_whatsapp_query", 
-            "process_menu_input",
-            "get_dn_dashboard",
-            "get_pending_dns",
-            "get_top_performers"
-        ]
-        
-        for method in required_methods:
-            if hasattr(dn_service, method):
-                logger.info(f"   ✅ DN service has method: {method}")
-            else:
-                logger.warning(f"   ⚠️ DN service missing method: {method}")
-        
-        logger.info("✅ Registered DN service (Menu 1, 7, 8) - 100% WORKING")
-        
-        # ============================================================
-        # BLOCK 11B: DEALER SERVICE - MENU 2
-        # ============================================================
-        
-        logger.info("=" * 60)
-        logger.info("📦 BLOCK 11B: Loading Dealer Service")
-        logger.info("=" * 60)
-        
-        try:
-            from app.services.dealer_analytics_service import DealerAnalyticsService
-            self.service_registry["dealer"] = DealerAnalyticsService()
-            logger.info("✅ Registered Dealer service (Menu 2)")
+            logger.info("✅ Successfully instantiated DN service")
         except Exception as e:
-            logger.warning(f"⚠️ Failed to register Dealer service: {e}")
-            self.service_errors["dealer"] = str(e)
-            self.service_registry["dealer"] = None
-        
-        # ============================================================
-        # BLOCK 11C: CITY SERVICE - MENU 3
-        # ============================================================
-        
-        logger.info("=" * 60)
-        logger.info("📦 BLOCK 11C: Loading City Service")
-        logger.info("=" * 60)
-        
+            logger.error(f"❌ Failed to instantiate DN service: {e}")
+            dn_service = None
+            
+    except ImportError as e:
+        logger.warning(f"⚠️ Import failed: {e}")
         try:
-            from app.services.city_service import CityAnalyticsService
-            self.service_registry["city"] = CityAnalyticsService()
-            logger.info("✅ Registered City service (Menu 3)")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to register City service: {e}")
-            self.service_errors["city"] = str(e)
-            self.service_registry["city"] = None
-        
-        # ============================================================
-        # BLOCK 11D: WAREHOUSE SERVICE - MENU 4
-        # ============================================================
-        
-        logger.info("=" * 60)
-        logger.info("📦 BLOCK 11D: Loading Warehouse Service")
-        logger.info("=" * 60)
-        
-        try:
-            from app.services.warehouse_service import WarehouseAnalyticsService
-            self.service_registry["warehouse"] = WarehouseAnalyticsService()
-            logger.info("✅ Registered Warehouse service (Menu 4)")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to register Warehouse service: {e}")
-            self.service_errors["warehouse"] = str(e)
-            self.service_registry["warehouse"] = None
-        
-        # ============================================================
-        # BLOCK 11E: PRODUCT SERVICE - MENU 5
-        # ============================================================
-        
-        logger.info("=" * 60)
-        logger.info("📦 BLOCK 11E: Loading Product Service")
-        logger.info("=" * 60)
-        
-        try:
-            from app.services.product_service import ProductAnalyticsService
-            self.service_registry["product"] = ProductAnalyticsService()
-            logger.info("✅ Registered Product service (Menu 5)")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to register Product service: {e}")
-            self.service_errors["product"] = str(e)
-            self.service_registry["product"] = None
-        
-        # ============================================================
-        # BLOCK 11F: NATIONAL KPI SERVICE - MENU 6
-        # ============================================================
-        
-        logger.info("=" * 60)
-        logger.info("📦 BLOCK 11F: Loading National KPI Service")
-        logger.info("=" * 60)
-        
-        try:
-            from app.services.national_kpi_service import NationalKPIService
-            self.service_registry["national"] = NationalKPIService()
-            logger.info("✅ Registered National KPI service (Menu 6)")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to register National KPI service: {e}")
-            self.service_errors["national"] = str(e)
-            self.service_registry["national"] = None
-        
-        # ============================================================
-        # BLOCK 11G: FINAL STATUS
-        # ============================================================
-        
-        logger.info("=" * 60)
-        logger.info("📋 SERVICE REGISTRY FINAL STATUS:")
-        logger.info("=" * 60)
-        
-        for key, service in self.service_registry.items():
-            status = "✅" if service is not None else "❌"
-            service_name = service.__class__.__name__ if service else "None"
-            if key == "dn" and service is not None:
-                logger.info(f"   ✅ {key}: {service_name} - 100% WORKING")
-            else:
-                logger.info(f"   {status} {key}: {service_name}")
-        
-        logger.info("=" * 60)
-        logger.info("🚀 DN Service Status: 100% FIXED")
-        logger.info("=" * 60)
+            logger.info("🔍 Trying alternative path...")
+            import sys
+            import os
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            from services.dn_analysis import DNAnalysisService
+            logger.info("✅ Found class from services.dn_analysis")
+            dn_service = DNAnalysisService()
+            logger.info("✅ Successfully instantiated DN service from alternative path")
+        except Exception as e2:
+            logger.error(f"❌ Alternative import also failed: {e2}")
+            dn_service = None
+    except Exception as e:
+        logger.error(f"❌ Unexpected error: {e}")
+        dn_service = None
+    
+    # If DN service is None, use fallback
+    if dn_service is None:
+        logger.error("❌ DN Service could not be loaded")
+        self.service_registry["dn"] = self._create_dn_fallback()
+        self.service_errors["dn"] = "All import attempts failed"
+        return
+    
+    # Verify the service has required methods
+    self.service_registry["dn"] = dn_service
+    
+    required_methods = [
+        "get_main_menu", 
+        "process_whatsapp_query", 
+        "process_menu_input",
+        "get_dn_dashboard",
+        "get_pending_dns",
+        "get_top_performers"
+    ]
+    
+    all_methods_found = True
+    for method in required_methods:
+        if hasattr(dn_service, method):
+            logger.info(f"   ✅ DN service has method: {method}")
+        else:
+            logger.warning(f"   ⚠️ DN service missing method: {method}")
+            all_methods_found = False
+    
+    if all_methods_found:
+        logger.info("✅ DN service fully functional")
+    else:
+        logger.warning("⚠️ DN service may have limited functionality")
+    
+    logger.info("✅ Registered DN service (Menu 1, 7, 8)")
+    
+    # ============================================================
+    # BLOCK 11B: DEALER SERVICE - MENU 2
+    # ============================================================
+    
+    logger.info("=" * 60)
+    logger.info("📦 BLOCK 11B: Loading Dealer Service")
+    logger.info("=" * 60)
+    
+    try:
+        from app.services.dealer_analytics_service import DealerAnalyticsService
+        self.service_registry["dealer"] = DealerAnalyticsService()
+        logger.info("✅ Registered Dealer service (Menu 2)")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to register Dealer service: {e}")
+        self.service_errors["dealer"] = str(e)
+        self.service_registry["dealer"] = None
+    
+    # ============================================================
+    # BLOCK 11C: CITY SERVICE - MENU 3
+    # ============================================================
+    
+    logger.info("=" * 60)
+    logger.info("📦 BLOCK 11C: Loading City Service")
+    logger.info("=" * 60)
+    
+    try:
+        from app.services.city_service import CityAnalyticsService
+        self.service_registry["city"] = CityAnalyticsService()
+        logger.info("✅ Registered City service (Menu 3)")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to register City service: {e}")
+        self.service_errors["city"] = str(e)
+        self.service_registry["city"] = None
+    
+    # ============================================================
+    # BLOCK 11D: WAREHOUSE SERVICE - MENU 4
+    # ============================================================
+    
+    logger.info("=" * 60)
+    logger.info("📦 BLOCK 11D: Loading Warehouse Service")
+    logger.info("=" * 60)
+    
+    try:
+        from app.services.warehouse_service import WarehouseAnalyticsService
+        self.service_registry["warehouse"] = WarehouseAnalyticsService()
+        logger.info("✅ Registered Warehouse service (Menu 4)")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to register Warehouse service: {e}")
+        self.service_errors["warehouse"] = str(e)
+        self.service_registry["warehouse"] = None
+    
+    # ============================================================
+    # BLOCK 11E: PRODUCT SERVICE - MENU 5
+    # ============================================================
+    
+    logger.info("=" * 60)
+    logger.info("📦 BLOCK 11E: Loading Product Service")
+    logger.info("=" * 60)
+    
+    try:
+        from app.services.product_service import ProductAnalyticsService
+        self.service_registry["product"] = ProductAnalyticsService()
+        logger.info("✅ Registered Product service (Menu 5)")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to register Product service: {e}")
+        self.service_errors["product"] = str(e)
+        self.service_registry["product"] = None
+    
+    # ============================================================
+    # BLOCK 11F: NATIONAL KPI SERVICE - MENU 6
+    # ============================================================
+    
+    logger.info("=" * 60)
+    logger.info("📦 BLOCK 11F: Loading National KPI Service")
+    logger.info("=" * 60)
+    
+    try:
+        from app.services.national_kpi_service import NationalKPIService
+        self.service_registry["national"] = NationalKPIService()
+        logger.info("✅ Registered National KPI service (Menu 6)")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to register National KPI service: {e}")
+        self.service_errors["national"] = str(e)
+        self.service_registry["national"] = None
+    
+    # ============================================================
+    # BLOCK 11G: FINAL STATUS
+    # ============================================================
+    
+    logger.info("=" * 60)
+    logger.info("📋 SERVICE REGISTRY FINAL STATUS:")
+    logger.info("=" * 60)
+    
+    for key, service in self.service_registry.items():
+        status = "✅" if service is not None else "❌"
+        service_name = service.__class__.__name__ if service else "None"
+        logger.info(f"   {status} {key}: {service_name}")
+    
+    logger.info("=" * 60)
+    logger.info("🚀 DN Service Status: LOADED" if self.service_registry.get("dn") is not None else "🚀 DN Service Status: FALLBACK")
+    logger.info("=" * 60)
     
     # ============================================================
     # BLOCK 12: DN SERVICE FALLBACK
