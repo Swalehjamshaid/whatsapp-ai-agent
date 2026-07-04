@@ -1,11 +1,11 @@
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 70.0 - DIRECT ROUTING TO ALL 7 SERVICES
+# VERSION: 71.0 - DIRECT ROUTING WITH DETAILED ERROR HANDLING
 # ============================================================
 
 """
 File: app/services/ai_provider_service.py
-Version: 70.0 - DIRECT ROUTING TO ALL 7 SERVICES
+Version: 71.0 - DIRECT ROUTING WITH DETAILED ERROR HANDLING
 
 ================================================================================
 PURPOSE
@@ -32,20 +32,6 @@ Menu | Dashboard Name          | Route To                                    | F
 5    | Product Dashboard       | product_service.py                          | get_product_analytics_service()
 6    | City Dashboard          | city_service.py                             | get_city_analytics_service()
 7    | AI Assistant            | groq_service.py                             | get_groq_service()
-
-================================================================================
-FUNCTIONS MATCHING YOUR FILES
-================================================================================
-
-| File                          | Function                    | Status  |
-|-------------------------------|-----------------------------|---------|
-| national_kpi_service.py       | get_national_kpi_service()  | ✅      |
-| dn_analysis.py (v34.0)        | get_dn_analytics_service()  | ✅      |
-| dealer_analytics_service.py   | get_dealer_service()        | ✅      |
-| warehouse_service.py          | get_warehouse_analytics_service() | ✅ |
-| product_service.py            | get_product_analytics_service() | ✅ |
-| city_service.py               | get_city_analytics_service()| ✅      |
-| groq_service.py               | get_groq_service()          | ✅      |
 
 ================================================================================
 STATUS: ENTERPRISE READY
@@ -183,7 +169,7 @@ class MenuItem:
         return False
 
 # ============================================================
-# SERVICE REGISTRY - ALL 7 SERVICES DIRECT ROUTING
+# SERVICE REGISTRY - ALL 7 SERVICES WITH ERROR HANDLING
 # ============================================================
 
 class ServiceRegistry:
@@ -206,13 +192,20 @@ class ServiceRegistry:
         self._module_map: Dict[ModuleType, MenuItem] = {}
         self._loader_cache: Dict[ModuleType, Any] = {}
         self._cache_lock = threading.RLock()
+        self._load_errors: Dict[str, str] = {}
         
         self._register_all_modules()
         
         logger.info(f"📦 Service Registry initialized with {len(self._menu_items)} modules")
+        
+        # Log any load errors
+        if self._load_errors:
+            logger.warning("⚠️ Some services failed to load:")
+            for name, error in self._load_errors.items():
+                logger.warning(f"   ❌ {name}: {error}")
     
     def _register_all_modules(self):
-        """Register ALL 7 modules with correct function names matching your files."""
+        """Register ALL 7 modules with correct function names and error handling."""
         
         # All 7 services with their correct function names
         module_defs = [
@@ -232,7 +225,7 @@ class ServiceRegistry:
                 "module_type": ModuleType.DN,
                 "file": "dn_analysis.py",
                 "import_path": "app.services.dn_analysis",
-                "function": "get_dn_analytics_service"  # ← From v34.0
+                "function": "get_dn_analytics_service"
             },
             {
                 "id": 3,
@@ -311,22 +304,34 @@ class ServiceRegistry:
                                 logger.info(f"   ✅ process_whatsapp_query method found")
                             else:
                                 logger.warning(f"   ⚠️ process_whatsapp_query method NOT found")
+                                self._load_errors[mod['name']] = "Missing process_whatsapp_query method"
                         else:
                             logger.warning(f"   ⚠️ Service returned None")
+                            self._load_errors[mod['name']] = "Service loader returned None"
                     except Exception as e:
-                        logger.error(f"   ❌ Service test failed: {e}")
+                        error_msg = str(e)
+                        logger.error(f"   ❌ Service test failed: {error_msg}")
+                        self._load_errors[mod['name']] = error_msg
                         
                 else:
-                    logger.warning(f"⚠️ Skipping: {mod['name']} - function {mod['function']} not found")
-                    logger.warning(f"   Available: {[a for a in dir(module) if not a.startswith('_')]}")
+                    error_msg = f"Function {mod['function']} not found"
+                    logger.warning(f"⚠️ Skipping: {mod['name']} - {error_msg}")
+                    self._load_errors[mod['name']] = error_msg
                     
             except ImportError as e:
-                logger.warning(f"⚠️ Skipping: {mod['name']} - module not found: {e}")
+                error_msg = f"Module not found: {e}"
+                logger.warning(f"⚠️ Skipping: {mod['name']} - {error_msg}")
+                self._load_errors[mod['name']] = error_msg
             except Exception as e:
-                logger.warning(f"⚠️ Skipping: {mod['name']} - error: {e}")
+                error_msg = str(e)
+                logger.warning(f"⚠️ Skipping: {mod['name']} - error: {error_msg}")
+                self._load_errors[mod['name']] = error_msg
     
     def get_menu_items(self) -> List[MenuItem]:
         return self._menu_items
+    
+    def get_load_errors(self) -> Dict[str, str]:
+        return self._load_errors
     
     def detect_menu_item(self, text: str) -> Optional[MenuItem]:
         text_clean = text.strip()
@@ -395,8 +400,10 @@ class AIProviderService:
         self._registry = ServiceRegistry()
         
         registered_count = len(self._registry.get_menu_items())
+        load_errors = self._registry.get_load_errors()
+        
         logger.info("=" * 70)
-        logger.info("🚀 ENTERPRISE GATEWAY v70.0 initialized")
+        logger.info("🚀 ENTERPRISE GATEWAY v71.0 initialized")
         logger.info(f"   📦 Registered {registered_count}/7 services")
         logger.info("   🔒 Session Locking: ✅")
         logger.info("   🔀 Direct routing to services")
@@ -404,10 +411,14 @@ class AIProviderService:
         logger.info("=" * 70)
         
         for item in self._registry.get_menu_items():
-            logger.info(f"   {item.id}. {item.name} → {item.file}")
+            logger.info(f"   ✅ {item.id}. {item.name} → {item.file}")
         
-        if registered_count < 7:
-            logger.warning(f"⚠️ Only {registered_count} of 7 services loaded!")
+        if load_errors:
+            logger.warning("=" * 70)
+            logger.warning("⚠️ SERVICE LOAD ERRORS:")
+            for name, error in load_errors.items():
+                logger.warning(f"   ❌ {name}: {error}")
+            logger.warning("=" * 70)
     
     # ============================================================
     # SESSION MANAGEMENT
@@ -639,7 +650,7 @@ class AIProviderService:
         
         return {
             "service": "ai_provider_service",
-            "version": "70.0",
+            "version": "71.0",
             "type": "enterprise_gateway",
             "status": "healthy",
             "active_sessions": active_sessions,
@@ -652,7 +663,8 @@ class AIProviderService:
                     "aliases": item.aliases
                 }
                 for item in self._registry.get_menu_items()
-            ]
+            ],
+            "load_errors": self._registry.get_load_errors()
         }
 
 
