@@ -1,31 +1,36 @@
 #!/usr/bin/env python3
 # ============================================================
-# FILE: app/services/dealer_analytics_service.py
-# VERSION: 2.0 - WHATSAPP WEBHOOK INTEGRATION
+# FILE: whatsapp-ai-agent-demo/app/services/dealer_analytics_service.py
+# VERSION: 2.0 - HPK LOGISTICS AI DEALER ANALYTICS
 # ============================================================
 
 """
 ================================================================================
-WHATSAPP DEALER ANALYTICS SERVICE
+DEALER ANALYTICS SERVICE - HPK LOGISTICS AI
 ================================================================================
 
-This service handles dealer search and returns formatted responses for WhatsApp.
+This service handles Dealer Dashboard functionality for HPK Logistics AI.
 
-USAGE IN WEBHOOK:
-    from app.services.dealer_analytics_service import get_dealer_analytics_service
-    
-    service = get_dealer_analytics_service()
-    response = service.handle_whatsapp_message(user_id, user_input)
-    # Send response back via WhatsApp API
+INTEGRATION WITH GATEWAY:
+    - Called by AIProviderService when user selects "Dealer Dashboard" (Option 3)
+    - process_whatsapp_query() is the main entry point
+    - Returns "99" or "__EXIT__" to unlock session and return to main menu
 
 ================================================================================
 """
 
-import re
 import logging
-from typing import Optional, Dict, List, Any
+import re
+from typing import Optional, Dict, List, Any, Union
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+EXIT_SIGNAL = "__EXIT__"
 
 # ============================================================
 # DEALER DATABASE
@@ -310,19 +315,26 @@ def format_number(num: int) -> str:
     """Format number with commas"""
     return f"{num:,}"
 
+def normalize_text(text: str) -> str:
+    """Normalize text for matching"""
+    text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip().lower()
+
 # ============================================================
 # DEALER ANALYTICS SERVICE
 # ============================================================
 
 class DealerAnalyticsService:
     """
-    WhatsApp Dealer Analytics Service
+    Dealer Analytics Service for HPK Logistics AI
     
-    Handles:
-    1. Dealer search
-    2. Dashboard generation
-    3. WhatsApp message formatting
-    4. Session state management
+    This service handles:
+    1. Dealer search and matching
+    2. Dealer dashboard generation
+    3. WhatsApp message processing
+    
+    Called by AIProviderService when user selects "Dealer Dashboard"
     """
     
     _instance: Optional["DealerAnalyticsService"] = None
@@ -340,8 +352,8 @@ class DealerAnalyticsService:
         self._service_name = "dealer_analytics"
         self._version = "2.0"
         
-        # Session state: track where each user is in the flow
-        self._sessions: Dict[str, Dict] = {}
+        # Session state per user
+        self._user_states: Dict[str, Dict] = {}
         
         # Load dealer data
         self._dealer_cache = {}
@@ -355,63 +367,99 @@ class DealerAnalyticsService:
             self._dealer_cache[key] = data
     
     # ============================================================
-    # WHATSAPP MESSAGE HANDLER - MAIN ENTRY POINT
+    # MAIN ENTRY POINT - Called by Gateway
     # ============================================================
     
-    def handle_whatsapp_message(self, user_id: str, message: str) -> str:
+    def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
         """
-        Main entry point for WhatsApp webhook
+        MAIN ENTRY POINT - Called by AIProviderService
         
         Args:
-            user_id: WhatsApp user ID (for session tracking)
             message: User's message text
+            sender: User identifier
         
         Returns:
-            Formatted response string for WhatsApp
+            Response string or EXIT_SIGNAL to unlock session
         """
-        logger.info(f"📨 Handling message from {user_id}: {message}")
-        
-        # Clean the message
-        message = message.strip() if message else ""
-        
-        if not message:
-            return self._get_welcome_message()
-        
-        # Check for exit command
-        if message.lower() in ['99', 'exit', 'quit', 'menu']:
-            return self._handle_exit(user_id)
-        
-        # Search for dealer
-        return self._handle_search(user_id, message)
-    
-    # ============================================================
-    # SEARCH HANDLER
-    # ============================================================
-    
-    def _handle_search(self, user_id: str, query: str) -> str:
-        """Handle dealer search"""
-        logger.info(f"🔍 Searching for: {query}")
-        
-        result = self.search_dealer(query)
-        
-        if result['success']:
-            # Update session
-            self._sessions[user_id] = {
-                'state': 'viewing',
-                'dealer': result['profile']['name']
-            }
-            return result['dashboard']
-        else:
-            # Show suggestions or error
-            if result.get('suggestions'):
-                suggestion_text = "\n".join([f"• {s}" for s in result['suggestions'][:3]])
-                return f"❌ {result['message']}\n\n💡 Did you mean:\n{suggestion_text}\n\nPlease try again or type '99' to exit."
+        try:
+            logger.info(f"📨 DealerAnalyticsService.process_whatsapp_query: '{message}' from {sender}")
+            
+            if not message or not message.strip():
+                return self.get_welcome_message()
+            
+            message_clean = message.strip()
+            
+            # Check for exit signal
+            if message_clean == "99" or message_clean.lower() in ["exit", "quit", "menu"]:
+                logger.info(f"🚪 User {sender} requesting exit from Dealer Dashboard")
+                return EXIT_SIGNAL
+            
+            # Get user state
+            state = self._user_states.get(sender, {})
+            step = state.get('step', 'idle')
+            
+            # Handle different steps
+            if step == 'idle':
+                # User is at the welcome screen - search for dealer
+                result = self.search_dealer(message_clean)
+                
+                if result['success']:
+                    # Update state
+                    self._user_states[sender] = {
+                        'step': 'viewing',
+                        'dealer': result['profile']['name'],
+                        'last_search': message_clean
+                    }
+                    return result['dashboard']
+                else:
+                    # Show suggestions or error
+                    if result.get('suggestions'):
+                        suggestion_text = "\n".join([f"• {s}" for s in result['suggestions'][:3]])
+                        return f"❌ {result['message']}\n\n💡 Did you mean:\n{suggestion_text}\n\nPlease try again or type '99' to exit."
+                    else:
+                        return f"❌ {result['message']}\n\nPlease try a different name or type '99' to exit."
+            
+            elif step == 'viewing':
+                # User is viewing a dealer dashboard
+                # Check if they want to search for another dealer
+                result = self.search_dealer(message_clean)
+                
+                if result['success']:
+                    # New dealer found
+                    self._user_states[sender] = {
+                        'step': 'viewing',
+                        'dealer': result['profile']['name'],
+                        'last_search': message_clean
+                    }
+                    return result['dashboard']
+                else:
+                    # Not a dealer name - maybe they want help
+                    return "\n".join([
+                        "📌 *Currently viewing:*",
+                        f"   {state.get('dealer', 'Unknown dealer')}",
+                        "",
+                        "• Type another dealer name to search",
+                        "• Type '99' to exit",
+                        "",
+                        self.get_help_message()
+                    ])
+            
             else:
-                return f"❌ {result['message']}\n\nPlease try a different name or type '99' to exit."
+                # Unknown state - reset
+                self._user_states[sender] = {'step': 'idle'}
+                return self.get_welcome_message()
+            
+        except Exception as e:
+            logger.error(f"❌ DealerAnalyticsService error: {e}", exc_info=True)
+            return f"⚠️ An error occurred: {str(e)[:200]}\n\nPlease type '99' to exit."
+    
+    # ============================================================
+    # SEARCH METHODS
+    # ============================================================
     
     def search_dealer(self, query: str) -> Dict[str, Any]:
         """
-        Search for a dealer
+        Search for a dealer using multi-stage matching
         
         Returns:
             Dict with: success, message, profile, dashboard, suggestions
@@ -533,7 +581,7 @@ class DealerAnalyticsService:
         return suggestions
     
     # ============================================================
-    # RESPONSE BUILDER
+    # RESPONSE BUILDERS
     # ============================================================
     
     def _build_response(self, match_result: Dict) -> Dict[str, Any]:
@@ -670,28 +718,23 @@ class DealerAnalyticsService:
         
         # Footer
         lines.append("=" * 50)
-        lines.append("Type '99' to exit")
+        lines.append("Type '99' to exit or search for another dealer")
         lines.append("=" * 50)
         
         return "\n".join(lines)
     
     # ============================================================
-    # SESSION MANAGEMENT
+    # MESSAGE HELPERS
     # ============================================================
     
-    def _handle_exit(self, user_id: str) -> str:
-        """Handle exit command"""
-        self._sessions[user_id] = {'state': 'idle'}
-        return self._get_welcome_message()
-    
-    def _get_welcome_message(self) -> str:
-        """Get welcome message"""
+    def get_welcome_message(self) -> str:
+        """Get welcome message for Dealer Dashboard"""
         return "\n".join([
-            "🤖 DEALER ANALYTICS",
+            "🤖 *DEALER DASHBOARD*",
             "",
             "Please enter the name of the dealer",
             "",
-            "📝 Examples:",
+            "📝 *Examples:*",
             "  • Zoom Appliances",
             "  • Arshad Electronics-Khi",
             "  • RUBA Digital",
@@ -699,7 +742,27 @@ class DealerAnalyticsService:
             "  • Friends Electronics",
             "  • Al Madina Electronics",
             "",
-            "Type '99' to exit"
+            "💡 *Tips:*",
+            "  • Use exact name for best results",
+            "  • Try partial name if unsure",
+            "  • Type '99' to exit",
+            "",
+            "Type a dealer name to continue:"
+        ])
+    
+    def get_help_message(self) -> str:
+        """Get help message"""
+        return "\n".join([
+            "📌 *Dealer Dashboard Help*",
+            "",
+            "• Type a dealer name to search",
+            "• Type '99' to exit",
+            "• Type 'help' for this message",
+            "",
+            "📝 *Available Dealers:*",
+        ] + [f"  • {data['name']}" for key, data in list(self._dealer_cache.items())[:6]] + [
+            "",
+            f"  ... and {len(self._dealer_cache) - 6} more"
         ])
     
     # ============================================================
@@ -713,17 +776,21 @@ class DealerAnalyticsService:
             "version": self._version,
             "status": "healthy",
             "dealers_loaded": len(self._dealer_cache),
-            "active_sessions": len(self._sessions),
+            "active_sessions": len(self._user_states)
         }
 
 # ============================================================
-# SERVICE SINGLETON
+# SINGLETON
 # ============================================================
 
 _service: Optional[DealerAnalyticsService] = None
 
-def get_dealer_analytics_service() -> DealerAnalyticsService:
-    """Get singleton instance"""
+def get_dealer_service() -> DealerAnalyticsService:
+    """
+    Get the DealerAnalyticsService singleton instance.
+    
+    This is the function that AIProviderService looks for.
+    """
     global _service
     if _service is None:
         _service = DealerAnalyticsService()
@@ -735,5 +802,37 @@ def get_dealer_analytics_service() -> DealerAnalyticsService:
 
 __all__ = [
     "DealerAnalyticsService",
-    "get_dealer_analytics_service",
+    "get_dealer_service",
+    "EXIT_SIGNAL"
 ]
+
+# ============================================================
+# TEST / STANDALONE MODE
+# ============================================================
+
+if __name__ == "__main__":
+    # Test the service
+    print("\n" + "=" * 60)
+    print("DEALER ANALYTICS SERVICE - TEST MODE".center(60))
+    print("=" * 60)
+    print()
+    
+    service = get_dealer_service()
+    
+    # Test welcome
+    print("📌 Welcome Message:")
+    print(service.get_welcome_message())
+    print("\n" + "-" * 60)
+    
+    # Test search
+    test_queries = ["zoom", "arshad", "unknown", "99"]
+    
+    for query in test_queries:
+        print(f"\n🔍 Testing: '{query}'")
+        print("-" * 40)
+        result = service.process_whatsapp_query(query, "test_user")
+        print(result[:500] + "..." if len(result) > 500 else result)
+        print()
+    
+    print("=" * 60)
+    print("✅ Test Complete")
