@@ -1,67 +1,13 @@
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 41.0 - ENTERPRISE SESSION ROUTER WITH OUT OF BOX HANDLING
+# VERSION: 42.0 - FIXED DN MODULE INTEGRATION
 # ============================================================
 
 """
 File: app/services/ai_provider_service.py
-Version: 41.0 - ENTERPRISE SESSION ROUTER
+Version: 42.0 - FIXED DN MODULE INTEGRATION
 
-================================================================================
-PURPOSE
-================================================================================
-
-This file is a 100% Enterprise Session Router.
-
-Its ONLY responsibility is:
-1. Receive WhatsApp message
-2. Detect which service should handle the conversation
-3. Route the conversation ONCE
-4. Suspend itself
-5. Wait until the selected service releases the session
-6. Resume only after the service exits
-
-================================================================================
-OUT OF BOX HANDLING
-================================================================================
-
-When a user asks something that doesn't match any menu option or service:
-- ✅ Shows: "Please select a valid option from the menu."
-- ✅ Shows the main menu
-- ✅ Does NOT try to interpret or answer the question
-
-================================================================================
-FORBIDDEN
-================================================================================
-
-This file is NOT ALLOWED to perform ANY business logic:
-
-- ❌ Search DN, Dealer, Warehouse, Product, City
-- ❌ Build Dashboard
-- ❌ Execute SQL
-- ❌ Query PostgreSQL
-- ❌ Calculate KPI, Revenue, Units, Pending
-- ❌ Generate Executive Dashboard
-- ❌ Call Analytics Functions
-- ❌ Detect Follow-up Questions
-- ❌ Detect Dashboard Type
-- ❌ Intent Detection (when locked)
-- ❌ Entity Detection (when locked)
-- ❌ AI Engine (when locked)
-- ❌ Answer questions directly
-
-================================================================================
-GOLDEN RULE
-================================================================================
-
-The router routes exactly ONCE.
-After that, it becomes completely passive.
-The selected domain service owns the conversation.
-The router must NEVER inspect, reinterpret, or reroute messages while locked.
-
-================================================================================
-STATUS: ENTERPRISE READY
-================================================================================
+FIX: Check DN module's lock status FIRST before router's own routing.
 """
 
 from __future__ import annotations
@@ -286,7 +232,7 @@ class AIProviderService:
         self._cache_lock = threading.RLock()
         
         logger.info("=" * 70)
-        logger.info("🚀 ENTERPRISE SESSION ROUTER v41.0 initialized")
+        logger.info("🚀 ENTERPRISE SESSION ROUTER v42.0 initialized")
         logger.info("   📦 ONLY responsible for ROUTING")
         logger.info("   🔒 Routes ONCE per session")
         logger.info("   🔑 Suspends itself after routing")
@@ -322,7 +268,7 @@ class AIProviderService:
                 del self._sessions[sender]
     
     def _is_locked(self, sender: str) -> bool:
-        """Check if session is locked"""
+        """Check if session is locked by router"""
         with self._session_lock:
             return sender in self._sessions
     
@@ -336,6 +282,33 @@ class AIProviderService:
             for sender in expired:
                 logger.info(f"🧹 Expired session cleaned: {sender}")
                 del self._sessions[sender]
+    
+    # ============================================================
+    # DN MODULE INTEGRATION - CRITICAL FIX
+    # ============================================================
+    
+    def _is_dn_module_locked(self, sender: str) -> bool:
+        """
+        Check if DN module has locked this session.
+        
+        CRITICAL: This checks the DN module's internal state,
+        NOT the router's state.
+        """
+        try:
+            from app.services.dn_analysis import is_session_locked
+            return is_session_locked(sender)
+        except Exception as e:
+            logger.debug(f"DN lock check failed: {e}")
+            return False
+    
+    def _get_dn_module_service(self):
+        """Get DN module service instance"""
+        try:
+            from app.services.dn_analysis import get_dn_analytics_service
+            return get_dn_analytics_service()
+        except Exception as e:
+            logger.error(f"DN service load failed: {e}")
+            return None
     
     # ============================================================
     # ROUTING - ONLY ROUTING LOGIC HERE
@@ -437,15 +410,17 @@ class AIProviderService:
         MAIN ENTRY POINT - ROUTER ONLY
         
         Flow:
-        1. Check if session is LOCKED
-           → YES: Forward to active service (NO ROUTING)
-           → NO: Route to service
-        2. If routed, LOCK session
-        3. Forward message to active service
-        4. Check if service returned "exit"
-        5. If exit, UNLOCK session
-        6. Return response
-        7. If NO route found, show menu with "Please select from menu"
+        1. Check if DN module has locked the session (CRITICAL!)
+        2. If DN module locked → Forward to DN module (NO ROUTING)
+        3. Check if router has locked the session
+        4. If router locked → Forward to active service (NO ROUTING)
+        5. If idle → Route to service
+        6. If routed, LOCK session
+        7. Forward message to active service
+        8. Check if service returned "exit"
+        9. If exit, UNLOCK session
+        10. Return response
+        11. If NO route found, show menu with "Please select from menu"
         """
         sender = sender or sender_id or "default"
         
@@ -459,7 +434,37 @@ class AIProviderService:
         self._cleanup_expired()
         
         # ============================================================
-        # CHECK: Is session LOCKED?
+        # STEP 1: CHECK DN MODULE LOCK STATUS - CRITICAL!
+        # ============================================================
+        if self._is_dn_module_locked(sender):
+            logger.info(f"🔒 DN module has LOCKED session {sender}")
+            
+            # Get DN service
+            dn_service = self._get_dn_module_service()
+            if dn_service and hasattr(dn_service, "process_whatsapp_query"):
+                try:
+                    result = dn_service.process_whatsapp_query(message_clean, sender)
+                    
+                    # Check if DN module wants to exit
+                    if result == "99":
+                        logger.info(f"🔓 DN module released session (99)")
+                        # Also clear router's state if it exists
+                        self._release_owner(sender)
+                        return self._get_main_menu()
+                    
+                    return result
+                except Exception as e:
+                    logger.error(f"❌ DN module error: {e}")
+                    # On error, release session
+                    self._release_owner(sender)
+                    return f"⚠️ DN service error: {str(e)[:200]}\n\nPlease try again or type 'menu' for options."
+            else:
+                logger.warning(f"⚠️ DN module not available, releasing")
+                self._release_owner(sender)
+                return self._get_main_menu()
+        
+        # ============================================================
+        # STEP 2: CHECK ROUTER SESSION LOCK
         # ============================================================
         owner = self._get_owner(sender)
         
@@ -467,7 +472,7 @@ class AIProviderService:
             # ============================================================
             # SESSION LOCKED: FORWARD ONLY - NO ROUTING!
             # ============================================================
-            logger.info(f"🔒 Session LOCKED → Forwarding to {owner.service_type.value}")
+            logger.info(f"🔒 Router LOCKED → Forwarding to {owner.service_type.value}")
             
             # Update activity
             owner.update_activity()
@@ -497,7 +502,7 @@ class AIProviderService:
                 return self._get_main_menu()
         
         # ============================================================
-        # SESSION IDLE: ROUTE ONCE
+        # STEP 3: SESSION IDLE - ROUTE ONCE
         # ============================================================
         logger.info(f"🔄 Session IDLE → Routing '{message_clean}' from {sender}")
         
@@ -597,7 +602,7 @@ class AIProviderService:
         
         return {
             "service": "ai_provider_service",
-            "version": "41.0",
+            "version": "42.0",
             "type": "enterprise_session_router",
             "status": "healthy",
             "active_sessions": active_sessions,
@@ -608,6 +613,7 @@ class AIProviderService:
                 "session_locking": True,
                 "route_once": True,
                 "forward_only_when_locked": True,
+                "dn_module_integration": True,
             }
         }
 
