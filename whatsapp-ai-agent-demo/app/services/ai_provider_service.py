@@ -1,18 +1,20 @@
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 57.0 - DEBUG VERSION (SHOWS EXACT ERRORS)
+# VERSION: 58.0 - ASYNC COMPATIBLE GATEWAY
 # ============================================================
 
 """
 File: app/services/ai_provider_service.py
-Version: 57.0 - DEBUG VERSION
+Version: 58.0 - ASYNC COMPATIBLE GATEWAY
 
-THIS VERSION WILL SHOW EXACT ERRORS TO HELP DEBUG.
-DO NOT USE IN PRODUCTION.
+================================================================================
+FIX: Added async support for webhook compatibility
+================================================================================
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -138,7 +140,7 @@ class MenuItem:
         return False
 
 # ============================================================
-# SERVICE REGISTRY - DEBUG VERSION
+# SERVICE REGISTRY
 # ============================================================
 
 class ServiceRegistry:
@@ -167,10 +169,7 @@ class ServiceRegistry:
         logger.info(f"📦 Service Registry initialized with {len(self._menu_items)} modules")
     
     def _register_modules(self):
-        """Register all 7 modules with debug logging."""
-        
         modules = [
-            # Menu ID 1: National Dashboard
             MenuItem(
                 id=1,
                 name="National Dashboard",
@@ -234,20 +233,18 @@ class ServiceRegistry:
             self._module_map[item.module_type] = item
     
     # ============================================================
-    # LOADER METHODS WITH DEBUG LOGGING
+    # LOADER METHODS
     # ============================================================
     
     def _load_national_service(self):
         with self._cache_lock:
             if ModuleType.NATIONAL not in self._loader_cache:
                 try:
-                    logger.info("🔍 DEBUG: Loading National Service...")
                     from app.services.national_kpi_service import get_national_kpi_service
                     self._loader_cache[ModuleType.NATIONAL] = get_national_kpi_service()
                     logger.info("✅ National KPI service loaded")
                 except Exception as e:
                     logger.error(f"❌ National KPI service error: {e}")
-                    logger.error(f"❌ Traceback: {traceback.format_exc()}")
                     self._loader_cache[ModuleType.NATIONAL] = None
             return self._loader_cache[ModuleType.NATIONAL]
     
@@ -255,13 +252,11 @@ class ServiceRegistry:
         with self._cache_lock:
             if ModuleType.DN not in self._loader_cache:
                 try:
-                    logger.info("🔍 DEBUG: Loading DN Service...")
                     from app.services.dn_analysis import get_dn_analysis_service
                     self._loader_cache[ModuleType.DN] = get_dn_analysis_service()
                     logger.info("✅ DN service loaded")
                 except Exception as e:
                     logger.error(f"❌ DN service error: {e}")
-                    logger.error(f"❌ Traceback: {traceback.format_exc()}")
                     self._loader_cache[ModuleType.DN] = None
             return self._loader_cache[ModuleType.DN]
     
@@ -269,13 +264,11 @@ class ServiceRegistry:
         with self._cache_lock:
             if ModuleType.DEALER not in self._loader_cache:
                 try:
-                    logger.info("🔍 DEBUG: Loading Dealer Service...")
                     from app.services.dealer_analytics_service import get_dealer_service
                     self._loader_cache[ModuleType.DEALER] = get_dealer_service()
                     logger.info("✅ Dealer service loaded")
                 except Exception as e:
                     logger.error(f"❌ Dealer service error: {e}")
-                    logger.error(f"❌ Traceback: {traceback.format_exc()}")
                     self._loader_cache[ModuleType.DEALER] = None
             return self._loader_cache[ModuleType.DEALER]
     
@@ -283,13 +276,11 @@ class ServiceRegistry:
         with self._cache_lock:
             if ModuleType.WAREHOUSE not in self._loader_cache:
                 try:
-                    logger.info("🔍 DEBUG: Loading Warehouse Service...")
                     from app.services.warehouse_service import get_warehouse_analytics_service
                     self._loader_cache[ModuleType.WAREHOUSE] = get_warehouse_analytics_service()
                     logger.info("✅ Warehouse service loaded")
                 except Exception as e:
                     logger.error(f"❌ Warehouse service error: {e}")
-                    logger.error(f"❌ Traceback: {traceback.format_exc()}")
                     self._loader_cache[ModuleType.WAREHOUSE] = None
             return self._loader_cache[ModuleType.WAREHOUSE]
     
@@ -297,13 +288,11 @@ class ServiceRegistry:
         with self._cache_lock:
             if ModuleType.PRODUCT not in self._loader_cache:
                 try:
-                    logger.info("🔍 DEBUG: Loading Product Service...")
                     from app.services.product_service import get_product_analytics_service
                     self._loader_cache[ModuleType.PRODUCT] = get_product_analytics_service()
                     logger.info("✅ Product service loaded")
                 except Exception as e:
                     logger.error(f"❌ Product service error: {e}")
-                    logger.error(f"❌ Traceback: {traceback.format_exc()}")
                     self._loader_cache[ModuleType.PRODUCT] = None
             return self._loader_cache[ModuleType.PRODUCT]
     
@@ -311,13 +300,11 @@ class ServiceRegistry:
         with self._cache_lock:
             if ModuleType.CITY not in self._loader_cache:
                 try:
-                    logger.info("🔍 DEBUG: Loading City Service...")
                     from app.services.city_service import get_city_analytics_service
                     self._loader_cache[ModuleType.CITY] = get_city_analytics_service()
                     logger.info("✅ City service loaded")
                 except Exception as e:
                     logger.error(f"❌ City service error: {e}")
-                    logger.error(f"❌ Traceback: {traceback.format_exc()}")
                     self._loader_cache[ModuleType.CITY] = None
             return self._loader_cache[ModuleType.CITY]
     
@@ -325,13 +312,11 @@ class ServiceRegistry:
         with self._cache_lock:
             if ModuleType.AI not in self._loader_cache:
                 try:
-                    logger.info("🔍 DEBUG: Loading AI Assistant Service...")
                     from app.services.groq_service import get_groq_service
                     self._loader_cache[ModuleType.AI] = get_groq_service()
                     logger.info("✅ AI Assistant service loaded")
                 except Exception as e:
                     logger.error(f"❌ AI Assistant service error: {e}")
-                    logger.error(f"❌ Traceback: {traceback.format_exc()}")
                     self._loader_cache[ModuleType.AI] = None
             return self._loader_cache[ModuleType.AI]
     
@@ -361,31 +346,21 @@ class ServiceRegistry:
     
     def get_service_by_text(self, text: str) -> Optional[tuple[MenuItem, Any]]:
         try:
-            logger.info(f"🔍 DEBUG: Detecting service for: '{text}'")
             item = self.detect_menu_item(text)
             if not item:
-                logger.info(f"❌ No menu item found for '{text}'")
                 return None
             
-            logger.info(f"✅ Found menu item: {item.name} (ID: {item.id})")
-            logger.info(f"🔍 DEBUG: Loading service for {item.module_type.value}...")
             service = self.get_service(item.module_type)
             if not service:
-                logger.warning(f"⚠️ Service not available for {item.name}")
                 return None
-            
-            logger.info(f"✅ Service loaded successfully for {item.name}")
-            logger.info(f"🔍 DEBUG: Service type: {type(service)}")
-            logger.info(f"🔍 DEBUG: Service methods: {dir(service)}")
             
             return (item, service)
         except Exception as e:
             logger.error(f"❌ get_service_by_text error: {e}")
-            logger.error(traceback.format_exc())
             return None
 
 # ============================================================
-# MAIN GATEWAY SERVICE - DEBUG VERSION
+# MAIN GATEWAY SERVICE - ASYNC COMPATIBLE
 # ============================================================
 
 class AIProviderService:
@@ -411,7 +386,10 @@ class AIProviderService:
         self._registry = ServiceRegistry()
         
         logger.info("=" * 70)
-        logger.info("🚀 DEBUG GATEWAY v57.0 initialized")
+        logger.info("🚀 ENTERPRISE GATEWAY v58.0 initialized (Async Compatible)")
+        logger.info(f"   📦 Registered {len(self._registry.get_menu_items())} services")
+        logger.info("   🔒 Session Locking: ✅")
+        logger.info("   🔀 Routes to 7 modules")
         logger.info("=" * 70)
         
         for item in self._registry.get_menu_items():
@@ -464,7 +442,7 @@ class AIProviderService:
             return self._sessions[sender].locked
     
     # ============================================================
-    # ROUTING - DEBUG VERSION
+    # ROUTING - SYNC VERSION
     # ============================================================
     
     def _detect_dashboard(self, message: str) -> Optional[tuple[MenuItem, Any]]:
@@ -472,7 +450,6 @@ class AIProviderService:
             return self._registry.get_service_by_text(message)
         except Exception as e:
             logger.error(f"❌ Dashboard detection error: {e}")
-            logger.error(traceback.format_exc())
             return None
     
     def _forward_to_module(self, session: Session, message: str, sender: str) -> str:
@@ -483,21 +460,15 @@ class AIProviderService:
         
         service = session.service_instance
         
-        # DEBUG: Check if service has process_whatsapp_query
-        logger.info(f"🔍 DEBUG: Checking service {session.module_name}")
-        logger.info(f"🔍 DEBUG: Service type: {type(service)}")
-        logger.info(f"🔍 DEBUG: Has process_whatsapp_query: {hasattr(service, 'process_whatsapp_query')}")
-        
         if not hasattr(service, "process_whatsapp_query"):
             logger.error(f"❌ Service {session.module_name} missing process_whatsapp_query")
-            logger.error(f"❌ Available methods: {dir(service)}")
+            logger.error(f"   Available methods: {dir(service)}")
             self._unlock_session(sender)
             return "⚠️ Service is misconfigured.\n\n" + self._get_main_dashboard()
         
         try:
             logger.info(f"📤 Forwarding to {session.module_name}: '{message}'")
             result = service.process_whatsapp_query(message, sender)
-            logger.info(f"📥 Result: {result[:100] if result else 'Empty'}...")
             
             if result == EXIT_SIGNAL or result == "99":
                 logger.info(f"🚪 Module {session.module_name} requested exit")
@@ -510,18 +481,18 @@ class AIProviderService:
             
         except Exception as e:
             logger.error(f"❌ Module {session.module_name} error: {e}")
-            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+            logger.error(traceback.format_exc())
             self._unlock_session(sender)
-            # Return the actual error for debugging
-            return f"⚠️ Error: {str(e)}\n\nPlease check logs for details."
+            return f"⚠️ Service error: {str(e)[:200]}\n\n" + self._get_main_dashboard()
     
     # ============================================================
-    # MAIN PROCESSING - DEBUG VERSION
+    # MAIN PROCESSING - SYNC ENTRY POINT
     # ============================================================
     
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
+        """SYNC entry point - for webhook compatibility."""
         try:
-            logger.info(f"📨 DEBUG: Gateway received: '{message}' from {sender}")
+            logger.info(f"📨 Gateway received: '{message}' from {sender}")
             
             if not message or not message.strip():
                 return self._get_main_dashboard()
@@ -547,7 +518,6 @@ class AIProviderService:
                 return self._get_main_dashboard()
             
             # STEP 3: DETECT DASHBOARD
-            logger.info(f"🔍 DEBUG: Detecting dashboard for: '{message_clean}'")
             detected = self._detect_dashboard(message_clean)
             
             if detected:
@@ -557,9 +527,7 @@ class AIProviderService:
                 self._lock_session(sender, menu_item, service)
                 
                 try:
-                    logger.info(f"📤 Calling {menu_item.name}.process_whatsapp_query...")
                     result = service.process_whatsapp_query(message_clean, sender)
-                    logger.info(f"📥 Result from {menu_item.name}: {result[:100] if result else 'Empty'}...")
                     
                     if result == EXIT_SIGNAL or result == "99":
                         logger.info(f"🚪 Immediate exit from {menu_item.name}")
@@ -573,18 +541,32 @@ class AIProviderService:
                     
                 except Exception as e:
                     logger.error(f"❌ Module {menu_item.name} error: {e}")
-                    logger.error(f"❌ Traceback: {traceback.format_exc()}")
+                    logger.error(traceback.format_exc())
                     self._unlock_session(sender)
-                    return f"⚠️ {menu_item.name} error: {str(e)}\n\nCheck logs for details."
+                    return f"⚠️ {menu_item.name} error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
             
             # STEP 4: NO DASHBOARD DETECTED
-            logger.info(f"❌ No dashboard detected for: '{message_clean}'")
             return self._get_out_of_box_response()
             
         except Exception as e:
             logger.error(f"❌ Gateway error: {e}")
             logger.error(traceback.format_exc())
-            return f"⚠️ System error: {str(e)}\n\nCheck logs for details."
+            return f"⚠️ System error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
+    
+    # ============================================================
+    # ASYNC ENTRY POINT - For async webhooks
+    # ============================================================
+    
+    async def process_whatsapp_query_async(self, message: str, sender: str = "default") -> str:
+        """ASYNC entry point - for async webhook compatibility."""
+        # Run sync version in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, 
+            self.process_whatsapp_query, 
+            message, 
+            sender
+        )
     
     # ============================================================
     # RESPONSES
@@ -619,6 +601,33 @@ class AIProviderService:
             "",
             self._get_main_dashboard()
         ])
+    
+    # ============================================================
+    # HEALTH CHECK
+    # ============================================================
+    
+    def health_check(self) -> Dict[str, Any]:
+        with self._session_lock:
+            active_sessions = len(self._sessions)
+            locked_sessions = sum(1 for s in self._sessions.values() if s.locked)
+        
+        return {
+            "service": "ai_provider_service",
+            "version": "58.0",
+            "type": "enterprise_gateway",
+            "status": "healthy",
+            "active_sessions": active_sessions,
+            "locked_sessions": locked_sessions,
+            "available_modules": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "file": item.file,
+                    "aliases": item.aliases
+                }
+                for item in self._registry.get_menu_items()
+            ]
+        }
 
 
 # ============================================================
@@ -637,16 +646,32 @@ def get_ai_provider_service() -> AIProviderService:
     return _ai_service
 
 
+# ============================================================
+# ENTRY POINTS - Both sync and async
+# ============================================================
+
 def process_whatsapp_query(message: str, sender: str = "default") -> str:
+    """SYNC entry point - for sync webhook calls."""
     try:
-        logger.info(f"📨 process_whatsapp_query called with: '{message}' from {sender}")
+        logger.info(f"📨 SYNC process called with: '{message}' from {sender}")
         service = get_ai_provider_service()
         result = service.process_whatsapp_query(message, sender)
-        logger.info(f"📤 process_whatsapp_query returning: {result[:100] if result else 'Empty'}...")
         return result
     except Exception as e:
-        logger.exception(f"Unexpected error: {e}")
-        return f"⚠️ Error: {str(e)}"
+        logger.exception(f"Unexpected sync error: {e}")
+        return "⚠️ Service is temporarily unavailable. Please try again later."
+
+
+async def process_whatsapp_query_async(message: str, sender: str = "default") -> str:
+    """ASYNC entry point - for async webhook calls."""
+    try:
+        logger.info(f"📨 ASYNC process called with: '{message}' from {sender}")
+        service = get_ai_provider_service()
+        result = await service.process_whatsapp_query_async(message, sender)
+        return result
+    except Exception as e:
+        logger.exception(f"Unexpected async error: {e}")
+        return "⚠️ Service is temporarily unavailable. Please try again later."
 
 
 # ============================================================
@@ -661,5 +686,6 @@ __all__ = [
     "ServiceRegistry",
     "get_ai_provider_service",
     "process_whatsapp_query",
+    "process_whatsapp_query_async",
     "EXIT_SIGNAL",
 ]
