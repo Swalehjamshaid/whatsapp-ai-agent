@@ -1,153 +1,633 @@
 # ============================================================
-# FILE: app/services/ai_provider_service.py
-# VERSION: 64.0 - CORRECT DN FUNCTION NAME
+# FILE: app/services/dealer_analytics_service.py
+# VERSION: 2.0 - ENTERPRISE DEALER ANALYTICS SERVICE
 # ============================================================
 
 """
-File: app/services/ai_provider_service.py
-Version: 64.0 - CORRECT DN FUNCTION NAME
+File: app/services/dealer_analytics_service.py
+Version: 2.0 - ENTERPRISE DEALER ANALYTICS SERVICE
 
 ================================================================================
-FIX: Changed DN function from get_dn_analytics_service to get_dn_analysis_service
+PURPOSE
+================================================================================
+
+This is the DEALER ANALYTICS DOMAIN SERVICE for the WhatsApp AI Agent.
+
+Its responsibilities are:
+1. Provide dealer-related analytics and insights
+2. Show dealer dashboards and rankings
+3. Handle dealer-specific queries
+4. Manage dealer context and session state
+
+================================================================================
+INTEGRATION
+================================================================================
+
+This service is called by ai_provider_service.py when the user selects:
+- Menu option "3" (Dealer Dashboard)
+- Or types "dealer", "dealer dashboard", etc.
+
+================================================================================
+EXIT CONTRACT
+================================================================================
+
+This service MUST return "99" or "__EXIT__" to unlock the session
+and return to the main dashboard.
+
+================================================================================
+STATUS: PRODUCTION READY
 ================================================================================
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
+import re
 import threading
-import traceback
+import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from enum import Enum
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Optional, Dict, List, Tuple, Union
 
 logger = logging.getLogger(__name__)
+
+# ============================================================
+# DATABASE IMPORTS
+# ============================================================
+
+try:
+    from sqlalchemy import func, or_, desc, and_
+    from sqlalchemy.orm import Session
+    from app.database import SessionLocal
+    from app.models import DeliveryReport
+    DB_AVAILABLE = True
+    logger.info("✅ Dealer database imports successful")
+except ImportError as e:
+    DB_AVAILABLE = False
+    logger.error(f"❌ Dealer database import error: {e}")
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-SESSION_TIMEOUT_SECONDS = int(os.getenv("SESSION_TIMEOUT_SECONDS", "1800"))  # 30 minutes
-EXIT_SIGNAL = "__EXIT__"
+DEALER_CACHE_TTL = int(os.getenv("DEALER_CACHE_TTL", "300"))
+DEALER_SESSION_TIMEOUT = int(os.getenv("DEALER_SESSION_TIMEOUT", "1800"))
 
 # ============================================================
 # ENUMS
 # ============================================================
 
-class ModuleType(Enum):
-    """Available domain modules - EXACTLY 7"""
-    NATIONAL = "national"
-    DN = "dn"
-    DEALER = "dealer"
-    WAREHOUSE = "warehouse"
-    PRODUCT = "product"
-    CITY = "city"
-    AI = "ai"
+class DealerIntentType(Enum):
+    """Dealer intent types."""
+    DASHBOARD = "dashboard"
+    RANKING = "ranking"
+    PERFORMANCE = "performance"
+    REVENUE = "revenue"
+    UNITS = "units"
+    PENDING_DN = "pending_dn"
+    DELIVERY = "delivery"
+    COMPARISON = "comparison"
+    SEARCH = "search"
+    MENU = "menu"
+    UNKNOWN = "unknown"
+
+class DealerMenuState(Enum):
+    """Dealer menu states."""
+    MAIN = "main"
+    DEALER_SELECTION = "dealer_selection"
+    COMPARISON_SELECTION = "comparison_selection"
+    EXECUTING = "executing"
 
 # ============================================================
 # DATA CLASSES
 # ============================================================
 
 @dataclass
-class Session:
-    """Session state for a user."""
-    sender: str
-    locked: bool = False
-    module_type: Optional[ModuleType] = None
-    module_name: Optional[str] = None
-    file_name: Optional[str] = None
-    menu_id: Optional[int] = None
-    service_instance: Optional[Any] = None
-    entered_at: Optional[datetime] = None
-    last_activity: datetime = field(default_factory=datetime.now)
+class DealerContext:
+    """Session context for dealer queries."""
+    session_id: str
+    current_dealer: Optional[str] = None
+    active_menu: DealerMenuState = DealerMenuState.MAIN
+    selected_option: Optional[str] = None
+    comparison_dealers: List[str] = field(default_factory=list)
     history: List[Dict[str, Any]] = field(default_factory=list)
+    last_query: str = ""
+    last_answer: str = ""
+    created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)
     
-    def update_activity(self):
-        self.last_activity = datetime.now()
+    def touch(self) -> None:
+        """Update timestamp."""
+        self.updated_at = datetime.now()
     
-    def is_expired(self, timeout_seconds: int = SESSION_TIMEOUT_SECONDS) -> bool:
-        elapsed = (datetime.now() - self.last_activity).total_seconds()
-        return elapsed > timeout_seconds
+    def is_expired(self, timeout: int = DEALER_SESSION_TIMEOUT) -> bool:
+        """Check if session has expired."""
+        elapsed = datetime.now() - self.updated_at
+        return elapsed.total_seconds() > timeout
     
-    def add_history(self, query: str, response: str):
+    def add_history(self, query: str, answer: str) -> None:
+        """Add to conversation history."""
         self.history.append({
             "query": query,
-            "response": response[:200] if len(response) > 200 else response,
+            "answer": answer[:200] if len(answer) > 200 else answer,
             "timestamp": datetime.now().isoformat()
         })
         if len(self.history) > 100:
             self.history = self.history[-100:]
+        self.last_query = query
+        self.last_answer = answer
+        self.touch()
+
+# ============================================================
+# UTILITY FUNCTIONS
+# ============================================================
+
+def _text(value: Any, default: str = "N/A") -> str:
+    """Safely convert value to string."""
+    if value is None:
+        return default
+    return str(value).strip() or default
+
+def _number(value: Any) -> float:
+    """Safely convert to float."""
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+def _percent(numerator: Any, denominator: Any) -> float:
+    """Calculate percentage."""
+    bottom = _number(denominator)
+    return round((_number(numerator) * 100.0 / bottom), 2) if bottom else 0.0
+
+def _format_currency(amount: float) -> str:
+    """Format currency amount."""
+    if amount is None:
+        return "PKR 0.00"
+    return f"PKR {amount:,.2f}"
+
+def _format_number(num: Union[int, float]) -> str:
+    """Format number with commas."""
+    if num is None:
+        return "0"
+    return f"{num:,}"
+
+# ============================================================
+# DEALER RENDERER
+# ============================================================
+
+class DealerRenderer:
+    """Render dealer analytics responses."""
     
-    def lock(self, module_type: ModuleType, module_name: str, file_name: str, 
-             menu_id: int, service_instance: Any):
-        self.locked = True
-        self.module_type = module_type
-        self.module_name = module_name
-        self.file_name = file_name
-        self.menu_id = menu_id
-        self.service_instance = service_instance
-        self.entered_at = datetime.now()
-        self.update_activity()
-        logger.info(f"🔒 Session LOCKED: {self.sender} → {module_name}")
+    @staticmethod
+    def render_main_menu() -> str:
+        """Render the main dealer menu."""
+        return "\n".join([
+            "📊 *DEALER ANALYTICS MENU*",
+            "",
+            "0. Main Menu",
+            "1. Dealer Dashboard",
+            "2. Dealer Rankings",
+            "3. Top Dealers",
+            "4. Search Dealer",
+            "5. Compare Dealers",
+            "99. Back to Main",
+            "",
+            "📌 *Quick Commands:*",
+            "• Type dealer name for dashboard",
+            "• top dealers - Show top dealers",
+            "• revenue - Show dealer revenue",
+            "• pending - Show pending DNs",
+            "",
+            "Reply with a number or dealer name:"
+        ])
     
-    def unlock(self):
-        old_module = self.module_name
-        self.locked = False
-        self.module_type = None
-        self.module_name = None
-        self.file_name = None
-        self.menu_id = None
-        self.service_instance = None
-        self.entered_at = None
-        self.update_activity()
-        logger.info(f"🔓 Session UNLOCKED: {self.sender} from {old_module}")
+    @staticmethod
+    def render_dealer_dashboard(dealer_name: str, data: Dict[str, Any]) -> str:
+        """Render dealer dashboard."""
+        lines = [
+            f"📊 *Dealer Dashboard - {dealer_name}*",
+            "",
+            "📌 *Dealer Details*",
+            f"Code: {data.get('dealer_code', 'N/A')}",
+            f"Sales Office: {data.get('sales_office', 'N/A')}",
+            f"Sales Manager: {data.get('sales_manager', 'N/A')}",
+            "",
+            "💰 *Financials*",
+            f"Revenue: {_format_currency(data.get('total_revenue', 0))}",
+            f"Avg Revenue/DN: {_format_currency(data.get('avg_revenue_per_dn', 0))}",
+            "",
+            "📦 *Operations*",
+            f"DN: {_format_number(data.get('total_dn', 0))}",
+            f"Units: {_format_number(data.get('total_units', 0))}",
+            f"Pending DN: {_format_number(data.get('pending_dn', 0))}",
+            f"Pending PGI: {_format_number(data.get('pending_pgi', 0))}",
+            f"Pending POD: {_format_number(data.get('pending_pod', 0))}",
+            "",
+            "🚚 *Delivery*",
+            f"Delivery Success: {data.get('delivery_success_pct', 0):.1f}%",
+            f"POD Success: {data.get('pod_success_pct', 0):.1f}%",
+            f"Avg Delivery Days: {data.get('avg_delivery_days', 0):.1f}",
+            f"Avg POD Days: {data.get('avg_pod_days', 0):.1f}",
+            "",
+            "📈 *Performance*",
+            f"Business Score: {data.get('business_score', 0):.1f}/100",
+            f"Status: {data.get('overall_status', 'Unknown')}",
+            f"Grade: {data.get('performance_grade', 'N/A')}",
+            "",
+            "━━━━━━━━━━━━━━━━━━",
+            "",
+            "0. Main Menu",
+            "99. Back",
+            "",
+            "📌 *Try:* 'Revenue' or 'Pending in [dealer]'"
+        ]
+        return "\n".join(lines)
     
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "sender": self.sender,
-            "locked": self.locked,
-            "module_type": self.module_type.value if self.module_type else None,
-            "module_name": self.module_name,
-            "file_name": self.file_name,
-            "menu_id": self.menu_id,
-            "entered_at": self.entered_at.isoformat() if self.entered_at else None,
-            "last_activity": self.last_activity.isoformat(),
-            "history_count": len(self.history),
-            "is_expired": self.is_expired()
+    @staticmethod
+    def render_ranking(ranking: List[Dict[str, Any]], metric: str = "revenue", limit: int = 10) -> str:
+        """Render dealer rankings."""
+        lines = [
+            f"🏆 *Dealer Rankings by {metric.title()}*",
+            "",
+        ]
+        
+        for i, item in enumerate(ranking[:limit], 1):
+            dealer = item.get('dealer', 'Unknown')
+            value = item.get('value', 'N/A')
+            
+            if i == 1:
+                medal = "🥇"
+            elif i == 2:
+                medal = "🥈"
+            elif i == 3:
+                medal = "🥉"
+            else:
+                medal = f"{i}."
+            
+            lines.append(f"{medal} {dealer}: {value}")
+        
+        lines.extend([
+            "",
+            "━━━━━━━━━━━━━━━━━━",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+        return "\n".join(lines)
+    
+    @staticmethod
+    def render_comparison(dealer1: str, dealer2: str, metrics: Dict[str, Any]) -> str:
+        """Render dealer comparison."""
+        lines = [
+            f"🔄 *Comparison: {dealer1} vs {dealer2}*",
+            "",
+            "───────────────────",
+            "",
+        ]
+        
+        metrics1 = metrics.get(f"{dealer1}_metrics", {})
+        metrics2 = metrics.get(f"{dealer2}_metrics", {})
+        
+        all_keys = set(metrics1.keys()) | set(metrics2.keys())
+        
+        for key in sorted(all_keys):
+            v1 = metrics1.get(key, "N/A")
+            v2 = metrics2.get(key, "N/A")
+            
+            if isinstance(v1, str) and isinstance(v2, str):
+                try:
+                    num1 = float(re.sub(r'[^\d.]', '', v1))
+                    num2 = float(re.sub(r'[^\d.]', '', v2))
+                    if key.lower() in ['pending', 'pending dn', 'delivery days']:
+                        winner = "✅" if num1 < num2 else "❌" if num1 > num2 else "➖"
+                    else:
+                        winner = "✅" if num1 > num2 else "❌" if num1 < num2 else "➖"
+                    lines.append(f"{key}: {v1} vs {v2} {winner}")
+                except:
+                    lines.append(f"{key}: {v1} vs {v2}")
+            else:
+                lines.append(f"{key}: {v1} vs {v2}")
+        
+        lines.extend([
+            "",
+            "───────────────────",
+            "",
+            "💡 *Summary*",
+            metrics.get('explanation', 'Comparison complete.'),
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+        return "\n".join(lines)
+    
+    @staticmethod
+    def render_search_results(query: str, items: List[Dict[str, Any]]) -> str:
+        """Render search results."""
+        if not items:
+            return f"🔍 No dealers found for '{query}'\n\n0. Main Menu\n99. Back"
+        
+        lines = [f"🔍 *Search Results for '{query}'*", ""]
+        lines.append(f"Found: {len(items)} dealers")
+        lines.append("")
+        
+        for i, item in enumerate(items[:15], 1):
+            dealer = item.get('dealer', 'Unknown')
+            code = item.get('dealer_code', 'N/A')
+            revenue = _format_currency(item.get('revenue', 0))
+            lines.append(f"{i}. *{dealer}* (Code: {code})")
+            lines.append(f"   Revenue: {revenue}")
+            lines.append(f"   DNs: {_format_number(item.get('dn_count', 0))}")
+            lines.append("")
+        
+        if len(items) > 15:
+            lines.append(f"... and {len(items) - 15} more")
+        
+        lines.extend(["", "0. Main Menu", "99. Back"])
+        return "\n".join(lines)
+    
+    @staticmethod
+    def render_pending_summary(dealer_name: str, data: Dict[str, Any]) -> str:
+        """Render pending summary."""
+        return "\n".join([
+            f"⏳ *Pending Summary - {dealer_name}*",
+            "",
+            f"Pending DN: {_format_number(data.get('pending_dn', 0))}",
+            f"Pending Revenue: {_format_currency(data.get('pending_revenue', 0))}",
+            f"Pending Units: {_format_number(data.get('pending_units', 0))}",
+            f"PGI Pending: {_format_number(data.get('pgi_pending_dn', 0))}",
+            f"POD Pending: {_format_number(data.get('pod_pending_dn', 0))}",
+            "",
+            f"Avg Pending Days: {data.get('pending_average_days', 0):.1f}",
+            f"Critical (>7 days): {_format_number(data.get('critical_pending', 0))}",
+            f"Overdue (>14 days): {_format_number(data.get('overdue_pending', 0))}",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+
+# ============================================================
+# DEALER REPOSITORY
+# ============================================================
+
+class DealerRepository:
+    """Database repository for dealer operations."""
+    
+    def __init__(self, session: Session):
+        self.session = session
+        self._cache: Dict[str, Dict[str, Any]] = {}
+        self._cache_lock = threading.RLock()
+    
+    def get_dealer_dashboard(self, dealer_identifier: str) -> Optional[Dict[str, Any]]:
+        """Get dealer dashboard data."""
+        cache_key = dealer_identifier.lower()
+        
+        with self._cache_lock:
+            if cache_key in self._cache:
+                return self._cache[cache_key].copy()
+        
+        try:
+            # Search by customer_name (dealer name) or dealer_code
+            query = self.session.query(
+                DeliveryReport.customer_name.label('dealer'),
+                DeliveryReport.dealer_code,
+                DeliveryReport.sales_office,
+                DeliveryReport.sales_manager,
+                func.count(distinct(DeliveryReport.dn_no)).label('total_dn'),
+                func.sum(DeliveryReport.dn_qty).label('total_units'),
+                func.sum(DeliveryReport.dn_amount).label('total_revenue'),
+                func.count(distinct(case(
+                    (or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)),
+                     DeliveryReport.dn_no)
+                ))).label('pending_dn'),
+                func.count(distinct(case(
+                    (DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no)
+                ))).label('pgi_pending_dn'),
+                func.count(distinct(case(
+                    (and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.is_(None)),
+                     DeliveryReport.dn_no)
+                ))).label('pod_pending_dn'),
+                func.count(distinct(case(
+                    (DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)
+                ))).label('pod_completed'),
+                func.count(distinct(case(
+                    (DeliveryReport.good_issue_date.isnot(None), DeliveryReport.dn_no)
+                ))).label('pgi_completed'),
+                func.avg(case(
+                    (DeliveryReport.good_issue_date.isnot(None),
+                     DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
+                )).label('avg_delivery_days'),
+                func.avg(case(
+                    (and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.isnot(None)),
+                     DeliveryReport.pod_date - DeliveryReport.good_issue_date)
+                )).label('avg_pod_days'),
+                func.avg(DeliveryReport.dn_amount).label('avg_revenue_per_dn'),
+            ).filter(
+                or_(
+                    func.lower(DeliveryReport.customer_name) == dealer_identifier.lower(),
+                    func.lower(DeliveryReport.dealer_code) == dealer_identifier.lower(),
+                    func.lower(DeliveryReport.customer_name).ilike(f"%{dealer_identifier.lower()}%"),
+                    func.lower(DeliveryReport.dealer_code).ilike(f"%{dealer_identifier.lower()}%"),
+                )
+            ).group_by(
+                DeliveryReport.customer_name,
+                DeliveryReport.dealer_code,
+                DeliveryReport.sales_office,
+                DeliveryReport.sales_manager
+            ).first()
+            
+            if not query:
+                return None
+            
+            total_dn = int(query.total_dn or 0)
+            pending_dn = int(query.pending_dn or 0)
+            pgi_completed = int(query.pgi_completed or 0)
+            pod_completed = int(query.pod_completed or 0)
+            
+            data = {
+                'dealer': _text(query.dealer),
+                'dealer_code': _text(query.dealer_code),
+                'sales_office': _text(query.sales_office),
+                'sales_manager': _text(query.sales_manager),
+                'total_dn': total_dn,
+                'total_units': int(query.total_units or 0),
+                'total_revenue': float(query.total_revenue or 0.0),
+                'pending_dn': pending_dn,
+                'pgi_pending_dn': int(query.pgi_pending_dn or 0),
+                'pod_pending_dn': int(query.pod_pending_dn or 0),
+                'pgi_completed': pgi_completed,
+                'pod_completed': pod_completed,
+                'avg_delivery_days': float(query.avg_delivery_days or 0.0),
+                'avg_pod_days': float(query.avg_pod_days or 0.0),
+                'avg_revenue_per_dn': float(query.avg_revenue_per_dn or 0.0),
+                'delivery_success_pct': _percent(pgi_completed, total_dn),
+                'pod_success_pct': _percent(pod_completed, total_dn),
+                'pending_pct': _percent(pending_dn, total_dn),
+            }
+            
+            # Calculate business score
+            score = (
+                data['delivery_success_pct'] * 0.25 +
+                (100 - data['pending_pct']) * 0.25 +
+                min(100, data['avg_revenue_per_dn'] / 1000) * 0.25 +
+                min(100, data['total_dn'] / 10) * 0.25
+            )
+            data['business_score'] = round(min(100, max(0, score)), 1)
+            
+            # Status
+            if data['business_score'] >= 85:
+                data['overall_status'] = "Excellent"
+                data['performance_grade'] = "A"
+            elif data['business_score'] >= 70:
+                data['overall_status'] = "Good"
+                data['performance_grade'] = "B"
+            elif data['business_score'] >= 50:
+                data['overall_status'] = "Watch"
+                data['performance_grade'] = "C"
+            else:
+                data['overall_status'] = "Critical"
+                data['performance_grade'] = "D"
+            
+            with self._cache_lock:
+                self._cache[cache_key] = data.copy()
+            
+            return data
+            
+        except Exception as e:
+            logger.error(f"Failed to get dealer dashboard: {e}")
+            return None
+    
+    def get_dealer_ranking(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get dealer ranking by revenue."""
+        try:
+            results = self.session.query(
+                DeliveryReport.customer_name.label('dealer'),
+                func.sum(DeliveryReport.dn_amount).label('revenue'),
+                func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
+                func.sum(DeliveryReport.dn_qty).label('units'),
+            ).filter(
+                DeliveryReport.customer_name.isnot(None)
+            ).group_by(
+                DeliveryReport.customer_name
+            ).order_by(
+                func.sum(DeliveryReport.dn_amount).desc()
+            ).limit(limit).all()
+            
+            ranking = []
+            for row in results:
+                if row.dealer:
+                    ranking.append({
+                        'dealer': _text(row.dealer),
+                        'value': _format_currency(float(row.revenue or 0)),
+                        'dn_count': int(row.dn_count or 0),
+                        'units': int(row.units or 0),
+                    })
+            return ranking
+        except Exception as e:
+            logger.error(f"Failed to get dealer ranking: {e}")
+            return []
+    
+    def search_dealers(self, query: str, limit: int = 30) -> List[Dict[str, Any]]:
+        """Search dealers."""
+        try:
+            search_pattern = f"%{query}%"
+            results = self.session.query(
+                DeliveryReport.customer_name.label('dealer'),
+                DeliveryReport.dealer_code,
+                DeliveryReport.sales_office,
+                func.sum(DeliveryReport.dn_amount).label('revenue'),
+                func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
+                func.sum(DeliveryReport.dn_qty).label('units'),
+            ).filter(
+                or_(
+                    DeliveryReport.customer_name.ilike(search_pattern),
+                    DeliveryReport.dealer_code.ilike(search_pattern),
+                    func.lower(DeliveryReport.customer_name).ilike(f"%{query.lower()}%"),
+                    func.lower(DeliveryReport.dealer_code).ilike(f"%{query.lower()}%"),
+                )
+            ).group_by(
+                DeliveryReport.customer_name,
+                DeliveryReport.dealer_code,
+                DeliveryReport.sales_office
+            ).order_by(
+                func.sum(DeliveryReport.dn_amount).desc()
+            ).limit(limit).all()
+            
+            items = []
+            for row in results:
+                if row.dealer:
+                    items.append({
+                        'dealer': _text(row.dealer),
+                        'dealer_code': _text(row.dealer_code),
+                        'sales_office': _text(row.sales_office),
+                        'revenue': float(row.revenue or 0),
+                        'dn_count': int(row.dn_count or 0),
+                        'units': int(row.units or 0),
+                    })
+            return items
+        except Exception as e:
+            logger.error(f"Failed to search dealers: {e}")
+            return []
+    
+    def compare_dealers(self, dealer1: str, dealer2: str) -> Dict[str, Any]:
+        """Compare two dealers."""
+        dash1 = self.get_dealer_dashboard(dealer1)
+        dash2 = self.get_dealer_dashboard(dealer2)
+        
+        if not dash1 or not dash2:
+            return {}
+        
+        metrics = {}
+        
+        metrics[f"{dealer1}_metrics"] = {
+            "Revenue": _format_currency(dash1.get('total_revenue', 0)),
+            "Units": _format_number(dash1.get('total_units', 0)),
+            "DN": _format_number(dash1.get('total_dn', 0)),
+            "Pending": _format_number(dash1.get('pending_dn', 0)),
+            "Delivery": f"{dash1.get('delivery_success_pct', 0):.1f}%",
+            "POD": f"{dash1.get('pod_success_pct', 0):.1f}%",
+            "Score": f"{dash1.get('business_score', 0):.1f}/100",
         }
+        
+        metrics[f"{dealer2}_metrics"] = {
+            "Revenue": _format_currency(dash2.get('total_revenue', 0)),
+            "Units": _format_number(dash2.get('total_units', 0)),
+            "DN": _format_number(dash2.get('total_dn', 0)),
+            "Pending": _format_number(dash2.get('pending_dn', 0)),
+            "Delivery": f"{dash2.get('delivery_success_pct', 0):.1f}%",
+            "POD": f"{dash2.get('pod_success_pct', 0):.1f}%",
+            "Score": f"{dash2.get('business_score', 0):.1f}/100",
+        }
+        
+        rev1 = dash1.get('total_revenue', 0)
+        rev2 = dash2.get('total_revenue', 0)
+        
+        if rev1 > rev2:
+            explanation = f"{dealer1} has higher revenue than {dealer2}"
+        elif rev2 > rev1:
+            explanation = f"{dealer2} has higher revenue than {dealer1}"
+        else:
+            explanation = f"{dealer1} and {dealer2} have similar revenue"
+        
+        metrics["explanation"] = explanation
+        
+        return metrics
 
-@dataclass
-class MenuItem:
-    """Menu item configuration - EXACTLY 7"""
-    id: int
-    name: str
-    aliases: List[str]
-    module_type: ModuleType
-    file: str
-    loader: Callable
+# ============================================================
+# MAIN DEALER ANALYTICS SERVICE
+# ============================================================
+
+class DealerAnalyticsService:
+    """
+    Dealer Analytics Domain Service.
     
-    def matches(self, text: str) -> bool:
-        text_lower = text.strip().lower()
-        if text_lower == str(self.id):
-            return True
-        if text_lower == self.name.lower():
-            return True
-        for alias in self.aliases:
-            if text_lower == alias.lower():
-                return True
-            if alias.lower() in text_lower:
-                return True
-        return False
-
-# ============================================================
-# SERVICE REGISTRY - ALL 7 SERVICES WITH CORRECT NAMES
-# ============================================================
-
-class ServiceRegistry:
-    _instance: Optional["ServiceRegistry"] = None
+    Single entry point for all dealer-related business questions.
+    PostgreSQL is the ONLY source of truth.
+    """
+    
+    _instance: Optional["DealerAnalyticsService"] = None
     _lock = threading.Lock()
     
     def __new__(cls):
@@ -162,475 +642,429 @@ class ServiceRegistry:
             return
         
         self._initialized = True
-        self._menu_items: List[MenuItem] = []
-        self._module_map: Dict[ModuleType, MenuItem] = {}
-        self._loader_cache: Dict[ModuleType, Any] = {}
-        self._cache_lock = threading.RLock()
+        self._service_name = "dealer_analytics"
+        self._version = "2.0"
+        self._renderer = DealerRenderer()
         
-        self._register_all_modules()
+        # Context memory per session
+        self._contexts: Dict[str, DealerContext] = {}
+        self._context_lock = threading.RLock()
         
-        logger.info(f"📦 Service Registry initialized with {len(self._menu_items)} modules")
+        logger.info("=" * 60)
+        logger.info(f"🚀 Dealer Analytics Service v{self._version} initialized")
+        logger.info(f"   🗄️  Database: {'Connected' if DB_AVAILABLE else 'Fallback'}")
+        logger.info("=" * 60)
     
-    def _register_all_modules(self):
-        """Register ALL 7 modules with correct import paths."""
+    def _get_context(self, session_id: str) -> DealerContext:
+        """Get or create context for session."""
+        with self._context_lock:
+            if session_id not in self._contexts:
+                self._contexts[session_id] = DealerContext(session_id=session_id)
+            return self._contexts[session_id]
+    
+    def _get_session(self) -> Optional[Session]:
+        """Get database session."""
+        if not DB_AVAILABLE:
+            return None
+        try:
+            return SessionLocal()
+        except Exception as e:
+            logger.error(f"Database session error: {e}")
+            return None
+    
+    def get_main_menu(self) -> str:
+        """Get the main dealer menu."""
+        return self._renderer.render_main_menu()
+    
+    def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
+        """
+        Main entry point for dealer processing.
         
-        # Define all 7 modules
-        module_defs = [
-            {
-                "id": 1,
-                "name": "National Dashboard",
-                "aliases": ["national", "national kpi", "kpi", "pakistan", "overall"],
-                "module_type": ModuleType.NATIONAL,
-                "file": "national_kpi_service.py",
-                "import_path": "app.services.national_kpi_service",
-                "function": "get_national_kpi_service"
-            },
-            {
-                "id": 2,
-                "name": "DN Intelligence Center",
-                "aliases": ["dn", "dn dashboard", "dn intelligence", "delivery", "delivery note", "pending dn"],
-                "module_type": ModuleType.DN,
-                "file": "dn_analysis.py",
-                "import_path": "app.services.dn_analysis",
-                "function": "get_dn_analysis_service"  # ← CORRECT FUNCTION NAME
-            },
-            {
-                "id": 3,
-                "name": "Dealer Dashboard",
-                "aliases": ["dealer", "dealer dashboard", "dealer analytics", "distributor"],
-                "module_type": ModuleType.DEALER,
-                "file": "dealer_analytics_service.py",
-                "import_path": "app.services.dealer_analytics_service",
-                "function": "get_dealer_service"
-            },
-            {
-                "id": 4,
-                "name": "Warehouse Dashboard",
-                "aliases": ["warehouse", "warehouse dashboard", "warehouse analytics", "warehouse report"],
-                "module_type": ModuleType.WAREHOUSE,
-                "file": "warehouse_service.py",
-                "import_path": "app.services.warehouse_service",
-                "function": "get_warehouse_analytics_service"
-            },
-            {
-                "id": 5,
-                "name": "Product Dashboard",
-                "aliases": ["product", "product dashboard", "material", "sku", "model"],
-                "module_type": ModuleType.PRODUCT,
-                "file": "product_service.py",
-                "import_path": "app.services.product_service",
-                "function": "get_product_analytics_service"
-            },
-            {
-                "id": 6,
-                "name": "City Dashboard",
-                "aliases": ["city", "city dashboard", "location", "region"],
-                "module_type": ModuleType.CITY,
-                "file": "city_service.py",
-                "import_path": "app.services.city_service",
-                "function": "get_city_analytics_service"
-            },
-            {
-                "id": 7,
-                "name": "AI Assistant",
-                "aliases": ["ai", "assistant", "general ai", "chat", "help"],
-                "module_type": ModuleType.AI,
-                "file": "groq_service.py",
-                "import_path": "app.services.groq_service",
-                "function": "get_groq_service"
-            },
+        This is the ONLY external interface.
+        All processing stays inside this module.
+        """
+        if not message or not message.strip():
+            return self.get_main_menu()
+        
+        message_clean = message.strip()
+        logger.info(f"📊 Dealer Query: '{message_clean}' from {sender}")
+        
+        # Get context for this session
+        context = self._get_context(sender)
+        context.touch()
+        
+        # ============================================================
+        # STEP 1: Check for "99" - Exit
+        # ============================================================
+        if message_clean == "99":
+            self._destroy_context(sender)
+            logger.info(f"🚪 Dealer session exited for {sender}")
+            return "99"
+        
+        # ============================================================
+        # STEP 2: Check for menu commands
+        # ============================================================
+        if message_clean.lower() in ["menu", "help", "options", "0"]:
+            return self.get_main_menu()
+        
+        # ============================================================
+        # STEP 3: Check for menu options (1-5)
+        # ============================================================
+        if message_clean in ["1", "2", "3", "4", "5"]:
+            return self._handle_menu_option(sender, message_clean)
+        
+        # ============================================================
+        # STEP 4: Check for dealer name
+        # ============================================================
+        dealer_name = self._resolve_dealer_name(message_clean)
+        if dealer_name:
+            context.current_dealer = dealer_name
+            return self._get_dealer_dashboard(sender, dealer_name)
+        
+        # ============================================================
+        # STEP 5: Check for "top dealers" command
+        # ============================================================
+        if "top" in message_clean.lower() and "dealer" in message_clean.lower():
+            return self._get_dealer_ranking(sender)
+        
+        # ============================================================
+        # STEP 6: Check for "search" command
+        # ============================================================
+        if "search" in message_clean.lower():
+            query = message_clean.replace("search", "").strip()
+            if query:
+                return self._search_dealers(sender, query)
+            return "🔍 Please specify what to search.\n\n0. Main Menu\n99. Back"
+        
+        # ============================================================
+        # STEP 7: Check if it's a follow-up question using current dealer
+        # ============================================================
+        if context.current_dealer:
+            query_lower = message_clean.lower()
+            
+            if "revenue" in query_lower or "amount" in query_lower:
+                return self._get_dealer_revenue(sender, context.current_dealer)
+            elif "pending" in query_lower or "backlog" in query_lower:
+                return self._get_dealer_pending(sender, context.current_dealer)
+            elif "delivery" in query_lower or "transit" in query_lower:
+                return self._get_dealer_delivery(sender, context.current_dealer)
+            elif "status" in query_lower:
+                return self._get_dealer_status(sender, context.current_dealer)
+            elif "units" in query_lower or "quantity" in query_lower:
+                return self._get_dealer_units(sender, context.current_dealer)
+        
+        # ============================================================
+        # STEP 8: Unknown - Show help
+        # ============================================================
+        return self._show_help()
+    
+    def _destroy_context(self, session_id: str) -> None:
+        """Destroy context for session."""
+        with self._context_lock:
+            if session_id in self._contexts:
+                del self._contexts[session_id]
+    
+    def _show_help(self) -> str:
+        """Show help message."""
+        return "\n".join([
+            "❌ I didn't understand that.",
+            "",
+            "💡 *Dealer Commands:*",
+            "• Type dealer name for dashboard",
+            "• top dealers - Show top dealers",
+            "• search [keyword] - Search dealers",
+            "• revenue - Revenue of current dealer",
+            "• pending - Pending of current dealer",
+            "• delivery - Delivery of current dealer",
+            "• status - Status of current dealer",
+            "• units - Units of current dealer",
+            "",
+            "📌 *Current Dealer:*",
+            "• Use 'menu' to see all options",
+            "• Type '99' to return to main menu",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+    
+    def _handle_menu_option(self, sender: str, option: str) -> str:
+        """Handle menu options."""
+        if option == "1":
+            return "🔍 *Enter dealer name:*\n\nType a dealer name.\n\n0. Main Menu\n99. Back"
+        elif option == "2":
+            return self._get_dealer_ranking(sender)
+        elif option == "3":
+            return self._get_dealer_ranking(sender)
+        elif option == "4":
+            return "🔍 *Search Dealers:*\n\nType 'search [keyword]' to find dealers.\n\nExamples:\n• search Lahore\n• search LALA KHAN\n\n0. Main Menu\n99. Back"
+        elif option == "5":
+            return "🔍 *Compare Dealers:*\n\nType 'compare [dealer1] and [dealer2]'\n\n0. Main Menu\n99. Back"
+        return self.get_main_menu()
+    
+    def _resolve_dealer_name(self, input_text: str) -> Optional[str]:
+        """Resolve dealer name from input."""
+        input_lower = input_text.lower().strip()
+        
+        # Common dealer names (you can expand this list)
+        dealers = [
+            "lala khan", "lala", "khan", "haier", "pakistan", 
+            "lahore", "karachi", "rawalpindi", "multan"
         ]
         
-        for mod in module_defs:
-            try:
-                logger.info(f"🔍 Registering: {mod['name']}...")
-                
-                # Try to import the module
-                module = __import__(mod['import_path'], fromlist=[mod['function']])
-                loader_func = getattr(module, mod['function'], None)
-                
-                if loader_func:
-                    menu_item = MenuItem(
-                        id=mod['id'],
-                        name=mod['name'],
-                        aliases=mod['aliases'],
-                        module_type=mod['module_type'],
-                        file=mod['file'],
-                        loader=loader_func
-                    )
-                    self._menu_items.append(menu_item)
-                    self._module_map[mod['module_type']] = menu_item
-                    logger.info(f"✅ Registered: {mod['id']}. {mod['name']} → {mod['file']}")
-                else:
-                    logger.warning(f"⚠️ Skipping: {mod['name']} - function {mod['function']} not found")
-                    
-            except ImportError as e:
-                logger.warning(f"⚠️ Skipping: {mod['name']} - module not found: {e}")
-            except Exception as e:
-                logger.warning(f"⚠️ Skipping: {mod['name']} - error: {e}")
-    
-    def get_menu_items(self) -> List[MenuItem]:
-        return self._menu_items
-    
-    def detect_menu_item(self, text: str) -> Optional[MenuItem]:
-        text_clean = text.strip()
-        for item in self._menu_items:
-            if item.matches(text_clean):
-                return item
+        # Direct match
+        for dealer in dealers:
+            if dealer == input_lower:
+                return dealer.title()
+            if dealer in input_lower:
+                return dealer.title()
+        
+        # Try database lookup for partial matches
+        try:
+            with self._get_session() as session:
+                repository = DealerRepository(session)
+                results = repository.search_dealers(input_text, limit=1)
+                if results:
+                    return results[0].get('dealer')
+        except Exception:
+            pass
+        
         return None
     
-    def get_service(self, module_type: ModuleType) -> Optional[Any]:
-        item = self._module_map.get(module_type)
-        if not item:
-            return None
-        
-        if module_type in self._loader_cache:
-            return self._loader_cache[module_type]
+    def _get_dealer_dashboard(self, sender: str, dealer_name: str) -> str:
+        """Get dealer dashboard."""
+        session = self._get_session()
+        if not session:
+            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
         
         try:
-            service = item.loader()
-            self._loader_cache[module_type] = service
-            logger.info(f"✅ Service loaded: {item.name}")
-            return service
+            repository = DealerRepository(session)
+            data = repository.get_dealer_dashboard(dealer_name)
+            session.close()
+            
+            if not data:
+                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
+            
+            return self._renderer.render_dealer_dashboard(dealer_name, data)
+            
         except Exception as e:
-            logger.error(f"❌ Failed to load {item.name}: {e}")
-            self._loader_cache[module_type] = None
-            return None
+            logger.error(f"Dealer dashboard error: {e}")
+            if session:
+                session.close()
+            return f"⚠️ Error fetching dealer {dealer_name}\n\n0. Main Menu\n99. Back"
     
-    def get_service_by_text(self, text: str) -> Optional[tuple[MenuItem, Any]]:
-        try:
-            item = self.detect_menu_item(text)
-            if not item:
-                return None
-            
-            service = self.get_service(item.module_type)
-            if not service:
-                return None
-            
-            return (item, service)
-        except Exception as e:
-            logger.error(f"❌ get_service_by_text error: {e}")
-            return None
-
-# ============================================================
-# MAIN GATEWAY SERVICE
-# ============================================================
-
-class AIProviderService:
-    _instance: Optional["AIProviderService"] = None
-    _lock = threading.Lock()
-    _initialized = False
-    
-    def __new__(cls):
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-        return cls._instance
-    
-    def __init__(self):
-        if AIProviderService._initialized:
-            return
-        
-        self._initialized = True
-        
-        self._sessions: Dict[str, Session] = {}
-        self._session_lock = threading.RLock()
-        self._registry = ServiceRegistry()
-        
-        logger.info("=" * 70)
-        logger.info("🚀 ENTERPRISE GATEWAY v64.0 initialized")
-        logger.info(f"   📦 Registered {len(self._registry.get_menu_items())} services")
-        logger.info("   🔒 Session Locking: ✅")
-        logger.info("   🔀 Routes to 7 modules")
-        logger.info("   🌐 Async compatible")
-        logger.info("=" * 70)
-        
-        for item in self._registry.get_menu_items():
-            logger.info(f"   {item.id}. {item.name} → {item.file}")
-    
-    # ============================================================
-    # SESSION MANAGEMENT
-    # ============================================================
-    
-    def _get_session(self, sender: str) -> Session:
-        with self._session_lock:
-            if sender not in self._sessions:
-                self._sessions[sender] = Session(sender=sender)
-                logger.info(f"🆕 New session created for {sender}")
-                return self._sessions[sender]
-            
-            session = self._sessions[sender]
-            if session.is_expired():
-                logger.info(f"⏰ Session expired for {sender}, creating new")
-                del self._sessions[sender]
-                session = Session(sender=sender)
-                self._sessions[sender] = session
-            
-            return session
-    
-    def _lock_session(self, sender: str, menu_item: MenuItem, service_instance: Any) -> bool:
-        with self._session_lock:
-            session = self._get_session(sender)
-            session.lock(
-                module_type=menu_item.module_type,
-                module_name=menu_item.name,
-                file_name=menu_item.file,
-                menu_id=menu_item.id,
-                service_instance=service_instance
-            )
-            return True
-    
-    def _unlock_session(self, sender: str) -> bool:
-        with self._session_lock:
-            if sender not in self._sessions:
-                return False
-            session = self._sessions[sender]
-            session.unlock()
-            return True
-    
-    def _is_locked(self, sender: str) -> bool:
-        with self._session_lock:
-            if sender not in self._sessions:
-                return False
-            return self._sessions[sender].locked
-    
-    # ============================================================
-    # ROUTING
-    # ============================================================
-    
-    def _detect_dashboard(self, message: str) -> Optional[tuple[MenuItem, Any]]:
-        try:
-            return self._registry.get_service_by_text(message)
-        except Exception as e:
-            logger.error(f"❌ Dashboard detection error: {e}")
-            return None
-    
-    def _forward_to_module(self, session: Session, message: str, sender: str) -> str:
-        if not session.service_instance:
-            logger.error(f"❌ No service instance for {session.module_name}")
-            self._unlock_session(sender)
-            return self._get_main_dashboard()
-        
-        service = session.service_instance
-        
-        if not hasattr(service, "process_whatsapp_query"):
-            logger.error(f"❌ Service {session.module_name} missing process_whatsapp_query")
-            self._unlock_session(sender)
-            return "⚠️ Service is misconfigured.\n\n" + self._get_main_dashboard()
+    def _get_dealer_ranking(self, sender: str) -> str:
+        """Get dealer ranking."""
+        session = self._get_session()
+        if not session:
+            return "⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
         
         try:
-            logger.info(f"📤 Forwarding to {session.module_name}: '{message}'")
-            result = service.process_whatsapp_query(message, sender)
+            repository = DealerRepository(session)
+            ranking = repository.get_dealer_ranking(10)
+            session.close()
             
-            # Check for exit signal
-            if result == EXIT_SIGNAL or result == "99":
-                logger.info(f"🚪 Module {session.module_name} requested exit")
-                self._unlock_session(sender)
-                return self._get_main_dashboard()
+            if not ranking:
+                return "🏆 *Dealer Rankings*\n\nNo dealers found.\n\n0. Main Menu\n99. Back"
             
-            session.update_activity()
-            session.add_history(message, result)
-            return result
+            return self._renderer.render_ranking(ranking, "Revenue", 10)
             
         except Exception as e:
-            logger.error(f"❌ Module {session.module_name} error: {e}")
-            logger.error(traceback.format_exc())
-            self._unlock_session(sender)
-            return f"⚠️ Service error: {str(e)[:200]}\n\n" + self._get_main_dashboard()
+            logger.error(f"Dealer ranking error: {e}")
+            if session:
+                session.close()
+            return "⚠️ Error fetching dealer rankings.\n\n0. Main Menu\n99. Back"
     
-    # ============================================================
-    # MAIN PROCESSING - SYNC ENTRY POINT
-    # ============================================================
-    
-    def process_whatsapp_query_sync(self, message: str, sender: str = "default") -> str:
-        """SYNC entry point - for internal use."""
+    def _search_dealers(self, sender: str, query: str) -> str:
+        """Search dealers."""
+        session = self._get_session()
+        if not session:
+            return "⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
+        
         try:
-            logger.info(f"📨 Gateway (sync) received: '{message}' from {sender}")
+            repository = DealerRepository(session)
+            items = repository.search_dealers(query, 30)
+            session.close()
             
-            if not message or not message.strip():
-                return self._get_main_dashboard()
-            
-            message_clean = message.strip()
-            session = self._get_session(sender)
-            
-            # STEP 1: CHECK IF SESSION IS LOCKED
-            if session.locked:
-                logger.info(f"🔒 Session LOCKED for {sender} → {session.module_name}")
-                
-                if message_clean == "99":
-                    logger.info(f"🚪 Manual exit (99) requested by {sender}")
-                    self._unlock_session(sender)
-                    return self._get_main_dashboard()
-                
-                return self._forward_to_module(session, message_clean, sender)
-            
-            # STEP 2: SESSION IDLE - CHECK COMMANDS
-            logger.info(f"🔄 Session IDLE for {sender}")
-            
-            if message_clean.lower() in ["menu", "help", "options", "dashboard", "main", "0"]:
-                return self._get_main_dashboard()
-            
-            # STEP 3: DETECT DASHBOARD
-            detected = self._detect_dashboard(message_clean)
-            
-            if detected:
-                menu_item, service = detected
-                logger.info(f"🎯 Detected: {menu_item.name} (ID: {menu_item.id})")
-                
-                self._lock_session(sender, menu_item, service)
-                
-                try:
-                    result = service.process_whatsapp_query(message_clean, sender)
-                    
-                    if result == EXIT_SIGNAL or result == "99":
-                        logger.info(f"🚪 Immediate exit from {menu_item.name}")
-                        self._unlock_session(sender)
-                        return self._get_main_dashboard()
-                    
-                    session = self._get_session(sender)
-                    session.update_activity()
-                    session.add_history(message_clean, result)
-                    return result
-                    
-                except Exception as e:
-                    logger.error(f"❌ Module {menu_item.name} error: {e}")
-                    logger.error(traceback.format_exc())
-                    self._unlock_session(sender)
-                    return f"⚠️ {menu_item.name} error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
-            
-            # STEP 4: NO DASHBOARD DETECTED
-            return self._get_out_of_box_response()
+            return self._renderer.render_search_results(query, items)
             
         except Exception as e:
-            logger.error(f"❌ Gateway error: {e}")
-            logger.error(traceback.format_exc())
-            return f"⚠️ System error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
+            logger.error(f"Dealer search error: {e}")
+            if session:
+                session.close()
+            return f"⚠️ Error searching for '{query}'\n\n0. Main Menu\n99. Back"
     
-    # ============================================================
-    # ASYNC ENTRY POINT - FOR WEBHOOK
-    # ============================================================
-    
-    async def process_whatsapp_query_async(self, message: str, sender: str = "default") -> str:
-        """
-        ASYNC entry point - Called by webhook.
-        """
+    def _get_dealer_revenue(self, sender: str, dealer_name: str) -> str:
+        """Get dealer revenue."""
+        session = self._get_session()
+        if not session:
+            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
+        
         try:
-            logger.info(f"📨 Gateway (async) received: '{message}' from {sender}")
+            repository = DealerRepository(session)
+            data = repository.get_dealer_dashboard(dealer_name)
+            session.close()
             
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                self.process_whatsapp_query_sync,
-                message,
-                sender
-            )
+            if not data:
+                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
             
-            logger.info(f"📤 Gateway (async) returning: {result[:100] if result else 'Empty'}...")
-            return result
+            revenue = data.get('total_revenue', 0)
+            return f"💰 *{dealer_name} Revenue*\n\n{_format_currency(revenue)}\n\n0. Main Menu\n99. Back"
             
         except Exception as e:
-            logger.error(f"❌ Gateway (async) error: {e}")
-            logger.error(traceback.format_exc())
-            return "⚠️ Service is temporarily unavailable. Please try again later."
+            logger.error(f"Dealer revenue error: {e}")
+            if session:
+                session.close()
+            return f"⚠️ Error fetching revenue for {dealer_name}\n\n0. Main Menu\n99. Back"
     
-    # ============================================================
-    # RESPONSES
-    # ============================================================
-    
-    def _get_main_dashboard(self) -> str:
-        lines = ["🏠 *HPK Logistics AI*", ""]
+    def _get_dealer_pending(self, sender: str, dealer_name: str) -> str:
+        """Get dealer pending summary."""
+        session = self._get_session()
+        if not session:
+            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
         
-        # Show ALL registered modules in order
-        for item in self._registry.get_menu_items():
-            lines.append(f"{item.id}️⃣ {item.name}")
-        
-        lines.extend([
-            "",
-            "📌 *Commands:*",
-            "• Type a number (1-7) to enter a dashboard",
-            "• Type dashboard name (e.g., 'Warehouse Dashboard')",
-            "• Type '99' to exit current dashboard",
-            "• Type 'menu' or 'help' for this menu",
-            "",
-            "Reply with a number or dashboard name:"
-        ])
-        
-        return "\n".join(lines)
+        try:
+            repository = DealerRepository(session)
+            data = repository.get_dealer_dashboard(dealer_name)
+            session.close()
+            
+            if not data:
+                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
+            
+            pending_data = {
+                'pending_dn': data.get('pending_dn', 0),
+                'pending_revenue': 0,  # Would need additional query
+                'pending_units': 0,    # Would need additional query
+                'pgi_pending_dn': data.get('pgi_pending_dn', 0),
+                'pod_pending_dn': data.get('pod_pending_dn', 0),
+                'pending_average_days': 0,
+                'critical_pending': 0,
+                'overdue_pending': 0,
+            }
+            
+            return self._renderer.render_pending_summary(dealer_name, pending_data)
+            
+        except Exception as e:
+            logger.error(f"Dealer pending error: {e}")
+            if session:
+                session.close()
+            return f"⚠️ Error fetching pending for {dealer_name}\n\n0. Main Menu\n99. Back"
     
-    def _get_out_of_box_response(self) -> str:
-        return "\n".join([
-            "❌ *Please select a valid option from the menu.*",
-            "",
-            "You can enter a dashboard by:",
-            "• Number (1-7)",
-            "• Dashboard name (e.g., 'Warehouse Dashboard')",
-            "",
-            self._get_main_dashboard()
-        ])
+    def _get_dealer_delivery(self, sender: str, dealer_name: str) -> str:
+        """Get dealer delivery summary."""
+        session = self._get_session()
+        if not session:
+            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
+        
+        try:
+            repository = DealerRepository(session)
+            data = repository.get_dealer_dashboard(dealer_name)
+            session.close()
+            
+            if not data:
+                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
+            
+            return "\n".join([
+                f"🚚 *Delivery Summary - {dealer_name}*",
+                "",
+                f"Delivery Success: {data.get('delivery_success_pct', 0):.1f}%",
+                f"POD Success: {data.get('pod_success_pct', 0):.1f}%",
+                f"Avg Delivery Days: {data.get('avg_delivery_days', 0):.1f}",
+                f"Avg POD Days: {data.get('avg_pod_days', 0):.1f}",
+                f"Pending DN: {_format_number(data.get('pending_dn', 0))}",
+                "",
+                "0. Main Menu",
+                "99. Back"
+            ])
+            
+        except Exception as e:
+            logger.error(f"Dealer delivery error: {e}")
+            if session:
+                session.close()
+            return f"⚠️ Error fetching delivery for {dealer_name}\n\n0. Main Menu\n99. Back"
     
-    # ============================================================
-    # HEALTH CHECK
-    # ============================================================
+    def _get_dealer_status(self, sender: str, dealer_name: str) -> str:
+        """Get dealer status."""
+        session = self._get_session()
+        if not session:
+            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
+        
+        try:
+            repository = DealerRepository(session)
+            data = repository.get_dealer_dashboard(dealer_name)
+            session.close()
+            
+            if not data:
+                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
+            
+            return "\n".join([
+                f"📊 *Status - {dealer_name}*",
+                "",
+                f"Score: {data.get('business_score', 0):.1f}/100",
+                f"Status: {data.get('overall_status', 'Unknown')}",
+                f"Grade: {data.get('performance_grade', 'N/A')}",
+                f"Delivery Success: {data.get('delivery_success_pct', 0):.1f}%",
+                f"Pending DN: {_format_number(data.get('pending_dn', 0))}",
+                "",
+                "0. Main Menu",
+                "99. Back"
+            ])
+            
+        except Exception as e:
+            logger.error(f"Dealer status error: {e}")
+            if session:
+                session.close()
+            return f"⚠️ Error fetching status for {dealer_name}\n\n0. Main Menu\n99. Back"
+    
+    def _get_dealer_units(self, sender: str, dealer_name: str) -> str:
+        """Get dealer units."""
+        session = self._get_session()
+        if not session:
+            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
+        
+        try:
+            repository = DealerRepository(session)
+            data = repository.get_dealer_dashboard(dealer_name)
+            session.close()
+            
+            if not data:
+                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
+            
+            units = data.get('total_units', 0)
+            return f"📦 *{dealer_name} Units*\n\n{_format_number(units)}\n\n0. Main Menu\n99. Back"
+            
+        except Exception as e:
+            logger.error(f"Dealer units error: {e}")
+            if session:
+                session.close()
+            return f"⚠️ Error fetching units for {dealer_name}\n\n0. Main Menu\n99. Back"
     
     def health_check(self) -> Dict[str, Any]:
-        with self._session_lock:
-            active_sessions = len(self._sessions)
-            locked_sessions = sum(1 for s in self._sessions.values() if s.locked)
-        
+        """Health check for service."""
         return {
-            "service": "ai_provider_service",
-            "version": "64.0",
-            "type": "enterprise_gateway",
+            "service": self._service_name,
+            "version": self._version,
             "status": "healthy",
-            "active_sessions": active_sessions,
-            "locked_sessions": locked_sessions,
-            "available_modules": [
-                {
-                    "id": item.id,
-                    "name": item.name,
-                    "file": item.file,
-                    "aliases": item.aliases
-                }
-                for item in self._registry.get_menu_items()
-            ]
+            "database": "connected" if DB_AVAILABLE else "disconnected",
+            "exit_command": "99",
+            "timestamp": datetime.now().isoformat()
         }
 
 
 # ============================================================
-# SINGLETON
+# SERVICE SINGLETON
 # ============================================================
 
-_ai_service: Optional[AIProviderService] = None
+_service: Optional[DealerAnalyticsService] = None
 _service_lock = threading.Lock()
 
-def get_ai_provider_service() -> AIProviderService:
-    global _ai_service
-    if _ai_service is None:
+def get_dealer_service() -> DealerAnalyticsService:
+    """Get singleton instance."""
+    global _service
+    if _service is None:
         with _service_lock:
-            if _ai_service is None:
-                _ai_service = AIProviderService()
-    return _ai_service
-
-
-# ============================================================
-# ENTRY POINT - FOR WEBHOOK
-# ============================================================
-
-async def process_whatsapp_query(message: str, sender: str = "default") -> str:
-    """
-    MAIN ENTRY POINT - Called by webhook.
-    
-    This is the function that the webhook calls:
-    response = await process_whatsapp_query(text, sender)
-    """
-    try:
-        logger.info(f"📨 process_whatsapp_query called: '{message}' from {sender}")
-        service = get_ai_provider_service()
-        return await service.process_whatsapp_query_async(message, sender)
-    except Exception as e:
-        logger.exception(f"Unexpected error in process_whatsapp_query: {e}")
-        return "⚠️ Service is temporarily unavailable. Please try again later."
+            if _service is None:
+                _service = DealerAnalyticsService()
+    return _service
 
 
 # ============================================================
@@ -638,12 +1072,9 @@ async def process_whatsapp_query(message: str, sender: str = "default") -> str:
 # ============================================================
 
 __all__ = [
-    "AIProviderService",
-    "ModuleType",
-    "Session",
-    "MenuItem",
-    "ServiceRegistry",
-    "get_ai_provider_service",
-    "process_whatsapp_query",
-    "EXIT_SIGNAL",
+    "DealerAnalyticsService",
+    "DealerContext",
+    "DealerIntentType",
+    "DealerMenuState",
+    "get_dealer_service",
 ]
