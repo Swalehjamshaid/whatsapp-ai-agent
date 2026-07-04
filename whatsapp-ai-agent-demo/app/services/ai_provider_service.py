@@ -1,15 +1,54 @@
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 69.0 - FIXED DN FUNCTION NAME
+# VERSION: 70.0 - DIRECT ROUTING TO ALL 7 SERVICES
 # ============================================================
 
 """
 File: app/services/ai_provider_service.py
-Version: 69.0 - FIXED DN FUNCTION NAME
+Version: 70.0 - DIRECT ROUTING TO ALL 7 SERVICES
 
 ================================================================================
-FIX: Changed DN function from get_dn_analysis_service to get_dn_analytics_service
-     (matching dn_analysis.py v34.0)
+PURPOSE
+================================================================================
+
+This is the SOLE GATEWAY for all WhatsApp interactions.
+
+Its ONLY responsibilities are:
+1. Detect if session is locked to a module
+2. If locked → Forward EVERY message to that module (NO ROUTING)
+3. If unlocked → Show Main Dashboard or Route to selected module
+4. ONLY "__EXIT__" or "99" unlocks the session and returns to Main Dashboard
+
+================================================================================
+ROUTING TABLE - DIRECT ROUTING TO 7 SERVICES
+================================================================================
+
+Menu | Dashboard Name          | Route To                                    | Function
+-----|-------------------------|---------------------------------------------|-------------------------------
+1    | National Dashboard      | national_kpi_service.py                     | get_national_kpi_service()
+2    | DN Intelligence Center  | dn_analysis.py                              | get_dn_analytics_service()
+3    | Dealer Dashboard        | dealer_analytics_service.py                 | get_dealer_service()
+4    | Warehouse Dashboard     | warehouse_service.py                        | get_warehouse_analytics_service()
+5    | Product Dashboard       | product_service.py                          | get_product_analytics_service()
+6    | City Dashboard          | city_service.py                             | get_city_analytics_service()
+7    | AI Assistant            | groq_service.py                             | get_groq_service()
+
+================================================================================
+FUNCTIONS MATCHING YOUR FILES
+================================================================================
+
+| File                          | Function                    | Status  |
+|-------------------------------|-----------------------------|---------|
+| national_kpi_service.py       | get_national_kpi_service()  | ✅      |
+| dn_analysis.py (v34.0)        | get_dn_analytics_service()  | ✅      |
+| dealer_analytics_service.py   | get_dealer_service()        | ✅      |
+| warehouse_service.py          | get_warehouse_analytics_service() | ✅ |
+| product_service.py            | get_product_analytics_service() | ✅ |
+| city_service.py               | get_city_analytics_service()| ✅      |
+| groq_service.py               | get_groq_service()          | ✅      |
+
+================================================================================
+STATUS: ENTERPRISE READY
 ================================================================================
 """
 
@@ -144,7 +183,7 @@ class MenuItem:
         return False
 
 # ============================================================
-# SERVICE REGISTRY - ALL 7 SERVICES WITH CORRECT NAMES
+# SERVICE REGISTRY - ALL 7 SERVICES DIRECT ROUTING
 # ============================================================
 
 class ServiceRegistry:
@@ -173,14 +212,14 @@ class ServiceRegistry:
         logger.info(f"📦 Service Registry initialized with {len(self._menu_items)} modules")
     
     def _register_all_modules(self):
-        """Register ALL 7 modules with correct import paths."""
+        """Register ALL 7 modules with correct function names matching your files."""
         
-        # Define all 7 modules with CORRECT function names
+        # All 7 services with their correct function names
         module_defs = [
             {
                 "id": 1,
                 "name": "National Dashboard",
-                "aliases": ["national", "national kpi", "kpi", "pakistan", "overall"],
+                "aliases": ["national", "national kpi", "kpi", "pakistan", "overall", "dashboard"],
                 "module_type": ModuleType.NATIONAL,
                 "file": "national_kpi_service.py",
                 "import_path": "app.services.national_kpi_service",
@@ -193,7 +232,7 @@ class ServiceRegistry:
                 "module_type": ModuleType.DN,
                 "file": "dn_analysis.py",
                 "import_path": "app.services.dn_analysis",
-                "function": "get_dn_analytics_service"  # ← FIXED: matches v34.0
+                "function": "get_dn_analytics_service"  # ← From v34.0
             },
             {
                 "id": 3,
@@ -207,7 +246,7 @@ class ServiceRegistry:
             {
                 "id": 4,
                 "name": "Warehouse Dashboard",
-                "aliases": ["warehouse", "warehouse dashboard", "warehouse analytics", "warehouse report"],
+                "aliases": ["warehouse", "warehouse dashboard", "warehouse analytics", "warehouse report", "inventory"],
                 "module_type": ModuleType.WAREHOUSE,
                 "file": "warehouse_service.py",
                 "import_path": "app.services.warehouse_service",
@@ -234,7 +273,7 @@ class ServiceRegistry:
             {
                 "id": 7,
                 "name": "AI Assistant",
-                "aliases": ["ai", "assistant", "general ai", "chat", "help"],
+                "aliases": ["ai", "assistant", "general ai", "chat", "help", "groq"],
                 "module_type": ModuleType.AI,
                 "file": "groq_service.py",
                 "import_path": "app.services.groq_service",
@@ -244,7 +283,7 @@ class ServiceRegistry:
         
         for mod in module_defs:
             try:
-                logger.info(f"🔍 Registering: {mod['name']}...")
+                logger.info(f"🔍 Registering: {mod['name']} (ID: {mod['id']})...")
                 
                 # Try to import the module
                 module = __import__(mod['import_path'], fromlist=[mod['function']])
@@ -262,8 +301,24 @@ class ServiceRegistry:
                     self._menu_items.append(menu_item)
                     self._module_map[mod['module_type']] = menu_item
                     logger.info(f"✅ Registered: {mod['id']}. {mod['name']} → {mod['file']}")
+                    
+                    # Test the service
+                    try:
+                        test_service = loader_func()
+                        if test_service:
+                            logger.info(f"   ✅ Service test successful: {type(test_service).__name__}")
+                            if hasattr(test_service, "process_whatsapp_query"):
+                                logger.info(f"   ✅ process_whatsapp_query method found")
+                            else:
+                                logger.warning(f"   ⚠️ process_whatsapp_query method NOT found")
+                        else:
+                            logger.warning(f"   ⚠️ Service returned None")
+                    except Exception as e:
+                        logger.error(f"   ❌ Service test failed: {e}")
+                        
                 else:
                     logger.warning(f"⚠️ Skipping: {mod['name']} - function {mod['function']} not found")
+                    logger.warning(f"   Available: {[a for a in dir(module) if not a.startswith('_')]}")
                     
             except ImportError as e:
                 logger.warning(f"⚠️ Skipping: {mod['name']} - module not found: {e}")
@@ -341,15 +396,18 @@ class AIProviderService:
         
         registered_count = len(self._registry.get_menu_items())
         logger.info("=" * 70)
-        logger.info("🚀 ENTERPRISE GATEWAY v69.0 initialized")
+        logger.info("🚀 ENTERPRISE GATEWAY v70.0 initialized")
         logger.info(f"   📦 Registered {registered_count}/7 services")
         logger.info("   🔒 Session Locking: ✅")
-        logger.info("   🔀 Routes to registered modules")
+        logger.info("   🔀 Direct routing to services")
         logger.info("   🌐 Async compatible")
         logger.info("=" * 70)
         
         for item in self._registry.get_menu_items():
             logger.info(f"   {item.id}. {item.name} → {item.file}")
+        
+        if registered_count < 7:
+            logger.warning(f"⚠️ Only {registered_count} of 7 services loaded!")
     
     # ============================================================
     # SESSION MANAGEMENT
@@ -398,7 +456,7 @@ class AIProviderService:
             return self._sessions[sender].locked
     
     # ============================================================
-    # ROUTING
+    # ROUTING - DIRECT ROUTING TO SERVICES
     # ============================================================
     
     def _detect_dashboard(self, message: str) -> Optional[tuple[MenuItem, Any]]:
@@ -472,7 +530,7 @@ class AIProviderService:
             if message_clean.lower() in ["menu", "help", "options", "dashboard", "main", "0"]:
                 return self._get_main_dashboard()
             
-            # STEP 3: DETECT DASHBOARD
+            # STEP 3: DETECT DASHBOARD - DIRECT ROUTING
             detected = self._detect_dashboard(message_clean)
             
             if detected:
@@ -581,7 +639,7 @@ class AIProviderService:
         
         return {
             "service": "ai_provider_service",
-            "version": "69.0",
+            "version": "70.0",
             "type": "enterprise_gateway",
             "status": "healthy",
             "active_sessions": active_sessions,
