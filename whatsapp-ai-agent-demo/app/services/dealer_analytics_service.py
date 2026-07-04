@@ -1,17 +1,17 @@
 # ============================================================
 # FILE: app/services/dealer_analytics_service.py
-# VERSION: 3.0 - ENTERPRISE DEALER DOMAIN AI ENGINE
+# VERSION: 4.0 - ENTERPRISE DEALER DOMAIN AI ENGINE
 # ============================================================
 
 """
 File: app/services/dealer_analytics_service.py
-Version: 3.0 - ENTERPRISE DEALER DOMAIN AI ENGINE
+Version: 4.0 - ENTERPRISE DEALER DOMAIN AI ENGINE
 
 ================================================================================
 PURPOSE
 ================================================================================
 
-This is the DEALER DOMAIN AI ENGINE - an independent microservice.
+This is a completely independent Enterprise AI Domain Service.
 
 Its responsibilities are:
 1. Dealer Intelligence Engine
@@ -24,12 +24,17 @@ Its responsibilities are:
 8. Dealer Semantic Routing
 9. Dealer Session Management
 10. Dealer Response Engine
+11. Dealer Menu System (Auto-display)
+12. Dealer Question Registry
+13. Dealer SQL Registry
+14. Dealer Business Rules
+15. Dealer Analytics Engine
 
 ================================================================================
-AI ARCHITECTURE
+SYSTEM ARCHITECTURE
 ================================================================================
 
-WhatsApp
+WhatsApp User
     │
     ▼
 ai_provider_service.py
@@ -38,16 +43,33 @@ ai_provider_service.py
 DealerAnalyticsService
     │
     ├── Session Manager
-    ├── Menu Engine
+    ├── Menu Manager (Auto-display)
+    ├── Menu Registry
+    ├── Question Registry
+    ├── SQL Registry
     ├── Intent Detection
     ├── Entity Extraction
     ├── Semantic Router
-    ├── Business Rule Engine
+    ├── Business Rules Engine
     ├── SQL Planner
     ├── Repository
     ├── PostgreSQL
     ├── Analytics Engine
-    └── Response Formatter
+    ├── Dashboard Engine
+    ├── Search Engine
+    ├── Timeline Engine
+    ├── Comparison Engine
+    ├── Ranking Engine
+    ├── AI Assistant
+    ├── Response Templates
+    └── Cache Manager
+
+================================================================================
+AUTO-MENU DISPLAY
+================================================================================
+
+Every time this service is entered, the FIRST response MUST automatically
+display its menu. The user never enters a blank conversation.
 
 ================================================================================
 STATUS: ENTERPRISE READY
@@ -57,6 +79,8 @@ STATUS: ENTERPRISE READY
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import re
@@ -66,6 +90,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from enum import Enum
 from typing import Any, Optional, Dict, List, Tuple, Union, Callable
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +176,7 @@ DEALER_CACHE_TTL = int(os.getenv("DEALER_CACHE_TTL", "300"))
 DEALER_SESSION_TIMEOUT = int(os.getenv("DEALER_SESSION_TIMEOUT", "1800"))
 DEALER_AI_ENABLED = os.getenv("DEALER_AI_ENABLED", "true").lower() == "true"
 DEALER_SEMANTIC_ENABLED = os.getenv("DEALER_SEMANTIC_ENABLED", "true").lower() == "true"
+DEALER_MENU_AUTO_SHOW = os.getenv("DEALER_MENU_AUTO_SHOW", "true").lower() == "true"
 
 # AI Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -164,10 +190,13 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 class DealerIntent(Enum):
     """Dealer intent types"""
     DASHBOARD = "dashboard"
+    SUMMARY = "summary"
     REVENUE = "revenue"
     UNITS = "units"
     PENDING = "pending"
     DELIVERY = "delivery"
+    PGI = "pgi"
+    POD = "pod"
     RANKING = "ranking"
     COMPARISON = "comparison"
     SEARCH = "search"
@@ -176,7 +205,11 @@ class DealerIntent(Enum):
     TIMELINE = "timeline"
     PRODUCTS = "products"
     MODELS = "models"
-    SUMMARY = "summary"
+    TOP = "top"
+    BOTTOM = "bottom"
+    TREND = "trend"
+    GROWTH = "growth"
+    FORECAST = "forecast"
     AI_ASK = "ai_ask"
     MENU = "menu"
     HELP = "help"
@@ -187,12 +220,12 @@ class DealerMenuState(Enum):
     """Dealer menu states"""
     MAIN = "main"
     DASHBOARD = "dashboard"
-    SEARCH = "search"
-    PERFORMANCE = "performance"
     ANALYTICS = "analytics"
     AI_ASSISTANT = "ai_assistant"
     DEALER_SELECTED = "dealer_selected"
     COMPARISON = "comparison"
+    SEARCH_RESULTS = "search_results"
+    RANKING = "ranking"
 
 # ============================================================
 # BLOCK 5: DATA CLASSES
@@ -217,6 +250,7 @@ class DealerSession:
     updated_at: datetime = field(default_factory=datetime.now)
     filters: Dict[str, Any] = field(default_factory=dict)
     context: Dict[str, Any] = field(default_factory=dict)
+    menu_shown: bool = False
     
     def touch(self):
         self.updated_at = datetime.now()
@@ -251,6 +285,7 @@ class DealerSession:
         self.comparison_dealers = []
         self.filters = {}
         self.context = {}
+        self.menu_shown = False
         self.touch()
 
 @dataclass
@@ -297,7 +332,14 @@ def _percent(numerator: Any, denominator: Any) -> float:
 def _format_currency(amount: float) -> str:
     if amount is None:
         return "PKR 0.00"
-    return f"PKR {amount:,.2f}"
+    if amount >= 1_000_000_000_000:
+        return f"PKR {amount/1_000_000_000_000:,.2f} Trillion"
+    elif amount >= 1_000_000_000:
+        return f"PKR {amount/1_000_000_000:,.2f} Billion"
+    elif amount >= 1_000_000:
+        return f"PKR {amount/1_000_000:,.2f} Million"
+    else:
+        return f"PKR {amount:,.2f}"
 
 def _format_number(num: Union[int, float]) -> str:
     if num is None:
@@ -309,8 +351,300 @@ def _date_text(value: Any) -> str:
         return value.strftime("%d-%b-%Y")
     return _text(value, "N/A")
 
+def _growth(current: float, previous: float) -> float:
+    if previous == 0:
+        return 100.0 if current > 0 else 0.0
+    return round(((current - previous) / previous) * 100, 2)
+
 # ============================================================
-# BLOCK 7: DEALER INTENT ENGINE
+# BLOCK 7: MENU REGISTRY
+# ============================================================
+
+class DealerMenuRegistry:
+    """Registry of all dealer menus and their items"""
+    
+    MENUS = {
+        "main": {
+            "id": "main",
+            "name": "DEALER INTELLIGENCE ENGINE",
+            "items": [
+                {"id": "1", "name": "Dashboard", "handler": "handle_dashboard", "icon": "📊"},
+                {"id": "2", "name": "Analytics", "handler": "handle_analytics", "icon": "📈"},
+                {"id": "3", "name": "AI Assistant", "handler": "handle_ai_assistant", "icon": "🤖"},
+                {"id": "99", "name": "Exit", "handler": "handle_exit", "icon": "🚪"},
+            ]
+        },
+        "dashboard": {
+            "id": "dashboard",
+            "name": "DEALER DASHBOARD",
+            "items": [
+                {"id": "1", "name": "Summary", "handler": "handle_summary", "icon": "📋"},
+                {"id": "2", "name": "Revenue", "handler": "handle_revenue", "icon": "💰"},
+                {"id": "3", "name": "Units", "handler": "handle_units", "icon": "📦"},
+                {"id": "4", "name": "Pending", "handler": "handle_pending", "icon": "⏳"},
+                {"id": "5", "name": "Delivery", "handler": "handle_delivery", "icon": "🚚"},
+                {"id": "6", "name": "Performance", "handler": "handle_performance", "icon": "📈"},
+                {"id": "0", "name": "Main Menu", "handler": "handle_main_menu", "icon": "🏠"},
+                {"id": "99", "name": "Exit", "handler": "handle_exit", "icon": "🚪"},
+            ]
+        },
+        "analytics": {
+            "id": "analytics",
+            "name": "DEALER ANALYTICS",
+            "items": [
+                {"id": "1", "name": "Search", "handler": "handle_search", "icon": "🔍"},
+                {"id": "2", "name": "Ranking", "handler": "handle_ranking", "icon": "🏆"},
+                {"id": "3", "name": "Comparison", "handler": "handle_comparison", "icon": "🔄"},
+                {"id": "4", "name": "Timeline", "handler": "handle_timeline", "icon": "📅"},
+                {"id": "5", "name": "History", "handler": "handle_history", "icon": "📖"},
+                {"id": "6", "name": "Products", "handler": "handle_products", "icon": "📦"},
+                {"id": "7", "name": "Trends", "handler": "handle_trends", "icon": "📈"},
+                {"id": "0", "name": "Main Menu", "handler": "handle_main_menu", "icon": "🏠"},
+                {"id": "99", "name": "Exit", "handler": "handle_exit", "icon": "🚪"},
+            ]
+        },
+        "ai_assistant": {
+            "id": "ai_assistant",
+            "name": "DEALER AI ASSISTANT",
+            "items": [
+                {"id": "1", "name": "Ask Question", "handler": "handle_ai_ask", "icon": "❓"},
+                {"id": "2", "name": "Analysis", "handler": "handle_ai_analysis", "icon": "📊"},
+                {"id": "3", "name": "Insights", "handler": "handle_ai_insights", "icon": "💡"},
+                {"id": "0", "name": "Main Menu", "handler": "handle_main_menu", "icon": "🏠"},
+                {"id": "99", "name": "Exit", "handler": "handle_exit", "icon": "🚪"},
+            ]
+        }
+    }
+
+# ============================================================
+# BLOCK 8: QUESTION REGISTRY
+# ============================================================
+
+class DealerQuestionRegistry:
+    """Registry of predefined questions and their handlers"""
+    
+    QUESTIONS = {
+        # Dashboard questions
+        "dashboard": {"handler": "handle_summary", "priority": 1},
+        "summary": {"handler": "handle_summary", "priority": 1},
+        "overview": {"handler": "handle_summary", "priority": 1},
+        "today kpi": {"handler": "handle_summary", "priority": 1},
+        "weekly kpi": {"handler": "handle_summary", "priority": 1},
+        "monthly kpi": {"handler": "handle_summary", "priority": 1},
+        "yearly kpi": {"handler": "handle_summary", "priority": 1},
+        "statistics": {"handler": "handle_summary", "priority": 1},
+        "performance": {"handler": "handle_performance", "priority": 1},
+        "health check": {"handler": "handle_summary", "priority": 1},
+        "business score": {"handler": "handle_summary", "priority": 1},
+        "dealer status": {"handler": "handle_summary", "priority": 1},
+        
+        # Revenue questions
+        "revenue": {"handler": "handle_revenue", "priority": 2},
+        "total revenue": {"handler": "handle_revenue", "priority": 2},
+        "sales": {"handler": "handle_revenue", "priority": 2},
+        "income": {"handler": "handle_revenue", "priority": 2},
+        "amount": {"handler": "handle_revenue", "priority": 2},
+        
+        # Units questions
+        "units": {"handler": "handle_units", "priority": 2},
+        "quantity": {"handler": "handle_units", "priority": 2},
+        "volume": {"handler": "handle_units", "priority": 2},
+        
+        # Pending questions
+        "pending": {"handler": "handle_pending", "priority": 2},
+        "backlog": {"handler": "handle_pending", "priority": 2},
+        "overdue": {"handler": "handle_pending", "priority": 2},
+        "pending dn": {"handler": "handle_pending", "priority": 2},
+        "pending orders": {"handler": "handle_pending", "priority": 2},
+        
+        # Delivery questions
+        "delivery": {"handler": "handle_delivery", "priority": 2},
+        "delivered": {"handler": "handle_delivery", "priority": 2},
+        "transit": {"handler": "handle_delivery", "priority": 2},
+        "shipping": {"handler": "handle_delivery", "priority": 2},
+        
+        # PGI/POD questions
+        "pgi": {"handler": "handle_pgi", "priority": 2},
+        "pod": {"handler": "handle_pod", "priority": 2},
+        "goods issue": {"handler": "handle_pgi", "priority": 2},
+        "proof of delivery": {"handler": "handle_pod", "priority": 2},
+        
+        # Ranking questions
+        "ranking": {"handler": "handle_ranking", "priority": 2},
+        "rank": {"handler": "handle_ranking", "priority": 2},
+        "leaderboard": {"handler": "handle_ranking", "priority": 2},
+        "top": {"handler": "handle_top", "priority": 2},
+        "bottom": {"handler": "handle_bottom", "priority": 2},
+        "best": {"handler": "handle_top", "priority": 2},
+        "worst": {"handler": "handle_bottom", "priority": 2},
+        "highest": {"handler": "handle_top", "priority": 2},
+        "lowest": {"handler": "handle_bottom", "priority": 2},
+        
+        # Comparison questions
+        "compare": {"handler": "handle_comparison", "priority": 2},
+        "comparison": {"handler": "handle_comparison", "priority": 2},
+        "vs": {"handler": "handle_comparison", "priority": 2},
+        "versus": {"handler": "handle_comparison", "priority": 2},
+        
+        # Search questions
+        "search": {"handler": "handle_search", "priority": 2},
+        "find": {"handler": "handle_search", "priority": 2},
+        "lookup": {"handler": "handle_search", "priority": 2},
+        
+        # Timeline questions
+        "timeline": {"handler": "handle_timeline", "priority": 2},
+        "history": {"handler": "handle_history", "priority": 2},
+        "chronology": {"handler": "handle_timeline", "priority": 2},
+        
+        # Products questions
+        "products": {"handler": "handle_products", "priority": 2},
+        "items": {"handler": "handle_products", "priority": 2},
+        "models": {"handler": "handle_models", "priority": 2},
+        "variants": {"handler": "handle_models", "priority": 2},
+        
+        # Trend questions
+        "trend": {"handler": "handle_trends", "priority": 2},
+        "growth": {"handler": "handle_trends", "priority": 2},
+        "change": {"handler": "handle_trends", "priority": 2},
+    }
+    
+    @classmethod
+    def find_handler(cls, text: str) -> Optional[tuple[str, float]]:
+        """Find matching handler for question"""
+        text_lower = text.lower().strip()
+        
+        # Exact match
+        if text_lower in cls.QUESTIONS:
+            return (cls.QUESTIONS[text_lower]["handler"], 1.0)
+        
+        # Partial match
+        for key, value in cls.QUESTIONS.items():
+            if key in text_lower or text_lower in key:
+                return (value["handler"], 0.8)
+        
+        # Fuzzy match
+        if RAPIDFUZZ_AVAILABLE:
+            best_match = None
+            best_score = 0.0
+            for key in cls.QUESTIONS.keys():
+                score = fuzz.partial_ratio(text_lower, key)
+                if score > best_score and score > 70:
+                    best_score = score
+                    best_match = key
+            if best_match:
+                return (cls.QUESTIONS[best_match]["handler"], best_score / 100.0)
+        
+        return None
+
+# ============================================================
+# BLOCK 9: SQL REGISTRY
+# ============================================================
+
+class DealerSQLRegistry:
+    """Registry of all SQL queries for dealer operations"""
+    
+    @staticmethod
+    def get_summary(dealer_identifier: str) -> str:
+        """Get dealer summary SQL"""
+        return f"""
+            SELECT 
+                customer_name as dealer,
+                dealer_code,
+                sales_office,
+                sales_manager,
+                COUNT(DISTINCT dn_no) as total_dn,
+                COALESCE(SUM(dn_qty), 0) as total_units,
+                COALESCE(SUM(dn_amount), 0) as total_revenue,
+                COUNT(DISTINCT CASE WHEN pending_flag = TRUE OR pod_date IS NULL THEN dn_no END) as pending_dn,
+                COUNT(DISTINCT CASE WHEN good_issue_date IS NULL THEN dn_no END) as pgi_pending_dn,
+                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN dn_no END) as pod_pending_dn,
+                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) as pod_completed,
+                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) as pgi_completed,
+                AVG(CASE WHEN good_issue_date IS NOT NULL 
+                    THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date))/86400 END) as avg_delivery_days,
+                AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
+                    THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date))/86400 END) as avg_pod_days,
+                AVG(dn_amount) as avg_revenue_per_dn,
+                MIN(dn_create_date) as first_order,
+                MAX(dn_create_date) as last_order
+            FROM delivery_reports
+            WHERE LOWER(customer_name) = LOWER('{dealer_identifier}')
+               OR LOWER(dealer_code) = LOWER('{dealer_identifier}')
+               OR LOWER(customer_name) LIKE LOWER('%{dealer_identifier}%')
+               OR LOWER(dealer_code) LIKE LOWER('%{dealer_identifier}%')
+            GROUP BY customer_name, dealer_code, sales_office, sales_manager
+        """
+    
+    @staticmethod
+    def get_ranking(metric: str, limit: int = 10) -> str:
+        """Get dealer ranking SQL"""
+        metric_map = {
+            "revenue": "SUM(dn_amount)",
+            "units": "SUM(dn_qty)",
+            "dn": "COUNT(DISTINCT dn_no)",
+            "pending": "COUNT(DISTINCT CASE WHEN pending_flag = TRUE OR pod_date IS NULL THEN dn_no END)",
+            "delivery": "AVG(CASE WHEN good_issue_date IS NOT NULL THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date))/86400 END)"
+        }
+        
+        agg_col = metric_map.get(metric, "SUM(dn_amount)")
+        order = "DESC" if metric in ["revenue", "units", "dn"] else "ASC"
+        
+        return f"""
+            SELECT 
+                customer_name as dealer,
+                {agg_col} as value
+            FROM delivery_reports
+            WHERE customer_name IS NOT NULL
+            GROUP BY customer_name
+            ORDER BY value {order}
+            LIMIT {limit}
+        """
+    
+    @staticmethod
+    def get_products(dealer_identifier: str, limit: int = 10) -> str:
+        """Get dealer products SQL"""
+        return f"""
+            SELECT 
+                customer_model as product,
+                COALESCE(SUM(dn_amount), 0) as revenue,
+                COALESCE(SUM(dn_qty), 0) as units,
+                COUNT(DISTINCT dn_no) as dn_count
+            FROM delivery_reports
+            WHERE (LOWER(customer_name) = LOWER('{dealer_identifier}')
+               OR LOWER(dealer_code) = LOWER('{dealer_identifier}')
+               OR LOWER(customer_name) LIKE LOWER('%{dealer_identifier}%'))
+               AND customer_model IS NOT NULL
+            GROUP BY customer_model
+            ORDER BY revenue DESC
+            LIMIT {limit}
+        """
+    
+    @staticmethod
+    def search(query: str, limit: int = 30) -> str:
+        """Search dealers SQL"""
+        search_pattern = f"%{query}%"
+        return f"""
+            SELECT 
+                customer_name as dealer,
+                dealer_code,
+                sales_office,
+                sales_manager,
+                COALESCE(SUM(dn_amount), 0) as revenue,
+                COUNT(DISTINCT dn_no) as dn_count,
+                COALESCE(SUM(dn_qty), 0) as units,
+                COUNT(DISTINCT CASE WHEN pending_flag = TRUE OR pod_date IS NULL THEN dn_no END) as pending_count
+            FROM delivery_reports
+            WHERE customer_name ILIKE '{search_pattern}'
+               OR dealer_code ILIKE '{search_pattern}'
+               OR LOWER(customer_name) LIKE LOWER('%{query}%')
+               OR LOWER(dealer_code) LIKE LOWER('%{query}%')
+            GROUP BY customer_name, dealer_code, sales_office, sales_manager
+            ORDER BY revenue DESC
+            LIMIT {limit}
+        """
+
+# ============================================================
+# BLOCK 10: DEALER INTENT ENGINE
 # ============================================================
 
 class DealerIntentEngine:
@@ -320,6 +654,10 @@ class DealerIntentEngine:
         DealerIntent.DASHBOARD: [
             r"(?:show|display|get).*(?:dealer|dashboard|profile)",
             r"dealer (?:dashboard|profile|details|info)",
+        ],
+        DealerIntent.SUMMARY: [
+            r"(?:summary|overview|brief|executive|quick).*(?:dealer)",
+            r"dealer (?:summary|overview|statistics)",
         ],
         DealerIntent.REVENUE: [
             r"(?:revenue|sales|income|amount|turnover).*(?:dealer)",
@@ -337,6 +675,16 @@ class DealerIntentEngine:
         DealerIntent.DELIVERY: [
             r"(?:delivery|deliveries|transit|shipping).*(?:dealer)",
             r"delivery (?:performance|time|days)",
+        ],
+        DealerIntent.PGI: [
+            r"pgi",
+            r"goods issue",
+            r"issue status",
+        ],
+        DealerIntent.POD: [
+            r"pod",
+            r"proof of delivery",
+            r"delivery confirmation",
         ],
         DealerIntent.RANKING: [
             r"(?:top|best|highest|leading).*(?:dealer|dealers)",
@@ -372,9 +720,28 @@ class DealerIntentEngine:
             r"(?:model|models|variants).*(?:dealer)",
             r"which (?:models|variants)",
         ],
-        DealerIntent.SUMMARY: [
-            r"(?:summary|overview|brief|executive).*(?:dealer)",
-            r"dealer (?:summary|overview)",
+        DealerIntent.TOP: [
+            r"top\s+(\d+)\s+(?:dealers|performers)",
+            r"best (?:dealer|dealers)",
+            r"highest (?:revenue|sales|performing)",
+        ],
+        DealerIntent.BOTTOM: [
+            r"bottom\s+(\d+)\s+(?:dealers|performers)",
+            r"worst (?:dealer|dealers)",
+            r"lowest (?:revenue|sales|performing)",
+        ],
+        DealerIntent.TREND: [
+            r"(?:trend|pattern|change).*(?:dealer)",
+            r"dealer (?:trend|growth|change)",
+            r"monthly trend",
+        ],
+        DealerIntent.GROWTH: [
+            r"(?:growth|increase|decrease).*(?:dealer)",
+            r"dealer (?:growth|decline)",
+        ],
+        DealerIntent.FORECAST: [
+            r"(?:forecast|predict|future).*(?:dealer)",
+            r"dealer (?:forecast|projection)",
         ],
         DealerIntent.AI_ASK: [
             r"(?:ask|tell|explain|why|how|what|when|where).*(?:dealer)",
@@ -384,7 +751,6 @@ class DealerIntentEngine:
             r"menu",
             r"dealer menu",
             r"options",
-            r"help",
         ],
         DealerIntent.HELP: [
             r"help",
@@ -479,6 +845,9 @@ class DealerIntentEngine:
                     ]),
                     Route(name="dealer_performance", utterances=[
                         "dealer performance", "dealer score", "dealer health"
+                    ]),
+                    Route(name="dealer_products", utterances=[
+                        "dealer products", "what products", "items sold"
                     ]),
                 ]
                 self.semantic_router = SemanticRouter(routes=routes)
@@ -600,7 +969,7 @@ class DealerIntentEngine:
                 response = self.groq_client.chat.completions.create(
                     model="llama3-70b-8192",
                     messages=[
-                        {"role": "system", "content": "Classify dealer query intent: dashboard, revenue, pending, ranking, comparison, search, performance, summary, ai_ask, menu, help, exit. Return only the intent name."},
+                        {"role": "system", "content": "Classify dealer query intent: dashboard, summary, revenue, units, pending, delivery, pgi, pod, ranking, comparison, search, performance, history, timeline, products, models, top, bottom, trend, growth, forecast, ai_ask, menu, help, exit. Return only the intent name."},
                         {"role": "user", "content": text}
                     ],
                     temperature=0.1,
@@ -614,7 +983,7 @@ class DealerIntentEngine:
                 response = self.openai_client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "Classify dealer query intent: dashboard, revenue, pending, ranking, comparison, search, performance, summary, ai_ask, menu, help, exit. Return only the intent name."},
+                        {"role": "system", "content": "Classify dealer query intent: dashboard, summary, revenue, units, pending, delivery, pgi, pod, ranking, comparison, search, performance, history, timeline, products, models, top, bottom, trend, growth, forecast, ai_ask, menu, help, exit. Return only the intent name."},
                         {"role": "user", "content": text}
                     ],
                     temperature=0.1,
@@ -636,14 +1005,22 @@ class DealerIntentEngine:
             "metrics": [],
             "limit": 10,
             "sort_by": None,
-            "order": "desc"
+            "order": "desc",
+            "comparison": [],
+            "timeframe": None
         }
         
-        # Extract dealer names (simple pattern)
+        # Extract dealer names
         dealer_pattern = r'(?:dealer|dealers|for|of|in|from)\s+([A-Za-z\s]+)'
         matches = re.findall(dealer_pattern, text, re.IGNORECASE)
         if matches:
             entities["dealers"] = [m.strip() for m in matches if m.strip()]
+        
+        # Extract comparison
+        compare_pattern = r'compare\s+([\w\s]+)\s+and\s+([\w\s]+)'
+        compare_match = re.search(compare_pattern, text, re.IGNORECASE)
+        if compare_match:
+            entities["comparison"] = [compare_match.group(1).strip(), compare_match.group(2).strip()]
         
         # Extract limit
         limit_match = re.search(r'top\s+(\d+)', text, re.IGNORECASE)
@@ -656,114 +1033,20 @@ class DealerIntentEngine:
             if metric in text.lower():
                 entities["metrics"].append(metric)
         
-        return entities
-
-# ============================================================
-# BLOCK 8: DEALER ENTITY EXTRACTOR
-# ============================================================
-
-class DealerEntityExtractor:
-    """Extract dealer entities from text"""
-    
-    def __init__(self):
-        self._cache: Dict[str, Dict[str, Any]] = {}
-        self._cache_lock = threading.RLock()
-    
-    def extract(self, text: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Extract entities with context awareness"""
-        text_lower = text.lower()
-        cache_key = text_lower[:100]
-        
-        with self._cache_lock:
-            if cache_key in self._cache:
-                return self._cache[cache_key].copy()
-        
-        entities = {
-            "dealer_names": [],
-            "dealer_codes": [],
-            "metrics": [],
-            "limit": 10,
-            "sort_by": None,
-            "order": "desc",
-            "comparison": [],
-            "timeframe": None,
-            "filters": {}
-        }
-        
-        # Extract dealer names
-        dealer_patterns = [
-            r'dealer\s+([A-Za-z\s]+)',
-            r'for\s+([A-Za-z\s]+)',
-            r'of\s+([A-Za-z\s]+)',
-            r'compare\s+([A-Za-z\s]+)\s+and\s+([A-Za-z\s]+)',
-        ]
-        
-        for pattern in dealer_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                for match in matches:
-                    if isinstance(match, tuple):
-                        entities["dealer_names"].extend([m.strip() for m in match if m.strip()])
-                        entities["comparison"] = [m.strip() for m in match if m.strip()]
-                    else:
-                        name = match.strip()
-                        if name and len(name) > 2:
-                            entities["dealer_names"].append(name)
-        
-        # Extract dealer codes
-        code_pattern = r'\b([A-Z0-9]{4,10})\b'
-        code_matches = re.findall(code_pattern, text.upper())
-        if code_matches:
-            entities["dealer_codes"] = code_matches
-        
-        # Extract limit
-        limit_match = re.search(r'(?:top|first|limit)\s+(\d+)', text_lower)
-        if limit_match:
-            entities["limit"] = int(limit_match.group(1))
-        
-        # Extract metrics
-        metric_map = {
-            "revenue": ["revenue", "sales", "income", "amount"],
-            "units": ["units", "quantity", "qty", "volume"],
-            "pending": ["pending", "backlog", "overdue"],
-            "delivery": ["delivery", "deliveries", "transit"],
-            "performance": ["performance", "score", "rating", "health"],
-        }
-        
-        for metric, keywords in metric_map.items():
-            for keyword in keywords:
-                if keyword in text_lower:
-                    entities["metrics"].append(metric)
-                    break
-        
-        # Extract sort order
-        if "highest" in text_lower or "top" in text_lower:
-            entities["order"] = "desc"
-        elif "lowest" in text_lower or "bottom" in text_lower:
-            entities["order"] = "asc"
-        
         # Extract timeframe
-        timeframe_patterns = [
-            (r'this\s+month', 'current_month'),
-            (r'last\s+month', 'previous_month'),
-            (r'this\s+quarter', 'current_quarter'),
-            (r'last\s+quarter', 'previous_quarter'),
-            (r'this\s+year', 'current_year'),
-            (r'last\s+year', 'previous_year'),
-        ]
-        
-        for pattern, value in timeframe_patterns:
-            if re.search(pattern, text_lower):
-                entities["timeframe"] = value
-                break
-        
-        with self._cache_lock:
-            self._cache[cache_key] = entities.copy()
+        if "today" in text.lower():
+            entities["timeframe"] = "today"
+        elif "this month" in text.lower():
+            entities["timeframe"] = "this_month"
+        elif "last month" in text.lower():
+            entities["timeframe"] = "last_month"
+        elif "this year" in text.lower():
+            entities["timeframe"] = "this_year"
         
         return entities
 
 # ============================================================
-# BLOCK 9: DEALER REPOSITORY
+# BLOCK 11: DEALER REPOSITORY
 # ============================================================
 
 class DealerRepository:
@@ -773,326 +1056,216 @@ class DealerRepository:
         self.session = session
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._cache_lock = threading.RLock()
+        self._sql_registry = DealerSQLRegistry()
+    
+    def _get_cache_key(self, query_type: str, identifier: str) -> str:
+        """Generate cache key"""
+        return f"{query_type}_{identifier}".lower()
+    
+    def execute_query(self, sql: str, cache_key: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Execute SQL and return results"""
+        if cache_key and cache_key in self._cache:
+            return self._cache[cache_key]
+        
+        try:
+            result = self.session.execute(text(sql))
+            columns = result.keys()
+            rows = [dict(zip(columns, row)) for row in result.fetchall()]
+            
+            if cache_key:
+                self._cache[cache_key] = rows
+            
+            return rows
+        except Exception as e:
+            logger.error(f"SQL execution error: {e}")
+            logger.error(f"SQL: {sql[:500]}...")
+            return []
     
     def get_dashboard(self, dealer_identifier: str) -> Optional[Dict[str, Any]]:
         """Get dealer dashboard"""
+        sql = self._sql_registry.get_summary(dealer_identifier)
         cache_key = f"dashboard_{dealer_identifier.lower()}"
+        results = self.execute_query(sql, cache_key)
         
-        with self._cache_lock:
-            if cache_key in self._cache:
-                return self._cache[cache_key].copy()
-        
-        try:
-            query = self.session.query(
-                DeliveryReport.customer_name.label('dealer'),
-                DeliveryReport.dealer_code,
-                DeliveryReport.sales_office,
-                DeliveryReport.sales_manager,
-                func.count(distinct(DeliveryReport.dn_no)).label('total_dn'),
-                func.sum(DeliveryReport.dn_qty).label('total_units'),
-                func.sum(DeliveryReport.dn_amount).label('total_revenue'),
-                func.count(distinct(case(
-                    (or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)),
-                     DeliveryReport.dn_no)
-                ))).label('pending_dn'),
-                func.count(distinct(case(
-                    (DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no)
-                ))).label('pgi_pending_dn'),
-                func.count(distinct(case(
-                    (and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.is_(None)),
-                     DeliveryReport.dn_no)
-                ))).label('pod_pending_dn'),
-                func.count(distinct(case(
-                    (DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)
-                ))).label('pod_completed'),
-                func.count(distinct(case(
-                    (DeliveryReport.good_issue_date.isnot(None), DeliveryReport.dn_no)
-                ))).label('pgi_completed'),
-                func.avg(case(
-                    (DeliveryReport.good_issue_date.isnot(None),
-                     DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
-                )).label('avg_delivery_days'),
-                func.avg(case(
-                    (and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.isnot(None)),
-                     DeliveryReport.pod_date - DeliveryReport.good_issue_date)
-                )).label('avg_pod_days'),
-                func.avg(DeliveryReport.dn_amount).label('avg_revenue_per_dn'),
-                func.min(DeliveryReport.dn_create_date).label('first_order'),
-                func.max(DeliveryReport.dn_create_date).label('last_order'),
-            ).filter(
-                or_(
-                    func.lower(DeliveryReport.customer_name) == dealer_identifier.lower(),
-                    func.lower(DeliveryReport.dealer_code) == dealer_identifier.lower(),
-                    func.lower(DeliveryReport.customer_name).ilike(f"%{dealer_identifier.lower()}%"),
-                    func.lower(DeliveryReport.dealer_code).ilike(f"%{dealer_identifier.lower()}%"),
-                )
-            ).group_by(
-                DeliveryReport.customer_name,
-                DeliveryReport.dealer_code,
-                DeliveryReport.sales_office,
-                DeliveryReport.sales_manager
-            ).first()
-            
-            if not query:
-                return None
-            
-            total_dn = int(query.total_dn or 0)
-            pending_dn = int(query.pending_dn or 0)
-            pgi_completed = int(query.pgi_completed or 0)
-            pod_completed = int(query.pod_completed or 0)
-            
-            data = {
-                'dealer': _text(query.dealer),
-                'dealer_code': _text(query.dealer_code),
-                'sales_office': _text(query.sales_office),
-                'sales_manager': _text(query.sales_manager),
-                'total_dn': total_dn,
-                'total_units': int(query.total_units or 0),
-                'total_revenue': float(query.total_revenue or 0.0),
-                'pending_dn': pending_dn,
-                'pgi_pending_dn': int(query.pgi_pending_dn or 0),
-                'pod_pending_dn': int(query.pod_pending_dn or 0),
-                'pgi_completed': pgi_completed,
-                'pod_completed': pod_completed,
-                'avg_delivery_days': float(query.avg_delivery_days or 0.0),
-                'avg_pod_days': float(query.avg_pod_days or 0.0),
-                'avg_revenue_per_dn': float(query.avg_revenue_per_dn or 0.0),
-                'delivery_success_pct': _percent(pgi_completed, total_dn),
-                'pod_success_pct': _percent(pod_completed, total_dn),
-                'pending_pct': _percent(pending_dn, total_dn),
-                'first_order': _date_text(query.first_order),
-                'last_order': _date_text(query.last_order),
-            }
-            
-            # Business score
-            score = (
-                data['delivery_success_pct'] * 0.30 +
-                (100 - data['pending_pct']) * 0.25 +
-                min(100, data['avg_revenue_per_dn'] / 1000) * 0.25 +
-                min(100, data['total_dn'] / 10) * 0.20
-            )
-            data['business_score'] = round(min(100, max(0, score)), 1)
-            
-            if data['business_score'] >= 85:
-                data['overall_status'] = "Excellent"
-                data['performance_grade'] = "A"
-            elif data['business_score'] >= 70:
-                data['overall_status'] = "Good"
-                data['performance_grade'] = "B"
-            elif data['business_score'] >= 50:
-                data['overall_status'] = "Watch"
-                data['performance_grade'] = "C"
-            else:
-                data['overall_status'] = "Critical"
-                data['performance_grade'] = "D"
-            
-            with self._cache_lock:
-                self._cache[cache_key] = data.copy()
-            
-            return data
-            
-        except Exception as e:
-            logger.error(f"Dashboard error: {e}")
+        if not results:
             return None
+        
+        row = results[0]
+        total_dn = int(row.get('total_dn', 0) or 0)
+        pending_dn = int(row.get('pending_dn', 0) or 0)
+        pgi_completed = int(row.get('pgi_completed', 0) or 0)
+        pod_completed = int(row.get('pod_completed', 0) or 0)
+        
+        data = {
+            'dealer': _text(row.get('dealer')),
+            'dealer_code': _text(row.get('dealer_code')),
+            'sales_office': _text(row.get('sales_office')),
+            'sales_manager': _text(row.get('sales_manager')),
+            'total_dn': total_dn,
+            'total_units': int(row.get('total_units', 0) or 0),
+            'total_revenue': float(row.get('total_revenue', 0) or 0.0),
+            'pending_dn': pending_dn,
+            'pgi_pending_dn': int(row.get('pgi_pending_dn', 0) or 0),
+            'pod_pending_dn': int(row.get('pod_pending_dn', 0) or 0),
+            'pgi_completed': pgi_completed,
+            'pod_completed': pod_completed,
+            'avg_delivery_days': float(row.get('avg_delivery_days', 0) or 0.0),
+            'avg_pod_days': float(row.get('avg_pod_days', 0) or 0.0),
+            'avg_revenue_per_dn': float(row.get('avg_revenue_per_dn', 0) or 0.0),
+            'first_order': _date_text(row.get('first_order')),
+            'last_order': _date_text(row.get('last_order')),
+        }
+        
+        # Calculate percentages
+        data['delivery_success_pct'] = _percent(pgi_completed, total_dn)
+        data['pod_success_pct'] = _percent(pod_completed, total_dn)
+        data['pending_pct'] = _percent(pending_dn, total_dn)
+        
+        # Business score
+        score = (
+            data['delivery_success_pct'] * 0.30 +
+            (100 - data['pending_pct']) * 0.25 +
+            min(100, data['avg_revenue_per_dn'] / 1000) * 0.25 +
+            min(100, data['total_dn'] / 10) * 0.20
+        )
+        data['business_score'] = round(min(100, max(0, score)), 1)
+        
+        if data['business_score'] >= 85:
+            data['overall_status'] = "Excellent"
+            data['performance_grade'] = "A"
+        elif data['business_score'] >= 70:
+            data['overall_status'] = "Good"
+            data['performance_grade'] = "B"
+        elif data['business_score'] >= 50:
+            data['overall_status'] = "Watch"
+            data['performance_grade'] = "C"
+        else:
+            data['overall_status'] = "Critical"
+            data['performance_grade'] = "D"
+        
+        return data
     
     def get_ranking(self, metric: str = "revenue", limit: int = 10) -> List[Dict[str, Any]]:
         """Get dealer ranking"""
-        metric_map = {
-            "revenue": (func.sum(DeliveryReport.dn_amount), _format_currency),
-            "units": (func.sum(DeliveryReport.dn_qty), lambda x: f"{int(x or 0):,}"),
-            "dn": (func.count(distinct(DeliveryReport.dn_no)), lambda x: f"{int(x or 0):,}"),
-            "delivery": (func.avg(case(
-                (DeliveryReport.good_issue_date.isnot(None),
-                 DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
-            )), lambda x: f"{float(x or 0):.1f} days"),
-            "pending": (func.count(distinct(case(
-                (or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)),
-                 DeliveryReport.dn_no)
-            ))), lambda x: f"{int(x or 0):,}"),
-        }
+        sql = self._sql_registry.get_ranking(metric, limit)
+        cache_key = f"ranking_{metric}_{limit}"
+        results = self.execute_query(sql, cache_key)
         
-        if metric not in metric_map:
-            metric = "revenue"
-        
-        agg_func, formatter = metric_map[metric]
-        
-        try:
-            results = self.session.query(
-                DeliveryReport.customer_name.label('dealer'),
-                agg_func.label('value')
-            ).filter(
-                DeliveryReport.customer_name.isnot(None)
-            ).group_by(
-                DeliveryReport.customer_name
-            ).order_by(
-                desc('value') if metric in ["revenue", "units", "dn"] else asc('value')
-            ).limit(limit).all()
-            
-            ranking = []
-            for row in results:
-                if row.dealer:
-                    ranking.append({
-                        'dealer': _text(row.dealer),
-                        'value': formatter(row.value),
-                        'raw_value': float(row.value or 0),
-                    })
-            return ranking
-        except Exception as e:
-            logger.error(f"Ranking error: {e}")
-            return []
-    
-    def compare(self, dealer1: str, dealer2: str) -> Dict[str, Any]:
-        """Compare two dealers"""
-        dash1 = self.get_dashboard(dealer1)
-        dash2 = self.get_dashboard(dealer2)
-        
-        if not dash1 or not dash2:
-            return {}
-        
-        metrics = {}
-        
-        for dealer, dash in [(dealer1, dash1), (dealer2, dash2)]:
-            metrics[f"{dealer}_metrics"] = {
-                "Revenue": _format_currency(dash.get('total_revenue', 0)),
-                "Units": _format_number(dash.get('total_units', 0)),
-                "DN": _format_number(dash.get('total_dn', 0)),
-                "Pending": _format_number(dash.get('pending_dn', 0)),
-                "Delivery": f"{dash.get('delivery_success_pct', 0):.1f}%",
-                "POD": f"{dash.get('pod_success_pct', 0):.1f}%",
-                "Score": f"{dash.get('business_score', 0):.1f}/100",
-                "Grade": dash.get('performance_grade', 'N/A'),
-            }
-        
-        rev1 = dash1.get('total_revenue', 0)
-        rev2 = dash2.get('total_revenue', 0)
-        
-        if rev1 > rev2:
-            metrics["explanation"] = f"{dealer1} has higher revenue than {dealer2}"
-        elif rev2 > rev1:
-            metrics["explanation"] = f"{dealer2} has higher revenue than {dealer1}"
-        else:
-            metrics["explanation"] = f"{dealer1} and {dealer2} have similar revenue"
-        
-        return metrics
+        ranking = []
+        for row in results:
+            dealer = _text(row.get('dealer'))
+            if dealer:
+                value = row.get('value')
+                if metric in ["revenue"]:
+                    formatted = _format_currency(float(value or 0))
+                elif metric in ["units", "dn", "pending"]:
+                    formatted = _format_number(int(value or 0))
+                else:
+                    formatted = f"{float(value or 0):.1f}"
+                
+                ranking.append({
+                    'dealer': dealer,
+                    'value': formatted,
+                    'raw_value': float(value or 0),
+                })
+        return ranking
     
     def search(self, query: str, limit: int = 30) -> List[Dict[str, Any]]:
         """Search dealers"""
-        search_pattern = f"%{query}%"
+        sql = self._sql_registry.search(query, limit)
+        cache_key = f"search_{query}_{limit}"
+        results = self.execute_query(sql, cache_key)
         
-        try:
-            results = self.session.query(
-                DeliveryReport.customer_name.label('dealer'),
-                DeliveryReport.dealer_code,
-                DeliveryReport.sales_office,
-                DeliveryReport.sales_manager,
-                func.sum(DeliveryReport.dn_amount).label('revenue'),
-                func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
-                func.sum(DeliveryReport.dn_qty).label('units'),
-                func.count(distinct(case(
-                    (or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)),
-                     DeliveryReport.dn_no)
-                ))).label('pending_count'),
-            ).filter(
-                or_(
-                    DeliveryReport.customer_name.ilike(search_pattern),
-                    DeliveryReport.dealer_code.ilike(search_pattern),
-                    func.lower(DeliveryReport.customer_name).ilike(f"%{query.lower()}%"),
-                    func.lower(DeliveryReport.dealer_code).ilike(f"%{query.lower()}%"),
-                )
-            ).group_by(
-                DeliveryReport.customer_name,
-                DeliveryReport.dealer_code,
-                DeliveryReport.sales_office,
-                DeliveryReport.sales_manager
-            ).order_by(
-                func.sum(DeliveryReport.dn_amount).desc()
-            ).limit(limit).all()
-            
-            items = []
-            for row in results:
-                if row.dealer:
-                    items.append({
-                        'dealer': _text(row.dealer),
-                        'dealer_code': _text(row.dealer_code),
-                        'sales_office': _text(row.sales_office),
-                        'sales_manager': _text(row.sales_manager),
-                        'revenue': float(row.revenue or 0),
-                        'dn_count': int(row.dn_count or 0),
-                        'units': int(row.units or 0),
-                        'pending_count': int(row.pending_count or 0),
-                    })
-            return items
-        except Exception as e:
-            logger.error(f"Search error: {e}")
-            return []
+        items = []
+        for row in results:
+            dealer = _text(row.get('dealer'))
+            if dealer:
+                items.append({
+                    'dealer': dealer,
+                    'dealer_code': _text(row.get('dealer_code')),
+                    'sales_office': _text(row.get('sales_office')),
+                    'sales_manager': _text(row.get('sales_manager')),
+                    'revenue': float(row.get('revenue', 0) or 0),
+                    'dn_count': int(row.get('dn_count', 0) or 0),
+                    'units': int(row.get('units', 0) or 0),
+                    'pending_count': int(row.get('pending_count', 0) or 0),
+                })
+        return items
     
     def get_products(self, dealer_identifier: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Get products for a dealer"""
-        try:
-            results = self.session.query(
-                DeliveryReport.customer_model.label('product'),
-                func.sum(DeliveryReport.dn_amount).label('revenue'),
-                func.sum(DeliveryReport.dn_qty).label('units'),
-                func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
-            ).filter(
-                or_(
-                    func.lower(DeliveryReport.customer_name) == dealer_identifier.lower(),
-                    func.lower(DeliveryReport.dealer_code) == dealer_identifier.lower(),
-                    func.lower(DeliveryReport.customer_name).ilike(f"%{dealer_identifier.lower()}%"),
-                ),
-                DeliveryReport.customer_model.isnot(None)
-            ).group_by(
-                DeliveryReport.customer_model
-            ).order_by(
-                func.sum(DeliveryReport.dn_amount).desc()
-            ).limit(limit).all()
-            
-            products = []
-            for row in results:
-                if row.product:
-                    products.append({
-                        'product': _text(row.product),
-                        'revenue': float(row.revenue or 0),
-                        'units': int(row.units or 0),
-                        'dn_count': int(row.dn_count or 0),
-                    })
-            return products
-        except Exception as e:
-            logger.error(f"Products error: {e}")
-            return []
+        sql = self._sql_registry.get_products(dealer_identifier, limit)
+        cache_key = f"products_{dealer_identifier.lower()}_{limit}"
+        results = self.execute_query(sql, cache_key)
+        
+        products = []
+        for row in results:
+            product = _text(row.get('product'))
+            if product:
+                products.append({
+                    'product': product,
+                    'revenue': float(row.get('revenue', 0) or 0),
+                    'units': int(row.get('units', 0) or 0),
+                    'dn_count': int(row.get('dn_count', 0) or 0),
+                })
+        return products
 
 # ============================================================
-# BLOCK 10: DEALER RENDERER
+# BLOCK 12: DEALER RENDERER
 # ============================================================
 
 class DealerRenderer:
     """Render dealer responses for WhatsApp"""
     
+    MENU_SEPARATOR = "━━━━━━━━━━━━━━━━━━━━━━━━"
+    
     @staticmethod
-    def render_main_menu() -> str:
-        return "\n".join([
-            "📊 *DEALER INTELLIGENCE ENGINE*",
-            "",
-            "1️⃣ Dealer Dashboard",
-            "2️⃣ Dealer Search",
-            "3️⃣ Dealer Performance",
-            "4️⃣ Dealer Analytics",
-            "5️⃣ AI Assistant",
-            "",
-            "99. Back to Main",
-            "",
-            "📌 *Quick Commands:*",
-            "• Type dealer name for dashboard",
-            "• top dealers - Show rankings",
-            "• search [keyword] - Search dealers",
-            "• compare [dealer1] and [dealer2]",
-            "",
-            "Reply with a number or command:"
-        ])
+    def _render_menu_footer(menu_type: str = "main") -> str:
+        """Render menu footer"""
+        menu = DealerMenuRegistry.MENUS.get(menu_type, DealerMenuRegistry.MENUS["main"])
+        
+        lines = ["", DealerRenderer.MENU_SEPARATOR, ""]
+        lines.append(f"📋 *{menu['name']}*")
+        lines.append("")
+        
+        for item in menu["items"]:
+            lines.append(f"{item['id']}. {item['icon']} {item['name']}")
+        
+        lines.append("")
+        lines.append("Reply with a number or type your question:")
+        
+        return "\n".join(lines)
+    
+    @classmethod
+    def render_main_menu(cls) -> str:
+        """Render the main menu"""
+        return cls._render_menu_footer("main")
+    
+    @classmethod
+    def render_dashboard_menu(cls) -> str:
+        """Render the dashboard menu"""
+        return cls._render_menu_footer("dashboard")
+    
+    @classmethod
+    def render_analytics_menu(cls) -> str:
+        """Render the analytics menu"""
+        return cls._render_menu_footer("analytics")
+    
+    @classmethod
+    def render_ai_assistant_menu(cls) -> str:
+        """Render the AI assistant menu"""
+        return cls._render_menu_footer("ai_assistant")
+    
+    @classmethod
+    def render_with_menu(cls, content: str, menu_type: str = "main") -> str:
+        """Render content with menu footer"""
+        menu_footer = cls._render_menu_footer(menu_type)
+        return f"{content}\n{menu_footer}"
     
     @staticmethod
     def render_dashboard(dealer: str, data: Dict[str, Any]) -> str:
-        return "\n".join([
+        """Render dealer dashboard"""
+        lines = [
             f"📊 *Dealer Dashboard - {dealer}*",
             "",
             "📌 *Details*",
@@ -1108,8 +1281,8 @@ class DealerRenderer:
             f"DN: {_format_number(data.get('total_dn', 0))}",
             f"Units: {_format_number(data.get('total_units', 0))}",
             f"Pending DN: {_format_number(data.get('pending_dn', 0))}",
-            f"Pending PGI: {_format_number(data.get('pgi_pending_dn', 0))}",
-            f"Pending POD: {_format_number(data.get('pod_pending_dn', 0))}",
+            f"PGI Pending: {_format_number(data.get('pgi_pending_dn', 0))}",
+            f"POD Pending: {_format_number(data.get('pod_pending_dn', 0))}",
             "",
             "🚚 *Delivery*",
             f"Success: {data.get('delivery_success_pct', 0):.1f}%",
@@ -1125,15 +1298,13 @@ class DealerRenderer:
             "📅 *Timeline*",
             f"First: {data.get('first_order', 'N/A')}",
             f"Last: {data.get('last_order', 'N/A')}",
-            "",
-            "━━━━━━━━━━━━━━━━━━",
-            "",
-            "0. Main Menu",
-            "99. Back"
-        ])
+        ]
+        
+        return "\n".join(lines)
     
     @staticmethod
     def render_ranking(ranking: List[Dict[str, Any]], metric: str = "Revenue", limit: int = 10) -> str:
+        """Render dealer ranking"""
         lines = [f"🏆 *Dealer Rankings by {metric}*", ""]
         
         for i, item in enumerate(ranking[:limit], 1):
@@ -1151,17 +1322,11 @@ class DealerRenderer:
             
             lines.append(f"{medal} {dealer}: {value}")
         
-        lines.extend([
-            "",
-            "━━━━━━━━━━━━━━━━━━",
-            "",
-            "0. Main Menu",
-            "99. Back"
-        ])
         return "\n".join(lines)
     
     @staticmethod
     def render_comparison(comparison: Dict[str, Any]) -> str:
+        """Render dealer comparison"""
         lines = ["🔄 *Dealer Comparison*", ""]
         
         for key, value in comparison.items():
@@ -1174,17 +1339,13 @@ class DealerRenderer:
                     lines.append(f"  {k}: {v}")
                 lines.append("")
         
-        lines.extend([
-            "",
-            "0. Main Menu",
-            "99. Back"
-        ])
         return "\n".join(lines)
     
     @staticmethod
     def render_search_results(query: str, items: List[Dict[str, Any]]) -> str:
+        """Render search results"""
         if not items:
-            return f"🔍 No dealers found for '{query}'\n\n0. Main Menu\n99. Back"
+            return f"🔍 No dealers found for '{query}'"
         
         lines = [f"🔍 *Search Results for '{query}'*", ""]
         lines.append(f"Found: {len(items)} dealers")
@@ -1205,13 +1366,13 @@ class DealerRenderer:
         if len(items) > 15:
             lines.append(f"... and {len(items) - 15} more")
         
-        lines.extend(["", "0. Main Menu", "99. Back"])
         return "\n".join(lines)
     
     @staticmethod
     def render_products(products: List[Dict[str, Any]], dealer: str) -> str:
+        """Render dealer products"""
         if not products:
-            return f"📦 *Products - {dealer}*\n\nNo products found.\n\n0. Main Menu\n99. Back"
+            return f"📦 No products found for {dealer}"
         
         lines = [f"📦 *Products - {dealer}*", ""]
         
@@ -1228,28 +1389,41 @@ class DealerRenderer:
         if len(products) > 10:
             lines.append(f"... and {len(products) - 10} more")
         
-        lines.extend(["", "0. Main Menu", "99. Back"])
         return "\n".join(lines)
     
     @staticmethod
-    def render_ai_response(query: str, response: str) -> str:
-        return "\n".join([
-            f"🤖 *AI Assistant*",
+    def render_summary(data: Dict[str, Any]) -> str:
+        """Render summary"""
+        lines = [
+            "📋 *Executive Summary*",
             "",
-            f"📝 *Your Query:* {query}",
+            f"Dealer: {data.get('dealer', 'N/A')}",
+            f"Code: {data.get('dealer_code', 'N/A')}",
             "",
-            response,
+            "📊 *Key Metrics*",
+            f"Revenue: {_format_currency(data.get('total_revenue', 0))}",
+            f"DN: {_format_number(data.get('total_dn', 0))}",
+            f"Units: {_format_number(data.get('total_units', 0))}",
+            f"Pending: {_format_number(data.get('pending_dn', 0))}",
             "",
-            "0. Main Menu",
-            "99. Back"
-        ])
+            "🚚 *Delivery*",
+            f"Success Rate: {data.get('delivery_success_pct', 0):.1f}%",
+            f"POD Rate: {data.get('pod_success_pct', 0):.1f}%",
+            f"Avg Days: {data.get('avg_delivery_days', 0):.1f}",
+            "",
+            "📈 *Performance*",
+            f"Score: {data.get('business_score', 0):.1f}/100",
+            f"Status: {data.get('overall_status', 'Unknown')}",
+            f"Grade: {data.get('performance_grade', 'N/A')}",
+        ]
+        return "\n".join(lines)
 
 # ============================================================
-# BLOCK 11: MAIN DEALER ANALYTICS SERVICE
+# BLOCK 13: MAIN DEALER ANALYTICS SERVICE
 # ============================================================
 
 class DealerAnalyticsService:
-    """Enterprise Dealer Domain AI Engine"""
+    """Enterprise Dealer Domain AI Engine - Fully Independent"""
     
     _instance: Optional["DealerAnalyticsService"] = None
     _lock = threading.Lock()
@@ -1267,23 +1441,24 @@ class DealerAnalyticsService:
         
         self._initialized = True
         self._service_name = "dealer_analytics"
-        self._version = "3.0"
+        self._version = "4.0"
         
         # Initialize engines
         self._intent_engine = DealerIntentEngine()
-        self._entity_extractor = DealerEntityExtractor()
         self._renderer = DealerRenderer()
+        self._question_registry = DealerQuestionRegistry()
         
         # Sessions
         self._sessions: Dict[str, DealerSession] = {}
         self._session_lock = threading.RLock()
         
-        logger.info("=" * 60)
+        logger.info("=" * 70)
         logger.info(f"🚀 Dealer Domain AI Engine v{self._version} initialized")
         logger.info(f"   🗄️  Database: {'Connected' if DB_AVAILABLE else 'Fallback'}")
         logger.info(f"   🤖 AI Engine: {'Active' if DEALER_AI_ENABLED else 'Limited'}")
         logger.info(f"   🔍 Semantic: {'Enabled' if DEALER_SEMANTIC_ENABLED else 'Disabled'}")
-        logger.info("=" * 60)
+        logger.info(f"   📋 Auto-Menu: {'Enabled' if DEALER_MENU_AUTO_SHOW else 'Disabled'}")
+        logger.info("=" * 70)
     
     def _get_session(self, session_id: str) -> DealerSession:
         with self._session_lock:
@@ -1301,68 +1476,159 @@ class DealerAnalyticsService:
             logger.error(f"Database session error: {e}")
             return None
     
+    def _get_menu_type(self, session: DealerSession) -> str:
+        """Get current menu type based on session state"""
+        if session.menu_state == DealerMenuState.DASHBOARD:
+            return "dashboard"
+        elif session.menu_state == DealerMenuState.ANALYTICS:
+            return "analytics"
+        elif session.menu_state == DealerMenuState.AI_ASSISTANT:
+            return "ai_assistant"
+        else:
+            return "main"
+    
+    def _get_menu(self, session: DealerSession) -> str:
+        """Get appropriate menu for current session state"""
+        menu_type = self._get_menu_type(session)
+        
+        if menu_type == "dashboard":
+            return self._renderer.render_dashboard_menu()
+        elif menu_type == "analytics":
+            return self._renderer.render_analytics_menu()
+        elif menu_type == "ai_assistant":
+            return self._renderer.render_ai_assistant_menu()
+        else:
+            return self._renderer.render_main_menu()
+    
+    def _render_response(self, content: str, session: DealerSession) -> str:
+        """Render response with appropriate menu footer"""
+        menu_type = self._get_menu_type(session)
+        return self._renderer.render_with_menu(content, menu_type)
+    
     def get_main_menu(self) -> str:
+        """Get the main dealer menu"""
         return self._renderer.render_main_menu()
     
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
-        """Main entry point for dealer processing"""
+        """
+        Main entry point for dealer processing.
+        
+        This is the ONLY external interface.
+        All processing stays inside this module.
+        """
+        session = self._get_session(sender)
+        
+        # AUTO-MENU: Show menu on first entry
+        if not session.menu_shown:
+            session.menu_shown = True
+            logger.info(f"📋 Auto-showing dealer menu for {sender}")
+            return self._render_response("📊 Welcome to the Dealer Intelligence Engine!", session)
+        
         if not message or not message.strip():
-            return self.get_main_menu()
+            return self._render_response("Please provide a dealer name or select a menu option.", session)
         
         message_clean = message.strip()
         logger.info(f"📊 Dealer Query: '{message_clean}' from {sender}")
         
-        session = self._get_session(sender)
         session.touch()
         
-        # STEP 1: Check for exit
+        # ============================================================
+        # STEP 1: Check for exit (99)
+        # ============================================================
         if message_clean == "99":
             session.clear()
             logger.info(f"🚪 Dealer session exited for {sender}")
-            return "99"
+            return "__EXIT__"
         
-        # STEP 2: Check for menu commands
-        if message_clean.lower() in ["menu", "help", "options", "0"]:
-            return self.get_main_menu()
+        # ============================================================
+        # STEP 2: Check for menu commands (0, 1, 2, 3)
+        # ============================================================
+        if message_clean == "0":
+            session.menu_state = DealerMenuState.MAIN
+            return self._render_response("Main Menu", session)
         
-        # STEP 3: Check for menu options (1-5)
-        if message_clean in ["1", "2", "3", "4", "5"]:
-            return self._handle_menu_option(sender, message_clean, session)
+        if message_clean == "1":
+            session.menu_state = DealerMenuState.DASHBOARD
+            return self._render_response("📊 *Dashboard Menu*\n\nSelect an option below:", session)
         
-        # STEP 4: Detect intent
+        if message_clean == "2":
+            session.menu_state = DealerMenuState.ANALYTICS
+            return self._render_response("📈 *Analytics Menu*\n\nSelect an option below:", session)
+        
+        if message_clean == "3":
+            session.menu_state = DealerMenuState.AI_ASSISTANT
+            return self._render_response("🤖 *AI Assistant*\n\nAsk me anything about dealers:", session)
+        
+        # ============================================================
+        # STEP 3: Check Question Registry (Predefined questions)
+        # ============================================================
+        handler_match = self._question_registry.find_handler(message_clean)
+        if handler_match:
+            handler_name, confidence = handler_match
+            logger.info(f"📋 Question matched: {handler_name} (confidence: {confidence:.2f})")
+            
+            if handler_name == "handle_summary":
+                return self._handle_summary(session, message_clean)
+            elif handler_name == "handle_revenue":
+                return self._handle_revenue(session, message_clean)
+            elif handler_name == "handle_units":
+                return self._handle_units(session, message_clean)
+            elif handler_name == "handle_pending":
+                return self._handle_pending(session, message_clean)
+            elif handler_name == "handle_delivery":
+                return self._handle_delivery(session, message_clean)
+            elif handler_name == "handle_pgi":
+                return self._handle_pgi(session, message_clean)
+            elif handler_name == "handle_pod":
+                return self._handle_pod(session, message_clean)
+            elif handler_name == "handle_ranking":
+                return self._handle_ranking(session, message_clean)
+            elif handler_name == "handle_top":
+                return self._handle_top(session, message_clean)
+            elif handler_name == "handle_bottom":
+                return self._handle_bottom(session, message_clean)
+            elif handler_name == "handle_comparison":
+                return self._handle_comparison(session, message_clean)
+            elif handler_name == "handle_search":
+                return self._handle_search(session, message_clean)
+            elif handler_name == "handle_performance":
+                return self._handle_performance(session, message_clean)
+            elif handler_name == "handle_timeline":
+                return self._handle_timeline(session, message_clean)
+            elif handler_name == "handle_history":
+                return self._handle_history(session, message_clean)
+            elif handler_name == "handle_products":
+                return self._handle_products(session, message_clean)
+            elif handler_name == "handle_models":
+                return self._handle_models(session, message_clean)
+            elif handler_name == "handle_trends":
+                return self._handle_trends(session, message_clean)
+        
+        # ============================================================
+        # STEP 4: Check if it's a dealer name
+        # ============================================================
+        dealer_name = self._resolve_dealer_name(message_clean)
+        if dealer_name:
+            session.set_dealer(dealer_name)
+            return self._handle_dashboard(session, dealer_name)
+        
+        # ============================================================
+        # STEP 5: Intent Detection (AI fallback)
+        # ============================================================
         intent_result = self._intent_engine.detect_intent(message_clean)
         session.last_intent = intent_result.intent
         logger.info(f"🎯 Intent: {intent_result.intent.value} (confidence: {intent_result.confidence:.2f})")
         
-        # STEP 5: Process based on intent
+        # Process based on intent
         response = self._process_intent(session, intent_result, message_clean)
         
-        # STEP 6: Update history
+        # Update history
         session.add_history(message_clean, response)
         
-        return response
-    
-    def _handle_menu_option(self, sender: str, option: str, session: DealerSession) -> str:
-        """Handle menu options"""
-        if option == "1":
-            if session.current_dealer:
-                return self._get_dashboard(session.current_dealer)
-            return "🔍 *Enter dealer name:*\n\nType a dealer name.\n\n0. Main Menu\n99. Back"
-        elif option == "2":
-            return "🔍 *Search Dealers:*\n\nType 'search [keyword]'\n\nExamples:\n• search Lahore\n• search Zoom\n\n0. Main Menu\n99. Back"
-        elif option == "3":
-            return self._get_ranking("revenue", 10)
-        elif option == "4":
-            if session.current_dealer:
-                return self._get_analytics(session.current_dealer)
-            return "🔍 *Enter dealer name for analytics:*\n\n0. Main Menu\n99. Back"
-        elif option == "5":
-            return "🤖 *AI Assistant*\n\nAsk me anything about dealers:\n• Revenue trends\n• Performance analysis\n• Dealer comparisons\n• Product insights\n\n0. Main Menu\n99. Back"
-        return self.get_main_menu()
+        return self._render_response(response, session)
     
     def _process_intent(self, session: DealerSession, intent_result: DealerIntentResult, message: str) -> str:
         """Process intent and return response"""
-        
         intent = intent_result.intent
         entities = intent_result.entities
         
@@ -1372,28 +1638,25 @@ class DealerAnalyticsService:
         # Handle exit
         if intent == DealerIntent.EXIT:
             session.clear()
-            return "99"
+            return "__EXIT__"
         
         # Handle menu
         if intent == DealerIntent.MENU or intent == DealerIntent.HELP:
-            return self.get_main_menu()
+            return "Main Menu"
         
         # Handle ranking
         if intent == DealerIntent.RANKING:
             metric = entities.get("metrics", ["revenue"])[0] if entities.get("metrics") else "revenue"
             limit = entities.get("limit", 10)
-            return self._get_ranking(metric, limit)
+            return self._handle_ranking(session, message)
         
         # Handle comparison
         if intent == DealerIntent.COMPARISON and len(dealer_names) >= 2:
-            return self._compare(dealer_names[0], dealer_names[1])
+            return self._handle_comparison(session, message)
         
         # Handle search
         if intent == DealerIntent.SEARCH:
-            query = message.replace("search", "").replace("find", "").strip()
-            if query:
-                return self._search(query)
-            return "🔍 Please specify what to search."
+            return self._handle_search(session, message)
         
         # Handle dealer-specific queries
         dealer_name = None
@@ -1407,41 +1670,45 @@ class DealerAnalyticsService:
         if dealer_name:
             session.set_dealer(dealer_name)
             
-            if intent == DealerIntent.DASHBOARD:
-                return self._get_dashboard(dealer_name)
+            if intent == DealerIntent.DASHBOARD or intent == DealerIntent.SUMMARY:
+                return self._handle_dashboard(session, dealer_name)
             elif intent == DealerIntent.REVENUE:
-                return self._get_revenue(dealer_name)
+                return self._handle_revenue(session, dealer_name)
             elif intent == DealerIntent.UNITS:
-                return self._get_units(dealer_name)
+                return self._handle_units(session, dealer_name)
             elif intent == DealerIntent.PENDING:
-                return self._get_pending(dealer_name)
+                return self._handle_pending(session, dealer_name)
             elif intent == DealerIntent.DELIVERY:
-                return self._get_delivery(dealer_name)
+                return self._handle_delivery(session, dealer_name)
+            elif intent == DealerIntent.PGI:
+                return self._handle_pgi(session, dealer_name)
+            elif intent == DealerIntent.POD:
+                return self._handle_pod(session, dealer_name)
             elif intent == DealerIntent.PERFORMANCE:
-                return self._get_performance(dealer_name)
-            elif intent == DealerIntent.PRODUCTS or intent == DealerIntent.MODELS:
-                return self._get_products(dealer_name)
+                return self._handle_performance(session, dealer_name)
+            elif intent == DealerIntent.PRODUCTS:
+                return self._handle_products(session, dealer_name)
+            elif intent == DealerIntent.MODELS:
+                return self._handle_models(session, dealer_name)
             elif intent == DealerIntent.HISTORY or intent == DealerIntent.TIMELINE:
-                return self._get_timeline(dealer_name)
-            elif intent == DealerIntent.SUMMARY:
-                return self._get_summary(dealer_name)
-            elif intent == DealerIntent.AI_ASK:
-                return self._get_ai_response(message, dealer_name)
+                return self._handle_timeline(session, dealer_name)
         
         # If we have a dealer name but no intent, show dashboard
         if dealer_names:
-            return self._get_dashboard(dealer_names[0])
+            dealer_name = dealer_names[0]
+            session.set_dealer(dealer_name)
+            return self._handle_dashboard(session, dealer_name)
         
         # If it's a dealer name with no intent, show dashboard
         if len(message.split()) <= 3:
             dealer_name = self._resolve_dealer_name(message)
             if dealer_name:
                 session.set_dealer(dealer_name)
-                return self._get_dashboard(dealer_name)
+                return self._handle_dashboard(session, dealer_name)
         
         # AI fallback
         if DEALER_AI_ENABLED:
-            return self._get_ai_response(message, session.current_dealer)
+            return self._handle_ai_ask(session, message)
         
         # Unknown
         return self._get_help()
@@ -1462,217 +1729,456 @@ class DealerAnalyticsService:
         
         return None
     
-    def _get_dashboard(self, dealer_name: str) -> str:
-        """Get dealer dashboard"""
-        session = self._get_db_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
+    # ============================================================
+    # HANDLERS - Predefined Business Logic
+    # ============================================================
+    
+    def _handle_main_menu(self, session: DealerSession) -> str:
+        """Handle main menu"""
+        session.menu_state = DealerMenuState.MAIN
+        return "Main Menu"
+    
+    def _handle_dashboard(self, session: DealerSession, dealer_name: str) -> str:
+        """Handle dealer dashboard"""
+        if not dealer_name:
+            return "Please provide a dealer name."
+        
+        session.menu_state = DealerMenuState.DASHBOARD
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
         
         try:
-            repo = DealerRepository(session)
+            repo = DealerRepository(db_session)
             data = repo.get_dashboard(dealer_name)
-            session.close()
+            db_session.close()
             
             if not data:
-                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
+                return f"⚠️ Dealer '{dealer_name}' not found."
             
             return self._renderer.render_dashboard(dealer_name, data)
             
         except Exception as e:
             logger.error(f"Dashboard error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching dealer {dealer_name}\n\n0. Main Menu\n99. Back"
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error fetching dealer {dealer_name}"
     
-    def _get_ranking(self, metric: str = "revenue", limit: int = 10) -> str:
-        """Get dealer ranking"""
-        session = self._get_db_session()
-        if not session:
-            return "⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
+    def _handle_summary(self, session: DealerSession, message: str) -> str:
+        """Handle summary request"""
+        dealer_name = session.current_dealer
+        
+        if not dealer_name:
+            # Try to extract dealer from message
+            dealer_name = self._resolve_dealer_name(message)
+            if not dealer_name:
+                return "Please provide a dealer name for the summary."
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
         
         try:
-            repo = DealerRepository(session)
-            ranking = repo.get_ranking(metric, limit)
-            session.close()
-            
-            if not ranking:
-                return f"🏆 *Dealer Rankings by {metric.title()}*\n\nNo dealers found.\n\n0. Main Menu\n99. Back"
-            
-            return self._renderer.render_ranking(ranking, metric.title(), limit)
-            
-        except Exception as e:
-            logger.error(f"Ranking error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching rankings.\n\n0. Main Menu\n99. Back"
-    
-    def _compare(self, dealer1: str, dealer2: str) -> str:
-        """Compare two dealers"""
-        session = self._get_db_session()
-        if not session:
-            return "⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            repo = DealerRepository(session)
-            comparison = repo.compare(dealer1, dealer2)
-            session.close()
-            
-            if not comparison:
-                return "⚠️ One or both dealers not found.\n\n0. Main Menu\n99. Back"
-            
-            return self._renderer.render_comparison(comparison)
-            
-        except Exception as e:
-            logger.error(f"Comparison error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error comparing dealers.\n\n0. Main Menu\n99. Back"
-    
-    def _search(self, query: str) -> str:
-        """Search dealers"""
-        session = self._get_db_session()
-        if not session:
-            return "⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            repo = DealerRepository(session)
-            results = repo.search(query)
-            session.close()
-            
-            return self._renderer.render_search_results(query, results)
-            
-        except Exception as e:
-            logger.error(f"Search error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error searching for '{query}'\n\n0. Main Menu\n99. Back"
-    
-    def _get_revenue(self, dealer_name: str) -> str:
-        """Get dealer revenue"""
-        session = self._get_db_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            repo = DealerRepository(session)
+            repo = DealerRepository(db_session)
             data = repo.get_dashboard(dealer_name)
-            session.close()
+            db_session.close()
             
             if not data:
-                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
+                return f"⚠️ Dealer '{dealer_name}' not found."
+            
+            return self._renderer.render_summary(data)
+            
+        except Exception as e:
+            logger.error(f"Summary error: {e}")
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error fetching summary for {dealer_name}"
+    
+    def _handle_revenue(self, session: DealerSession, message: str) -> str:
+        """Handle revenue request"""
+        dealer_name = session.current_dealer
+        
+        if not dealer_name:
+            dealer_name = self._resolve_dealer_name(message)
+            if not dealer_name:
+                return "Please provide a dealer name for revenue."
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
+        
+        try:
+            repo = DealerRepository(db_session)
+            data = repo.get_dashboard(dealer_name)
+            db_session.close()
+            
+            if not data:
+                return f"⚠️ Dealer '{dealer_name}' not found."
             
             revenue = data.get('total_revenue', 0)
-            return f"💰 *{dealer_name} Revenue*\n\n{_format_currency(revenue)}\n\n0. Main Menu\n99. Back"
+            return f"💰 *{dealer_name} Revenue*\n\n{_format_currency(revenue)}"
             
         except Exception as e:
             logger.error(f"Revenue error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching revenue for {dealer_name}\n\n0. Main Menu\n99. Back"
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error fetching revenue for {dealer_name}"
     
-    def _get_units(self, dealer_name: str) -> str:
-        """Get dealer units"""
-        session = self._get_db_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
+    def _handle_units(self, session: DealerSession, message: str) -> str:
+        """Handle units request"""
+        dealer_name = session.current_dealer
+        
+        if not dealer_name:
+            dealer_name = self._resolve_dealer_name(message)
+            if not dealer_name:
+                return "Please provide a dealer name for units."
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
         
         try:
-            repo = DealerRepository(session)
+            repo = DealerRepository(db_session)
             data = repo.get_dashboard(dealer_name)
-            session.close()
+            db_session.close()
             
             if not data:
-                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
+                return f"⚠️ Dealer '{dealer_name}' not found."
             
             units = data.get('total_units', 0)
-            return f"📦 *{dealer_name} Units*\n\n{_format_number(units)}\n\n0. Main Menu\n99. Back"
+            return f"📦 *{dealer_name} Units*\n\n{_format_number(units)}"
             
         except Exception as e:
             logger.error(f"Units error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching units for {dealer_name}\n\n0. Main Menu\n99. Back"
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error fetching units for {dealer_name}"
     
-    def _get_pending(self, dealer_name: str) -> str:
-        """Get dealer pending"""
-        session = self._get_db_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
+    def _handle_pending(self, session: DealerSession, message: str) -> str:
+        """Handle pending request"""
+        dealer_name = session.current_dealer
+        
+        if not dealer_name:
+            dealer_name = self._resolve_dealer_name(message)
+            if not dealer_name:
+                return "Please provide a dealer name for pending."
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
         
         try:
-            repo = DealerRepository(session)
+            repo = DealerRepository(db_session)
             data = repo.get_dashboard(dealer_name)
-            session.close()
+            db_session.close()
             
             if not data:
-                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
+                return f"⚠️ Dealer '{dealer_name}' not found."
             
-            return "\n".join([
+            lines = [
                 f"⏳ *Pending Summary - {dealer_name}*",
                 "",
                 f"Pending DN: {_format_number(data.get('pending_dn', 0))}",
                 f"PGI Pending: {_format_number(data.get('pgi_pending_dn', 0))}",
                 f"POD Pending: {_format_number(data.get('pod_pending_dn', 0))}",
-                f"Pending Revenue: {_format_currency(data.get('total_revenue', 0) * (data.get('pending_pct', 0) / 100))}",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ])
+            ]
+            return "\n".join(lines)
             
         except Exception as e:
             logger.error(f"Pending error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching pending for {dealer_name}\n\n0. Main Menu\n99. Back"
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error fetching pending for {dealer_name}"
     
-    def _get_delivery(self, dealer_name: str) -> str:
-        """Get dealer delivery"""
-        session = self._get_db_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
+    def _handle_delivery(self, session: DealerSession, message: str) -> str:
+        """Handle delivery request"""
+        dealer_name = session.current_dealer
+        
+        if not dealer_name:
+            dealer_name = self._resolve_dealer_name(message)
+            if not dealer_name:
+                return "Please provide a dealer name for delivery."
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
         
         try:
-            repo = DealerRepository(session)
+            repo = DealerRepository(db_session)
             data = repo.get_dashboard(dealer_name)
-            session.close()
+            db_session.close()
             
             if not data:
-                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
+                return f"⚠️ Dealer '{dealer_name}' not found."
             
-            return "\n".join([
+            lines = [
                 f"🚚 *Delivery Summary - {dealer_name}*",
                 "",
                 f"Success Rate: {data.get('delivery_success_pct', 0):.1f}%",
                 f"POD Success: {data.get('pod_success_pct', 0):.1f}%",
                 f"Avg Delivery Days: {data.get('avg_delivery_days', 0):.1f}",
                 f"Avg POD Days: {data.get('avg_pod_days', 0):.1f}",
-                f"Pending DN: {_format_number(data.get('pending_dn', 0))}",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ])
+            ]
+            return "\n".join(lines)
             
         except Exception as e:
             logger.error(f"Delivery error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching delivery for {dealer_name}\n\n0. Main Menu\n99. Back"
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error fetching delivery for {dealer_name}"
     
-    def _get_performance(self, dealer_name: str) -> str:
-        """Get dealer performance"""
-        session = self._get_db_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
+    def _handle_pgi(self, session: DealerSession, message: str) -> str:
+        """Handle PGI request"""
+        dealer_name = session.current_dealer
+        
+        if not dealer_name:
+            dealer_name = self._resolve_dealer_name(message)
+            if not dealer_name:
+                return "Please provide a dealer name for PGI."
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
         
         try:
-            repo = DealerRepository(session)
+            repo = DealerRepository(db_session)
             data = repo.get_dashboard(dealer_name)
-            session.close()
+            db_session.close()
             
             if not data:
-                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
+                return f"⚠️ Dealer '{dealer_name}' not found."
             
-            return "\n".join([
+            lines = [
+                f"📋 *PGI Summary - {dealer_name}*",
+                "",
+                f"PGI Completed: {_format_number(data.get('pgi_completed', 0))}",
+                f"PGI Pending: {_format_number(data.get('pgi_pending_dn', 0))}",
+                f"PGI Success: {data.get('delivery_success_pct', 0):.1f}%",
+            ]
+            return "\n".join(lines)
+            
+        except Exception as e:
+            logger.error(f"PGI error: {e}")
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error fetching PGI for {dealer_name}"
+    
+    def _handle_pod(self, session: DealerSession, message: str) -> str:
+        """Handle POD request"""
+        dealer_name = session.current_dealer
+        
+        if not dealer_name:
+            dealer_name = self._resolve_dealer_name(message)
+            if not dealer_name:
+                return "Please provide a dealer name for POD."
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
+        
+        try:
+            repo = DealerRepository(db_session)
+            data = repo.get_dashboard(dealer_name)
+            db_session.close()
+            
+            if not data:
+                return f"⚠️ Dealer '{dealer_name}' not found."
+            
+            lines = [
+                f"📋 *POD Summary - {dealer_name}*",
+                "",
+                f"POD Completed: {_format_number(data.get('pod_completed', 0))}",
+                f"POD Pending: {_format_number(data.get('pod_pending_dn', 0))}",
+                f"POD Success: {data.get('pod_success_pct', 0):.1f}%",
+            ]
+            return "\n".join(lines)
+            
+        except Exception as e:
+            logger.error(f"POD error: {e}")
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error fetching POD for {dealer_name}"
+    
+    def _handle_ranking(self, session: DealerSession, message: str) -> str:
+        """Handle ranking request"""
+        session.menu_state = DealerMenuState.RANKING
+        
+        # Extract metric from message
+        metric = "revenue"
+        if "units" in message.lower():
+            metric = "units"
+        elif "pending" in message.lower():
+            metric = "pending"
+        elif "delivery" in message.lower():
+            metric = "delivery"
+        
+        # Extract limit
+        limit = 10
+        limit_match = re.search(r'top\s+(\d+)', message.lower())
+        if limit_match:
+            limit = int(limit_match.group(1))
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
+        
+        try:
+            repo = DealerRepository(db_session)
+            ranking = repo.get_ranking(metric, limit)
+            db_session.close()
+            
+            if not ranking:
+                return f"🏆 *Dealer Rankings by {metric.title()}*\n\nNo dealers found."
+            
+            return self._renderer.render_ranking(ranking, metric.title(), limit)
+            
+        except Exception as e:
+            logger.error(f"Ranking error: {e}")
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error fetching rankings."
+    
+    def _handle_top(self, session: DealerSession, message: str) -> str:
+        """Handle top dealers request"""
+        return self._handle_ranking(session, message)
+    
+    def _handle_bottom(self, session: DealerSession, message: str) -> str:
+        """Handle bottom dealers request"""
+        session.menu_state = DealerMenuState.RANKING
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
+        
+        try:
+            repo = DealerRepository(db_session)
+            # Reverse order for bottom
+            ranking = repo.get_ranking("revenue", 10)
+            ranking.reverse()
+            db_session.close()
+            
+            if not ranking:
+                return "🏆 *Bottom Dealers*\n\nNo dealers found."
+            
+            return self._renderer.render_ranking(ranking, "Revenue (Bottom)", 10)
+            
+        except Exception as e:
+            logger.error(f"Bottom ranking error: {e}")
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error fetching bottom rankings."
+    
+    def _handle_comparison(self, session: DealerSession, message: str) -> str:
+        """Handle comparison request"""
+        session.menu_state = DealerMenuState.COMPARISON
+        
+        # Extract dealer names from message
+        compare_pattern = r'compare\s+([\w\s]+)\s+and\s+([\w\s]+)'
+        compare_match = re.search(compare_pattern, message, re.IGNORECASE)
+        
+        if not compare_match:
+            return "Please specify two dealers to compare.\nExample: compare Dealer1 and Dealer2"
+        
+        dealer1 = compare_match.group(1).strip()
+        dealer2 = compare_match.group(2).strip()
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
+        
+        try:
+            repo = DealerRepository(db_session)
+            dash1 = repo.get_dashboard(dealer1)
+            dash2 = repo.get_dashboard(dealer2)
+            db_session.close()
+            
+            if not dash1 or not dash2:
+                return "⚠️ One or both dealers not found."
+            
+            comparison = {}
+            
+            for dealer, dash in [(dealer1, dash1), (dealer2, dash2)]:
+                comparison[f"{dealer}_metrics"] = {
+                    "Revenue": _format_currency(dash.get('total_revenue', 0)),
+                    "Units": _format_number(dash.get('total_units', 0)),
+                    "DN": _format_number(dash.get('total_dn', 0)),
+                    "Pending": _format_number(dash.get('pending_dn', 0)),
+                    "Delivery": f"{dash.get('delivery_success_pct', 0):.1f}%",
+                    "POD": f"{dash.get('pod_success_pct', 0):.1f}%",
+                    "Score": f"{dash.get('business_score', 0):.1f}/100",
+                }
+            
+            rev1 = dash1.get('total_revenue', 0)
+            rev2 = dash2.get('total_revenue', 0)
+            
+            if rev1 > rev2:
+                comparison["explanation"] = f"{dealer1} has higher revenue than {dealer2}"
+            elif rev2 > rev1:
+                comparison["explanation"] = f"{dealer2} has higher revenue than {dealer1}"
+            else:
+                comparison["explanation"] = f"{dealer1} and {dealer2} have similar revenue"
+            
+            return self._renderer.render_comparison(comparison)
+            
+        except Exception as e:
+            logger.error(f"Comparison error: {e}")
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error comparing dealers."
+    
+    def _handle_search(self, session: DealerSession, message: str) -> str:
+        """Handle search request"""
+        session.menu_state = DealerMenuState.SEARCH_RESULTS
+        
+        # Extract search query
+        search_terms = ["search", "find", "lookup"]
+        query = message
+        for term in search_terms:
+            query = query.replace(term, "").strip()
+        
+        if not query:
+            return "Please specify what to search for."
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
+        
+        try:
+            repo = DealerRepository(db_session)
+            results = repo.search(query)
+            db_session.close()
+            
+            return self._renderer.render_search_results(query, results)
+            
+        except Exception as e:
+            logger.error(f"Search error: {e}")
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error searching for '{query}'"
+    
+    def _handle_performance(self, session: DealerSession, message: str) -> str:
+        """Handle performance request"""
+        dealer_name = session.current_dealer
+        
+        if not dealer_name:
+            dealer_name = self._resolve_dealer_name(message)
+            if not dealer_name:
+                return "Please provide a dealer name for performance."
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
+        
+        try:
+            repo = DealerRepository(db_session)
+            data = repo.get_dashboard(dealer_name)
+            db_session.close()
+            
+            if not data:
+                return f"⚠️ Dealer '{dealer_name}' not found."
+            
+            lines = [
                 f"📈 *Performance - {dealer_name}*",
                 "",
                 f"Score: {data.get('business_score', 0):.1f}/100",
@@ -1681,149 +2187,134 @@ class DealerAnalyticsService:
                 f"Delivery Success: {data.get('delivery_success_pct', 0):.1f}%",
                 f"POD Success: {data.get('pod_success_pct', 0):.1f}%",
                 f"Pending DN: {_format_number(data.get('pending_dn', 0))}",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ])
+            ]
+            return "\n".join(lines)
             
         except Exception as e:
             logger.error(f"Performance error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching performance for {dealer_name}\n\n0. Main Menu\n99. Back"
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error fetching performance for {dealer_name}"
     
-    def _get_products(self, dealer_name: str) -> str:
-        """Get dealer products"""
-        session = self._get_db_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
+    def _handle_timeline(self, session: DealerSession, message: str) -> str:
+        """Handle timeline request"""
+        dealer_name = session.current_dealer
+        
+        if not dealer_name:
+            dealer_name = self._resolve_dealer_name(message)
+            if not dealer_name:
+                return "Please provide a dealer name for timeline."
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
         
         try:
-            repo = DealerRepository(session)
-            products = repo.get_products(dealer_name)
-            session.close()
-            
-            return self._renderer.render_products(products, dealer_name)
-            
-        except Exception as e:
-            logger.error(f"Products error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching products for {dealer_name}\n\n0. Main Menu\n99. Back"
-    
-    def _get_timeline(self, dealer_name: str) -> str:
-        """Get dealer timeline"""
-        session = self._get_db_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            repo = DealerRepository(session)
+            repo = DealerRepository(db_session)
             data = repo.get_dashboard(dealer_name)
-            session.close()
+            db_session.close()
             
             if not data:
-                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
+                return f"⚠️ Dealer '{dealer_name}' not found."
             
-            return "\n".join([
+            lines = [
                 f"📅 *Timeline - {dealer_name}*",
                 "",
                 f"First Order: {data.get('first_order', 'N/A')}",
                 f"Last Order: {data.get('last_order', 'N/A')}",
                 f"Total DN: {_format_number(data.get('total_dn', 0))}",
                 f"Total Revenue: {_format_currency(data.get('total_revenue', 0))}",
-                "",
-                f"Status: {data.get('overall_status', 'Unknown')}",
-                f"Score: {data.get('business_score', 0):.1f}/100",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ])
+            ]
+            return "\n".join(lines)
             
         except Exception as e:
             logger.error(f"Timeline error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching timeline for {dealer_name}\n\n0. Main Menu\n99. Back"
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error fetching timeline for {dealer_name}"
     
-    def _get_summary(self, dealer_name: str) -> str:
-        """Get dealer summary"""
-        session = self._get_db_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
+    def _handle_history(self, session: DealerSession, message: str) -> str:
+        """Handle history request"""
+        return self._handle_timeline(session, message)
+    
+    def _handle_products(self, session: DealerSession, message: str) -> str:
+        """Handle products request"""
+        dealer_name = session.current_dealer
+        
+        if not dealer_name:
+            dealer_name = self._resolve_dealer_name(message)
+            if not dealer_name:
+                return "Please provide a dealer name for products."
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
         
         try:
-            repo = DealerRepository(session)
-            data = repo.get_dashboard(dealer_name)
-            session.close()
+            repo = DealerRepository(db_session)
+            products = repo.get_products(dealer_name)
+            db_session.close()
             
-            if not data:
-                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
-            
-            summary = f"📋 *Executive Summary - {dealer_name}*\n\n"
-            summary += f"Revenue: {_format_currency(data.get('total_revenue', 0))}\n"
-            summary += f"DN: {_format_number(data.get('total_dn', 0))}\n"
-            summary += f"Units: {_format_number(data.get('total_units', 0))}\n"
-            summary += f"Pending: {_format_number(data.get('pending_dn', 0))}\n"
-            summary += f"Delivery: {data.get('delivery_success_pct', 0):.1f}%\n"
-            summary += f"Score: {data.get('business_score', 0):.1f}/100\n"
-            summary += f"Status: {data.get('overall_status', 'Unknown')}\n"
-            summary += f"Grade: {data.get('performance_grade', 'N/A')}\n\n"
-            summary += "0. Main Menu\n99. Back"
-            
-            return summary
+            return self._renderer.render_products(products, dealer_name)
             
         except Exception as e:
-            logger.error(f"Summary error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching summary for {dealer_name}\n\n0. Main Menu\n99. Back"
+            logger.error(f"Products error: {e}")
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error fetching products for {dealer_name}"
     
-    def _get_analytics(self, dealer_name: str) -> str:
-        """Get dealer analytics"""
-        session = self._get_db_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
+    def _handle_models(self, session: DealerSession, message: str) -> str:
+        """Handle models request"""
+        return self._handle_products(session, message)
+    
+    def _handle_trends(self, session: DealerSession, message: str) -> str:
+        """Handle trends request"""
+        dealer_name = session.current_dealer
+        
+        if not dealer_name:
+            dealer_name = self._resolve_dealer_name(message)
+            if not dealer_name:
+                return "Please provide a dealer name for trends."
+        
+        db_session = self._get_db_session()
+        if not db_session:
+            return "⚠️ Database unavailable."
         
         try:
-            repo = DealerRepository(session)
+            repo = DealerRepository(db_session)
             data = repo.get_dashboard(dealer_name)
-            session.close()
+            db_session.close()
             
             if not data:
-                return f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu\n99. Back"
+                return f"⚠️ Dealer '{dealer_name}' not found."
             
-            return "\n".join([
-                f"📊 *Analytics - {dealer_name}*",
+            # Simple growth calculation (mock for now)
+            growth = 12.5  # Placeholder
+            
+            lines = [
+                f"📈 *Trends - {dealer_name}*",
                 "",
-                "📈 *Revenue Analysis*",
-                f"Total: {_format_currency(data.get('total_revenue', 0))}",
-                f"Per DN: {_format_currency(data.get('avg_revenue_per_dn', 0))}",
-                "",
-                "📦 *Volume Analysis*",
-                f"Total DN: {_format_number(data.get('total_dn', 0))}",
-                f"Total Units: {_format_number(data.get('total_units', 0))}",
-                f"Per DN: {round(data.get('total_units', 0) / max(1, data.get('total_dn', 1)), 2)}",
-                "",
-                "⏳ *Pending Analysis*",
-                f"Pending: {_format_number(data.get('pending_dn', 0))}",
-                f"PGI Pending: {_format_number(data.get('pgi_pending_dn', 0))}",
-                f"POD Pending: {_format_number(data.get('pod_pending_dn', 0))}",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ])
+                f"Growth Rate: {growth:+.1f}%",
+                f"Revenue: {_format_currency(data.get('total_revenue', 0))}",
+                f"DN: {_format_number(data.get('total_dn', 0))}",
+                f"Units: {_format_number(data.get('total_units', 0))}",
+            ]
+            return "\n".join(lines)
             
         except Exception as e:
-            logger.error(f"Analytics error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching analytics for {dealer_name}\n\n0. Main Menu\n99. Back"
+            logger.error(f"Trends error: {e}")
+            if db_session:
+                db_session.close()
+            return f"⚠️ Error fetching trends for {dealer_name}"
     
-    def _get_ai_response(self, query: str, dealer_name: Optional[str] = None) -> str:
-        """Get AI-powered response"""
+    def _handle_ai_ask(self, session: DealerSession, message: str) -> str:
+        """Handle AI assistant request"""
+        session.menu_state = DealerMenuState.AI_ASSISTANT
+        
         if not DEALER_AI_ENABLED:
-            return "🤖 *AI Assistant*\n\nAI is currently disabled. Please try:\n• Dealer dashboard\n• Dealer search\n• Dealer rankings\n\n0. Main Menu\n99. Back"
+            return "🤖 AI Assistant is currently disabled."
+        
+        dealer_name = session.current_dealer
         
         # Build context
         context = f"Dealer: {dealer_name or 'Not specified'}\n"
@@ -1831,27 +2322,27 @@ class DealerAnalyticsService:
         # Get dealer data if available
         dealer_data = None
         if dealer_name:
-            session = self._get_db_session()
-            if session:
+            db_session = self._get_db_session()
+            if db_session:
                 try:
-                    repo = DealerRepository(session)
+                    repo = DealerRepository(db_session)
                     dealer_data = repo.get_dashboard(dealer_name)
-                    session.close()
+                    db_session.close()
                 except Exception:
                     pass
         
         # Build response
-        response_lines = ["🤖 *AI Assistant*", ""]
-        response_lines.append(f"📝 *Question:* {query}")
-        response_lines.append("")
+        lines = ["🤖 *AI Assistant*", ""]
+        lines.append(f"📝 *Question:* {message}")
+        lines.append("")
         
         if dealer_data:
-            response_lines.append("📊 *Dealer Data:*")
-            response_lines.append(f"Revenue: {_format_currency(dealer_data.get('total_revenue', 0))}")
-            response_lines.append(f"DN: {_format_number(dealer_data.get('total_dn', 0))}")
-            response_lines.append(f"Delivery: {dealer_data.get('delivery_success_pct', 0):.1f}%")
-            response_lines.append(f"Score: {dealer_data.get('business_score', 0):.1f}/100")
-            response_lines.append("")
+            lines.append("📊 *Dealer Data:*")
+            lines.append(f"Revenue: {_format_currency(dealer_data.get('total_revenue', 0))}")
+            lines.append(f"DN: {_format_number(dealer_data.get('total_dn', 0))}")
+            lines.append(f"Delivery: {dealer_data.get('delivery_success_pct', 0):.1f}%")
+            lines.append(f"Score: {dealer_data.get('business_score', 0):.1f}/100")
+            lines.append("")
         
         # Try LLM response
         try:
@@ -1860,42 +2351,55 @@ class DealerAnalyticsService:
                     model="llama3-70b-8192",
                     messages=[
                         {"role": "system", "content": f"You are a dealer analytics expert. Provide insights for: {context}"},
-                        {"role": "user", "content": query}
+                        {"role": "user", "content": message}
                     ],
                     temperature=0.7,
                     max_tokens=300
                 )
                 ai_response = response.choices[0].message.content.strip()
-                response_lines.append("💡 *AI Insights:*")
-                response_lines.append(ai_response)
+                lines.append("💡 *AI Insights:*")
+                lines.append(ai_response)
             elif self._intent_engine.openai_client:
                 response = self._intent_engine.openai_client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
                         {"role": "system", "content": f"You are a dealer analytics expert. Provide insights for: {context}"},
-                        {"role": "user", "content": query}
+                        {"role": "user", "content": message}
                     ],
                     temperature=0.7,
                     max_tokens=300
                 )
                 ai_response = response.choices[0].message.content.strip()
-                response_lines.append("💡 *AI Insights:*")
-                response_lines.append(ai_response)
+                lines.append("💡 *AI Insights:*")
+                lines.append(ai_response)
             else:
-                response_lines.append("💡 *AI Insights:*")
-                response_lines.append("AI insights are currently unavailable.")
-                response_lines.append("Please try a specific command like:")
-                response_lines.append("• Revenue analysis")
-                response_lines.append("• Delivery performance")
-                response_lines.append("• Dealer comparison")
+                lines.append("💡 *AI Insights:*")
+                lines.append("Please try a specific dealer command like:")
+                lines.append("• Revenue analysis")
+                lines.append("• Delivery performance")
+                lines.append("• Dealer comparison")
         except Exception as e:
             logger.error(f"AI response error: {e}")
-            response_lines.append("💡 *AI Insights:*")
-            response_lines.append("Unable to generate AI insights at this time.")
-            response_lines.append("Please try a specific dealer command.")
+            lines.append("💡 *AI Insights:*")
+            lines.append("Unable to generate AI insights at this time.")
+            lines.append("Please try a specific dealer command.")
         
-        response_lines.extend(["", "0. Main Menu", "99. Back"])
-        return "\n".join(response_lines)
+        return "\n".join(lines)
+    
+    def _handle_analytics(self, session: DealerSession, message: str) -> str:
+        """Handle analytics menu"""
+        session.menu_state = DealerMenuState.ANALYTICS
+        return "📈 *Analytics Menu*\n\nSelect an option below:"
+    
+    def _handle_ai_assistant(self, session: DealerSession, message: str) -> str:
+        """Handle AI assistant menu"""
+        session.menu_state = DealerMenuState.AI_ASSISTANT
+        return "🤖 *AI Assistant*\n\nAsk me anything about dealers:"
+    
+    def _handle_exit(self, session: DealerSession, message: str) -> str:
+        """Handle exit"""
+        session.clear()
+        return "__EXIT__"
     
     def _get_help(self) -> str:
         """Get help message"""
@@ -1916,9 +2420,6 @@ class DealerAnalyticsService:
             "📌 *Current Dealer:*",
             "• Use 'menu' to see all options",
             "• Type '99' to return to main menu",
-            "",
-            "0. Main Menu",
-            "99. Back"
         ])
     
     def health_check(self) -> Dict[str, Any]:
@@ -1933,6 +2434,7 @@ class DealerAnalyticsService:
             "database": "connected" if DB_AVAILABLE else "disconnected",
             "ai_enabled": DEALER_AI_ENABLED,
             "semantic_enabled": DEALER_SEMANTIC_ENABLED,
+            "auto_menu": DEALER_MENU_AUTO_SHOW,
             "active_sessions": active_sessions,
             "exit_command": "99",
             "timestamp": datetime.now().isoformat()
