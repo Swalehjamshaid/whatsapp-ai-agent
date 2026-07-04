@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
-# FILE: whatsapp-ai-agent-demo/app/services/dealer_analytics_service.py
-# VERSION: 2.0 - WHATSAPP DEALER ANALYTICS SERVICE
+# FILE: app/services/dealer_analytics_service.py
+# VERSION: 2.0 - WHATSAPP WEBHOOK INTEGRATION
 # ============================================================
 
 """
@@ -9,29 +9,26 @@
 WHATSAPP DEALER ANALYTICS SERVICE
 ================================================================================
 
-This is a COMPLETE, INDEPENDENT file for WhatsApp AI Agent Demo.
+This service handles dealer search and returns formatted responses for WhatsApp.
 
-STARTUP BEHAVIOR:
-    1. Initializes the service
-    2. Loads dealer data
-    3. DISPLAYS: "Please enter the name of the dealer"
-    4. Waits for user input
-    5. Searches and displays dashboard
-    6. Returns to prompt for next search
-    7. Type '99' to exit
+USAGE IN WEBHOOK:
+    from app.services.dealer_analytics_service import get_dealer_analytics_service
+    
+    service = get_dealer_analytics_service()
+    response = service.handle_whatsapp_message(user_id, user_input)
+    # Send response back via WhatsApp API
 
-================================================================================
-FILE PATH: whatsapp-ai-agent-demo/app/services/dealer_analytics_service.py
 ================================================================================
 """
 
 import re
-import sys
-from dataclasses import dataclass, field
+import logging
 from typing import Optional, Dict, List, Any
 
+logger = logging.getLogger(__name__)
+
 # ============================================================
-# DEALER DATA
+# DEALER DATABASE
 # ============================================================
 
 DEALER_DATABASE = {
@@ -297,69 +294,11 @@ DEALER_DATABASE = {
 }
 
 # ============================================================
-# DATA CLASSES
-# ============================================================
-
-@dataclass
-class DealerMatch:
-    dealer_name: str
-    dealer_code: str
-    customer_code: str
-    score: float
-    match_type: str
-    confidence: float
-
-@dataclass
-class DealerProfile:
-    name: str = ""
-    code: str = ""
-    customer_code: str = ""
-    office: str = ""
-    manager: str = ""
-    division: str = ""
-    warehouse: str = ""
-    warehouse_code: str = ""
-    city: str = ""
-    revenue: float = 0.0
-    avg_revenue_per_dn: float = 0.0
-    total_units: int = 0
-    avg_units_per_dn: float = 0.0
-    total_dn: int = 0
-    pending_dn: int = 0
-    delivered_dn: int = 0
-    delivery_pct: float = 0.0
-    pgi_pct: float = 0.0
-    pod_pct: float = 0.0
-    avg_delivery_days: float = 0.0
-    avg_pod_days: float = 0.0
-    product_count: int = 0
-    top_product: str = ""
-    warehouses_used: List[str] = field(default_factory=list)
-    warehouse_count: int = 0
-    cities_served: List[str] = field(default_factory=list)
-    city_count: int = 0
-    business_score: float = 0.0
-    risk_score: float = 0.0
-    first_order: str = ""
-    last_order: str = ""
-    latest_pod: str = ""
-    latest_activity: str = ""
-    insights: List[str] = field(default_factory=list)
-    recommendations: List[str] = field(default_factory=list)
-
-@dataclass
-class SearchResult:
-    success: bool
-    message: str = ""
-    profile: Optional[DealerProfile] = None
-    dashboard: str = ""
-    matches: List[DealerMatch] = field(default_factory=list)
-
-# ============================================================
 # UTILITY FUNCTIONS
 # ============================================================
 
 def format_currency(amount: float) -> str:
+    """Format currency for display"""
     if amount >= 1_000_000_000:
         return f"PKR {amount/1_000_000_000:,.2f} Billion"
     elif amount >= 1_000_000:
@@ -368,12 +307,8 @@ def format_currency(amount: float) -> str:
         return f"PKR {amount:,.2f}"
 
 def format_number(num: int) -> str:
+    """Format number with commas"""
     return f"{num:,}"
-
-def normalize_text(text: str) -> str:
-    text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip().lower()
 
 # ============================================================
 # DEALER ANALYTICS SERVICE
@@ -383,7 +318,11 @@ class DealerAnalyticsService:
     """
     WhatsApp Dealer Analytics Service
     
-    Starts with: "Please enter the name of the dealer"
+    Handles:
+    1. Dealer search
+    2. Dashboard generation
+    3. WhatsApp message formatting
+    4. Session state management
     """
     
     _instance: Optional["DealerAnalyticsService"] = None
@@ -401,98 +340,140 @@ class DealerAnalyticsService:
         self._service_name = "dealer_analytics"
         self._version = "2.0"
         
+        # Session state: track where each user is in the flow
+        self._sessions: Dict[str, Dict] = {}
+        
         # Load dealer data
         self._dealer_cache = {}
         self._load_dealers()
         
-        print("\n" + "=" * 50)
-        print("DEALER ANALYTICS SERVICE")
-        print("=" * 50)
-        print()
+        logger.info(f"✅ DealerAnalyticsService initialized with {len(self._dealer_cache)} dealers")
     
     def _load_dealers(self):
         """Load dealers from database"""
         for key, data in DEALER_DATABASE.items():
             self._dealer_cache[key] = data
-        print(f"✅ Loaded {len(self._dealer_cache)} dealers")
-        print()
     
-    def search_dealer(self, query: str) -> SearchResult:
-        """Search for a dealer"""
+    # ============================================================
+    # WHATSAPP MESSAGE HANDLER - MAIN ENTRY POINT
+    # ============================================================
+    
+    def handle_whatsapp_message(self, user_id: str, message: str) -> str:
+        """
+        Main entry point for WhatsApp webhook
+        
+        Args:
+            user_id: WhatsApp user ID (for session tracking)
+            message: User's message text
+        
+        Returns:
+            Formatted response string for WhatsApp
+        """
+        logger.info(f"📨 Handling message from {user_id}: {message}")
+        
+        # Clean the message
+        message = message.strip() if message else ""
+        
+        if not message:
+            return self._get_welcome_message()
+        
+        # Check for exit command
+        if message.lower() in ['99', 'exit', 'quit', 'menu']:
+            return self._handle_exit(user_id)
+        
+        # Search for dealer
+        return self._handle_search(user_id, message)
+    
+    # ============================================================
+    # SEARCH HANDLER
+    # ============================================================
+    
+    def _handle_search(self, user_id: str, query: str) -> str:
+        """Handle dealer search"""
+        logger.info(f"🔍 Searching for: {query}")
+        
+        result = self.search_dealer(query)
+        
+        if result['success']:
+            # Update session
+            self._sessions[user_id] = {
+                'state': 'viewing',
+                'dealer': result['profile']['name']
+            }
+            return result['dashboard']
+        else:
+            # Show suggestions or error
+            if result.get('suggestions'):
+                suggestion_text = "\n".join([f"• {s}" for s in result['suggestions'][:3]])
+                return f"❌ {result['message']}\n\n💡 Did you mean:\n{suggestion_text}\n\nPlease try again or type '99' to exit."
+            else:
+                return f"❌ {result['message']}\n\nPlease try a different name or type '99' to exit."
+    
+    def search_dealer(self, query: str) -> Dict[str, Any]:
+        """
+        Search for a dealer
+        
+        Returns:
+            Dict with: success, message, profile, dashboard, suggestions
+        """
         if not query or not query.strip():
-            return SearchResult(
-                success=False,
-                message="Please enter a dealer name."
-            )
+            return {
+                'success': False,
+                'message': "Please enter a dealer name."
+            }
         
         query_clean = query.strip()
         
         # Stage 1: Exact Match
         result = self._exact_match(query_clean)
         if result:
-            return self._build_result(result)
+            return self._build_response(result)
         
         # Stage 2: Case Insensitive
         result = self._case_insensitive_match(query_clean)
         if result:
-            return self._build_result(result)
+            return self._build_response(result)
         
         # Stage 3: Partial Match
         result = self._partial_match(query_clean)
         if result:
-            return self._build_result(result)
+            return self._build_response(result)
         
         # Stage 4: Word Match
         result = self._word_match(query_clean)
         if result:
-            return self._build_result(result)
+            return self._build_response(result)
         
         # Stage 5: Dealer Code
         result = self._code_match(query_clean)
         if result:
-            return self._build_result(result)
+            return self._build_response(result)
         
         # No match - get suggestions
         suggestions = self._get_suggestions(query_clean)
         
-        if suggestions:
-            suggestion_text = "\n".join([f"  • {s.dealer_name}" for s in suggestions[:3]])
-            return SearchResult(
-                success=False,
-                message=f"Dealer not found. Did you mean:\n{suggestion_text}"
-            )
-        
-        return SearchResult(
-            success=False,
-            message="Dealer not found. Please try a different name."
-        )
+        return {
+            'success': False,
+            'message': "Dealer not found.",
+            'suggestions': suggestions
+        }
+    
+    # ============================================================
+    # MATCHING METHODS
+    # ============================================================
     
     def _exact_match(self, query: str):
         query_lower = query.lower()
         for key, data in self._dealer_cache.items():
             if key == query_lower:
-                return DealerMatch(
-                    dealer_name=data['name'],
-                    dealer_code=data['code'],
-                    customer_code=data['customer_code'],
-                    score=100.0,
-                    match_type="exact",
-                    confidence=1.0
-                )
+                return {'dealer': data, 'match_type': 'exact', 'score': 100}
         return None
     
     def _case_insensitive_match(self, query: str):
         query_lower = query.lower()
         for key, data in self._dealer_cache.items():
             if key == query_lower:
-                return DealerMatch(
-                    dealer_name=data['name'],
-                    dealer_code=data['code'],
-                    customer_code=data['customer_code'],
-                    score=99.0,
-                    match_type="case_insensitive",
-                    confidence=0.99
-                )
+                return {'dealer': data, 'match_type': 'case_insensitive', 'score': 99}
         return None
     
     def _partial_match(self, query: str):
@@ -508,14 +489,7 @@ class DealerAnalyticsService:
                     best_match = data
         
         if best_match and best_score > 0.4:
-            return DealerMatch(
-                dealer_name=best_match['name'],
-                dealer_code=best_match['code'],
-                customer_code=best_match['customer_code'],
-                score=best_score * 100,
-                match_type="partial",
-                confidence=best_score
-            )
+            return {'dealer': best_match, 'match_type': 'partial', 'score': best_score * 100}
         return None
     
     def _word_match(self, query: str):
@@ -536,116 +510,47 @@ class DealerAnalyticsService:
                     best_match = data
         
         if best_match and best_score > 0.5:
-            return DealerMatch(
-                dealer_name=best_match['name'],
-                dealer_code=best_match['code'],
-                customer_code=best_match['customer_code'],
-                score=best_score * 100,
-                match_type="word",
-                confidence=best_score
-            )
+            return {'dealer': best_match, 'match_type': 'word', 'score': best_score * 100}
         return None
     
     def _code_match(self, query: str):
         query_clean = query.strip().upper()
         for key, data in self._dealer_cache.items():
             if data['code'] == query_clean or data['customer_code'] == query_clean:
-                return DealerMatch(
-                    dealer_name=data['name'],
-                    dealer_code=data['code'],
-                    customer_code=data['customer_code'],
-                    score=99.0,
-                    match_type="code",
-                    confidence=0.99
-                )
+                return {'dealer': data, 'match_type': 'code', 'score': 99}
         return None
     
-    def _get_suggestions(self, query: str, limit: int = 3) -> List[DealerMatch]:
+    def _get_suggestions(self, query: str, limit: int = 3) -> List[str]:
         query_lower = query.lower()
         suggestions = []
         
         for key, data in self._dealer_cache.items():
             if query_lower in key or key in query_lower:
-                suggestions.append(
-                    DealerMatch(
-                        dealer_name=data['name'],
-                        dealer_code=data['code'],
-                        customer_code=data['customer_code'],
-                        score=70.0,
-                        match_type="suggestion",
-                        confidence=0.70
-                    )
-                )
+                suggestions.append(data['name'])
                 if len(suggestions) >= limit:
                     break
         
         return suggestions
     
-    def _build_result(self, match: DealerMatch) -> SearchResult:
-        """Build search result with dashboard"""
-        # Get full profile data
-        dealer_data = None
-        for key, data in self._dealer_cache.items():
-            if data['name'] == match.dealer_name:
-                dealer_data = data
-                break
-        
-        if not dealer_data:
-            return SearchResult(
-                success=False,
-                message=f"Dealer '{match.dealer_name}' found but data not available."
-            )
-        
-        # Create profile
-        profile = DealerProfile(
-            name=dealer_data['name'],
-            code=dealer_data['code'],
-            customer_code=dealer_data['customer_code'],
-            office=dealer_data['office'],
-            manager=dealer_data['manager'],
-            division=dealer_data['division'],
-            warehouse=dealer_data['warehouse'],
-            warehouse_code=dealer_data['warehouse_code'],
-            city=dealer_data['city'],
-            revenue=dealer_data['revenue'],
-            avg_revenue_per_dn=dealer_data['avg_revenue_per_dn'],
-            total_units=dealer_data['total_units'],
-            avg_units_per_dn=dealer_data['avg_units_per_dn'],
-            total_dn=dealer_data['total_dn'],
-            pending_dn=dealer_data['pending_dn'],
-            delivered_dn=dealer_data['delivered_dn'],
-            delivery_pct=dealer_data['delivery_pct'],
-            pgi_pct=dealer_data['pgi_pct'],
-            pod_pct=dealer_data['pod_pct'],
-            avg_delivery_days=dealer_data['avg_delivery_days'],
-            avg_pod_days=dealer_data['avg_pod_days'],
-            product_count=dealer_data['product_count'],
-            top_product=dealer_data['top_product'],
-            warehouses_used=dealer_data['warehouses_used'],
-            warehouse_count=dealer_data['warehouse_count'],
-            cities_served=dealer_data['cities_served'],
-            city_count=dealer_data['city_count'],
-            business_score=dealer_data['business_score'],
-            risk_score=dealer_data['risk_score'],
-            first_order=dealer_data['first_order'],
-            last_order=dealer_data['last_order'],
-            latest_pod=dealer_data['latest_pod'],
-            latest_activity=dealer_data['latest_activity'],
-            insights=dealer_data['insights'],
-            recommendations=dealer_data['recommendations']
-        )
+    # ============================================================
+    # RESPONSE BUILDER
+    # ============================================================
+    
+    def _build_response(self, match_result: Dict) -> Dict[str, Any]:
+        """Build search response with dashboard"""
+        dealer = match_result['dealer']
         
         # Build dashboard
-        dashboard = self._build_dashboard(profile)
+        dashboard = self._build_dashboard(dealer)
         
-        return SearchResult(
-            success=True,
-            message=f"✅ Dealer found: {match.dealer_name}",
-            profile=profile,
-            dashboard=dashboard
-        )
+        return {
+            'success': True,
+            'message': f"✅ Dealer found: {dealer['name']}",
+            'profile': dealer,
+            'dashboard': dashboard
+        }
     
-    def _build_dashboard(self, profile: DealerProfile) -> str:
+    def _build_dashboard(self, dealer: Dict) -> str:
         """Build professional WhatsApp dashboard"""
         lines = []
         
@@ -657,109 +562,109 @@ class DealerAnalyticsService:
         
         # Identity
         lines.append("📌 IDENTITY")
-        lines.append(f"Name: {profile.name}")
-        if profile.code:
-            lines.append(f"Code: {profile.code}")
-        if profile.customer_code:
-            lines.append(f"Customer Code: {profile.customer_code}")
-        if profile.office:
-            lines.append(f"Office: {profile.office}")
-        if profile.manager:
-            lines.append(f"Manager: {profile.manager}")
-        if profile.division:
-            lines.append(f"Division: {profile.division}")
+        lines.append(f"Name: {dealer['name']}")
+        if dealer.get('code'):
+            lines.append(f"Code: {dealer['code']}")
+        if dealer.get('customer_code'):
+            lines.append(f"Customer Code: {dealer['customer_code']}")
+        if dealer.get('office'):
+            lines.append(f"Office: {dealer['office']}")
+        if dealer.get('manager'):
+            lines.append(f"Manager: {dealer['manager']}")
+        if dealer.get('division'):
+            lines.append(f"Division: {dealer['division']}")
         lines.append("")
         
         # Location
         lines.append("📍 LOCATION")
-        if profile.warehouse:
-            lines.append(f"Warehouse: {profile.warehouse}")
-        if profile.warehouse_code:
-            lines.append(f"Warehouse Code: {profile.warehouse_code}")
-        if profile.city:
-            lines.append(f"City: {profile.city}")
+        if dealer.get('warehouse'):
+            lines.append(f"Warehouse: {dealer['warehouse']}")
+        if dealer.get('warehouse_code'):
+            lines.append(f"Warehouse Code: {dealer['warehouse_code']}")
+        if dealer.get('city'):
+            lines.append(f"City: {dealer['city']}")
         lines.append("")
         
         # Financial
         lines.append("💰 FINANCIALS")
-        lines.append(f"Revenue: {format_currency(profile.revenue)}")
-        lines.append(f"Avg Revenue/DN: {format_currency(profile.avg_revenue_per_dn)}")
-        lines.append(f"Total Units: {format_number(profile.total_units)}")
-        lines.append(f"Avg Units/DN: {profile.avg_units_per_dn:.1f}")
+        lines.append(f"Revenue: {format_currency(dealer['revenue'])}")
+        lines.append(f"Avg Revenue/DN: {format_currency(dealer['avg_revenue_per_dn'])}")
+        lines.append(f"Total Units: {format_number(dealer['total_units'])}")
+        lines.append(f"Avg Units/DN: {dealer['avg_units_per_dn']:.1f}")
         lines.append("")
         
         # Operations
         lines.append("📦 OPERATIONS")
-        lines.append(f"Total DN: {format_number(profile.total_dn)}")
-        lines.append(f"Pending DN: {format_number(profile.pending_dn)}")
-        lines.append(f"Delivered DN: {format_number(profile.delivered_dn)}")
+        lines.append(f"Total DN: {format_number(dealer['total_dn'])}")
+        lines.append(f"Pending DN: {format_number(dealer['pending_dn'])}")
+        lines.append(f"Delivered DN: {format_number(dealer['delivered_dn'])}")
         lines.append("")
         
         # Delivery
         lines.append("🚚 DELIVERY")
-        lines.append(f"Delivery Success: {profile.delivery_pct:.1f}%")
-        lines.append(f"PGI Success: {profile.pgi_pct:.1f}%")
-        lines.append(f"POD Success: {profile.pod_pct:.1f}%")
-        lines.append(f"Avg Delivery Days: {profile.avg_delivery_days:.1f}")
-        lines.append(f"Avg POD Days: {profile.avg_pod_days:.1f}")
+        lines.append(f"Delivery Success: {dealer['delivery_pct']:.1f}%")
+        lines.append(f"PGI Success: {dealer['pgi_pct']:.1f}%")
+        lines.append(f"POD Success: {dealer['pod_pct']:.1f}%")
+        lines.append(f"Avg Delivery Days: {dealer['avg_delivery_days']:.1f}")
+        lines.append(f"Avg POD Days: {dealer['avg_pod_days']:.1f}")
         lines.append("")
         
         # Products
         lines.append("🏷️ PRODUCTS")
-        lines.append(f"Total Products: {format_number(profile.product_count)}")
-        if profile.top_product:
-            lines.append(f"Top Product: {profile.top_product}")
+        lines.append(f"Total Products: {format_number(dealer['product_count'])}")
+        if dealer.get('top_product'):
+            lines.append(f"Top Product: {dealer['top_product']}")
         lines.append("")
         
         # Warehouses
         lines.append("🏭 WAREHOUSES")
-        lines.append(f"Warehouses: {format_number(profile.warehouse_count)}")
-        if profile.warehouses_used:
-            display = profile.warehouses_used[:3]
+        lines.append(f"Warehouses: {format_number(dealer['warehouse_count'])}")
+        if dealer.get('warehouses_used'):
+            display = dealer['warehouses_used'][:3]
             lines.append(f"Used: {', '.join(display)}")
-            if len(profile.warehouses_used) > 3:
-                lines.append(f"... and {len(profile.warehouses_used) - 3} more")
+            if len(dealer['warehouses_used']) > 3:
+                lines.append(f"... and {len(dealer['warehouses_used']) - 3} more")
         lines.append("")
         
         # Cities
         lines.append("🏙️ CITIES")
-        lines.append(f"Cities Served: {format_number(profile.city_count)}")
-        if profile.cities_served:
-            display = profile.cities_served[:3]
+        lines.append(f"Cities Served: {format_number(dealer['city_count'])}")
+        if dealer.get('cities_served'):
+            display = dealer['cities_served'][:3]
             lines.append(f"Served: {', '.join(display)}")
-            if len(profile.cities_served) > 3:
-                lines.append(f"... and {len(profile.cities_served) - 3} more")
+            if len(dealer['cities_served']) > 3:
+                lines.append(f"... and {len(dealer['cities_served']) - 3} more")
         lines.append("")
         
         # Scores
         lines.append("📊 SCORES")
-        lines.append(f"Business Score: {profile.business_score:.1f}/100")
-        lines.append(f"Risk Score: {profile.risk_score:.1f}/100")
+        lines.append(f"Business Score: {dealer['business_score']:.1f}/100")
+        lines.append(f"Risk Score: {dealer['risk_score']:.1f}/100")
         lines.append("")
         
         # Timeline
         lines.append("📅 TIMELINE")
-        if profile.first_order:
-            lines.append(f"First Order: {profile.first_order}")
-        if profile.last_order:
-            lines.append(f"Last Order: {profile.last_order}")
-        if profile.latest_pod:
-            lines.append(f"Latest POD: {profile.latest_pod}")
-        if profile.latest_activity:
-            lines.append(f"Latest Activity: {profile.latest_activity}")
+        if dealer.get('first_order'):
+            lines.append(f"First Order: {dealer['first_order']}")
+        if dealer.get('last_order'):
+            lines.append(f"Last Order: {dealer['last_order']}")
+        if dealer.get('latest_pod'):
+            lines.append(f"Latest POD: {dealer['latest_pod']}")
+        if dealer.get('latest_activity'):
+            lines.append(f"Latest Activity: {dealer['latest_activity']}")
         lines.append("")
         
         # Insights
-        if profile.insights:
+        if dealer.get('insights'):
             lines.append("💡 INSIGHTS")
-            for insight in profile.insights:
+            for insight in dealer['insights']:
                 lines.append(f"  • {insight}")
             lines.append("")
         
         # Recommendations
-        if profile.recommendations:
+        if dealer.get('recommendations'):
             lines.append("🎯 RECOMMENDATIONS")
-            for rec in profile.recommendations:
+            for rec in dealer['recommendations']:
                 lines.append(f"  • {rec}")
             lines.append("")
         
@@ -770,13 +675,22 @@ class DealerAnalyticsService:
         
         return "\n".join(lines)
     
-    def get_welcome(self) -> str:
-        """Get welcome message"""
-        return "Please enter the name of the dealer"
+    # ============================================================
+    # SESSION MANAGEMENT
+    # ============================================================
     
-    def get_help(self) -> str:
-        """Get help message"""
+    def _handle_exit(self, user_id: str) -> str:
+        """Handle exit command"""
+        self._sessions[user_id] = {'state': 'idle'}
+        return self._get_welcome_message()
+    
+    def _get_welcome_message(self) -> str:
+        """Get welcome message"""
         return "\n".join([
+            "🤖 DEALER ANALYTICS",
+            "",
+            "Please enter the name of the dealer",
+            "",
             "📝 Examples:",
             "  • Zoom Appliances",
             "  • Arshad Electronics-Khi",
@@ -785,11 +699,22 @@ class DealerAnalyticsService:
             "  • Friends Electronics",
             "  • Al Madina Electronics",
             "",
-            "💡 Tips:",
-            "  • Use exact name for best results",
-            "  • Try partial name if unsure",
-            "  • Type '99' to exit"
+            "Type '99' to exit"
         ])
+    
+    # ============================================================
+    # HEALTH CHECK
+    # ============================================================
+    
+    def health_check(self) -> Dict[str, Any]:
+        """Health check for the service"""
+        return {
+            "service": self._service_name,
+            "version": self._version,
+            "status": "healthy",
+            "dealers_loaded": len(self._dealer_cache),
+            "active_sessions": len(self._sessions),
+        }
 
 # ============================================================
 # SERVICE SINGLETON
@@ -805,74 +730,10 @@ def get_dealer_analytics_service() -> DealerAnalyticsService:
     return _service
 
 # ============================================================
-# MAIN INTERACTIVE LOOP
-# ============================================================
-
-def main():
-    """Main entry point for WhatsApp AI Agent Demo"""
-    print("\n" + "=" * 60)
-    print("WHATSAPP AI AGENT DEMO - DEALER ANALYTICS".center(60))
-    print("=" * 60)
-    print()
-    
-    # Initialize service
-    service = get_dealer_analytics_service()
-    
-    # Display welcome
-    print(service.get_welcome())
-    print()
-    print(service.get_help())
-    print()
-    
-    # Interactive loop
-    while True:
-        try:
-            # Prompt for dealer name
-            query = input("🔍 Enter Dealer Name (or '99' to exit): ").strip()
-            
-            # Check for exit
-            if query == "99":
-                print("\n👋 Goodbye!")
-                break
-            
-            if not query:
-                print("⚠️ Please enter a dealer name.\n")
-                continue
-            
-            # Search
-            print("\n⏳ Searching...")
-            result = service.search_dealer(query)
-            
-            if result.success:
-                print("\n" + result.dashboard)
-                print()
-            else:
-                print(f"\n❌ {result.message}")
-                print()
-        
-        except KeyboardInterrupt:
-            print("\n\n👋 Goodbye!")
-            break
-        except Exception as e:
-            print(f"\n⚠️ An error occurred: {e}")
-            print("Please try again.\n")
-
-# ============================================================
 # MODULE EXPORTS
 # ============================================================
 
 __all__ = [
     "DealerAnalyticsService",
-    "DealerProfile",
-    "DealerMatch",
-    "SearchResult",
     "get_dealer_analytics_service",
-    "main",
 ]
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
-
-if __name__ == "__main__":
-    main()
