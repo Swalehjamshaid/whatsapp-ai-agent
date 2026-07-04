@@ -1,20 +1,19 @@
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 58.0 - ASYNC COMPATIBLE GATEWAY
+# VERSION: 59.0 - MINIMAL WORKING VERSION
 # ============================================================
 
 """
 File: app/services/ai_provider_service.py
-Version: 58.0 - ASYNC COMPATIBLE GATEWAY
+Version: 59.0 - MINIMAL WORKING VERSION
 
 ================================================================================
-FIX: Added async support for webhook compatibility
+FIX: Only loads services that exist. Graceful error handling.
 ================================================================================
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import threading
@@ -140,7 +139,7 @@ class MenuItem:
         return False
 
 # ============================================================
-# SERVICE REGISTRY
+# SERVICE REGISTRY - SAFE LOADING
 # ============================================================
 
 class ServiceRegistry:
@@ -164,165 +163,108 @@ class ServiceRegistry:
         self._loader_cache: Dict[ModuleType, Any] = {}
         self._cache_lock = threading.RLock()
         
-        self._register_modules()
+        # Register modules safely
+        self._register_modules_safely()
         
         logger.info(f"📦 Service Registry initialized with {len(self._menu_items)} modules")
     
-    def _register_modules(self):
-        modules = [
-            MenuItem(
-                id=1,
-                name="National Dashboard",
-                aliases=["national", "national kpi", "kpi", "pakistan", "overall"],
-                module_type=ModuleType.NATIONAL,
-                file="national_kpi_service.py",
-                loader=self._load_national_service
-            ),
-            MenuItem(
-                id=2,
-                name="DN Intelligence Center",
-                aliases=["dn", "dn dashboard", "dn intelligence", "delivery", "delivery note", "pending dn"],
-                module_type=ModuleType.DN,
-                file="dn_analysis.py",
-                loader=self._load_dn_service
-            ),
-            MenuItem(
-                id=3,
-                name="Dealer Dashboard",
-                aliases=["dealer", "dealer dashboard", "dealer analytics", "distributor"],
-                module_type=ModuleType.DEALER,
-                file="dealer_analytics_service.py",
-                loader=self._load_dealer_service
-            ),
-            MenuItem(
-                id=4,
-                name="Warehouse Dashboard",
-                aliases=["warehouse", "warehouse dashboard", "warehouse analytics", "warehouse report"],
-                module_type=ModuleType.WAREHOUSE,
-                file="warehouse_service.py",
-                loader=self._load_warehouse_service
-            ),
-            MenuItem(
-                id=5,
-                name="Product Dashboard",
-                aliases=["product", "product dashboard", "material", "sku", "model"],
-                module_type=ModuleType.PRODUCT,
-                file="product_service.py",
-                loader=self._load_product_service
-            ),
-            MenuItem(
-                id=6,
-                name="City Dashboard",
-                aliases=["city", "city dashboard", "location", "region"],
-                module_type=ModuleType.CITY,
-                file="city_service.py",
-                loader=self._load_city_service
-            ),
-            MenuItem(
-                id=7,
-                name="AI Assistant",
-                aliases=["ai", "assistant", "general ai", "chat", "help"],
-                module_type=ModuleType.AI,
-                file="groq_service.py",
-                loader=self._load_ai_service
-            ),
+    def _register_modules_safely(self):
+        """Register modules only if they exist."""
+        
+        # Define all possible modules
+        module_defs = [
+            {
+                "id": 1,
+                "name": "National Dashboard",
+                "aliases": ["national", "national kpi", "kpi", "pakistan", "overall"],
+                "module_type": ModuleType.NATIONAL,
+                "file": "national_kpi_service.py",
+                "import_path": "app.services.national_kpi_service",
+                "function": "get_national_kpi_service"
+            },
+            {
+                "id": 2,
+                "name": "DN Intelligence Center",
+                "aliases": ["dn", "dn dashboard", "dn intelligence", "delivery", "delivery note", "pending dn"],
+                "module_type": ModuleType.DN,
+                "file": "dn_analysis.py",
+                "import_path": "app.services.dn_analysis",
+                "function": "get_dn_analysis_service"
+            },
+            {
+                "id": 3,
+                "name": "Dealer Dashboard",
+                "aliases": ["dealer", "dealer dashboard", "dealer analytics", "distributor"],
+                "module_type": ModuleType.DEALER,
+                "file": "dealer_analytics_service.py",
+                "import_path": "app.services.dealer_analytics_service",
+                "function": "get_dealer_service"
+            },
+            {
+                "id": 4,
+                "name": "Warehouse Dashboard",
+                "aliases": ["warehouse", "warehouse dashboard", "warehouse analytics", "warehouse report"],
+                "module_type": ModuleType.WAREHOUSE,
+                "file": "warehouse_service.py",
+                "import_path": "app.services.warehouse_service",
+                "function": "get_warehouse_analytics_service"
+            },
+            {
+                "id": 5,
+                "name": "Product Dashboard",
+                "aliases": ["product", "product dashboard", "material", "sku", "model"],
+                "module_type": ModuleType.PRODUCT,
+                "file": "product_service.py",
+                "import_path": "app.services.product_service",
+                "function": "get_product_analytics_service"
+            },
+            {
+                "id": 6,
+                "name": "City Dashboard",
+                "aliases": ["city", "city dashboard", "location", "region"],
+                "module_type": ModuleType.CITY,
+                "file": "city_service.py",
+                "import_path": "app.services.city_service",
+                "function": "get_city_analytics_service"
+            },
+            {
+                "id": 7,
+                "name": "AI Assistant",
+                "aliases": ["ai", "assistant", "general ai", "chat", "help"],
+                "module_type": ModuleType.AI,
+                "file": "groq_service.py",
+                "import_path": "app.services.groq_service",
+                "function": "get_groq_service"
+            },
         ]
         
-        for item in modules:
-            self._menu_items.append(item)
-            self._module_map[item.module_type] = item
-    
-    # ============================================================
-    # LOADER METHODS
-    # ============================================================
-    
-    def _load_national_service(self):
-        with self._cache_lock:
-            if ModuleType.NATIONAL not in self._loader_cache:
-                try:
-                    from app.services.national_kpi_service import get_national_kpi_service
-                    self._loader_cache[ModuleType.NATIONAL] = get_national_kpi_service()
-                    logger.info("✅ National KPI service loaded")
-                except Exception as e:
-                    logger.error(f"❌ National KPI service error: {e}")
-                    self._loader_cache[ModuleType.NATIONAL] = None
-            return self._loader_cache[ModuleType.NATIONAL]
-    
-    def _load_dn_service(self):
-        with self._cache_lock:
-            if ModuleType.DN not in self._loader_cache:
-                try:
-                    from app.services.dn_analysis import get_dn_analysis_service
-                    self._loader_cache[ModuleType.DN] = get_dn_analysis_service()
-                    logger.info("✅ DN service loaded")
-                except Exception as e:
-                    logger.error(f"❌ DN service error: {e}")
-                    self._loader_cache[ModuleType.DN] = None
-            return self._loader_cache[ModuleType.DN]
-    
-    def _load_dealer_service(self):
-        with self._cache_lock:
-            if ModuleType.DEALER not in self._loader_cache:
-                try:
-                    from app.services.dealer_analytics_service import get_dealer_service
-                    self._loader_cache[ModuleType.DEALER] = get_dealer_service()
-                    logger.info("✅ Dealer service loaded")
-                except Exception as e:
-                    logger.error(f"❌ Dealer service error: {e}")
-                    self._loader_cache[ModuleType.DEALER] = None
-            return self._loader_cache[ModuleType.DEALER]
-    
-    def _load_warehouse_service(self):
-        with self._cache_lock:
-            if ModuleType.WAREHOUSE not in self._loader_cache:
-                try:
-                    from app.services.warehouse_service import get_warehouse_analytics_service
-                    self._loader_cache[ModuleType.WAREHOUSE] = get_warehouse_analytics_service()
-                    logger.info("✅ Warehouse service loaded")
-                except Exception as e:
-                    logger.error(f"❌ Warehouse service error: {e}")
-                    self._loader_cache[ModuleType.WAREHOUSE] = None
-            return self._loader_cache[ModuleType.WAREHOUSE]
-    
-    def _load_product_service(self):
-        with self._cache_lock:
-            if ModuleType.PRODUCT not in self._loader_cache:
-                try:
-                    from app.services.product_service import get_product_analytics_service
-                    self._loader_cache[ModuleType.PRODUCT] = get_product_analytics_service()
-                    logger.info("✅ Product service loaded")
-                except Exception as e:
-                    logger.error(f"❌ Product service error: {e}")
-                    self._loader_cache[ModuleType.PRODUCT] = None
-            return self._loader_cache[ModuleType.PRODUCT]
-    
-    def _load_city_service(self):
-        with self._cache_lock:
-            if ModuleType.CITY not in self._loader_cache:
-                try:
-                    from app.services.city_service import get_city_analytics_service
-                    self._loader_cache[ModuleType.CITY] = get_city_analytics_service()
-                    logger.info("✅ City service loaded")
-                except Exception as e:
-                    logger.error(f"❌ City service error: {e}")
-                    self._loader_cache[ModuleType.CITY] = None
-            return self._loader_cache[ModuleType.CITY]
-    
-    def _load_ai_service(self):
-        with self._cache_lock:
-            if ModuleType.AI not in self._loader_cache:
-                try:
-                    from app.services.groq_service import get_groq_service
-                    self._loader_cache[ModuleType.AI] = get_groq_service()
-                    logger.info("✅ AI Assistant service loaded")
-                except Exception as e:
-                    logger.error(f"❌ AI Assistant service error: {e}")
-                    self._loader_cache[ModuleType.AI] = None
-            return self._loader_cache[ModuleType.AI]
-    
-    # ============================================================
-    # PUBLIC METHODS
-    # ============================================================
+        for mod in module_defs:
+            try:
+                # Try to import the module
+                logger.info(f"🔍 Checking: {mod['file']}...")
+                module = __import__(mod['import_path'], fromlist=[mod['function']])
+                loader_func = getattr(module, mod['function'], None)
+                
+                if loader_func:
+                    # Create menu item
+                    menu_item = MenuItem(
+                        id=mod['id'],
+                        name=mod['name'],
+                        aliases=mod['aliases'],
+                        module_type=mod['module_type'],
+                        file=mod['file'],
+                        loader=lambda f=loader_func: f()  # Safe lambda
+                    )
+                    self._menu_items.append(menu_item)
+                    self._module_map[mod['module_type']] = menu_item
+                    logger.info(f"✅ Registered: {mod['name']} → {mod['file']}")
+                else:
+                    logger.warning(f"⚠️ Skipping: {mod['file']} - loader not found")
+                    
+            except ImportError as e:
+                logger.warning(f"⚠️ Skipping: {mod['file']} - not found")
+            except Exception as e:
+                logger.warning(f"⚠️ Skipping: {mod['file']} - error: {e}")
     
     def get_menu_items(self) -> List[MenuItem]:
         return self._menu_items
@@ -338,10 +280,19 @@ class ServiceRegistry:
         item = self._module_map.get(module_type)
         if not item:
             return None
+        
+        # Check cache
+        if module_type in self._loader_cache:
+            return self._loader_cache[module_type]
+        
         try:
-            return item.loader()
+            # Load the service
+            service = item.loader()
+            self._loader_cache[module_type] = service
+            return service
         except Exception as e:
-            logger.error(f"❌ Service load failed: {e}")
+            logger.error(f"❌ Failed to load {item.name}: {e}")
+            self._loader_cache[module_type] = None
             return None
     
     def get_service_by_text(self, text: str) -> Optional[tuple[MenuItem, Any]]:
@@ -360,7 +311,7 @@ class ServiceRegistry:
             return None
 
 # ============================================================
-# MAIN GATEWAY SERVICE - ASYNC COMPATIBLE
+# MAIN GATEWAY SERVICE
 # ============================================================
 
 class AIProviderService:
@@ -386,10 +337,9 @@ class AIProviderService:
         self._registry = ServiceRegistry()
         
         logger.info("=" * 70)
-        logger.info("🚀 ENTERPRISE GATEWAY v58.0 initialized (Async Compatible)")
+        logger.info("🚀 ENTERPRISE GATEWAY v59.0 initialized")
         logger.info(f"   📦 Registered {len(self._registry.get_menu_items())} services")
         logger.info("   🔒 Session Locking: ✅")
-        logger.info("   🔀 Routes to 7 modules")
         logger.info("=" * 70)
         
         for item in self._registry.get_menu_items():
@@ -442,7 +392,7 @@ class AIProviderService:
             return self._sessions[sender].locked
     
     # ============================================================
-    # ROUTING - SYNC VERSION
+    # ROUTING
     # ============================================================
     
     def _detect_dashboard(self, message: str) -> Optional[tuple[MenuItem, Any]]:
@@ -462,7 +412,6 @@ class AIProviderService:
         
         if not hasattr(service, "process_whatsapp_query"):
             logger.error(f"❌ Service {session.module_name} missing process_whatsapp_query")
-            logger.error(f"   Available methods: {dir(service)}")
             self._unlock_session(sender)
             return "⚠️ Service is misconfigured.\n\n" + self._get_main_dashboard()
         
@@ -486,11 +435,11 @@ class AIProviderService:
             return f"⚠️ Service error: {str(e)[:200]}\n\n" + self._get_main_dashboard()
     
     # ============================================================
-    # MAIN PROCESSING - SYNC ENTRY POINT
+    # MAIN PROCESSING
     # ============================================================
     
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
-        """SYNC entry point - for webhook compatibility."""
+        """Sync entry point for webhook."""
         try:
             logger.info(f"📨 Gateway received: '{message}' from {sender}")
             
@@ -554,21 +503,6 @@ class AIProviderService:
             return f"⚠️ System error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
     
     # ============================================================
-    # ASYNC ENTRY POINT - For async webhooks
-    # ============================================================
-    
-    async def process_whatsapp_query_async(self, message: str, sender: str = "default") -> str:
-        """ASYNC entry point - for async webhook compatibility."""
-        # Run sync version in thread pool to avoid blocking
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None, 
-            self.process_whatsapp_query, 
-            message, 
-            sender
-        )
-    
-    # ============================================================
     # RESPONSES
     # ============================================================
     
@@ -613,7 +547,7 @@ class AIProviderService:
         
         return {
             "service": "ai_provider_service",
-            "version": "58.0",
+            "version": "59.0",
             "type": "enterprise_gateway",
             "status": "healthy",
             "active_sessions": active_sessions,
@@ -647,30 +581,16 @@ def get_ai_provider_service() -> AIProviderService:
 
 
 # ============================================================
-# ENTRY POINTS - Both sync and async
+# ENTRY POINT
 # ============================================================
 
 def process_whatsapp_query(message: str, sender: str = "default") -> str:
-    """SYNC entry point - for sync webhook calls."""
+    """Main entry point for webhook."""
     try:
-        logger.info(f"📨 SYNC process called with: '{message}' from {sender}")
         service = get_ai_provider_service()
-        result = service.process_whatsapp_query(message, sender)
-        return result
+        return service.process_whatsapp_query(message, sender)
     except Exception as e:
-        logger.exception(f"Unexpected sync error: {e}")
-        return "⚠️ Service is temporarily unavailable. Please try again later."
-
-
-async def process_whatsapp_query_async(message: str, sender: str = "default") -> str:
-    """ASYNC entry point - for async webhook calls."""
-    try:
-        logger.info(f"📨 ASYNC process called with: '{message}' from {sender}")
-        service = get_ai_provider_service()
-        result = await service.process_whatsapp_query_async(message, sender)
-        return result
-    except Exception as e:
-        logger.exception(f"Unexpected async error: {e}")
+        logger.exception(f"Unexpected error: {e}")
         return "⚠️ Service is temporarily unavailable. Please try again later."
 
 
@@ -686,6 +606,5 @@ __all__ = [
     "ServiceRegistry",
     "get_ai_provider_service",
     "process_whatsapp_query",
-    "process_whatsapp_query_async",
     "EXIT_SIGNAL",
 ]
