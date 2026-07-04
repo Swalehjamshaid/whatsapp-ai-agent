@@ -1,11 +1,11 @@
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 51.0 - ENTERPRISE GATEWAY (ROBUST ERROR HANDLING)
+# VERSION: 52.0 - CLEAN SINGLE-RESPONSIBILITY GATEWAY
 # ============================================================
 
 """
 File: app/services/ai_provider_service.py
-Version: 51.0 - ENTERPRISE GATEWAY (ROBUST ERROR HANDLING)
+Version: 52.0 - CLEAN SINGLE-RESPONSIBILITY GATEWAY
 
 ================================================================================
 PURPOSE
@@ -14,20 +14,90 @@ PURPOSE
 This is the SOLE GATEWAY for all WhatsApp interactions.
 
 Its ONLY responsibilities are:
-1. Detect if session is locked to a module
-2. If locked → Forward EVERY message to that module (NO ROUTING)
-3. If unlocked → Show Main Dashboard or Route to selected module
-4. ONLY "__EXIT__" or "99" unlocks the session and returns to Main Dashboard
+1. Display the main dashboard
+2. Detect user selection by menu number, dashboard name, or alias
+3. Route to ONLY ONE of the seven approved modules
+4. Lock the session to that module
+5. Forward ALL subsequent messages to the locked module
+6. Return to main dashboard only when module signals "__EXIT__"
 
 ================================================================================
-FIXES IN V51.0
+FORBIDDEN
 ================================================================================
 
-1. Added robust error handling for all service calls
-2. Added fallback responses when services fail
-3. Fixed service loader imports with try/except
-4. Added detailed error logging
-5. Fixed synchronous processing
+This file is NOT ALLOWED to perform ANY business logic:
+
+- ❌ Search DN, Dealer, Warehouse, Product, City
+- ❌ Build Dashboard
+- ❌ Execute SQL
+- ❌ Query PostgreSQL
+- ❌ Calculate KPI, Revenue, Units, Pending
+- ❌ Generate Executive Dashboard
+- ❌ Call Analytics Functions
+- ❌ Detect Follow-up Questions
+- ❌ Detect Dashboard Type
+- ❌ Intent Detection (when locked)
+- ❌ Entity Detection (when locked)
+- ❌ AI Engine (when locked)
+- ❌ Answer questions directly
+
+================================================================================
+ROUTING CONFIGURATION
+================================================================================
+
+Menu | Dashboard Name          | Accepted Inputs                    | Route To
+-----|-------------------------|------------------------------------|----------------------------------
+1    | National Dashboard      | 1, National, National Dashboard,   | national_kpi_service.py
+     |                         | KPI, National KPI                  |
+2    | DN Intelligence Center  | 2, DN, DN Dashboard, DN Intelligence,| dn_analysis.py
+     |                         | Delivery, Delivery Note, Pending DN |
+3    | Dealer Dashboard        | 3, Dealer, Dealer Dashboard,       | dealer_analytics_service.py
+     |                         | Dealer Analytics, Distributor      |
+4    | Warehouse Dashboard     | 4, Warehouse, Warehouse Dashboard, | warehouse_service.py
+     |                         | Warehouse Analytics, Warehouse Report|
+5    | Product Dashboard       | 5, Product, Product Dashboard,     | product_service.py
+     |                         | Material, SKU, Model               |
+6    | City Dashboard          | 6, City, City Dashboard,           | city_service.py
+     |                         | Location, Region                   |
+7    | AI Assistant            | 7, AI, Assistant, General AI,      | groq_service.py
+     |                         | Chat, Help                         |
+
+================================================================================
+ROUTING FLOW
+================================================================================
+
+WhatsApp User
+       │
+       ▼
+ai_provider_service.py
+       │
+       ▼
+Main Dashboard
+       │
+       ├── 1 / National Dashboard  ─────► national_kpi_service.py
+       ├── 2 / DN Intelligence      ───► dn_analysis.py
+       ├── 3 / Dealer Dashboard     ───► dealer_analytics_service.py
+       ├── 4 / Warehouse Dashboard  ───► warehouse_service.py
+       ├── 5 / Product Dashboard    ───► product_service.py
+       ├── 6 / City Dashboard       ───► city_service.py
+       └── 7 / AI Assistant         ───► groq_service.py
+
+================================================================================
+SESSION LOCKING
+================================================================================
+
+After routing: User → 4 → Warehouse Dashboard → warehouse_service.py → SESSION LOCKED
+
+Every subsequent message goes directly to warehouse_service.py
+NO routing occurs while the session is locked.
+
+================================================================================
+EXIT
+================================================================================
+
+Only the active module can release the session.
+
+User → 99 → warehouse_service.py → return "__EXIT__" → ai_provider_service.py → Main Dashboard
 
 ================================================================================
 STATUS: ENTERPRISE READY
@@ -38,14 +108,12 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import threading
-import time
 import traceback
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union, Callable
+from typing import Any, Dict, List, Optional, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +129,7 @@ EXIT_SIGNAL = "__EXIT__"
 # ============================================================
 
 class ModuleType(Enum):
-    """Available domain modules"""
+    """Available domain modules - EXACTLY 7"""
     NATIONAL = "national"
     DN = "dn"
     DEALER = "dealer"
@@ -150,7 +218,7 @@ class Session:
 
 @dataclass
 class MenuItem:
-    """Menu item configuration."""
+    """Menu item configuration - EXACTLY 7"""
     id: int
     name: str
     aliases: List[str]
@@ -180,13 +248,13 @@ class MenuItem:
         return False
 
 # ============================================================
-# BLOCK 4: SERVICE REGISTRY - ALL 7 SERVICES WITH ERROR HANDLING
+# BLOCK 4: SERVICE REGISTRY - EXACTLY 7 MODULES
 # ============================================================
 
 class ServiceRegistry:
     """
-    SERVICE REGISTRY - All 7 modules registered here.
-    Adding a new module requires only ONE configuration entry.
+    SERVICE REGISTRY - EXACTLY 7 modules registered here.
+    Adding or removing a module is a single configuration change.
     """
     
     _instance: Optional["ServiceRegistry"] = None
@@ -209,74 +277,74 @@ class ServiceRegistry:
         self._loader_cache: Dict[ModuleType, Any] = {}
         self._cache_lock = threading.RLock()
         
-        # Register all modules
+        # Register exactly 7 modules
         self._register_modules()
         
         logger.info(f"📦 Service Registry initialized with {len(self._menu_items)} modules")
     
     def _register_modules(self):
-        """Register all 7 modules."""
+        """Register exactly 7 modules."""
         
         modules = [
-            # Menu ID 1: National Dashboard → national_kpi_service.py
+            # Menu ID 1: National Dashboard
             MenuItem(
                 id=1,
                 name="National Dashboard",
-                aliases=["national", "national kpi", "kpi", "pakistan", "overall", "dashboard"],
+                aliases=["national", "national kpi", "kpi", "pakistan", "overall"],
                 module_type=ModuleType.NATIONAL,
                 file="national_kpi_service.py",
                 loader=self._load_national_service
             ),
-            # Menu ID 2: DN Dashboard → dn_analysis.py (v31.0)
+            # Menu ID 2: DN Intelligence Center
             MenuItem(
                 id=2,
-                name="DN Dashboard",
-                aliases=["dn", "delivery", "delivery note", "pending dn", "delivery dashboard", "dn intelligence"],
+                name="DN Intelligence Center",
+                aliases=["dn", "dn dashboard", "dn intelligence", "delivery", "delivery note", "pending dn"],
                 module_type=ModuleType.DN,
                 file="dn_analysis.py",
                 loader=self._load_dn_service
             ),
-            # Menu ID 3: Dealer Dashboard → dealer_service.py
+            # Menu ID 3: Dealer Dashboard
             MenuItem(
                 id=3,
                 name="Dealer Dashboard",
-                aliases=["dealer", "distributor", "partner", "customer", "dealer analytics"],
+                aliases=["dealer", "dealer dashboard", "dealer analytics", "distributor"],
                 module_type=ModuleType.DEALER,
-                file="dealer_service.py",
+                file="dealer_analytics_service.py",
                 loader=self._load_dealer_service
             ),
-            # Menu ID 4: Warehouse Dashboard → warehouse_service.py
+            # Menu ID 4: Warehouse Dashboard
             MenuItem(
                 id=4,
                 name="Warehouse Dashboard",
-                aliases=["warehouse", "storage", "plant", "inventory", "warehouse analytics"],
+                aliases=["warehouse", "warehouse dashboard", "warehouse analytics", "warehouse report"],
                 module_type=ModuleType.WAREHOUSE,
                 file="warehouse_service.py",
                 loader=self._load_warehouse_service
             ),
-            # Menu ID 5: Product Dashboard → product_service.py
+            # Menu ID 5: Product Dashboard
             MenuItem(
                 id=5,
                 name="Product Dashboard",
-                aliases=["product", "material", "sku", "model", "product analytics"],
+                aliases=["product", "product dashboard", "material", "sku", "model"],
                 module_type=ModuleType.PRODUCT,
                 file="product_service.py",
                 loader=self._load_product_service
             ),
-            # Menu ID 6: City Dashboard → city_service.py
+            # Menu ID 6: City Dashboard
             MenuItem(
                 id=6,
                 name="City Dashboard",
-                aliases=["city", "location", "region", "city analytics", "town"],
+                aliases=["city", "city dashboard", "location", "region"],
                 module_type=ModuleType.CITY,
                 file="city_service.py",
                 loader=self._load_city_service
             ),
-            # Menu ID 7: AI Chat → groq_service.py
+            # Menu ID 7: AI Assistant
             MenuItem(
                 id=7,
-                name="AI Chat",
-                aliases=["ai", "chat", "assistant", "groq", "ai assistant", "help"],
+                name="AI Assistant",
+                aliases=["ai", "assistant", "general ai", "chat", "help"],
                 module_type=ModuleType.AI,
                 file="groq_service.py",
                 loader=self._load_ai_service
@@ -288,7 +356,7 @@ class ServiceRegistry:
             self._module_map[item.module_type] = item
     
     # ============================================================
-    # LOADER METHODS - All 7 services with error handling
+    # LOADER METHODS - Exactly 7 services
     # ============================================================
     
     def _safe_import(self, module_name: str, function_name: str) -> Optional[Any]:
@@ -321,14 +389,14 @@ class ServiceRegistry:
             return self._loader_cache[ModuleType.NATIONAL]
     
     def _load_dn_service(self):
-        """Load DN service (v31.0)."""
+        """Load DN service."""
         with self._cache_lock:
             if ModuleType.DN not in self._loader_cache:
                 try:
                     loader = self._safe_import("app.services.dn_analysis", "get_dn_analysis_service")
                     if loader:
                         self._loader_cache[ModuleType.DN] = loader()
-                        logger.info("✅ DN service loaded (v31.0)")
+                        logger.info("✅ DN service loaded")
                     else:
                         self._loader_cache[ModuleType.DN] = None
                         logger.warning("⚠️ DN service not available")
@@ -342,7 +410,7 @@ class ServiceRegistry:
         with self._cache_lock:
             if ModuleType.DEALER not in self._loader_cache:
                 try:
-                    loader = self._safe_import("app.services.dealer_service", "get_dealer_service")
+                    loader = self._safe_import("app.services.dealer_analytics_service", "get_dealer_service")
                     if loader:
                         self._loader_cache[ModuleType.DEALER] = loader()
                         logger.info("✅ Dealer service loaded")
@@ -406,19 +474,19 @@ class ServiceRegistry:
             return self._loader_cache[ModuleType.CITY]
     
     def _load_ai_service(self):
-        """Load AI Chat service (Groq)."""
+        """Load AI Assistant service (Groq)."""
         with self._cache_lock:
             if ModuleType.AI not in self._loader_cache:
                 try:
                     loader = self._safe_import("app.services.groq_service", "get_groq_service")
                     if loader:
                         self._loader_cache[ModuleType.AI] = loader()
-                        logger.info("✅ AI Chat service loaded (Groq)")
+                        logger.info("✅ AI Assistant service loaded (Groq)")
                     else:
                         self._loader_cache[ModuleType.AI] = None
-                        logger.warning("⚠️ AI Chat service not available")
+                        logger.warning("⚠️ AI Assistant service not available")
                 except Exception as e:
-                    logger.error(f"❌ AI Chat service load failed: {e}")
+                    logger.error(f"❌ AI Assistant service load failed: {e}")
                     self._loader_cache[ModuleType.AI] = None
             return self._loader_cache[ModuleType.AI]
     
@@ -481,13 +549,9 @@ class AIProviderService:
     ENTERPRISE GATEWAY - SOLE ENTRY POINT
     
     This is the ONLY gateway for all WhatsApp interactions.
+    It routes EXACTLY to the 7 modules and locks sessions.
     
-    Responsibilities:
-    1. Manage sessions (lock/unlock)
-    2. Route to modules (ALL 7 SERVICES)
-    3. Forward messages when locked
-    4. Show Main Dashboard
-    5. Handle "__EXIT__" and "99" signals
+    NO business logic, NO SQL, NO analytics, NO answering questions directly.
     """
     
     _instance: Optional["AIProviderService"] = None
@@ -515,14 +579,14 @@ class AIProviderService:
         self._registry = ServiceRegistry()
         
         logger.info("=" * 70)
-        logger.info("🚀 ENTERPRISE GATEWAY v51.0 initialized")
+        logger.info("🚀 ENTERPRISE GATEWAY v52.0 initialized")
         logger.info("   📦 SOLE entry point for all interactions")
-        logger.info("   🔒 GENERIC session locking (all modules equal)")
-        logger.info("   🔀 Routes to any registered module")
-        logger.info("   🚫 NO special-case logic")
+        logger.info("   🔒 GENERIC session locking")
+        logger.info("   🔀 Routes to EXACTLY 7 modules")
         logger.info("   🚫 NO business logic")
         logger.info("   🚫 NO SQL queries")
         logger.info("   🚫 NO analytics")
+        logger.info("   🚫 NO answering questions directly")
         logger.info("   📋 Shows Main Dashboard")
         logger.info("   🚪 Only '__EXIT__' or '99' unlocks")
         logger.info("=" * 70)
@@ -545,7 +609,6 @@ class AIProviderService:
             
             session = self._sessions[sender]
             
-            # Check if session expired
             if session.is_expired():
                 logger.info(f"⏰ Session expired for {sender}, creating new")
                 del self._sessions[sender]
@@ -584,20 +647,8 @@ class AIProviderService:
                 return False
             return self._sessions[sender].locked
     
-    def _get_module_info(self, sender: str) -> Optional[Dict[str, Any]]:
-        """Get current module info for locked session."""
-        with self._session_lock:
-            if sender not in self._sessions:
-                return None
-            
-            session = self._sessions[sender]
-            if not session.locked:
-                return None
-            
-            return session.to_dict()
-    
     # ============================================================
-    # MODULE ROUTING - ALL 7 SERVICES
+    # ROUTING - ONLY ROUTING, NO BUSINESS LOGIC
     # ============================================================
     
     def _detect_dashboard(self, message: str) -> Optional[tuple[MenuItem, Any]]:
@@ -624,14 +675,12 @@ class AIProviderService:
         
         service = session.service_instance
         
-        # Check if service has process_whatsapp_query method
         if not hasattr(service, "process_whatsapp_query"):
             logger.error(f"❌ Service {session.module_name} missing process_whatsapp_query")
             self._unlock_session(sender)
             return "⚠️ Service is misconfigured.\n\n" + self._get_main_dashboard()
         
         try:
-            # Forward to service
             logger.info(f"📤 Forwarding to {session.module_name}: '{message}'")
             result = service.process_whatsapp_query(message, sender)
             
@@ -641,12 +690,8 @@ class AIProviderService:
                 self._unlock_session(sender)
                 return self._get_main_dashboard()
             
-            # Update session activity
             session.update_activity()
-            
-            # Add to history
             session.add_history(message, result)
-            
             return result
             
         except Exception as e:
@@ -661,16 +706,14 @@ class AIProviderService:
     
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
         """
-        MAIN ENTRY POINT - SOLE GATEWAY (SYNCHRONOUS)
+        MAIN ENTRY POINT - SOLE GATEWAY
         
         Flow:
-        1. Get or create session
-        2. Check if session is locked
-        3. If locked → FORWARD to module (NO ROUTING)
-        4. If unlocked → Show Main Dashboard or Route
-        5. Handle commands → Show Main Dashboard
-        6. Detect dashboard → Lock and Route
-        7. No detection → Show Main Dashboard
+        1. Check if session is locked
+        2. If locked → FORWARD to module (NO ROUTING)
+        3. If unlocked → Check for menu commands
+        4. Detect dashboard → Lock and Route
+        5. No detection → Show Main Dashboard
         """
         try:
             if not message or not message.strip():
@@ -694,7 +737,7 @@ class AIProviderService:
                     self._unlock_session(sender)
                     return self._get_main_dashboard()
                 
-                # Forward to module
+                # Forward to module - NO ROUTING
                 return self._forward_to_module(session, message_clean, sender)
             
             # ============================================================
@@ -706,10 +749,6 @@ class AIProviderService:
             if message_clean.lower() in ["menu", "help", "options", "dashboard", "main", "0"]:
                 return self._get_main_dashboard()
             
-            # Check for exit
-            if message_clean == "99":
-                return self._get_main_dashboard()
-            
             # ============================================================
             # STEP 3: DETECT DASHBOARD
             # ============================================================
@@ -719,7 +758,7 @@ class AIProviderService:
                 menu_item, service = detected
                 logger.info(f"🎯 Detected: {menu_item.name} (ID: {menu_item.id})")
                 
-                # CRITICAL: Lock session BEFORE calling service
+                # Lock session BEFORE calling service
                 self._lock_session(sender, menu_item, service)
                 
                 try:
@@ -738,18 +777,6 @@ class AIProviderService:
                     
                     return result
                     
-                except AttributeError as e:
-                    logger.error(f"❌ AttributeError in {menu_item.name}: {e}")
-                    logger.error(traceback.format_exc())
-                    self._unlock_session(sender)
-                    return f"⚠️ {menu_item.name} is not properly configured.\n\n{self._get_main_dashboard()}"
-                    
-                except TypeError as e:
-                    logger.error(f"❌ TypeError in {menu_item.name}: {e}")
-                    logger.error(traceback.format_exc())
-                    self._unlock_session(sender)
-                    return f"⚠️ {menu_item.name} method signature mismatch.\n\n{self._get_main_dashboard()}"
-                    
                 except Exception as e:
                     logger.error(f"❌ Module {menu_item.name} error: {e}")
                     logger.error(traceback.format_exc())
@@ -767,11 +794,11 @@ class AIProviderService:
             return f"⚠️ System error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
     
     # ============================================================
-    # RESPONSES
+    # RESPONSES - ONLY THE GATEWAY SHOWS THESE
     # ============================================================
     
     def _get_main_dashboard(self) -> str:
-        """Get the Main Dashboard - GENERIC from registry."""
+        """Get the Main Dashboard."""
         lines = ["🏠 *HPK Logistics AI*", ""]
         
         for item in self._registry.get_menu_items():
@@ -818,7 +845,7 @@ class AIProviderService:
         
         return {
             "service": "ai_provider_service",
-            "version": "51.0",
+            "version": "52.0",
             "type": "enterprise_gateway",
             "status": "healthy",
             "active_sessions": active_sessions,
@@ -834,8 +861,8 @@ class AIProviderService:
                 for item in self._registry.get_menu_items()
             ],
             "features": {
-                "generic_session_locking": True,
-                "generic_module_routing": True,
+                "session_locking": True,
+                "module_routing": True,
                 "exit_signal": EXIT_SIGNAL,
                 "main_dashboard": True,
                 "alias_detection": True
@@ -851,7 +878,6 @@ class AIProviderService:
         with self._session_lock:
             if sender not in self._sessions:
                 return None
-            
             return self._sessions[sender].to_dict()
     
     def clear_session(self, sender: str) -> bool:
