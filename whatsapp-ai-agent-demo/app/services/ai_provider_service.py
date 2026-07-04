@@ -1,19 +1,41 @@
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 59.0 - MINIMAL WORKING VERSION
+# VERSION: 60.0 - ASYNC-COMPATIBLE GATEWAY
 # ============================================================
 
 """
 File: app/services/ai_provider_service.py
-Version: 59.0 - MINIMAL WORKING VERSION
+Version: 60.0 - ASYNC-COMPATIBLE GATEWAY
 
 ================================================================================
-FIX: Only loads services that exist. Graceful error handling.
+INTEGRATION WITH WEBHOOK
+================================================================================
+
+This gateway is designed to work with the webhook in webhook.py.
+The webhook calls: response = await process_whatsapp_query(text, sender)
+
+================================================================================
+INTEGRATED SERVICES
+================================================================================
+
+Menu | Dashboard Name          | Route To
+-----|-------------------------|------------------------------------------
+1    | National Dashboard      | national_kpi_service.py
+2    | DN Intelligence Center  | dn_analysis.py
+3    | Dealer Dashboard        | dealer_analytics_service.py
+4    | Warehouse Dashboard     | warehouse_service.py
+5    | Product Dashboard       | product_service.py
+6    | City Dashboard          | city_service.py
+7    | AI Assistant            | groq_service.py
+
+================================================================================
+STATUS: ENTERPRISE READY
 ================================================================================
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -29,7 +51,7 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ============================================================
 
-SESSION_TIMEOUT_SECONDS = int(os.getenv("SESSION_TIMEOUT_SECONDS", "1800"))
+SESSION_TIMEOUT_SECONDS = int(os.getenv("SESSION_TIMEOUT_SECONDS", "1800"))  # 30 minutes
 EXIT_SIGNAL = "__EXIT__"
 
 # ============================================================
@@ -37,6 +59,7 @@ EXIT_SIGNAL = "__EXIT__"
 # ============================================================
 
 class ModuleType(Enum):
+    """Available domain modules - EXACTLY 7"""
     NATIONAL = "national"
     DN = "dn"
     DEALER = "dealer"
@@ -51,6 +74,7 @@ class ModuleType(Enum):
 
 @dataclass
 class Session:
+    """Session state for a user."""
     sender: str
     locked: bool = False
     module_type: Optional[ModuleType] = None
@@ -118,6 +142,7 @@ class Session:
 
 @dataclass
 class MenuItem:
+    """Menu item configuration - EXACTLY 7"""
     id: int
     name: str
     aliases: List[str]
@@ -139,7 +164,7 @@ class MenuItem:
         return False
 
 # ============================================================
-# SERVICE REGISTRY - SAFE LOADING
+# SERVICE REGISTRY
 # ============================================================
 
 class ServiceRegistry:
@@ -163,7 +188,6 @@ class ServiceRegistry:
         self._loader_cache: Dict[ModuleType, Any] = {}
         self._cache_lock = threading.RLock()
         
-        # Register modules safely
         self._register_modules_safely()
         
         logger.info(f"📦 Service Registry initialized with {len(self._menu_items)} modules")
@@ -171,7 +195,6 @@ class ServiceRegistry:
     def _register_modules_safely(self):
         """Register modules only if they exist."""
         
-        # Define all possible modules
         module_defs = [
             {
                 "id": 1,
@@ -240,20 +263,18 @@ class ServiceRegistry:
         
         for mod in module_defs:
             try:
-                # Try to import the module
                 logger.info(f"🔍 Checking: {mod['file']}...")
                 module = __import__(mod['import_path'], fromlist=[mod['function']])
                 loader_func = getattr(module, mod['function'], None)
                 
                 if loader_func:
-                    # Create menu item
                     menu_item = MenuItem(
                         id=mod['id'],
                         name=mod['name'],
                         aliases=mod['aliases'],
                         module_type=mod['module_type'],
                         file=mod['file'],
-                        loader=lambda f=loader_func: f()  # Safe lambda
+                        loader=loader_func
                     )
                     self._menu_items.append(menu_item)
                     self._module_map[mod['module_type']] = menu_item
@@ -281,12 +302,10 @@ class ServiceRegistry:
         if not item:
             return None
         
-        # Check cache
         if module_type in self._loader_cache:
             return self._loader_cache[module_type]
         
         try:
-            # Load the service
             service = item.loader()
             self._loader_cache[module_type] = service
             return service
@@ -311,7 +330,7 @@ class ServiceRegistry:
             return None
 
 # ============================================================
-# MAIN GATEWAY SERVICE
+# MAIN GATEWAY SERVICE - ASYNC COMPATIBLE
 # ============================================================
 
 class AIProviderService:
@@ -337,9 +356,11 @@ class AIProviderService:
         self._registry = ServiceRegistry()
         
         logger.info("=" * 70)
-        logger.info("🚀 ENTERPRISE GATEWAY v59.0 initialized")
+        logger.info("🚀 ENTERPRISE GATEWAY v60.0 initialized")
         logger.info(f"   📦 Registered {len(self._registry.get_menu_items())} services")
         logger.info("   🔒 Session Locking: ✅")
+        logger.info("   🔀 Routes to 7 modules")
+        logger.info("   🌐 Async compatible")
         logger.info("=" * 70)
         
         for item in self._registry.get_menu_items():
@@ -392,7 +413,7 @@ class AIProviderService:
             return self._sessions[sender].locked
     
     # ============================================================
-    # ROUTING
+    # ROUTING - SYNC VERSION
     # ============================================================
     
     def _detect_dashboard(self, message: str) -> Optional[tuple[MenuItem, Any]]:
@@ -435,13 +456,13 @@ class AIProviderService:
             return f"⚠️ Service error: {str(e)[:200]}\n\n" + self._get_main_dashboard()
     
     # ============================================================
-    # MAIN PROCESSING
+    # MAIN PROCESSING - SYNC ENTRY POINT
     # ============================================================
     
-    def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
-        """Sync entry point for webhook."""
+    def process_whatsapp_query_sync(self, message: str, sender: str = "default") -> str:
+        """SYNC entry point - for internal use."""
         try:
-            logger.info(f"📨 Gateway received: '{message}' from {sender}")
+            logger.info(f"📨 Gateway (sync) received: '{message}' from {sender}")
             
             if not message or not message.strip():
                 return self._get_main_dashboard()
@@ -503,6 +524,37 @@ class AIProviderService:
             return f"⚠️ System error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
     
     # ============================================================
+    # ASYNC ENTRY POINT - FOR WEBHOOK
+    # ============================================================
+    
+    async def process_whatsapp_query_async(self, message: str, sender: str = "default") -> str:
+        """
+        ASYNC entry point - Called by webhook.
+        
+        This is the main entry point that the webhook calls with:
+        response = await process_whatsapp_query(text, sender)
+        """
+        try:
+            logger.info(f"📨 Gateway (async) received: '{message}' from {sender}")
+            
+            # Run sync version in thread pool to avoid blocking the event loop
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                self.process_whatsapp_query_sync,
+                message,
+                sender
+            )
+            
+            logger.info(f"📤 Gateway (async) returning: {result[:100] if result else 'Empty'}...")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Gateway (async) error: {e}")
+            logger.error(traceback.format_exc())
+            return "⚠️ Service is temporarily unavailable. Please try again later."
+    
+    # ============================================================
     # RESPONSES
     # ============================================================
     
@@ -547,7 +599,7 @@ class AIProviderService:
         
         return {
             "service": "ai_provider_service",
-            "version": "59.0",
+            "version": "60.0",
             "type": "enterprise_gateway",
             "status": "healthy",
             "active_sessions": active_sessions,
@@ -581,16 +633,24 @@ def get_ai_provider_service() -> AIProviderService:
 
 
 # ============================================================
-# ENTRY POINT
+# ENTRY POINT - FOR WEBHOOK
 # ============================================================
 
-def process_whatsapp_query(message: str, sender: str = "default") -> str:
-    """Main entry point for webhook."""
+async def process_whatsapp_query(message: str, sender: str = "default") -> str:
+    """
+    MAIN ENTRY POINT - Called by webhook.
+    
+    This is the function that the webhook calls:
+    response = await process_whatsapp_query(text, sender)
+    
+    It handles both sync and async calls.
+    """
     try:
+        logger.info(f"📨 process_whatsapp_query called: '{message}' from {sender}")
         service = get_ai_provider_service()
-        return service.process_whatsapp_query(message, sender)
+        return await service.process_whatsapp_query_async(message, sender)
     except Exception as e:
-        logger.exception(f"Unexpected error: {e}")
+        logger.exception(f"Unexpected error in process_whatsapp_query: {e}")
         return "⚠️ Service is temporarily unavailable. Please try again later."
 
 
