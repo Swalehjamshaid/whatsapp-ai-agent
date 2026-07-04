@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: whatsapp-ai-agent-demo/app/services/dealer_analytics_service.py
-# VERSION: 3.0 - POSTGRESQL INTEGRATION
+# VERSION: 3.1 - POSTGRESQL INTEGRATED (FIXED)
 # ============================================================
 
 """
 ================================================================================
-DEALER ANALYTICS SERVICE - POSTGRESQL INTEGRATION
+DEALER ANALYTICS SERVICE - POSTGRESQL INTEGRATED
 ================================================================================
 
-This service queries PostgreSQL for real dealer data.
+This service queries PostgreSQL for real dealer data using your schema.
 
-DATABASE TABLES:
-    - delivery_reports: Main table with all delivery data
-    - dealers: Dealer master table (if available)
-
-QUERIES:
-    1. Dealer search by name, code, or customer code
-    2. Dealer KPI calculation
-    3. Dealer dashboard generation
+DATABASE TABLE: delivery_reports
+    - customer_name: Dealer name
+    - dealer_code: Dealer code
+    - customer_code: Customer code
+    - dn_no: Delivery Note number
+    - dn_qty: Quantity
+    - dn_amount: Amount
+    - dn_create_date: Creation date
+    - good_issue_date: PGI date
+    - pod_date: POD date
+    - division: Division
+    - sales_office: Sales office
+    - sales_manager: Sales manager
+    - ship_to_city: City
+    - warehouse: Warehouse
+    - pending_flag: Pending status
 
 ================================================================================
 """
@@ -27,7 +35,7 @@ import logging
 import re
 from typing import Optional, Dict, List, Any, Union
 from datetime import datetime, date, timedelta
-from sqlalchemy import func, text, and_, or_
+from sqlalchemy import func, text, and_, or_, desc, asc
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -58,91 +66,47 @@ except ImportError as e:
 # ============================================================
 
 FALLBACK_DEALERS = {
-    "zoom appliances": {
-        "name": "Zoom Appliances",
-        "code": "ZA-001",
-        "customer_code": "CUST-1001",
-        "office": "Karachi",
-        "manager": "Ahmed Khan",
-        "division": "Electronics",
-        "warehouse": "Karachi Warehouse",
-        "warehouse_code": "WH-KHI-01",
-        "city": "Karachi",
-        "revenue": 15678900.50,
-        "avg_revenue_per_dn": 63995.51,
-        "total_units": 1234,
-        "avg_units_per_dn": 5.0,
-        "total_dn": 245,
-        "pending_dn": 37,
-        "delivered_dn": 208,
-        "delivery_pct": 84.9,
-        "pgi_pct": 89.1,
-        "pod_pct": 84.9,
-        "avg_delivery_days": 2.5,
-        "avg_pod_days": 1.2,
-        "product_count": 8,
-        "top_product": "Electronics",
-        "warehouses_used": ["Karachi Warehouse"],
-        "warehouse_count": 1,
-        "cities_served": ["Karachi"],
-        "city_count": 1,
-        "business_score": 62.0,
-        "risk_score": 38.0,
-        "first_order": "15-Jan-2025",
-        "last_order": "01-Jul-2026",
-        "latest_pod": "28-Jun-2026",
-        "latest_activity": "01-Jul-2026",
-        "insights": [
-            "💰 High revenue performer: PKR 15,678,900.50",
-            "⚠️ Delivery performance needs improvement"
-        ],
-        "recommendations": [
-            "📦 Improve delivery speed and reliability",
-            "🏭 Consider diversifying warehouse coverage",
-            "🌍 Expand to new cities for growth"
-        ]
-    },
-    "arshad electronics khi": {
+    "arshad electronics-khi": {
         "name": "Arshad Electronics-Khi",
-        "code": "AE-002",
-        "customer_code": "CUST-1002",
-        "office": "Karachi",
-        "manager": "Saima Arshad",
-        "division": "Electronics",
-        "warehouse": "Karachi Warehouse",
-        "warehouse_code": "WH-KHI-01",
+        "code": "DEAL_ARSHAD_ELECTRON",
+        "customer_code": "CUST_ARSHAD_ELECTRON",
+        "office": "Karachi Office",
+        "manager": "Traditional Channel",
+        "division": "Washing Machine",
+        "warehouse": "Karachi",
+        "warehouse_code": "KHI",
         "city": "Karachi",
-        "revenue": 9876543.75,
-        "avg_revenue_per_dn": 52256.85,
-        "total_units": 876,
-        "avg_units_per_dn": 4.6,
-        "total_dn": 189,
-        "pending_dn": 28,
-        "delivered_dn": 161,
-        "delivery_pct": 85.2,
-        "pgi_pct": 89.4,
-        "pod_pct": 85.2,
-        "avg_delivery_days": 2.3,
-        "avg_pod_days": 1.1,
+        "revenue": 738427.00,
+        "avg_revenue_per_dn": 184606.75,
+        "total_units": 29,
+        "avg_units_per_dn": 7.25,
+        "total_dn": 4,
+        "pending_dn": 0,
+        "delivered_dn": 4,
+        "delivery_pct": 100.0,
+        "pgi_pct": 100.0,
+        "pod_pct": 100.0,
+        "avg_delivery_days": 0.0,
+        "avg_pod_days": 8.0,
         "product_count": 6,
-        "top_product": "TV",
-        "warehouses_used": ["Karachi Warehouse"],
+        "top_product": "HWM 150-826S6 GC",
+        "warehouses_used": ["Karachi"],
         "warehouse_count": 1,
         "cities_served": ["Karachi"],
         "city_count": 1,
-        "business_score": 58.5,
-        "risk_score": 41.5,
-        "first_order": "20-Jan-2025",
-        "last_order": "28-Jun-2026",
-        "latest_pod": "25-Jun-2026",
-        "latest_activity": "28-Jun-2026",
+        "business_score": 85.0,
+        "risk_score": 15.0,
+        "first_order": "09-Jun-2026",
+        "last_order": "09-Jun-2026",
+        "latest_pod": "19-Jun-2026",
+        "latest_activity": "19-Jun-2026",
         "insights": [
-            "📊 Steady business performance",
-            "✅ Good delivery track record"
+            "💰 Revenue: PKR 0.74 Million",
+            "✅ 100% delivery success rate"
         ],
         "recommendations": [
-            "📈 Expand product portfolio",
-            "🌍 Consider new city expansion"
+            "📊 Monitor performance metrics",
+            "📈 Review delivery efficiency"
         ]
     }
 }
@@ -218,16 +182,15 @@ class DealerAnalyticsService:
         
         self._initialized = True
         self._service_name = "dealer_analytics"
-        self._version = "3.0"
+        self._version = "3.1"
         self._db_available = DB_AVAILABLE
         
         # Session state
         self._user_states: Dict[str, Dict] = {}
         
-        # Cache for dealer names (for suggestions)
+        # Cache for dealer names
         self._dealer_cache: Dict[str, str] = {}
-        self._alias_cache: Dict[str, str] = {}
-        self._last_cache_update = None
+        self._code_cache: Dict[str, str] = {}
         
         # Load initial cache
         self._load_dealer_cache()
@@ -279,9 +242,9 @@ class DealerAnalyticsService:
                     
                     # Index by code
                     if row.dealer_code:
-                        self._alias_cache[row.dealer_code.lower()] = name
+                        self._code_cache[row.dealer_code.lower()] = name
                     if row.customer_code:
-                        self._alias_cache[row.customer_code.lower()] = name
+                        self._code_cache[row.customer_code.lower()] = name
             
             logger.info(f"   📚 Loaded {len(self._dealer_cache)} dealers from PostgreSQL")
             
@@ -296,9 +259,9 @@ class DealerAnalyticsService:
         for key, data in FALLBACK_DEALERS.items():
             self._dealer_cache[normalize_text(key)] = data['name']
             if data.get('code'):
-                self._alias_cache[data['code'].lower()] = data['name']
+                self._code_cache[data['code'].lower()] = data['name']
             if data.get('customer_code'):
-                self._alias_cache[data['customer_code'].lower()] = data['name']
+                self._code_cache[data['customer_code'].lower()] = data['name']
         
         logger.info(f"   📚 Loaded {len(self._dealer_cache)} dealers from fallback data")
     
@@ -371,10 +334,10 @@ class DealerAnalyticsService:
             logger.info(f"   ✅ Found in cache: {dealer_name}")
             return self._get_dealer_details(dealer_name)
         
-        # Check alias cache
-        if query_clean.lower() in self._alias_cache:
-            dealer_name = self._alias_cache[query_clean.lower()]
-            logger.info(f"   ✅ Found by alias: {dealer_name}")
+        # Check code cache
+        if query_clean.lower() in self._code_cache:
+            dealer_name = self._code_cache[query_clean.lower()]
+            logger.info(f"   ✅ Found by code: {dealer_name}")
             return self._get_dealer_details(dealer_name)
         
         # Search in database
@@ -407,6 +370,7 @@ class DealerAnalyticsService:
             # Search by customer_name, dealer_code, or customer_code
             search_pattern = f"%{query}%"
             
+            # Get dealer summary
             results = session.query(
                 DeliveryReport.customer_name,
                 DeliveryReport.dealer_code,
@@ -423,6 +387,12 @@ class DealerAnalyticsService:
                 func.count(func.distinct(DeliveryReport.customer_model)).label('product_count'),
                 func.count(func.distinct(DeliveryReport.warehouse)).label('warehouse_count'),
                 func.count(func.distinct(DeliveryReport.ship_to_city)).label('city_count'),
+                func.count(func.distinct(
+                    func.case(
+                        [(DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)],
+                        else_=None
+                    )
+                )).label('delivered_dn')
             ).filter(
                 or_(
                     DeliveryReport.customer_name.ilike(search_pattern),
@@ -439,34 +409,35 @@ class DealerAnalyticsService:
                 DeliveryReport.ship_to_city,
                 DeliveryReport.warehouse,
                 DeliveryReport.warehouse_code
-            ).limit(1).all()
+            ).first()
             
             if not results:
                 session.close()
                 return None
             
-            row = results[0]
+            # Extract data
+            dealer_name = _text(results.customer_name)
+            total_dn = int(results.total_dn or 0)
+            total_revenue = float(results.total_revenue or 0)
+            total_units = int(results.total_units or 0)
+            delivered_dn = int(results.delivered_dn or 0)
             
             # Get additional metrics
-            dealer_name = _text(row.customer_name)
-            
-            # Get delivery metrics
-            delivery_sql = f"""
+            metrics_sql = f"""
                 SELECT 
-                    COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) as delivered_dn,
                     AVG(CASE WHEN good_issue_date IS NOT NULL 
                         THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date))/86400 END) as avg_delivery_days,
                     AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
                         THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date))/86400 END) as avg_pod_days,
                     MIN(dn_create_date) as first_order,
                     MAX(dn_create_date) as last_order,
-                    MAX(CASE WHEN pod_date IS NOT NULL THEN pod_date END) as latest_pod,
+                    MAX(pod_date) as latest_pod,
                     MAX(GREATEST(dn_create_date, good_issue_date, pod_date)) as latest_activity
                 FROM delivery_reports
                 WHERE customer_name = '{dealer_name.replace("'", "''")}'
             """
-            delivery_result = session.execute(text(delivery_sql))
-            delivery_row = delivery_result.fetchone()
+            metrics_result = session.execute(text(metrics_sql))
+            metrics_row = metrics_result.fetchone()
             
             # Get top product
             product_sql = f"""
@@ -506,21 +477,16 @@ class DealerAnalyticsService:
             session.close()
             
             # Build profile
-            total_dn = int(row.total_dn or 0)
-            total_revenue = float(row.total_revenue or 0)
-            total_units = int(row.total_units or 0)
-            delivered_dn = int(delivery_row[0] or 0) if delivery_row else 0
-            
             profile = {
                 'name': dealer_name,
-                'code': _text(row.dealer_code),
-                'customer_code': _text(row.customer_code),
-                'office': _text(row.sales_office),
-                'manager': _text(row.sales_manager),
-                'division': _text(row.division),
-                'city': _text(row.ship_to_city),
-                'warehouse': _text(row.warehouse),
-                'warehouse_code': _text(row.warehouse_code),
+                'code': _text(results.dealer_code),
+                'customer_code': _text(results.customer_code),
+                'office': _text(results.sales_office),
+                'manager': _text(results.sales_manager),
+                'division': _text(results.division),
+                'city': _text(results.ship_to_city),
+                'warehouse': _text(results.warehouse),
+                'warehouse_code': _text(results.warehouse_code),
                 'revenue': total_revenue,
                 'avg_revenue_per_dn': total_revenue / max(1, total_dn),
                 'total_units': total_units,
@@ -529,30 +495,20 @@ class DealerAnalyticsService:
                 'pending_dn': total_dn - delivered_dn,
                 'delivered_dn': delivered_dn,
                 'delivery_pct': _percent(delivered_dn, total_dn),
-                'pgi_pct': _percent(delivered_dn * 1.05, total_dn),
+                'pgi_pct': _percent(delivered_dn, total_dn),  # Approximate
                 'pod_pct': _percent(delivered_dn, total_dn),
-                'avg_delivery_days': float(delivery_row[1] or 0) if delivery_row else 0,
-                'avg_pod_days': float(delivery_row[2] or 0) if delivery_row else 0,
-                'product_count': int(row.product_count or 0),
+                'avg_delivery_days': float(metrics_row[0] or 0) if metrics_row else 0,
+                'avg_pod_days': float(metrics_row[1] or 0) if metrics_row else 0,
+                'product_count': int(results.product_count or 0),
                 'top_product': _text(product_row[0]) if product_row else "N/A",
-                'warehouses_used': warehouses,
-                'warehouse_count': len(warehouses),
-                'cities_served': cities,
-                'city_count': len(cities),
-                'first_order': _date_text(delivery_row[3]) if delivery_row else "N/A",
-                'last_order': _date_text(delivery_row[4]) if delivery_row else "N/A",
-                'latest_pod': _date_text(delivery_row[5]) if delivery_row else "N/A",
-                'latest_activity': _date_text(delivery_row[6]) if delivery_row else "N/A",
-                'business_score': 75.0,  # Calculate based on metrics
-                'risk_score': 25.0,
-                'insights': [
-                    f"💰 Revenue: {format_currency(total_revenue)}",
-                    f"📦 Total DN: {format_number(total_dn)}"
-                ],
-                'recommendations': [
-                    "📊 Monitor performance metrics",
-                    "📈 Review delivery efficiency"
-                ]
+                'warehouses_used': warehouses if warehouses else ["N/A"],
+                'warehouse_count': len(warehouses) or 1,
+                'cities_served': cities if cities else ["N/A"],
+                'city_count': len(cities) or 1,
+                'first_order': _date_text(metrics_row[2]) if metrics_row else "N/A",
+                'last_order': _date_text(metrics_row[3]) if metrics_row else "N/A",
+                'latest_pod': _date_text(metrics_row[4]) if metrics_row else "N/A",
+                'latest_activity': _date_text(metrics_row[5]) if metrics_row else "N/A",
             }
             
             # Calculate business score
@@ -581,7 +537,7 @@ class DealerAnalyticsService:
             }
             
         except Exception as e:
-            logger.error(f"❌ Database search error: {e}")
+            logger.error(f"❌ Database search error: {e}", exc_info=True)
             if session:
                 session.close()
             return None
@@ -706,11 +662,18 @@ class DealerAnalyticsService:
         
         if profile['revenue'] > 10000000:
             insights.append(f"💰 High revenue performer: {format_currency(profile['revenue'])}")
+        elif profile['revenue'] > 1000000:
+            insights.append(f"💰 Revenue: {format_currency(profile['revenue'])}")
         
         if profile['delivery_pct'] >= 95:
-            insights.append("✅ Excellent delivery performance")
+            insights.append("✅ Excellent delivery performance (95%+)")
+        elif profile['delivery_pct'] >= 80:
+            insights.append(f"✅ Good delivery performance ({profile['delivery_pct']:.1f}%)")
         elif profile['delivery_pct'] < 80:
             insights.append("⚠️ Delivery performance needs improvement")
+        
+        if profile['pending_dn'] > 0:
+            insights.append(f"⏳ {profile['pending_dn']} pending delivery notes")
         
         if profile['warehouse_count'] > 3:
             insights.append(f"🏭 Strong warehouse network: {profile['warehouse_count']} warehouses")
@@ -773,25 +736,25 @@ class DealerAnalyticsService:
         # Identity
         lines.append("📌 IDENTITY")
         lines.append(f"Name: {profile['name']}")
-        if profile.get('code'):
+        if profile.get('code') and profile['code'] != "N/A":
             lines.append(f"Code: {profile['code']}")
-        if profile.get('customer_code'):
+        if profile.get('customer_code') and profile['customer_code'] != "N/A":
             lines.append(f"Customer Code: {profile['customer_code']}")
-        if profile.get('office'):
+        if profile.get('office') and profile['office'] != "N/A":
             lines.append(f"Office: {profile['office']}")
-        if profile.get('manager'):
+        if profile.get('manager') and profile['manager'] != "N/A":
             lines.append(f"Manager: {profile['manager']}")
-        if profile.get('division'):
+        if profile.get('division') and profile['division'] != "N/A":
             lines.append(f"Division: {profile['division']}")
         lines.append("")
         
         # Location
         lines.append("📍 LOCATION")
-        if profile.get('warehouse'):
+        if profile.get('warehouse') and profile['warehouse'] != "N/A":
             lines.append(f"Warehouse: {profile['warehouse']}")
-        if profile.get('warehouse_code'):
+        if profile.get('warehouse_code') and profile['warehouse_code'] != "N/A":
             lines.append(f"Warehouse Code: {profile['warehouse_code']}")
-        if profile.get('city'):
+        if profile.get('city') and profile['city'] != "N/A":
             lines.append(f"City: {profile['city']}")
         lines.append("")
         
@@ -822,7 +785,7 @@ class DealerAnalyticsService:
         # Products
         lines.append("🏷️ PRODUCTS")
         lines.append(f"Total Products: {format_number(profile['product_count'])}")
-        if profile.get('top_product'):
+        if profile.get('top_product') and profile['top_product'] != "N/A":
             lines.append(f"Top Product: {profile['top_product']}")
         lines.append("")
         
@@ -830,20 +793,22 @@ class DealerAnalyticsService:
         lines.append("🏭 WAREHOUSES")
         lines.append(f"Warehouses: {format_number(profile['warehouse_count'])}")
         if profile.get('warehouses_used'):
-            display = profile['warehouses_used'][:3]
-            lines.append(f"Used: {', '.join(display)}")
-            if len(profile['warehouses_used']) > 3:
-                lines.append(f"... and {len(profile['warehouses_used']) - 3} more")
+            display = [w for w in profile['warehouses_used'] if w != "N/A"][:3]
+            if display:
+                lines.append(f"Used: {', '.join(display)}")
+                if len(profile['warehouses_used']) > 3:
+                    lines.append(f"... and {len(profile['warehouses_used']) - 3} more")
         lines.append("")
         
         # Cities
         lines.append("🏙️ CITIES")
         lines.append(f"Cities Served: {format_number(profile['city_count'])}")
         if profile.get('cities_served'):
-            display = profile['cities_served'][:3]
-            lines.append(f"Served: {', '.join(display)}")
-            if len(profile['cities_served']) > 3:
-                lines.append(f"... and {len(profile['cities_served']) - 3} more")
+            display = [c for c in profile['cities_served'] if c != "N/A"][:3]
+            if display:
+                lines.append(f"Served: {', '.join(display)}")
+                if len(profile['cities_served']) > 3:
+                    lines.append(f"... and {len(profile['cities_served']) - 3} more")
         lines.append("")
         
         # Scores
@@ -854,13 +819,13 @@ class DealerAnalyticsService:
         
         # Timeline
         lines.append("📅 TIMELINE")
-        if profile.get('first_order'):
+        if profile.get('first_order') and profile['first_order'] != "N/A":
             lines.append(f"First Order: {profile['first_order']}")
-        if profile.get('last_order'):
+        if profile.get('last_order') and profile['last_order'] != "N/A":
             lines.append(f"Last Order: {profile['last_order']}")
-        if profile.get('latest_pod'):
+        if profile.get('latest_pod') and profile['latest_pod'] != "N/A":
             lines.append(f"Latest POD: {profile['latest_pod']}")
-        if profile.get('latest_activity'):
+        if profile.get('latest_activity') and profile['latest_activity'] != "N/A":
             lines.append(f"Latest Activity: {profile['latest_activity']}")
         lines.append("")
         
@@ -897,12 +862,9 @@ class DealerAnalyticsService:
             "Please enter the name of the dealer",
             "",
             "📝 *Examples:*",
-            "  • Zoom Appliances",
             "  • Arshad Electronics-Khi",
+            "  • Zoom Appliances",
             "  • RUBA Digital",
-            "  • Metro Electronics",
-            "  • Friends Electronics",
-            "  • Al Madina Electronics",
             "",
             "💡 *Tips:*",
             "  • Use exact name for best results",
@@ -968,7 +930,7 @@ if __name__ == "__main__":
     print()
     
     # Test queries
-    test_queries = ["zoom", "arshad", "metro"]
+    test_queries = ["arshad", "Arshad", "DEAL_ARSHAD_ELECTRON", "CUST_ARSHAD_ELECTRON"]
     
     for query in test_queries:
         print(f"\n🔍 Testing: '{query}'")
@@ -976,8 +938,8 @@ if __name__ == "__main__":
         result = service.process_whatsapp_query(query, "test_user")
         if result == EXIT_SIGNAL:
             print("EXIT_SIGNAL received")
-        elif len(result) > 300:
-            print(result[:300] + "...")
+        elif len(result) > 500:
+            print(result[:500] + "...")
         else:
             print(result)
         print()
