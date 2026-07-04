@@ -1,51 +1,37 @@
 #!/usr/bin/env python3
 # ============================================================
-# FILE: dealer_search_service.py
-# VERSION: 1.0 - ENTERPRISE DEALER SEARCH ENGINE
+# FILE: whatsapp-ai-agent-demo/app/services/dealer_search_service.py
+# VERSION: 2.0 - FINAL POSTGRESQL INTEGRATION
 # ============================================================
 
 """
 ================================================================================
-DEALER SEARCH SERVICE - ENTERPRISE VERSION
+DEALER SEARCH SERVICE - POSTGRESQL INTEGRATION
 ================================================================================
 
-PURPOSE:
-    This service is responsible ONLY for Dealer Search.
-    
-    Receive Dealer Name → Search PostgreSQL → Return Dealer Dashboard
+DATABASE: delivery_reports
+PRIMARY DEALER COLUMN: customer_name
 
-RESTRICTIONS:
-    - NO DN Search
-    - NO Warehouse Search
-    - NO Product Search
-    - NO Dashboard Search
-    - NO Analytics Menu
-    - NO Question Library
-    - NO AI Chat
-    - NO SQL Planning
-    - NO Intent Detection
+This service searches for dealers using customer_name, dealer_code, and customer_code.
 
 ================================================================================
 """
 
 import logging
 import re
-import sys
 from typing import Optional, Dict, List, Any, Union
 from datetime import datetime, date
-from sqlalchemy import func, text, or_
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
+logger = logging.getLogger(__name__)
+
 # ============================================================
-# LOGGING
+# CONFIGURATION
 # ============================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger(__name__)
+EXIT_SIGNAL = "__EXIT__"
+FUZZY_THRESHOLD = 70
 
 # ============================================================
 # DATABASE IMPORTS
@@ -59,14 +45,6 @@ try:
 except ImportError as e:
     DB_AVAILABLE = False
     logger.error(f"❌ PostgreSQL connection failed: {e}")
-    logger.info("   Running in FALLBACK mode")
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-EXIT_SIGNAL = "__EXIT__"
-FUZZY_THRESHOLD = 70
 
 # ============================================================
 # RAPIDFUZZ (optional)
@@ -119,27 +97,22 @@ def format_number(num: Union[int, float]) -> str:
         return "0"
     return f"{int(num):,}"
 
-def normalize_text(text: str) -> str:
-    """Remove spaces, symbols, special characters"""
+def clean_text(text: str) -> str:
+    """Clean text for matching - lowercase, strip, remove special chars"""
     if not text:
         return ""
-    text = re.sub(r'[^a-zA-Z0-9]', '', text)
+    text = re.sub(r'[^a-zA-Z0-9\s-]', '', text)
+    text = re.sub(r'\s+', ' ', text)
     return text.strip().lower()
 
 def normalize_no_spaces(text: str) -> str:
-    """Remove all spaces only"""
+    """Remove all spaces"""
     if not text:
         return ""
     return re.sub(r'\s+', '', text).lower()
 
-def clean_text(text: str) -> str:
-    """Basic text cleaning - lowercase, strip"""
-    if not text:
-        return ""
-    return text.strip().lower()
-
 # ============================================================
-# SAMPLE DATA (Fallback)
+# SAMPLE DATA (Fallback - for testing when DB unavailable)
 # ============================================================
 
 SAMPLE_DEALERS = {
@@ -168,8 +141,8 @@ SAMPLE_DEALERS = {
         "avg_pod_days": 8.0,
         "top_product": "HWM 150-826S6 GC",
         "top_model": "HWM 150-826S6 GC",
-        "material_count": 6,
         "product_count": 6,
+        "material_count": 6,
         "warehouses_used": ["Karachi"],
         "cities_served": ["Karachi"],
         "latest_dn": "09-Jun-2026",
@@ -195,8 +168,7 @@ class DealerSearchEngine:
     """
     Enterprise Dealer Search Engine
     
-    ONE TASK ONLY:
-        Receive Dealer Name → Search PostgreSQL → Return Dashboard
+    Searches PostgreSQL delivery_reports table using customer_name
     """
     
     _instance: Optional["DealerSearchEngine"] = None
@@ -211,20 +183,20 @@ class DealerSearchEngine:
             return
         
         self._initialized = True
-        self._version = "1.0"
+        self._version = "2.0"
         self._db_available = DB_AVAILABLE
         
-        # Cache
+        # Cache for quick lookups
         self._dealer_cache: Dict[str, Dict] = {}
         self._dealer_names: List[str] = []
         
-        # Load dealers
+        # Load dealers on startup
         self._load_dealers()
         
         logger.info("=" * 70)
-        logger.info("🚀 DEALER SEARCH ENGINE v1.0")
+        logger.info("🚀 DEALER SEARCH ENGINE v2.0")
         logger.info(f"   🗄️  PostgreSQL: {'✅ Connected' if self._db_available else '⚠️ Fallback'}")
-        logger.info(f"   📚 Dealers: {len(self._dealer_cache)}")
+        logger.info(f"   📚 Dealers Loaded: {len(self._dealer_cache)}")
         logger.info("=" * 70)
     
     def _get_session(self) -> Optional[Session]:
@@ -238,7 +210,7 @@ class DealerSearchEngine:
             return None
     
     def _load_dealers(self):
-        """Load all dealers for caching"""
+        """Load all dealers from PostgreSQL delivery_reports table"""
         if not self._db_available:
             self._load_sample_dealers()
             return
@@ -249,13 +221,22 @@ class DealerSearchEngine:
             return
         
         try:
+            # Get all distinct customer_names (dealers) from delivery_reports
             results = session.query(
                 DeliveryReport.customer_name,
                 DeliveryReport.dealer_code,
                 DeliveryReport.customer_code
             ).filter(
                 DeliveryReport.customer_name.isnot(None),
-                DeliveryReport.customer_name != ''
+                DeliveryReport.customer_name != '',
+                # Filter out non-dealer records
+                ~DeliveryReport.customer_name.like('PK%'),
+                ~DeliveryReport.customer_name.like('%-prepaid-%'),
+                ~DeliveryReport.customer_name.like('%Faiq%'),
+                ~DeliveryReport.customer_name.like('%Alam%'),
+                # dealer_code should exist and look like a dealer
+                DeliveryReport.dealer_code.isnot(None),
+                DeliveryReport.dealer_code != ''
             ).distinct().all()
             
             session.close()
@@ -263,6 +244,7 @@ class DealerSearchEngine:
             for row in results:
                 name = _text(row.customer_name)
                 if name and name != "N/A" and len(name) > 2:
+                    # Store in cache with multiple keys for fast lookup
                     key = clean_text(name)
                     self._dealer_cache[key] = {
                         'name': name,
@@ -294,11 +276,68 @@ class DealerSearchEngine:
         logger.info(f"   📚 Loaded {len(self._dealer_cache)} sample dealers")
     
     # ============================================================
-    # STARTUP SCREEN
+    # WHATSAPP ENTRY POINT
     # ============================================================
     
-    def get_startup_screen(self) -> str:
-        """Display startup screen with examples"""
+    def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
+        """
+        MAIN ENTRY POINT - Called by AIProviderService
+        
+        Args:
+            message: User's input (Dealer Name, Code, etc.)
+            sender: User identifier
+            
+        Returns:
+            Dashboard, error message, or EXIT_SIGNAL
+        """
+        try:
+            logger.info(f"📨 Dealer Search: '{message}' from {sender}")
+            
+            if not message or not message.strip():
+                return self.get_welcome_message()
+            
+            message_clean = message.strip()
+            
+            # Check for exit
+            if message_clean == "99" or message_clean.lower() in ["exit", "quit", "menu"]:
+                logger.info(f"🚪 Exit requested by {sender}")
+                return EXIT_SIGNAL
+            
+            # Search for dealer
+            result = self.search_dealer(message_clean)
+            
+            if result['success']:
+                logger.info(f"✅ Dealer found: {result['profile']['name']}")
+                return result['dashboard']
+            else:
+                logger.info(f"❌ Dealer not found: {message_clean}")
+                
+                if result.get('suggestions'):
+                    suggestion_lines = ["❌ Dealer not found.", "", "💡 Did you mean:"]
+                    for i, name in enumerate(result['suggestions'][:5], 1):
+                        suggestion_lines.append(f"{i}. {name}")
+                    suggestion_lines.append("")
+                    suggestion_lines.append("Type a number or dealer name, or '99' to exit")
+                    return "\n".join(suggestion_lines)
+                else:
+                    return "\n".join([
+                        "❌ Dealer not found.",
+                        "",
+                        "Please try a different name.",
+                        "",
+                        "Type '99' to exit"
+                    ])
+            
+        except Exception as e:
+            logger.error(f"❌ process_whatsapp_query error: {e}", exc_info=True)
+            return f"⚠️ An error occurred: {str(e)[:200]}\n\nPlease type '99' to exit."
+    
+    # ============================================================
+    # WELCOME MESSAGE
+    # ============================================================
+    
+    def get_welcome_message(self) -> str:
+        """Display welcome message"""
         return "\n".join([
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "🏢 DEALER SEARCH",
@@ -314,43 +353,31 @@ class DealerSearchEngine:
             "• Al Madina Electronics",
             "",
             "✅ Supported Search:",
-            "✓ Dealer Name",
-            "✓ Dealer Code",
-            "✓ Customer Code",
+            "✓ Dealer Name (customer_name)",
+            "✓ Dealer Code (dealer_code)",
+            "✓ Customer Code (customer_code)",
             "✓ Partial Name",
             "✓ Alias",
             "✓ Fuzzy Search (70%)",
             "",
             "99️⃣ Main Menu",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "",
-            "Waiting for Dealer Name..."
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ])
     
     # ============================================================
-    # SEARCH ENGINE
+    # DEALER SEARCH ENGINE
     # ============================================================
     
-    def search(self, query: str) -> Dict[str, Any]:
+    def search_dealer(self, query: str) -> Dict[str, Any]:
         """
         Search for dealer using multi-stage matching
         
-        Search Order:
-            1. customer_name
+        Search Priority:
+            1. customer_name (exact)
             2. dealer_code
             3. customer_code
-        
-        Matching Order:
-            1. Exact Match
-            2. Ignore Case
-            3. Ignore Spaces
-            4. Ignore Symbols
-            5. Contains Match
-            6. Starts With
-            7. Ends With
-            8. Word Match
-            9. Alias Match
-            10. RapidFuzz Match (70%)
+            4. Partial matches
+            5. Fuzzy matches
         """
         if not query or not query.strip():
             return {
@@ -363,73 +390,105 @@ class DealerSearchEngine:
         
         logger.info(f"🔍 Searching: '{query_clean}'")
         
-        # 1. EXACT MATCH
+        # ============================================================
+        # STAGE 1: EXACT MATCH on customer_name
+        # ============================================================
         result = self._exact_match(query_cleaned)
         if result:
             logger.info(f"   ✅ Exact match: {result['name']} (100%)")
             return self._get_dealer_dashboard(result['name'])
         
-        # 2. IGNORE CASE
+        # ============================================================
+        # STAGE 2: IGNORE CASE
+        # ============================================================
         result = self._case_insensitive_match(query_cleaned)
         if result:
             logger.info(f"   ✅ Case insensitive match: {result['name']}")
             return self._get_dealer_dashboard(result['name'])
         
-        # 3. IGNORE SPACES
+        # ============================================================
+        # STAGE 3: IGNORE SPACES
+        # ============================================================
         result = self._space_insensitive_match(query_cleaned)
         if result:
             logger.info(f"   ✅ Space insensitive match: {result['name']}")
             return self._get_dealer_dashboard(result['name'])
         
-        # 4. IGNORE SYMBOLS
+        # ============================================================
+        # STAGE 4: IGNORE SYMBOLS
+        # ============================================================
         result = self._symbol_insensitive_match(query_cleaned)
         if result:
             logger.info(f"   ✅ Symbol insensitive match: {result['name']}")
             return self._get_dealer_dashboard(result['name'])
         
-        # 5. CONTAINS MATCH
+        # ============================================================
+        # STAGE 5: CONTAINS MATCH
+        # ============================================================
         result = self._contains_match(query_cleaned)
         if result:
             logger.info(f"   ✅ Contains match: {result['name']}")
             return self._get_dealer_dashboard(result['name'])
         
-        # 6. STARTS WITH
+        # ============================================================
+        # STAGE 6: STARTS WITH
+        # ============================================================
         result = self._starts_with_match(query_cleaned)
         if result:
             logger.info(f"   ✅ Starts with match: {result['name']}")
             return self._get_dealer_dashboard(result['name'])
         
-        # 7. ENDS WITH
+        # ============================================================
+        # STAGE 7: ENDS WITH
+        # ============================================================
         result = self._ends_with_match(query_cleaned)
         if result:
             logger.info(f"   ✅ Ends with match: {result['name']}")
             return self._get_dealer_dashboard(result['name'])
         
-        # 8. WORD MATCH
+        # ============================================================
+        # STAGE 8: WORD MATCH
+        # ============================================================
         result = self._word_match(query_cleaned)
         if result:
             logger.info(f"   ✅ Word match: {result['name']}")
             return self._get_dealer_dashboard(result['name'])
         
-        # 9. ALIAS MATCH
+        # ============================================================
+        # STAGE 9: ALIAS MATCH
+        # ============================================================
         result = self._alias_match(query_cleaned)
         if result:
             logger.info(f"   ✅ Alias match: {result['name']}")
             return self._get_dealer_dashboard(result['name'])
         
-        # 10. CODE MATCH
-        result = self._code_match(query_clean)
+        # ============================================================
+        # STAGE 10: DEALER CODE MATCH (dealer_code)
+        # ============================================================
+        result = self._dealer_code_match(query_clean)
         if result:
-            logger.info(f"   ✅ Code match: {result['name']} (100%)")
+            logger.info(f"   ✅ Dealer code match: {result['name']} (100%)")
             return self._get_dealer_dashboard(result['name'])
         
-        # 11. RAPIDFUZZ MATCH (70%)
+        # ============================================================
+        # STAGE 11: CUSTOMER CODE MATCH (customer_code)
+        # ============================================================
+        result = self._customer_code_match(query_clean)
+        if result:
+            logger.info(f"   ✅ Customer code match: {result['name']} (100%)")
+            return self._get_dealer_dashboard(result['name'])
+        
+        # ============================================================
+        # STAGE 12: RAPIDFUZZ MATCH (70% threshold)
+        # ============================================================
         result = self._fuzzy_match(query_cleaned)
         if result:
             logger.info(f"   ✅ Fuzzy match: {result['name']} ({result['score']:.0f}%)")
             return self._get_dealer_dashboard(result['name'])
         
+        # ============================================================
         # NO MATCH - Get suggestions
+        # ============================================================
         logger.info(f"   ❌ No match found")
         suggestions = self._get_suggestions(query_cleaned)
         
@@ -457,14 +516,14 @@ class DealerSearchEngine:
         return None
     
     def _case_insensitive_match(self, query: str):
-        """Case insensitive match"""
+        """Case insensitive match on customer_name"""
         for key, data in self._dealer_cache.items():
             if key == query:
                 return data
         return None
     
     def _space_insensitive_match(self, query: str):
-        """Ignore spaces"""
+        """Ignore spaces in customer_name"""
         query_no_space = normalize_no_spaces(query)
         for key, data in self._dealer_cache.items():
             if normalize_no_spaces(key) == query_no_space:
@@ -472,15 +531,16 @@ class DealerSearchEngine:
         return None
     
     def _symbol_insensitive_match(self, query: str):
-        """Ignore symbols"""
-        query_normalized = normalize_text(query)
+        """Ignore symbols in customer_name"""
+        # Already cleaned in normalize_text
         for key, data in self._dealer_cache.items():
-            if normalize_text(key) == query_normalized:
+            # Compare cleaned versions
+            if clean_text(key) == query:
                 return data
         return None
     
     def _contains_match(self, query: str):
-        """Contains match"""
+        """Contains match - query is part of customer_name"""
         best_match = None
         best_score = 0.0
         
@@ -496,7 +556,7 @@ class DealerSearchEngine:
         return None
     
     def _starts_with_match(self, query: str):
-        """Starts with match"""
+        """Starts with match on customer_name"""
         best_match = None
         best_score = 0.0
         
@@ -512,7 +572,7 @@ class DealerSearchEngine:
         return None
     
     def _ends_with_match(self, query: str):
-        """Ends with match"""
+        """Ends with match on customer_name"""
         best_match = None
         best_score = 0.0
         
@@ -528,7 +588,7 @@ class DealerSearchEngine:
         return None
     
     def _word_match(self, query: str):
-        """Word match"""
+        """Word match on customer_name"""
         query_words = set(query.split())
         if len(query_words) < 1:
             return None
@@ -550,7 +610,7 @@ class DealerSearchEngine:
         return None
     
     def _alias_match(self, query: str):
-        """Alias match - partial of name"""
+        """Alias match - partial of customer_name"""
         best_match = None
         best_score = 0.0
         
@@ -559,7 +619,7 @@ class DealerSearchEngine:
             parts = key.split()
             for part in parts:
                 if len(part) >= 3 and part in query:
-                    score = len(part) / len(query)
+                    score = len(part) / len(query) if len(query) > 0 else 0
                     if score > best_score:
                         best_score = score
                         best_match = data
@@ -573,15 +633,23 @@ class DealerSearchEngine:
             return best_match
         return None
     
-    def _code_match(self, query: str):
-        """Match by dealer_code or customer_code"""
+    def _dealer_code_match(self, query: str):
+        """Match by dealer_code column"""
         query_clean = query.strip().upper()
         
         for key, data in self._dealer_cache.items():
             dealer_code = data.get('dealer_code', '').upper()
+            if dealer_code and dealer_code == query_clean:
+                return data
+        return None
+    
+    def _customer_code_match(self, query: str):
+        """Match by customer_code column"""
+        query_clean = query.strip().upper()
+        
+        for key, data in self._dealer_cache.items():
             customer_code = data.get('customer_code', '').upper()
-            
-            if dealer_code == query_clean or customer_code == query_clean:
+            if customer_code and customer_code == query_clean:
                 return data
         return None
     
@@ -640,7 +708,7 @@ class DealerSearchEngine:
     # ============================================================
     
     def _get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-        """Get full dealer dashboard"""
+        """Get full dealer dashboard from PostgreSQL"""
         if self._db_available:
             result = self._query_dealer_dashboard(dealer_name)
             if result:
@@ -650,13 +718,17 @@ class DealerSearchEngine:
         return self._get_sample_dashboard(dealer_name)
     
     def _query_dealer_dashboard(self, dealer_name: str) -> Optional[Dict[str, Any]]:
-        """Query PostgreSQL for dealer dashboard"""
+        """
+        Query PostgreSQL for complete dealer dashboard
+        
+        Uses customer_name to find all records for this dealer
+        """
         session = self._get_session()
         if not session:
             return None
         
         try:
-            # Parameterized SQL query
+            # Parameterized SQL query - SAFE
             sql = """
                 SELECT 
                     customer_name,
@@ -867,7 +939,6 @@ class DealerSearchEngine:
     
     def _get_sample_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         """Get sample dashboard for fallback"""
-        # Find dealer in sample data
         for key, data in SAMPLE_DEALERS.items():
             if data['name'].lower() == dealer_name.lower():
                 profile = {
@@ -1048,52 +1119,6 @@ class DealerSearchEngine:
         return "\n".join(lines)
     
     # ============================================================
-    # MAIN ENTRY POINT
-    # ============================================================
-    
-    def process_query(self, message: str) -> str:
-        """
-        Process user query - the ONLY entry point
-        
-        Args:
-            message: User's input (Dealer Name, Code, etc.)
-            
-        Returns:
-            Dashboard or error message
-        """
-        if not message or not message.strip():
-            return self.get_startup_screen()
-        
-        message_clean = message.strip()
-        
-        # Check for exit
-        if message_clean == "99":
-            return EXIT_SIGNAL
-        
-        # Search
-        result = self.search(message_clean)
-        
-        if result['success']:
-            return result['dashboard']
-        else:
-            # Show suggestions
-            if result.get('suggestions'):
-                suggestion_lines = ["Dealer not found.", "", "💡 Did you mean:"]
-                for i, name in enumerate(result['suggestions'][:5], 1):
-                    suggestion_lines.append(f"{i}. {name}")
-                suggestion_lines.append("")
-                suggestion_lines.append("99️⃣ Main Menu")
-                return "\n".join(suggestion_lines)
-            else:
-                return "\n".join([
-                    "❌ Dealer not found.",
-                    "",
-                    "Please try a different name.",
-                    "",
-                    "99️⃣ Main Menu"
-                ])
-    
-    # ============================================================
     # HEALTH CHECK
     # ============================================================
     
@@ -1121,25 +1146,40 @@ def get_dealer_search_engine() -> DealerSearchEngine:
     return _service
 
 # ============================================================
-# MAIN ENTRY - For standalone testing
+# MODULE EXPORTS
 # ============================================================
 
-def main():
-    """Standalone testing"""
-    engine = get_dealer_search_engine()
-    
+__all__ = [
+    "DealerSearchEngine",
+    "get_dealer_search_engine",
+    "EXIT_SIGNAL"
+]
+
+# ============================================================
+# TEST / STANDALONE MODE
+# ============================================================
+
+if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("DEALER SEARCH ENGINE - TEST MODE".center(60))
     print("=" * 60)
     print()
     
-    # Show startup screen
-    print(engine.get_startup_screen())
+    engine = get_dealer_search_engine()
+    
+    # Show health
+    health = engine.health_check()
+    print(f"📊 Health: {health}")
     print()
     
+    # Show welcome
+    print(engine.get_welcome_message())
+    print()
+    
+    # Interactive test
     while True:
         try:
-            query = input("🔍 Enter Dealer Name (or 99): ").strip()
+            query = input("🔍 Enter Dealer Name (or 99 to exit): ").strip()
             
             if query == "99":
                 print("\n👋 Goodbye!")
@@ -1149,7 +1189,7 @@ def main():
                 continue
             
             print("\n⏳ Searching...\n")
-            result = engine.process_query(query)
+            result = engine.process_whatsapp_query(query, "test_user")
             
             if result == EXIT_SIGNAL:
                 print("Exiting...")
@@ -1163,20 +1203,3 @@ def main():
             break
         except Exception as e:
             print(f"\n❌ Error: {e}\n")
-
-# ============================================================
-# EXPORTS
-# ============================================================
-
-__all__ = [
-    "DealerSearchEngine",
-    "get_dealer_search_engine",
-    "EXIT_SIGNAL"
-]
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
-
-if __name__ == "__main__":
-    main()
