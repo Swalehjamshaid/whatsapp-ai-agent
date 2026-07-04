@@ -1,854 +1,902 @@
+# ============================================================
+# FILE: app/services/ai_provider_service.py
+# VERSION: 49.0 - ENTERPRISE GATEWAY (7 SERVICES)
+# ============================================================
+
 """
-File: app/services/groq_service.py
-Version: 2.0 - ENTERPRISE AI ENHANCEMENT SERVICE
-Purpose: AI enhancement and natural language processing for WhatsApp responses
-Integration: 100% integrated with ai_provider_service.py and PostgreSQL
+File: app/services/ai_provider_service.py
+Version: 49.0 - ENTERPRISE GATEWAY
+
+================================================================================
+PURPOSE
+================================================================================
+
+This is the SOLE GATEWAY for all WhatsApp interactions.
+
+Its ONLY responsibilities are:
+1. Detect if session is locked to a module
+2. If locked → Forward EVERY message to that module (NO ROUTING)
+3. If unlocked → Show Main Dashboard or Route to selected module
+4. ONLY "__EXIT__" or "99" unlocks the session and returns to Main Dashboard
+
+================================================================================
+INTEGRATED SERVICES (7 Files)
+================================================================================
+
+Menu ID | Dashboard Name          | Service File           | Loader Function
+--------|-------------------------|------------------------|-------------------------------
+1       | National Dashboard      | national_kpi_service.py| get_national_kpi_service()
+2       | DN Dashboard            | dn_analysis.py (v31.0) | get_dn_analysis_service()
+3       | Dealer Dashboard        | dealer_service.py      | get_dealer_service()
+4       | Warehouse Dashboard     | warehouse_service.py   | get_warehouse_analytics_service()
+5       | Product Dashboard       | product_service.py     | get_product_analytics_service()
+6       | City Dashboard          | city_service.py        | get_city_analytics_service()
+7       | AI Chat                 | groq_service.py        | get_groq_service()
+
+================================================================================
+SESSION LOCKING
+================================================================================
+
+Once a user enters a module:
+- Session is LOCKED
+- ALL messages go directly to that module
+- NO routing occurs
+- Only "__EXIT__" or "99" unlocks
+
+================================================================================
+EXIT CONTRACT
+================================================================================
+
+All modules MUST return "__EXIT__" or "99" to unlock the session.
+The gateway checks for these signals and unlocks the session.
+
+================================================================================
+STATUS: ENTERPRISE READY
+================================================================================
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import os
 import re
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
-
-import httpx
-from cachetools import TTLCache
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-70b-8192")
-GROQ_API_URL = os.getenv("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
-GROQ_TIMEOUT = int(os.getenv("GROQ_TIMEOUT", "30"))
-GROQ_MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS", "500"))
-GROQ_TEMPERATURE = float(os.getenv("GROQ_TEMPERATURE", "0.7"))
-ENABLE_GROQ = os.getenv("ENABLE_GROQ", "true").lower() == "true"
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Any, Dict, List, Optional, Union, Callable
 
 logger = logging.getLogger(__name__)
 
+# ============================================================
+# BLOCK 1: CONFIGURATION
+# ============================================================
+
+SESSION_TIMEOUT_SECONDS = int(os.getenv("SESSION_TIMEOUT_SECONDS", "1800"))  # 30 minutes
+EXIT_SIGNAL = "__EXIT__"
 
 # ============================================================
-# PROMPT TEMPLATES
+# BLOCK 2: ENUMS
 # ============================================================
 
-class GroqPromptTemplates:
-    """Prompt templates for different use cases"""
+class ModuleType(Enum):
+    """Available domain modules"""
+    NATIONAL = "national"
+    DN = "dn"
+    DEALER = "dealer"
+    WAREHOUSE = "warehouse"
+    PRODUCT = "product"
+    CITY = "city"
+    AI = "ai"
+
+# ============================================================
+# BLOCK 3: DATA CLASSES
+# ============================================================
+
+@dataclass
+class Session:
+    """Session state for a user."""
+    sender: str
+    locked: bool = False
+    module_type: Optional[ModuleType] = None
+    module_name: Optional[str] = None
+    file_name: Optional[str] = None
+    menu_id: Optional[int] = None
+    service_instance: Optional[Any] = None
+    entered_at: Optional[datetime] = None
+    last_activity: datetime = field(default_factory=datetime.now)
+    history: List[Dict[str, Any]] = field(default_factory=list)
     
-    # System prompt - defines the assistant's role
-    SYSTEM_PROMPT = """You are HPK Logistics AI Assistant, an expert logistics analytics bot for Pakistan's supply chain.
+    def update_activity(self):
+        """Update last activity timestamp."""
+        self.last_activity = datetime.now()
+    
+    def is_expired(self, timeout_seconds: int = SESSION_TIMEOUT_SECONDS) -> bool:
+        """Check if session has expired."""
+        elapsed = (datetime.now() - self.last_activity).total_seconds()
+        return elapsed > timeout_seconds
+    
+    def add_history(self, query: str, response: str):
+        """Add to conversation history."""
+        self.history.append({
+            "query": query,
+            "response": response[:200] if len(response) > 200 else response,
+            "timestamp": datetime.now().isoformat()
+        })
+        if len(self.history) > 100:
+            self.history = self.history[-100:]
+    
+    def lock(self, module_type: ModuleType, module_name: str, file_name: str, 
+             menu_id: int, service_instance: Any):
+        """Lock session to a module."""
+        self.locked = True
+        self.module_type = module_type
+        self.module_name = module_name
+        self.file_name = file_name
+        self.menu_id = menu_id
+        self.service_instance = service_instance
+        self.entered_at = datetime.now()
+        self.update_activity()
+    
+    def unlock(self):
+        """Unlock session."""
+        self.locked = False
+        self.module_type = None
+        self.module_name = None
+        self.file_name = None
+        self.menu_id = None
+        self.service_instance = None
+        self.entered_at = None
+        self.update_activity()
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert session to dictionary."""
+        return {
+            "sender": self.sender,
+            "locked": self.locked,
+            "module_type": self.module_type.value if self.module_type else None,
+            "module_name": self.module_name,
+            "file_name": self.file_name,
+            "menu_id": self.menu_id,
+            "entered_at": self.entered_at.isoformat() if self.entered_at else None,
+            "last_activity": self.last_activity.isoformat(),
+            "history_count": len(self.history),
+            "is_expired": self.is_expired()
+        }
 
-You have access to real logistics data from PostgreSQL including:
-- Delivery Notes (DN) with status, quantities, revenue
-- Dealer performance metrics
-- Warehouse operations data
-- City-level analytics
-- PGI and POD status
-- National KPIs
-
-Your role is to:
-1. Understand user questions about logistics data
-2. Provide clear, concise answers with insights
-3. Suggest relevant logistics metrics when appropriate
-4. Maintain a professional, helpful tone
-
-Always be specific, data-driven, and actionable in your responses.
-
-Format responses for WhatsApp - use:
-- Bullet points (•) for lists
-- Bold (**text**) for emphasis
-- Emojis for visual cues (📦 🏪 📊 🚚 ✅ ❌ ⚠️)
-
-When you don't know something, say so clearly. Never invent data.
-NEVER mention that you are an AI. Present yourself as the Logistics Assistant."""
-
-    # Query enhancement prompt
-    QUERY_ENHANCEMENT = """Analyze this logistics query and extract key information:
-
-Query: {query}
-
-Extract:
-1. Intent (what the user wants to know)
-2. Entity type (DN, Dealer, Warehouse, City, Product, KPI, Pending, Delivery, Revenue, Units, Comparison)
-3. Entity name (if any)
-4. Time frame (if any)
-5. Additional filters or conditions
-
-Return as JSON only:
-{{
-    "intent": "",
-    "entity_type": "",
-    "entity_name": "",
-    "time_frame": "",
-    "conditions": []
-}}"""
-
-    # Response enhancement prompt
-    RESPONSE_ENHANCEMENT = """Enhance this business data response for WhatsApp:
-
-Context:
-- User asked: {user_query}
-- Intent: {intent}
-- Entity: {entity}
-
-Business Data:
-{business_data}
-
-Requirements:
-1. Make it clear and scannable for WhatsApp
-2. Add relevant insights and context
-3. Suggest next steps if appropriate
-4. Use bullet points (•) and emojis
-5. Keep it concise (max 2000 characters)
-6. Highlight key metrics (bold them)
-7. Add a brief executive summary at the top
-
-Format the response with:
-- A brief summary
-- Key metrics with values
-- Insights or trends (if applicable)
-- Recommendations or next steps (if applicable)
-
-Return only the formatted WhatsApp message."""
-
-    # Explanation prompt
-    EXPLANATION_PROMPT = """Explain this logistics term in simple, clear language for WhatsApp:
-
-Term: {term}
-Context: {context}
-
-Format for WhatsApp with:
-- A simple definition
-- Why it matters
-- A real example (if applicable)
-- Related terms (if applicable)
-
-Keep it under 500 characters. Use bullet points and emojis for readability."""
-
-    # Conversational response prompt
-    CONVERSATIONAL_PROMPT = """Respond to this user message as HPK Logistics AI Assistant:
-
-User: {user_message}
-
-Guidelines:
-1. Be helpful and professional
-2. If it's a greeting, respond warmly
-3. If it's a question, answer it directly
-4. If unsure, suggest what you can help with
-5. Suggest specific logistics topics they can ask about
-6. Keep it concise (max 500 characters)
-
-Suggested logistics topics:
-- DN Tracking (send a DN number)
-- Dealer Analytics (dealer name)
-- Warehouse Analytics (warehouse name)
-- City Analytics (city name)
-- National KPIs
-- Pending Deliveries
-- Reports & Rankings
-
-Format for WhatsApp with appropriate emojis."""
-
-    # Pending DNs prompt
-    PENDING_DNS_PROMPT = """Analyze these pending DNs and provide a helpful summary:
-
-Pending DNs Data:
-{pending_data}
-
-Summary Requirements:
-1. Total pending count
-2. Breakdown by pending type (PGI Pending vs POD Pending)
-3. Oldest pending DN
-4. Total revenue pending
-5. Urgency assessment
-
-Format for WhatsApp with clear sections and emojis."""
-
-    # Dealer insights prompt
-    DEALER_INSIGHTS_PROMPT = """Analyze this dealer's performance data and provide actionable insights:
-
-Dealer: {dealer_name}
-Data: {dealer_data}
-
-Insights to provide:
-1. Overall performance assessment (Excellent/Good/Watch/Critical)
-2. Key strengths (top 2-3)
-3. Areas for improvement (top 2-3)
-4. Specific recommendations (top 2-3)
-5. Revenue growth trend
-
-Be specific, data-driven, and actionable. Format for WhatsApp."""
-
+@dataclass
+class MenuItem:
+    """Menu item configuration."""
+    id: int
+    name: str
+    aliases: List[str]
+    module_type: ModuleType
+    file: str
+    loader: Callable
+    
+    def matches(self, text: str) -> bool:
+        """Check if text matches this menu item."""
+        text_lower = text.strip().lower()
+        
+        # Check by ID
+        if text_lower == str(self.id):
+            return True
+        
+        # Check by name
+        if text_lower == self.name.lower():
+            return True
+        
+        # Check by aliases
+        for alias in self.aliases:
+            if text_lower == alias.lower():
+                return True
+            if alias.lower() in text_lower:
+                return True
+        
+        return False
 
 # ============================================================
-# GROQ SERVICE
+# BLOCK 4: SERVICE REGISTRY - ALL 7 SERVICES
 # ============================================================
 
-class GroqService:
+class ServiceRegistry:
     """
-    Enterprise Groq AI Service for WhatsApp Logistics Assistant.
-    Provides AI enhancement for business data responses.
+    SERVICE REGISTRY - All 7 modules registered here.
+    Adding a new module requires only ONE configuration entry.
     """
     
-    _instance: Optional["GroqService"] = None
+    _instance: Optional["ServiceRegistry"] = None
     _lock = threading.Lock()
     
-    def __new__(cls) -> "GroqService":
+    def __new__(cls):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
-                    cls._instance._initialized = False
         return cls._instance
     
-    def __init__(self) -> None:
-        if self._initialized:
+    def __init__(self):
+        if hasattr(self, "_initialized") and self._initialized:
             return
         
         self._initialized = True
-        self._client = None
-        self._cache = TTLCache(maxsize=1000, ttl=3600)
+        self._menu_items: List[MenuItem] = []
+        self._module_map: Dict[ModuleType, MenuItem] = {}
+        self._loader_cache: Dict[ModuleType, Any] = {}
+        self._cache_lock = threading.RLock()
         
-        # Initialize HTTP client
-        if ENABLE_GROQ and GROQ_API_KEY:
-            try:
-                self._client = httpx.AsyncClient(
-                    timeout=GROQ_TIMEOUT,
-                    headers={
-                        "Authorization": f"Bearer {GROQ_API_KEY}",
-                        "Content-Type": "application/json",
-                    }
-                )
-                logger.info("✅ GroqService initialized with API key")
-            except Exception as e:
-                logger.error(f"❌ GroqService initialization failed: {e}")
-                self._client = None
-        else:
-            if not GROQ_API_KEY:
-                logger.warning("⚠️ GROQ_API_KEY not set - Groq service disabled")
-            if not ENABLE_GROQ:
-                logger.info("ℹ️ Groq service disabled by ENABLE_GROQ=false")
-            self._client = None
+        # Register all modules
+        self._register_modules()
         
-        # Initialize prompt templates
-        self.prompts = GroqPromptTemplates()
-        
-        logger.info(f"✅ GroqService initialized (v2.0) - Enabled: {self.is_available()}")
+        logger.info(f"📦 Service Registry initialized with {len(self._menu_items)} modules")
     
-    def is_available(self) -> bool:
-        """Check if Groq service is available"""
-        return self._client is not None and ENABLE_GROQ and GROQ_API_KEY is not None
+    def _register_modules(self):
+        """Register all 7 modules."""
+        
+        modules = [
+            # Menu ID 1: National Dashboard → national_kpi_service.py
+            MenuItem(
+                id=1,
+                name="National Dashboard",
+                aliases=["national", "national kpi", "kpi", "pakistan", "overall", "dashboard"],
+                module_type=ModuleType.NATIONAL,
+                file="national_kpi_service.py",
+                loader=self._load_national_service
+            ),
+            # Menu ID 2: DN Dashboard → dn_analysis.py (v31.0)
+            MenuItem(
+                id=2,
+                name="DN Dashboard",
+                aliases=["dn", "delivery", "delivery note", "pending dn", "delivery dashboard", "dn intelligence"],
+                module_type=ModuleType.DN,
+                file="dn_analysis.py",
+                loader=self._load_dn_service
+            ),
+            # Menu ID 3: Dealer Dashboard → dealer_service.py
+            MenuItem(
+                id=3,
+                name="Dealer Dashboard",
+                aliases=["dealer", "distributor", "partner", "customer", "dealer analytics"],
+                module_type=ModuleType.DEALER,
+                file="dealer_service.py",
+                loader=self._load_dealer_service
+            ),
+            # Menu ID 4: Warehouse Dashboard → warehouse_service.py
+            MenuItem(
+                id=4,
+                name="Warehouse Dashboard",
+                aliases=["warehouse", "storage", "plant", "inventory", "warehouse analytics"],
+                module_type=ModuleType.WAREHOUSE,
+                file="warehouse_service.py",
+                loader=self._load_warehouse_service
+            ),
+            # Menu ID 5: Product Dashboard → product_service.py
+            MenuItem(
+                id=5,
+                name="Product Dashboard",
+                aliases=["product", "material", "sku", "model", "product analytics"],
+                module_type=ModuleType.PRODUCT,
+                file="product_service.py",
+                loader=self._load_product_service
+            ),
+            # Menu ID 6: City Dashboard → city_service.py
+            MenuItem(
+                id=6,
+                name="City Dashboard",
+                aliases=["city", "location", "region", "city analytics", "town"],
+                module_type=ModuleType.CITY,
+                file="city_service.py",
+                loader=self._load_city_service
+            ),
+            # Menu ID 7: AI Chat → groq_service.py
+            MenuItem(
+                id=7,
+                name="AI Chat",
+                aliases=["ai", "chat", "assistant", "groq", "ai assistant", "help"],
+                module_type=ModuleType.AI,
+                file="groq_service.py",
+                loader=self._load_ai_service
+            ),
+        ]
+        
+        for item in modules:
+            self._menu_items.append(item)
+            self._module_map[item.module_type] = item
     
-    def _get_cache_key(self, prompt: str, system_prompt: str) -> str:
-        """Generate cache key for a request"""
-        import hashlib
-        key = f"{system_prompt}_{prompt}"
-        return hashlib.md5(key.encode()).hexdigest()
+    # ============================================================
+    # LOADER METHODS - All 7 services
+    # ============================================================
     
-    async def _call_api(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        temperature: float = GROQ_TEMPERATURE,
-        max_tokens: int = GROQ_MAX_TOKENS,
-    ) -> Optional[str]:
-        """
-        Call Groq API with system and user prompts.
-        
-        Args:
-            system_prompt: System instruction for the AI
-            user_prompt: User query or data to process
-            temperature: Creativity (0.0 to 1.0)
-            max_tokens: Maximum response length
-        
-        Returns:
-            AI response string or None on failure
-        """
-        if not self.is_available():
-            logger.warning("Groq service not available - skipping API call")
-            return None
-        
-        # Check cache
-        cache_key = self._get_cache_key(user_prompt, system_prompt)
-        if cache_key in self._cache:
-            logger.debug(f"✅ Groq cache hit for: {user_prompt[:50]}...")
-            return self._cache[cache_key]
-        
-        try:
-            payload = {
-                "model": GROQ_MODEL,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
-            
-            logger.debug(f"📤 Calling Groq API: {GROQ_MODEL}")
-            start_time = time.perf_counter()
-            
-            response = await self._client.post(GROQ_API_URL, json=payload)
-            response.raise_for_status()
-            
-            elapsed_ms = (time.perf_counter() - start_time) * 1000
-            data = response.json()
-            
-            if "choices" in data and len(data["choices"]) > 0:
-                content = data["choices"][0]["message"]["content"].strip()
-                logger.info(f"✅ Groq response received in {elapsed_ms:.2f}ms")
-                
-                # Cache the response
-                self._cache[cache_key] = content
-                return content
-            
-            logger.error(f"❌ Unexpected Groq response format: {data}")
-            return None
-            
-        except httpx.TimeoutException:
-            logger.error("❌ Groq API timeout")
-            return None
-        except httpx.HTTPStatusError as e:
-            logger.error(f"❌ Groq API HTTP error: {e.response.status_code} - {e.response.text}")
-            return None
-        except Exception as e:
-            logger.error(f"❌ Groq API error: {str(e)}")
-            return None
+    def _load_national_service(self):
+        """Load National KPI service."""
+        with self._cache_lock:
+            if ModuleType.NATIONAL not in self._loader_cache:
+                try:
+                    from app.services.national_kpi_service import get_national_kpi_service
+                    self._loader_cache[ModuleType.NATIONAL] = get_national_kpi_service()
+                    logger.info("✅ National KPI service loaded")
+                except Exception as e:
+                    logger.error(f"❌ National KPI service load failed: {e}")
+                    self._loader_cache[ModuleType.NATIONAL] = None
+            return self._loader_cache[ModuleType.NATIONAL]
+    
+    def _load_dn_service(self):
+        """Load DN service (v31.0)."""
+        with self._cache_lock:
+            if ModuleType.DN not in self._loader_cache:
+                try:
+                    from app.services.dn_analysis import get_dn_analysis_service
+                    self._loader_cache[ModuleType.DN] = get_dn_analysis_service()
+                    logger.info("✅ DN service loaded (v31.0)")
+                except Exception as e:
+                    logger.error(f"❌ DN service load failed: {e}")
+                    self._loader_cache[ModuleType.DN] = None
+            return self._loader_cache[ModuleType.DN]
+    
+    def _load_dealer_service(self):
+        """Load Dealer service."""
+        with self._cache_lock:
+            if ModuleType.DEALER not in self._loader_cache:
+                try:
+                    from app.services.dealer_service import get_dealer_service
+                    self._loader_cache[ModuleType.DEALER] = get_dealer_service()
+                    logger.info("✅ Dealer service loaded")
+                except Exception as e:
+                    logger.error(f"❌ Dealer service load failed: {e}")
+                    self._loader_cache[ModuleType.DEALER] = None
+            return self._loader_cache[ModuleType.DEALER]
+    
+    def _load_warehouse_service(self):
+        """Load Warehouse service."""
+        with self._cache_lock:
+            if ModuleType.WAREHOUSE not in self._loader_cache:
+                try:
+                    from app.services.warehouse_service import get_warehouse_analytics_service
+                    self._loader_cache[ModuleType.WAREHOUSE] = get_warehouse_analytics_service()
+                    logger.info("✅ Warehouse service loaded")
+                except Exception as e:
+                    logger.error(f"❌ Warehouse service load failed: {e}")
+                    self._loader_cache[ModuleType.WAREHOUSE] = None
+            return self._loader_cache[ModuleType.WAREHOUSE]
+    
+    def _load_product_service(self):
+        """Load Product service."""
+        with self._cache_lock:
+            if ModuleType.PRODUCT not in self._loader_cache:
+                try:
+                    from app.services.product_service import get_product_analytics_service
+                    self._loader_cache[ModuleType.PRODUCT] = get_product_analytics_service()
+                    logger.info("✅ Product service loaded")
+                except Exception as e:
+                    logger.error(f"❌ Product service load failed: {e}")
+                    self._loader_cache[ModuleType.PRODUCT] = None
+            return self._loader_cache[ModuleType.PRODUCT]
+    
+    def _load_city_service(self):
+        """Load City service."""
+        with self._cache_lock:
+            if ModuleType.CITY not in self._loader_cache:
+                try:
+                    from app.services.city_service import get_city_analytics_service
+                    self._loader_cache[ModuleType.CITY] = get_city_analytics_service()
+                    logger.info("✅ City service loaded")
+                except Exception as e:
+                    logger.error(f"❌ City service load failed: {e}")
+                    self._loader_cache[ModuleType.CITY] = None
+            return self._loader_cache[ModuleType.CITY]
+    
+    def _load_ai_service(self):
+        """Load AI Chat service (Groq)."""
+        with self._cache_lock:
+            if ModuleType.AI not in self._loader_cache:
+                try:
+                    from app.services.groq_service import get_groq_service
+                    self._loader_cache[ModuleType.AI] = get_groq_service()
+                    logger.info("✅ AI Chat service loaded (Groq)")
+                except Exception as e:
+                    logger.error(f"❌ AI Chat service load failed: {e}")
+                    self._loader_cache[ModuleType.AI] = None
+            return self._loader_cache[ModuleType.AI]
     
     # ============================================================
     # PUBLIC METHODS
     # ============================================================
     
-    async def process_query(self, message: str, context: Optional[Dict] = None) -> Dict[str, Any]:
-        """
-        Process a user query with AI enhancement.
-        
-        Args:
-            message: User message
-            context: Optional context (intent, entity, business data)
-        
-        Returns:
-            Dict with response, intent, confidence
-        """
-        if not self.is_available():
-            return {
-                "success": False,
-                "response": "AI service is currently unavailable. Please try again later.",
-                "error": "Groq service not available"
-            }
-        
-        try:
-            # Detect if it's a greeting
-            greeting_patterns = [
-                r'^(hi|hello|hey|good morning|good evening|good afternoon|howdy|salam|namaste)',
-                r'^(what\'?s up|how are you|how do you do|nice to meet you)',
-            ]
-            
-            for pattern in greeting_patterns:
-                if re.search(pattern, message.lower()):
-                    response = await self._generate_greeting(message)
-                    return {
-                        "success": True,
-                        "response": response,
-                        "intent": "greeting",
-                        "confidence": 0.95,
-                    }
-            
-            # Check for help
-            if re.search(r'(help|assist|support|what can you do|how to use|commands|menu)', message.lower()):
-                response = await self._generate_help(message)
-                return {
-                    "success": True,
-                    "response": response,
-                    "intent": "help",
-                    "confidence": 0.95,
-                }
-            
-            # Check for explanation
-            explanation_match = re.search(r'(what is|explain|definition|meaning|what does|how does)\s+(pod|pgi|dn|aging|kpi|delivery|warehouse|dealer|logistics)', message.lower())
-            if explanation_match:
-                term = explanation_match.group(2)
-                response = await self._generate_explanation(term, message)
-                return {
-                    "success": True,
-                    "response": response,
-                    "intent": "explanation",
-                    "confidence": 0.90,
-                }
-            
-            # General conversational response
-            response = await self._generate_conversational_response(message, context)
-            return {
-                "success": True,
-                "response": response,
-                "intent": "conversational",
-                "confidence": 0.80,
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ Groq process_query failed: {e}")
-            return {
-                "success": False,
-                "response": "I encountered an error processing your request. Please try again.",
-                "error": str(e)
-            }
+    def get_menu_items(self) -> List[MenuItem]:
+        """Get all menu items."""
+        return self._menu_items
     
-    async def enhance_response(self, business_data: Dict[str, Any], user_query: str, intent: str = "", entity: str = "") -> Dict[str, Any]:
-        """
-        Enhance a business data response with AI insights.
-        
-        Args:
-            business_data: Business data from PostgreSQL
-            user_query: Original user query
-            intent: Detected intent
-            entity: Entity name
-        
-        Returns:
-            Enhanced response with AI insights
-        """
-        if not self.is_available() or not business_data:
-            return {
-                "success": False,
-                "enhanced": False,
-                "response": business_data.get("whatsapp_message", str(business_data)),
-                "error": "Groq service not available or no data"
-            }
-        
-        try:
-            # Format business data as string
-            if isinstance(business_data, dict):
-                business_str = json.dumps(business_data, indent=2, default=str)
-            else:
-                business_str = str(business_data)
-            
-            # Truncate if too long
-            if len(business_str) > 4000:
-                business_str = business_str[:4000] + "... (truncated)"
-            
-            # Prepare prompt
-            prompt = self.prompts.RESPONSE_ENHANCEMENT.format(
-                user_query=user_query[:500],
-                intent=intent or "unknown",
-                entity=entity or "unknown",
-                business_data=business_str[:4000],
-            )
-            
-            # Get AI response
-            enhanced = await self._call_api(
-                system_prompt=self.prompts.SYSTEM_PROMPT,
-                user_prompt=prompt,
-                temperature=0.5,
-                max_tokens=600,
-            )
-            
-            if enhanced:
-                return {
-                    "success": True,
-                    "enhanced": True,
-                    "response": enhanced,
-                    "original_data": business_data,
-                }
-            
-            return {
-                "success": False,
-                "enhanced": False,
-                "response": business_data.get("whatsapp_message", str(business_data)),
-                "error": "AI enhancement failed"
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ Groq enhance_response failed: {e}")
-            return {
-                "success": False,
-                "enhanced": False,
-                "response": business_data.get("whatsapp_message", str(business_data)),
-                "error": str(e)
-            }
+    def get_menu_item_by_type(self, module_type: ModuleType) -> Optional[MenuItem]:
+        """Get menu item by module type."""
+        return self._module_map.get(module_type)
     
-    async def analyze_pending_dns(self, pending_data: Dict[str, Any]) -> str:
-        """
-        Analyze pending DNs and provide insights.
+    def detect_menu_item(self, text: str) -> Optional[MenuItem]:
+        """Detect which menu item the text matches."""
+        text_clean = text.strip()
         
-        Args:
-            pending_data: Pending DNs data from PostgreSQL
+        for item in self._menu_items:
+            if item.matches(text_clean):
+                return item
         
-        Returns:
-            AI-analyzed summary
-        """
-        if not self.is_available():
-            return "⚠️ AI analysis is currently unavailable."
-        
-        try:
-            pending_str = json.dumps(pending_data, indent=2, default=str)
-            if len(pending_str) > 4000:
-                pending_str = pending_str[:4000] + "... (truncated)"
-            
-            prompt = self.prompts.PENDING_DNS_PROMPT.format(pending_data=pending_str)
-            
-            response = await self._call_api(
-                system_prompt=self.prompts.SYSTEM_PROMPT,
-                user_prompt=prompt,
-                temperature=0.3,
-                max_tokens=400,
-            )
-            
-            return response or "Unable to analyze pending DNs at this time."
-            
-        except Exception as e:
-            logger.error(f"❌ Groq analyze_pending_dns failed: {e}")
-            return "Unable to analyze pending DNs at this time."
+        return None
     
-    async def generate_dealer_insights(self, dealer_name: str, dealer_data: Dict[str, Any]) -> str:
-        """
-        Generate AI insights for a dealer.
-        
-        Args:
-            dealer_name: Name of the dealer
-            dealer_data: Dealer performance data
-        
-        Returns:
-            AI-generated insights
-        """
-        if not self.is_available():
-            return "⚠️ AI insights are currently unavailable."
+    def get_service(self, module_type: ModuleType) -> Optional[Any]:
+        """Get service instance for module type."""
+        item = self._module_map.get(module_type)
+        if not item:
+            return None
         
         try:
-            dealer_str = json.dumps(dealer_data, indent=2, default=str)
-            if len(dealer_str) > 4000:
-                dealer_str = dealer_str[:4000] + "... (truncated)"
-            
-            prompt = self.prompts.DEALER_INSIGHTS_PROMPT.format(
-                dealer_name=dealer_name,
-                dealer_data=dealer_str,
-            )
-            
-            response = await self._call_api(
-                system_prompt=self.prompts.SYSTEM_PROMPT,
-                user_prompt=prompt,
-                temperature=0.4,
-                max_tokens=500,
-            )
-            
-            return response or f"Unable to generate insights for {dealer_name}."
-            
+            return item.loader()
         except Exception as e:
-            logger.error(f"❌ Groq generate_dealer_insights failed: {e}")
-            return f"Unable to generate insights for {dealer_name}."
+            logger.error(f"❌ Service load failed for {module_type.value}: {e}")
+            return None
     
-    async def extract_entities(self, query: str) -> Dict[str, Any]:
-        """
-        Extract entities from a query using AI.
+    def get_service_by_text(self, text: str) -> Optional[tuple[MenuItem, Any]]:
+        """Get service by text detection."""
+        item = self.detect_menu_item(text)
+        if not item:
+            return None
         
-        Args:
-            query: User query
+        service = self.get_service(item.module_type)
+        if not service:
+            return None
         
-        Returns:
-            Extracted entities as dict
-        """
-        if not self.is_available():
-            return {"intent": "unknown", "entity_type": "unknown", "entity_name": "", "time_frame": "", "conditions": []}
+        return (item, service)
+
+# ============================================================
+# BLOCK 5: MAIN GATEWAY SERVICE
+# ============================================================
+
+class AIProviderService:
+    """
+    ENTERPRISE GATEWAY - SOLE ENTRY POINT
+    
+    This is the ONLY gateway for all WhatsApp interactions.
+    
+    Responsibilities:
+    1. Manage sessions (lock/unlock)
+    2. Route to modules (ALL 7 SERVICES)
+    3. Forward messages when locked
+    4. Show Main Dashboard
+    5. Handle "__EXIT__" and "99" signals
+    
+    NO business logic.
+    NO SQL queries.
+    NO analytics.
+    NO answering questions directly.
+    """
+    
+    _instance: Optional["AIProviderService"] = None
+    _lock = threading.Lock()
+    _initialized = False
+    
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def __init__(self):
+        if AIProviderService._initialized:
+            return
         
-        try:
-            prompt = self.prompts.QUERY_ENHANCEMENT.format(query=query[:500])
-            
-            response = await self._call_api(
-                system_prompt="You are a logistics query analyzer. Extract entities accurately. Return ONLY JSON.",
-                user_prompt=prompt,
-                temperature=0.1,
-                max_tokens=200,
-            )
-            
-            if response:
-                # Try to parse JSON
-                try:
-                    return json.loads(response)
-                except json.JSONDecodeError:
-                    # Try to extract JSON from response
-                    json_match = re.search(r'\{.*\}', response, re.DOTALL)
-                    if json_match:
-                        try:
-                            return json.loads(json_match.group())
-                        except:
-                            pass
-                    
-                    logger.warning(f"Failed to parse Groq entity extraction response: {response[:100]}")
-            
-            return {"intent": "unknown", "entity_type": "unknown", "entity_name": "", "time_frame": "", "conditions": []}
-            
-        except Exception as e:
-            logger.error(f"❌ Groq extract_entities failed: {e}")
-            return {"intent": "unknown", "entity_type": "unknown", "entity_name": "", "time_frame": "", "conditions": []}
+        self._initialized = True
+        
+        # Sessions storage
+        self._sessions: Dict[str, Session] = {}
+        self._session_lock = threading.RLock()
+        
+        # Service registry
+        self._registry = ServiceRegistry()
+        
+        logger.info("=" * 70)
+        logger.info("🚀 ENTERPRISE GATEWAY v49.0 initialized")
+        logger.info("   📦 SOLE entry point for all interactions")
+        logger.info("   🔒 GENERIC session locking (all modules equal)")
+        logger.info("   🔀 Routes to any registered module")
+        logger.info("   🚫 NO special-case logic")
+        logger.info("   🚫 NO business logic")
+        logger.info("   🚫 NO SQL queries")
+        logger.info("   🚫 NO analytics")
+        logger.info("   📋 Shows Main Dashboard")
+        logger.info("   🚪 Only '__EXIT__' or '99' unlocks")
+        logger.info("=" * 70)
+        
+        # Log available modules
+        for item in self._registry.get_menu_items():
+            logger.info(f"   {item.id}. {item.name} → {item.file}")
     
     # ============================================================
-    # PRIVATE METHODS
+    # SESSION MANAGEMENT
     # ============================================================
     
-    async def _generate_greeting(self, message: str) -> str:
-        """Generate a greeting response"""
-        prompt = self.prompts.CONVERSATIONAL_PROMPT.format(user_message=message)
-        
-        response = await self._call_api(
-            system_prompt=self.prompts.SYSTEM_PROMPT,
-            user_prompt=prompt,
-            temperature=0.7,
-            max_tokens=200,
-        )
-        
-        if response:
-            return response
-        
-        return """👋 Welcome to HPK Logistics AI Assistant!
-
-I can help you with:
-📦 DN Tracking
-🏪 Dealer Analytics
-🏭 Warehouse Analytics
-🏙️ City Analytics
-📊 National KPIs
-📋 Pending Deliveries
-
-Type 'menu' to see all options or 'help' for commands."""
+    def _get_session(self, sender: str) -> Session:
+        """Get or create session for sender."""
+        with self._session_lock:
+            if sender not in self._sessions:
+                self._sessions[sender] = Session(sender=sender)
+                logger.info(f"🆕 New session created for {sender}")
+                return self._sessions[sender]
+            
+            session = self._sessions[sender]
+            
+            # Check if session expired
+            if session.is_expired():
+                logger.info(f"⏰ Session expired for {sender}, creating new")
+                del self._sessions[sender]
+                session = Session(sender=sender)
+                self._sessions[sender] = session
+            
+            return session
     
-    async def _generate_help(self, message: str) -> str:
-        """Generate a help response"""
-        prompt = self.prompts.CONVERSATIONAL_PROMPT.format(user_message=message)
-        
-        response = await self._call_api(
-            system_prompt=self.prompts.SYSTEM_PROMPT,
-            user_prompt=prompt,
-            temperature=0.5,
-            max_tokens=300,
-        )
-        
-        if response:
-            return response
-        
-        return """📋 Available Commands:
-
-📦 **DN Queries:**
-• Send a DN number (8-12 digits)
-• 'Pending DN', 'Pending PGI', 'Pending POD'
-
-🏪 **Dealer Queries:**
-• 'Dealer [name]'
-• 'Top dealers', 'Bottom dealers'
-
-🏭 **Warehouse Queries:**
-• 'Warehouse [name]'
-
-🏙️ **City Queries:**
-• 'City [name]'
-
-📊 **Analytics:**
-• 'National KPI'
-• 'Revenue', 'Total DNs'
-
-📋 **Menu:**
-• Type 'menu' to see all options
-
-Need help? Just ask!"""
+    def _lock_session(self, sender: str, menu_item: MenuItem, service_instance: Any) -> bool:
+        """Lock session to a module."""
+        with self._session_lock:
+            session = self._get_session(sender)
+            session.lock(
+                module_type=menu_item.module_type,
+                module_name=menu_item.name,
+                file_name=menu_item.file,
+                menu_id=menu_item.id,
+                service_instance=service_instance
+            )
+            
+            logger.info(f"🔒 Session LOCKED for {sender} → {menu_item.name} ({menu_item.file})")
+            return True
     
-    async def _generate_explanation(self, term: str, context: str) -> str:
-        """Generate an explanation response"""
-        prompt = self.prompts.EXPLANATION_PROMPT.format(term=term, context=context)
-        
-        response = await self._call_api(
-            system_prompt=self.prompts.SYSTEM_PROMPT,
-            user_prompt=prompt,
-            temperature=0.3,
-            max_tokens=300,
-        )
-        
-        if response:
-            return response
-        
-        explanations = {
-            "pod": """📖 **POD (Proof of Delivery)**
-
-• Delivery confirmation document
-• Signed by the receiver
-• Confirms goods were received
-• Critical for billing and closure
-
-💡 Why it matters: POD confirms delivery completion and enables invoicing.""",
-            "pgi": """📖 **PGI (Post Goods Issue)**
-
-• Warehouse release confirmation
-• Marks goods as shipped
-• Triggers delivery process
-• Updates inventory records
-
-💡 Why it matters: PGI confirms goods have left the warehouse.""",
-            "dn": """📖 **DN (Delivery Note)**
-
-• Document accompanying delivery
-• Lists items being delivered
-• Tracks delivery status
-• Contains customer and order details
-
-💡 Why it matters: DN is the primary document for tracking deliveries.""",
-        }
-        
-        return explanations.get(term.lower(), f"📖 **{term.upper()}**\n\nI'll help you understand this logistics term. Please ask with more context.")
+    def _unlock_session(self, sender: str) -> bool:
+        """Unlock session."""
+        with self._session_lock:
+            if sender not in self._sessions:
+                return False
+            
+            session = self._sessions[sender]
+            module_name = session.module_name
+            session.unlock()
+            
+            logger.info(f"🔓 Session UNLOCKED for {sender} from {module_name}")
+            return True
     
-    async def _generate_conversational_response(self, message: str, context: Optional[Dict]) -> str:
-        """Generate a conversational response"""
-        prompt = self.prompts.CONVERSATIONAL_PROMPT.format(user_message=message)
+    def _is_locked(self, sender: str) -> bool:
+        """Check if session is locked."""
+        with self._session_lock:
+            if sender not in self._sessions:
+                return False
+            return self._sessions[sender].locked
+    
+    def _get_module_info(self, sender: str) -> Optional[Dict[str, Any]]:
+        """Get current module info for locked session."""
+        with self._session_lock:
+            if sender not in self._sessions:
+                return None
+            
+            session = self._sessions[sender]
+            if not session.locked:
+                return None
+            
+            return session.to_dict()
+    
+    # ============================================================
+    # MODULE ROUTING - ALL 7 SERVICES
+    # ============================================================
+    
+    def _detect_dashboard(self, message: str) -> Optional[tuple[MenuItem, Any]]:
+        """
+        Detect which dashboard the user wants.
         
-        response = await self._call_api(
-            system_prompt=self.prompts.SYSTEM_PROMPT,
-            user_prompt=prompt,
-            temperature=0.7,
-            max_tokens=250,
-        )
+        Supports:
+        - Menu numbers: "1", "2", etc.
+        - Dashboard names: "National Dashboard", "Warehouse Dashboard"
+        - Aliases: "national", "warehouse", "pending dn"
+        """
+        return self._registry.get_service_by_text(message)
+    
+    def _forward_to_module(self, session: Session, message: str, sender: str) -> str:
+        """Forward message to locked module."""
+        if not session.service_instance:
+            logger.error(f"❌ No service instance for {session.module_name}")
+            self._unlock_session(sender)
+            return self._get_main_dashboard()
         
-        if response:
-            return response
+        service = session.service_instance
         
-        return """I'm here to help with your logistics data!
-
-You can ask me about:
-📦 DN Tracking - Send any 8-12 digit number
-🏪 Dealer Analytics - Dealer performance
-🏭 Warehouse Analytics - Operations data
-🏙️ City Analytics - City-level metrics
-📊 National KPIs - Overall performance
-
-Type 'help' to see all commands or 'menu' for options."""
+        # Check if service has process_whatsapp_query method
+        if not hasattr(service, "process_whatsapp_query"):
+            logger.error(f"❌ Service {session.module_name} missing process_whatsapp_query")
+            self._unlock_session(sender)
+            return "⚠️ Service is misconfigured.\n\n" + self._get_main_dashboard()
+        
+        try:
+            # Forward to service
+            result = service.process_whatsapp_query(message, sender)
+            
+            # Check for exit signal
+            if result == EXIT_SIGNAL or result == "99":
+                logger.info(f"🚪 Module {session.module_name} requested exit ({result})")
+                self._unlock_session(sender)
+                return self._get_main_dashboard()
+            
+            # Update session activity
+            session.update_activity()
+            
+            # Add to history
+            session.add_history(message, result)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Module {session.module_name} error: {e}")
+            self._unlock_session(sender)
+            return f"⚠️ Service error: {str(e)[:200]}\n\n" + self._get_main_dashboard()
+    
+    # ============================================================
+    # MAIN PROCESSING - GATEWAY ONLY
+    # ============================================================
+    
+    async def process_whatsapp_query(
+        self,
+        message: str,
+        sender: Optional[str] = None,
+        sender_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> str:
+        """
+        MAIN ENTRY POINT - SOLE GATEWAY
+        
+        Flow:
+        1. Get or create session
+        2. Check if session is locked
+        3. If locked → FORWARD to module (NO ROUTING)
+        4. If unlocked → Show Main Dashboard or Route
+        5. Handle commands → Show Main Dashboard
+        6. Detect dashboard → Lock and Route
+        7. No detection → Show Main Dashboard
+        """
+        sender = sender or sender_id or "default"
+        
+        if not message or not message.strip():
+            return self._get_main_dashboard()
+        
+        message_clean = message.strip()
+        logger.info(f"📨 Gateway received: '{message_clean}' from {sender}")
+        
+        # Get session
+        session = self._get_session(sender)
+        
+        # ============================================================
+        # STEP 1: CHECK IF SESSION IS LOCKED
+        # ============================================================
+        if session.locked:
+            logger.info(f"🔒 Session LOCKED for {sender} → {session.module_name}")
+            
+            # Check for manual exit (99) at gateway level
+            if message_clean == "99":
+                logger.info(f"🚪 Manual exit (99) requested by {sender}")
+                self._unlock_session(sender)
+                return self._get_main_dashboard()
+            
+            # Forward to module
+            return self._forward_to_module(session, message_clean, sender)
+        
+        # ============================================================
+        # STEP 2: SESSION IDLE - CHECK COMMANDS
+        # ============================================================
+        logger.info(f"🔄 Session IDLE for {sender}")
+        
+        # Check for menu commands
+        if message_clean.lower() in ["menu", "help", "options", "dashboard", "main", "0"]:
+            return self._get_main_dashboard()
+        
+        # Check for exit
+        if message_clean == "99":
+            return self._get_main_dashboard()
+        
+        # ============================================================
+        # STEP 3: DETECT DASHBOARD
+        # ============================================================
+        detected = self._detect_dashboard(message_clean)
+        
+        if detected:
+            menu_item, service = detected
+            
+            # Lock session
+            self._lock_session(sender, menu_item, service)
+            
+            try:
+                # Forward to service
+                result = service.process_whatsapp_query(message_clean, sender)
+                
+                # Check for immediate exit
+                if result == EXIT_SIGNAL or result == "99":
+                    self._unlock_session(sender)
+                    return self._get_main_dashboard()
+                
+                # Update session
+                session = self._get_session(sender)
+                session.update_activity()
+                session.add_history(message_clean, result)
+                
+                return result
+                
+            except Exception as e:
+                logger.error(f"❌ Module {menu_item.name} error: {e}")
+                self._unlock_session(sender)
+                return f"⚠️ {menu_item.name} error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
+        
+        # ============================================================
+        # STEP 4: NO DASHBOARD DETECTED - SHOW MAIN DASHBOARD
+        # ============================================================
+        return self._get_out_of_box_response()
+    
+    # ============================================================
+    # RESPONSES
+    # ============================================================
+    
+    def _get_main_dashboard(self) -> str:
+        """Get the Main Dashboard - GENERIC from registry."""
+        lines = ["🏠 *HPK Logistics AI*", ""]
+        
+        for item in self._registry.get_menu_items():
+            lines.append(f"{item.id}️⃣ {item.name}")
+        
+        lines.extend([
+            "",
+            "📌 *Commands:*",
+            "• Type a number (1-7) to enter a dashboard",
+            "• Type dashboard name (e.g., 'Warehouse Dashboard')",
+            "• Type '99' to exit current dashboard",
+            "• Type 'menu' or 'help' for this menu",
+            "",
+            "Reply with a number or dashboard name:"
+        ])
+        
+        return "\n".join(lines)
+    
+    def _get_out_of_box_response(self) -> str:
+        """Response when no dashboard detected."""
+        return "\n".join([
+            "❌ *Please select a valid option from the menu.*",
+            "",
+            "You can enter a dashboard by:",
+            "• Number (1-7)",
+            "• Dashboard name (e.g., 'Warehouse Dashboard')",
+            "",
+            self._get_main_dashboard()
+        ])
     
     # ============================================================
     # HEALTH CHECK
     # ============================================================
     
     def health_check(self) -> Dict[str, Any]:
-        """Health check for Groq service"""
+        """Health check for gateway."""
+        with self._session_lock:
+            active_sessions = len(self._sessions)
+            locked_sessions = sum(1 for s in self._sessions.values() if s.locked)
+            session_details = {
+                sender: session.to_dict()
+                for sender, session in self._sessions.items()
+            }
+        
         return {
-            "service": "groq_service",
-            "version": "2.0",
-            "enabled": ENABLE_GROQ,
-            "available": self.is_available(),
-            "api_key_set": GROQ_API_KEY is not None,
-            "api_key_preview": GROQ_API_KEY[:8] + "..." if GROQ_API_KEY else None,
-            "model": GROQ_MODEL,
-            "timeout": GROQ_TIMEOUT,
-            "cache_size": len(self._cache),
+            "service": "ai_provider_service",
+            "version": "49.0",
+            "type": "enterprise_gateway",
+            "status": "healthy",
+            "active_sessions": active_sessions,
+            "locked_sessions": locked_sessions,
+            "session_details": session_details,
+            "available_modules": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "file": item.file,
+                    "aliases": item.aliases
+                }
+                for item in self._registry.get_menu_items()
+            ],
+            "features": {
+                "generic_session_locking": True,
+                "generic_module_routing": True,
+                "exit_signal": EXIT_SIGNAL,
+                "main_dashboard": True,
+                "alias_detection": True
+            }
         }
     
-    def get_service_metadata(self) -> Dict[str, Any]:
-        """Get service metadata"""
-        return {
-            "service_name": "groq_service",
-            "version": "2.0",
-            "description": "Enterprise AI Enhancement Service",
-            "capabilities": [
-                "response_enhancement",
-                "entity_extraction",
-                "pending_analysis",
-                "dealer_insights",
-                "conversational_ai",
-                "explanation_generation",
-            ],
-            "supported_models": ["llama3-70b-8192", "mixtral-8x7b-32768", "gemma2-9b-it"],
-            "current_model": GROQ_MODEL,
-            "enabled": ENABLE_GROQ,
-            "available": self.is_available(),
-        }
+    # ============================================================
+    # SESSION MANAGEMENT UTILITIES
+    # ============================================================
+    
+    def get_session_info(self, sender: str) -> Optional[Dict[str, Any]]:
+        """Get session information for debugging."""
+        with self._session_lock:
+            if sender not in self._sessions:
+                return None
+            
+            return self._sessions[sender].to_dict()
+    
+    def clear_session(self, sender: str) -> bool:
+        """Clear session for debugging."""
+        with self._session_lock:
+            if sender in self._sessions:
+                del self._sessions[sender]
+                logger.info(f"🧹 Session cleared for {sender}")
+                return True
+            return False
+
+    # ============================================================
+    # SYNCHRONOUS WRAPPER FOR ASYNC
+    # ============================================================
+    
+    def process_sync(self, message: str, sender: str = "default") -> str:
+        """Synchronous wrapper for async method."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        return loop.run_until_complete(
+            self.process_whatsapp_query(message=message, sender=sender)
+        )
 
 
 # ============================================================
-# SINGLETON INSTANCE
+# BLOCK 6: SINGLETON
 # ============================================================
 
-_groq_service: Optional[GroqService] = None
-_groq_service_lock = threading.Lock()
+_ai_service: Optional[AIProviderService] = None
+_service_lock = threading.Lock()
 
-
-def get_groq_service() -> GroqService:
-    """Get singleton instance of GroqService"""
-    global _groq_service
-    if _groq_service is None:
-        with _groq_service_lock:
-            if _groq_service is None:
-                try:
-                    _groq_service = GroqService()
-                    logger.info("✅ GroqService singleton initialized")
-                except Exception as e:
-                    logger.exception(f"❌ GroqService initialization failed: {e}")
-                    _groq_service = GroqService.__new__(GroqService)
-                    _groq_service._initialized = True
-                    _groq_service._client = None
-                    _groq_service._cache = TTLCache(maxsize=100, ttl=3600)
-                    _groq_service.prompts = GroqPromptTemplates()
-                    logger.warning("⚠️ GroqService running in degraded mode")
-    return _groq_service
-
-
-# ============================================================
-# MODULE-LEVEL FUNCTIONS
-# ============================================================
+def get_ai_provider_service() -> AIProviderService:
+    """Get singleton instance."""
+    global _ai_service
+    if _ai_service is None:
+        with _service_lock:
+            if _ai_service is None:
+                _ai_service = AIProviderService()
+    return _ai_service
 
 async def process_whatsapp_query(
     message: str,
+    sender: Optional[str] = None,
     sender_id: Optional[str] = None,
-    **context: Any,
-) -> Dict[str, Any]:
-    """
-    Module-level function for processing WhatsApp queries.
-    Backward compatible with older integrations.
-    """
-    service = get_groq_service()
-    return await service.process_query(message, context)
+    **kwargs: Any,
+) -> str:
+    """Process WhatsApp query through the gateway."""
+    try:
+        return await get_ai_provider_service().process_whatsapp_query(
+            message=message,
+            sender=sender,
+            sender_id=sender_id,
+            **kwargs,
+        )
+    except Exception as e:
+        logger.exception(f"Unexpected error: {e}")
+        return "⚠️ Service is temporarily unavailable. Please try again."
 
-
-async def enhance_response(
-    response: Any,
-    message: str = "",
-    **context: Any,
-) -> Dict[str, Any]:
-    """
-    Module-level function for enhancing responses.
-    Backward compatible with older integrations.
-    """
-    service = get_groq_service()
-    
-    # Extract business data
-    business_data = response if isinstance(response, dict) else {"response": str(response)}
-    intent = context.get("intent", "")
-    entity = context.get("entity", "")
-    
-    return await service.enhance_response(business_data, message or context.get("user_query", ""), intent, entity)
-
-
-async def health_check() -> Dict[str, Any]:
-    """Module-level health check"""
-    service = get_groq_service()
-    return service.health_check()
-
-
-def get_service_metadata() -> Dict[str, Any]:
-    """Module-level service metadata"""
-    service = get_groq_service()
-    return service.get_service_metadata()
+def process_sync(message: str, sender: str = "default") -> str:
+    """Synchronous entry point for non-async contexts."""
+    return get_ai_provider_service().process_sync(message, sender)
 
 
 # ============================================================
-# EXPORTS
+# BLOCK 7: EXPORTS
 # ============================================================
 
 __all__ = [
-    "GroqService",
-    "get_groq_service",
+    "AIProviderService",
+    "ModuleType",
+    "Session",
+    "MenuItem",
+    "ServiceRegistry",
+    "get_ai_provider_service",
     "process_whatsapp_query",
-    "enhance_response",
-    "health_check",
-    "get_service_metadata",
-    "GroqPromptTemplates",
+    "process_sync",
+    "EXIT_SIGNAL",
 ]
