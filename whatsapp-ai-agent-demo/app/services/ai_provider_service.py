@@ -1,11 +1,11 @@
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 43.0 - ENTERPRISE GATEWAY
+# VERSION: 44.0 - COMPLETE GENERIC ENTERPRISE GATEWAY
 # ============================================================
 
 """
 File: app/services/ai_provider_service.py
-Version: 43.0 - ENTERPRISE GATEWAY
+Version: 44.0 - COMPLETE GENERIC ENTERPRISE GATEWAY
 
 ================================================================================
 PURPOSE
@@ -17,7 +17,7 @@ Its ONLY responsibilities are:
 1. Detect if session is locked to a module
 2. If locked → Forward EVERY message to that module (NO ROUTING)
 3. If unlocked → Show Main Dashboard or Route to selected module
-4. ONLY "99" unlocks the session and returns to Main Dashboard
+4. ONLY "__EXIT__" unlocks the session and returns to Main Dashboard
 
 ================================================================================
 ARCHITECTURE
@@ -44,7 +44,7 @@ ai_provider_service.py (GATEWAY)
     Main Dashboard
            │
            ▼
-    Detect Dashboard
+    Detect Dashboard (by number, name, or alias)
            │
            ▼
     Lock Session
@@ -53,46 +53,24 @@ ai_provider_service.py (GATEWAY)
     Route Once
 
 ================================================================================
-DASHBOARD MAPPING
+GENERIC SERVICE REGISTRY
 ================================================================================
 
-Number | Dashboard Name          | File
--------|-------------------------|------------------------------
-1      | National Dashboard      | national_kpi_service.py
-2      | DN Dashboard            | dn_analysis.py
-3      | Dealer Dashboard        | dealer_service.py
-4      | Warehouse Dashboard     | warehouse_service.py
-5      | Product Dashboard       | product_service.py
-6      | City Dashboard          | city_service.py
-7      | Inventory Dashboard     | inventory_service.py
-8      | PGI Dashboard           | pgi_service.py
-9      | POD Dashboard           | pod_service.py
-10     | Logistics Dashboard     | logistics_service.py
+All modules are registered in SERVICE_REGISTRY.
+Adding a new module requires only ONE configuration entry.
+
+No special-case logic for any module.
+Every module is treated identically.
 
 ================================================================================
-SESSION OBJECT
+EXIT CONTRACT
 ================================================================================
 
-{
-    "sender": "+923001234567",
-    "locked": True,
-    "module": "warehouse",
-    "file": "warehouse_service.py",
-    "entered_at": "2026-07-04T08:23:52",
-    "last_activity": "2026-07-04T08:23:52",
-    "history": []
-}
+All modules MUST return "__EXIT__" to unlock the session.
+This is the ONLY exit mechanism.
 
-================================================================================
-EXIT RULE
-================================================================================
-
-The ONLY valid exit command is "99"
-
-When received:
-1. Module returns "__EXIT__"
-2. Gateway unlocks session
-3. Return Main Dashboard
+The gateway never checks for "99" in content.
+It only checks for the exact "__EXIT__" string.
 
 ================================================================================
 STATUS: ENTERPRISE READY
@@ -109,7 +87,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union, Callable
+from typing import Any, Dict, List, Optional, Union, Callable, Type
 from functools import lru_cache
 
 logger = logging.getLogger(__name__)
@@ -119,13 +97,14 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 SESSION_TIMEOUT_SECONDS = int(os.getenv("SESSION_TIMEOUT_SECONDS", "1800"))  # 30 minutes
+EXIT_SIGNAL = "__EXIT__"
 
 # ============================================================
 # BLOCK 2: ENUMS
 # ============================================================
 
 class ModuleType(Enum):
-    """Available domain modules"""
+    """Available domain modules - GENERIC"""
     NATIONAL = "national"
     DN = "dn"
     DEALER = "dealer"
@@ -136,7 +115,11 @@ class ModuleType(Enum):
     PGI = "pgi"
     POD = "pod"
     LOGISTICS = "logistics"
-    MAIN = "main"
+    SALES_OFFICE = "sales_office"
+    TRANSPORT = "transport"
+    FORECAST = "forecast"
+    REPORTS = "reports"
+    MANAGEMENT = "management"
 
 # ============================================================
 # BLOCK 3: DATA CLASSES
@@ -144,11 +127,15 @@ class ModuleType(Enum):
 
 @dataclass
 class Session:
-    """Session state for a user."""
+    """Session state for a user - GENERIC."""
     sender: str
     locked: bool = False
-    module: Optional[ModuleType] = None
-    file: Optional[str] = None
+    module_type: Optional[ModuleType] = None
+    module_name: Optional[str] = None
+    file_name: Optional[str] = None
+    menu_id: Optional[int] = None
+    dashboard_name: Optional[str] = None
+    service_instance: Optional[Any] = None
     entered_at: Optional[datetime] = None
     last_activity: datetime = field(default_factory=datetime.now)
     history: List[Dict[str, Any]] = field(default_factory=list)
@@ -166,181 +153,503 @@ class Session:
         """Add to conversation history."""
         self.history.append({
             "query": query,
-            "response": response,
+            "response": response[:200] if len(response) > 200 else response,
             "timestamp": datetime.now().isoformat()
         })
         # Keep last 100 entries
         if len(self.history) > 100:
             self.history = self.history[-100:]
+    
+    def lock(self, module_type: ModuleType, module_name: str, file_name: str, 
+             menu_id: int, dashboard_name: str, service_instance: Any):
+        """Lock session to a module."""
+        self.locked = True
+        self.module_type = module_type
+        self.module_name = module_name
+        self.file_name = file_name
+        self.menu_id = menu_id
+        self.dashboard_name = dashboard_name
+        self.service_instance = service_instance
+        self.entered_at = datetime.now()
+        self.update_activity()
+    
+    def unlock(self):
+        """Unlock session."""
+        self.locked = False
+        self.module_type = None
+        self.module_name = None
+        self.file_name = None
+        self.menu_id = None
+        self.dashboard_name = None
+        self.service_instance = None
+        self.entered_at = None
+        self.update_activity()
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert session to dictionary."""
+        return {
+            "sender": self.sender,
+            "locked": self.locked,
+            "module_type": self.module_type.value if self.module_type else None,
+            "module_name": self.module_name,
+            "file_name": self.file_name,
+            "menu_id": self.menu_id,
+            "dashboard_name": self.dashboard_name,
+            "entered_at": self.entered_at.isoformat() if self.entered_at else None,
+            "last_activity": self.last_activity.isoformat(),
+            "history_count": len(self.history),
+            "is_expired": self.is_expired()
+        }
 
 @dataclass
-class ModuleConfig:
-    """Configuration for a domain module."""
+class MenuItem:
+    """Menu item configuration."""
+    id: int
+    name: str
+    aliases: List[str]
     module_type: ModuleType
     file: str
-    display_name: str
-    number: int
     loader: Callable
-
-# ============================================================
-# BLOCK 4: MODULE LOADER
-# ============================================================
-
-class ModuleLoader:
-    """Lazy load domain modules only when needed."""
     
-    _instances: Dict[str, Any] = {}
+    def matches(self, text: str) -> bool:
+        """Check if text matches this menu item."""
+        text_lower = text.strip().lower()
+        
+        # Check by ID
+        if text_lower == str(self.id):
+            return True
+        
+        # Check by name
+        if text_lower == self.name.lower():
+            return True
+        
+        # Check by aliases
+        for alias in self.aliases:
+            if text_lower == alias.lower():
+                return True
+            if alias.lower() in text_lower:
+                return True
+        
+        return False
+
+# ============================================================
+# BLOCK 4: GENERIC SERVICE REGISTRY
+# ============================================================
+
+class ServiceRegistry:
+    """
+    GENERIC SERVICE REGISTRY
+    
+    All modules are registered here.
+    Adding a new module requires only ONE configuration entry.
+    No special-case logic anywhere.
+    """
+    
+    _instance: Optional["ServiceRegistry"] = None
     _lock = threading.Lock()
     
-    @classmethod
-    def get_national_service(cls):
-        """Get or load National KPI service."""
-        if "national" not in cls._instances:
+    def __new__(cls):
+        if cls._instance is None:
             with cls._lock:
-                if "national" not in cls._instances:
-                    try:
-                        from app.services.national_kpi_service import NationalKPIService
-                        cls._instances["national"] = NationalKPIService()
-                        logger.info("✅ National KPI service loaded")
-                    except Exception as e:
-                        logger.error(f"❌ National KPI service load failed: {e}")
-                        cls._instances["national"] = None
-        return cls._instances["national"]
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
     
-    @classmethod
-    def get_dn_service(cls):
-        """Get or load DN service."""
-        if "dn" not in cls._instances:
-            with cls._lock:
-                if "dn" not in cls._instances:
-                    try:
-                        from app.services.dn_analysis import DNAnalysisService
-                        cls._instances["dn"] = DNAnalysisService()
-                        logger.info("✅ DN service loaded")
-                    except Exception as e:
-                        logger.error(f"❌ DN service load failed: {e}")
-                        cls._instances["dn"] = None
-        return cls._instances["dn"]
+    def __init__(self):
+        if hasattr(self, "_initialized") and self._initialized:
+            return
+        
+        self._initialized = True
+        self._menu_items: List[MenuItem] = []
+        self._module_map: Dict[ModuleType, MenuItem] = {}
+        self._loader_cache: Dict[ModuleType, Any] = {}
+        self._cache_lock = threading.RLock()
+        
+        # Register all modules
+        self._register_modules()
+        
+        logger.info(f"📦 Service Registry initialized with {len(self._menu_items)} modules")
     
-    @classmethod
-    def get_dealer_service(cls):
-        """Get or load Dealer service."""
-        if "dealer" not in cls._instances:
-            with cls._lock:
-                if "dealer" not in cls._instances:
-                    try:
-                        from app.services.dealer_service import DealerService
-                        cls._instances["dealer"] = DealerService()
-                        logger.info("✅ Dealer service loaded")
-                    except Exception as e:
-                        logger.error(f"❌ Dealer service load failed: {e}")
-                        cls._instances["dealer"] = None
-        return cls._instances["dealer"]
+    def _register_modules(self):
+        """Register all modules - GENERIC."""
+        
+        # ============================================================
+        # Define all modules here - This is the ONLY place to add modules
+        # ============================================================
+        
+        modules = [
+            MenuItem(
+                id=1,
+                name="National Dashboard",
+                aliases=["national", "national kpi", "kpi"],
+                module_type=ModuleType.NATIONAL,
+                file="national_kpi_service.py",
+                loader=self._load_national_service
+            ),
+            MenuItem(
+                id=2,
+                name="DN Dashboard",
+                aliases=["dn", "delivery", "delivery note", "pending dn"],
+                module_type=ModuleType.DN,
+                file="dn_analysis.py",
+                loader=self._load_dn_service
+            ),
+            MenuItem(
+                id=3,
+                name="Dealer Dashboard",
+                aliases=["dealer", "distributor", "partner"],
+                module_type=ModuleType.DEALER,
+                file="dealer_service.py",
+                loader=self._load_dealer_service
+            ),
+            MenuItem(
+                id=4,
+                name="Warehouse Dashboard",
+                aliases=["warehouse", "storage", "plant", "inventory"],
+                module_type=ModuleType.WAREHOUSE,
+                file="warehouse_service.py",
+                loader=self._load_warehouse_service
+            ),
+            MenuItem(
+                id=5,
+                name="Product Dashboard",
+                aliases=["product", "material", "sku"],
+                module_type=ModuleType.PRODUCT,
+                file="product_service.py",
+                loader=self._load_product_service
+            ),
+            MenuItem(
+                id=6,
+                name="City Dashboard",
+                aliases=["city", "location", "region"],
+                module_type=ModuleType.CITY,
+                file="city_service.py",
+                loader=self._load_city_service
+            ),
+            MenuItem(
+                id=7,
+                name="Inventory Dashboard",
+                aliases=["inventory", "stock", "availability"],
+                module_type=ModuleType.INVENTORY,
+                file="inventory_service.py",
+                loader=self._load_inventory_service
+            ),
+            MenuItem(
+                id=8,
+                name="PGI Dashboard",
+                aliases=["pgi", "goods issue", "issue"],
+                module_type=ModuleType.PGI,
+                file="pgi_service.py",
+                loader=self._load_pgi_service
+            ),
+            MenuItem(
+                id=9,
+                name="POD Dashboard",
+                aliases=["pod", "proof of delivery", "delivered"],
+                module_type=ModuleType.POD,
+                file="pod_service.py",
+                loader=self._load_pod_service
+            ),
+            MenuItem(
+                id=10,
+                name="Logistics Dashboard",
+                aliases=["logistics", "transport", "shipping", "fleet"],
+                module_type=ModuleType.LOGISTICS,
+                file="logistics_service.py",
+                loader=self._load_logistics_service
+            ),
+            MenuItem(
+                id=11,
+                name="Sales Office Dashboard",
+                aliases=["sales", "office", "sales office"],
+                module_type=ModuleType.SALES_OFFICE,
+                file="sales_office_service.py",
+                loader=self._load_sales_office_service
+            ),
+            MenuItem(
+                id=12,
+                name="Transport Dashboard",
+                aliases=["transport", "fleet", "vehicle"],
+                module_type=ModuleType.TRANSPORT,
+                file="transport_service.py",
+                loader=self._load_transport_service
+            ),
+            MenuItem(
+                id=13,
+                name="Forecast Dashboard",
+                aliases=["forecast", "prediction", "trend"],
+                module_type=ModuleType.FORECAST,
+                file="forecast_service.py",
+                loader=self._load_forecast_service
+            ),
+            MenuItem(
+                id=14,
+                name="Reports Dashboard",
+                aliases=["reports", "analytics", "insights"],
+                module_type=ModuleType.REPORTS,
+                file="reports_service.py",
+                loader=self._load_reports_service
+            ),
+            MenuItem(
+                id=15,
+                name="Management Dashboard",
+                aliases=["management", "executive", "dashboard"],
+                module_type=ModuleType.MANAGEMENT,
+                file="management_service.py",
+                loader=self._load_management_service
+            ),
+        ]
+        
+        # Register all modules
+        for item in modules:
+            self._menu_items.append(item)
+            self._module_map[item.module_type] = item
     
-    @classmethod
-    def get_warehouse_service(cls):
-        """Get or load Warehouse service."""
-        if "warehouse" not in cls._instances:
-            with cls._lock:
-                if "warehouse" not in cls._instances:
-                    try:
-                        from app.services.warehouse_service import WarehouseService
-                        cls._instances["warehouse"] = WarehouseService()
-                        logger.info("✅ Warehouse service loaded")
-                    except Exception as e:
-                        logger.error(f"❌ Warehouse service load failed: {e}")
-                        cls._instances["warehouse"] = None
-        return cls._instances["warehouse"]
+    # ============================================================
+    # LOADER METHODS - GENERIC
+    # ============================================================
     
-    @classmethod
-    def get_product_service(cls):
-        """Get or load Product service."""
-        if "product" not in cls._instances:
-            with cls._lock:
-                if "product" not in cls._instances:
-                    try:
-                        from app.services.product_service import ProductService
-                        cls._instances["product"] = ProductService()
-                        logger.info("✅ Product service loaded")
-                    except Exception as e:
-                        logger.error(f"❌ Product service load failed: {e}")
-                        cls._instances["product"] = None
-        return cls._instances["product"]
+    def _load_national_service(self):
+        """Load National KPI service."""
+        with self._cache_lock:
+            if ModuleType.NATIONAL not in self._loader_cache:
+                try:
+                    from app.services.national_kpi_service import NationalKPIService
+                    self._loader_cache[ModuleType.NATIONAL] = NationalKPIService()
+                    logger.info("✅ National KPI service loaded")
+                except Exception as e:
+                    logger.error(f"❌ National KPI service load failed: {e}")
+                    self._loader_cache[ModuleType.NATIONAL] = None
+            return self._loader_cache[ModuleType.NATIONAL]
     
-    @classmethod
-    def get_city_service(cls):
-        """Get or load City service."""
-        if "city" not in cls._instances:
-            with cls._lock:
-                if "city" not in cls._instances:
-                    try:
-                        from app.services.city_service import CityService
-                        cls._instances["city"] = CityService()
-                        logger.info("✅ City service loaded")
-                    except Exception as e:
-                        logger.error(f"❌ City service load failed: {e}")
-                        cls._instances["city"] = None
-        return cls._instances["city"]
+    def _load_dn_service(self):
+        """Load DN service."""
+        with self._cache_lock:
+            if ModuleType.DN not in self._loader_cache:
+                try:
+                    from app.services.dn_analysis import DNAnalysisService
+                    self._loader_cache[ModuleType.DN] = DNAnalysisService()
+                    logger.info("✅ DN service loaded")
+                except Exception as e:
+                    logger.error(f"❌ DN service load failed: {e}")
+                    self._loader_cache[ModuleType.DN] = None
+            return self._loader_cache[ModuleType.DN]
     
-    @classmethod
-    def get_inventory_service(cls):
-        """Get or load Inventory service."""
-        if "inventory" not in cls._instances:
-            with cls._lock:
-                if "inventory" not in cls._instances:
-                    try:
-                        from app.services.inventory_service import InventoryService
-                        cls._instances["inventory"] = InventoryService()
-                        logger.info("✅ Inventory service loaded")
-                    except Exception as e:
-                        logger.error(f"❌ Inventory service load failed: {e}")
-                        cls._instances["inventory"] = None
-        return cls._instances["inventory"]
+    def _load_dealer_service(self):
+        """Load Dealer service."""
+        with self._cache_lock:
+            if ModuleType.DEALER not in self._loader_cache:
+                try:
+                    from app.services.dealer_service import DealerService
+                    self._loader_cache[ModuleType.DEALER] = DealerService()
+                    logger.info("✅ Dealer service loaded")
+                except Exception as e:
+                    logger.error(f"❌ Dealer service load failed: {e}")
+                    self._loader_cache[ModuleType.DEALER] = None
+            return self._loader_cache[ModuleType.DEALER]
     
-    @classmethod
-    def get_pgi_service(cls):
-        """Get or load PGI service."""
-        if "pgi" not in cls._instances:
-            with cls._lock:
-                if "pgi" not in cls._instances:
-                    try:
-                        from app.services.pgi_service import PGIService
-                        cls._instances["pgi"] = PGIService()
-                        logger.info("✅ PGI service loaded")
-                    except Exception as e:
-                        logger.error(f"❌ PGI service load failed: {e}")
-                        cls._instances["pgi"] = None
-        return cls._instances["pgi"]
+    def _load_warehouse_service(self):
+        """Load Warehouse service."""
+        with self._cache_lock:
+            if ModuleType.WAREHOUSE not in self._loader_cache:
+                try:
+                    from app.services.warehouse_service import WarehouseService
+                    self._loader_cache[ModuleType.WAREHOUSE] = WarehouseService()
+                    logger.info("✅ Warehouse service loaded")
+                except Exception as e:
+                    logger.error(f"❌ Warehouse service load failed: {e}")
+                    self._loader_cache[ModuleType.WAREHOUSE] = None
+            return self._loader_cache[ModuleType.WAREHOUSE]
     
-    @classmethod
-    def get_pod_service(cls):
-        """Get or load POD service."""
-        if "pod" not in cls._instances:
-            with cls._lock:
-                if "pod" not in cls._instances:
-                    try:
-                        from app.services.pod_service import PODService
-                        cls._instances["pod"] = PODService()
-                        logger.info("✅ POD service loaded")
-                    except Exception as e:
-                        logger.error(f"❌ POD service load failed: {e}")
-                        cls._instances["pod"] = None
-        return cls._instances["pod"]
+    def _load_product_service(self):
+        """Load Product service."""
+        with self._cache_lock:
+            if ModuleType.PRODUCT not in self._loader_cache:
+                try:
+                    from app.services.product_service import ProductService
+                    self._loader_cache[ModuleType.PRODUCT] = ProductService()
+                    logger.info("✅ Product service loaded")
+                except Exception as e:
+                    logger.error(f"❌ Product service load failed: {e}")
+                    self._loader_cache[ModuleType.PRODUCT] = None
+            return self._loader_cache[ModuleType.PRODUCT]
     
-    @classmethod
-    def get_logistics_service(cls):
-        """Get or load Logistics service."""
-        if "logistics" not in cls._instances:
-            with cls._lock:
-                if "logistics" not in cls._instances:
-                    try:
-                        from app.services.logistics_service import LogisticsService
-                        cls._instances["logistics"] = LogisticsService()
-                        logger.info("✅ Logistics service loaded")
-                    except Exception as e:
-                        logger.error(f"❌ Logistics service load failed: {e}")
-                        cls._instances["logistics"] = None
-        return cls._instances["logistics"]
+    def _load_city_service(self):
+        """Load City service."""
+        with self._cache_lock:
+            if ModuleType.CITY not in self._loader_cache:
+                try:
+                    from app.services.city_service import CityService
+                    self._loader_cache[ModuleType.CITY] = CityService()
+                    logger.info("✅ City service loaded")
+                except Exception as e:
+                    logger.error(f"❌ City service load failed: {e}")
+                    self._loader_cache[ModuleType.CITY] = None
+            return self._loader_cache[ModuleType.CITY]
+    
+    def _load_inventory_service(self):
+        """Load Inventory service."""
+        with self._cache_lock:
+            if ModuleType.INVENTORY not in self._loader_cache:
+                try:
+                    from app.services.inventory_service import InventoryService
+                    self._loader_cache[ModuleType.INVENTORY] = InventoryService()
+                    logger.info("✅ Inventory service loaded")
+                except Exception as e:
+                    logger.error(f"❌ Inventory service load failed: {e}")
+                    self._loader_cache[ModuleType.INVENTORY] = None
+            return self._loader_cache[ModuleType.INVENTORY]
+    
+    def _load_pgi_service(self):
+        """Load PGI service."""
+        with self._cache_lock:
+            if ModuleType.PGI not in self._loader_cache:
+                try:
+                    from app.services.pgi_service import PGIService
+                    self._loader_cache[ModuleType.PGI] = PGIService()
+                    logger.info("✅ PGI service loaded")
+                except Exception as e:
+                    logger.error(f"❌ PGI service load failed: {e}")
+                    self._loader_cache[ModuleType.PGI] = None
+            return self._loader_cache[ModuleType.PGI]
+    
+    def _load_pod_service(self):
+        """Load POD service."""
+        with self._cache_lock:
+            if ModuleType.POD not in self._loader_cache:
+                try:
+                    from app.services.pod_service import PODService
+                    self._loader_cache[ModuleType.POD] = PODService()
+                    logger.info("✅ POD service loaded")
+                except Exception as e:
+                    logger.error(f"❌ POD service load failed: {e}")
+                    self._loader_cache[ModuleType.POD] = None
+            return self._loader_cache[ModuleType.POD]
+    
+    def _load_logistics_service(self):
+        """Load Logistics service."""
+        with self._cache_lock:
+            if ModuleType.LOGISTICS not in self._loader_cache:
+                try:
+                    from app.services.logistics_service import LogisticsService
+                    self._loader_cache[ModuleType.LOGISTICS] = LogisticsService()
+                    logger.info("✅ Logistics service loaded")
+                except Exception as e:
+                    logger.error(f"❌ Logistics service load failed: {e}")
+                    self._loader_cache[ModuleType.LOGISTICS] = None
+            return self._loader_cache[ModuleType.LOGISTICS]
+    
+    def _load_sales_office_service(self):
+        """Load Sales Office service."""
+        with self._cache_lock:
+            if ModuleType.SALES_OFFICE not in self._loader_cache:
+                try:
+                    from app.services.sales_office_service import SalesOfficeService
+                    self._loader_cache[ModuleType.SALES_OFFICE] = SalesOfficeService()
+                    logger.info("✅ Sales Office service loaded")
+                except Exception as e:
+                    logger.error(f"❌ Sales Office service load failed: {e}")
+                    self._loader_cache[ModuleType.SALES_OFFICE] = None
+            return self._loader_cache[ModuleType.SALES_OFFICE]
+    
+    def _load_transport_service(self):
+        """Load Transport service."""
+        with self._cache_lock:
+            if ModuleType.TRANSPORT not in self._loader_cache:
+                try:
+                    from app.services.transport_service import TransportService
+                    self._loader_cache[ModuleType.TRANSPORT] = TransportService()
+                    logger.info("✅ Transport service loaded")
+                except Exception as e:
+                    logger.error(f"❌ Transport service load failed: {e}")
+                    self._loader_cache[ModuleType.TRANSPORT] = None
+            return self._loader_cache[ModuleType.TRANSPORT]
+    
+    def _load_forecast_service(self):
+        """Load Forecast service."""
+        with self._cache_lock:
+            if ModuleType.FORECAST not in self._loader_cache:
+                try:
+                    from app.services.forecast_service import ForecastService
+                    self._loader_cache[ModuleType.FORECAST] = ForecastService()
+                    logger.info("✅ Forecast service loaded")
+                except Exception as e:
+                    logger.error(f"❌ Forecast service load failed: {e}")
+                    self._loader_cache[ModuleType.FORECAST] = None
+            return self._loader_cache[ModuleType.FORECAST]
+    
+    def _load_reports_service(self):
+        """Load Reports service."""
+        with self._cache_lock:
+            if ModuleType.REPORTS not in self._loader_cache:
+                try:
+                    from app.services.reports_service import ReportsService
+                    self._loader_cache[ModuleType.REPORTS] = ReportsService()
+                    logger.info("✅ Reports service loaded")
+                except Exception as e:
+                    logger.error(f"❌ Reports service load failed: {e}")
+                    self._loader_cache[ModuleType.REPORTS] = None
+            return self._loader_cache[ModuleType.REPORTS]
+    
+    def _load_management_service(self):
+        """Load Management service."""
+        with self._cache_lock:
+            if ModuleType.MANAGEMENT not in self._loader_cache:
+                try:
+                    from app.services.management_service import ManagementService
+                    self._loader_cache[ModuleType.MANAGEMENT] = ManagementService()
+                    logger.info("✅ Management service loaded")
+                except Exception as e:
+                    logger.error(f"❌ Management service load failed: {e}")
+                    self._loader_cache[ModuleType.MANAGEMENT] = None
+            return self._loader_cache[ModuleType.MANAGEMENT]
+    
+    # ============================================================
+    # PUBLIC METHODS
+    # ============================================================
+    
+    def get_menu_items(self) -> List[MenuItem]:
+        """Get all menu items."""
+        return self._menu_items
+    
+    def get_menu_item_by_type(self, module_type: ModuleType) -> Optional[MenuItem]:
+        """Get menu item by module type."""
+        return self._module_map.get(module_type)
+    
+    def detect_menu_item(self, text: str) -> Optional[MenuItem]:
+        """Detect which menu item the text matches."""
+        text_clean = text.strip()
+        
+        # Check each menu item
+        for item in self._menu_items:
+            if item.matches(text_clean):
+                return item
+        
+        return None
+    
+    def get_service(self, module_type: ModuleType) -> Optional[Any]:
+        """Get service instance for module type."""
+        item = self._module_map.get(module_type)
+        if not item:
+            return None
+        
+        try:
+            return item.loader()
+        except Exception as e:
+            logger.error(f"❌ Service load failed for {module_type.value}: {e}")
+            return None
+    
+    def get_service_by_text(self, text: str) -> Optional[tuple[MenuItem, Any]]:
+        """Get service by text detection."""
+        item = self.detect_menu_item(text)
+        if not item:
+            return None
+        
+        service = self.get_service(item.module_type)
+        if not service:
+            return None
+        
+        return (item, service)
 
 # ============================================================
 # BLOCK 5: MAIN GATEWAY SERVICE
@@ -354,15 +663,16 @@ class AIProviderService:
     
     Responsibilities:
     1. Manage sessions (lock/unlock)
-    2. Route to modules
+    2. Route to modules (GENERIC - no special cases)
     3. Forward messages when locked
     4. Show Main Dashboard
-    5. Handle "99" exit
+    5. Handle "__EXIT__" signal
     
     NO business logic.
     NO SQL queries.
     NO analytics.
     NO answering questions directly.
+    NO special-case logic for any module.
     """
     
     _instance: Optional["AIProviderService"] = None
@@ -386,123 +696,25 @@ class AIProviderService:
         self._sessions: Dict[str, Session] = {}
         self._session_lock = threading.RLock()
         
-        # Module loader
-        self._loader = ModuleLoader()
-        
-        # Module configurations
-        self._modules = {
-            "1": ModuleConfig(
-                module_type=ModuleType.NATIONAL,
-                file="national_kpi_service.py",
-                display_name="National Dashboard",
-                number=1,
-                loader=self._loader.get_national_service
-            ),
-            "2": ModuleConfig(
-                module_type=ModuleType.DN,
-                file="dn_analysis.py",
-                display_name="DN Dashboard",
-                number=2,
-                loader=self._loader.get_dn_service
-            ),
-            "3": ModuleConfig(
-                module_type=ModuleType.DEALER,
-                file="dealer_service.py",
-                display_name="Dealer Dashboard",
-                number=3,
-                loader=self._loader.get_dealer_service
-            ),
-            "4": ModuleConfig(
-                module_type=ModuleType.WAREHOUSE,
-                file="warehouse_service.py",
-                display_name="Warehouse Dashboard",
-                number=4,
-                loader=self._loader.get_warehouse_service
-            ),
-            "5": ModuleConfig(
-                module_type=ModuleType.PRODUCT,
-                file="product_service.py",
-                display_name="Product Dashboard",
-                number=5,
-                loader=self._loader.get_product_service
-            ),
-            "6": ModuleConfig(
-                module_type=ModuleType.CITY,
-                file="city_service.py",
-                display_name="City Dashboard",
-                number=6,
-                loader=self._loader.get_city_service
-            ),
-            "7": ModuleConfig(
-                module_type=ModuleType.INVENTORY,
-                file="inventory_service.py",
-                display_name="Inventory Dashboard",
-                number=7,
-                loader=self._loader.get_inventory_service
-            ),
-            "8": ModuleConfig(
-                module_type=ModuleType.PGI,
-                file="pgi_service.py",
-                display_name="PGI Dashboard",
-                number=8,
-                loader=self._loader.get_pgi_service
-            ),
-            "9": ModuleConfig(
-                module_type=ModuleType.POD,
-                file="pod_service.py",
-                display_name="POD Dashboard",
-                number=9,
-                loader=self._loader.get_pod_service
-            ),
-            "10": ModuleConfig(
-                module_type=ModuleType.LOGISTICS,
-                file="logistics_service.py",
-                display_name="Logistics Dashboard",
-                number=10,
-                loader=self._loader.get_logistics_service
-            ),
-        }
-        
-        # Dashboard name to number mapping
-        self._dashboard_names = {
-            "national": "1",
-            "national dashboard": "1",
-            "dn": "2",
-            "dn dashboard": "2",
-            "delivery": "2",
-            "dealer": "3",
-            "dealer dashboard": "3",
-            "warehouse": "4",
-            "warehouse dashboard": "4",
-            "product": "5",
-            "product dashboard": "5",
-            "city": "6",
-            "city dashboard": "6",
-            "inventory": "7",
-            "inventory dashboard": "7",
-            "pgi": "8",
-            "pgi dashboard": "8",
-            "pod": "9",
-            "pod dashboard": "9",
-            "logistics": "10",
-            "logistics dashboard": "10",
-        }
+        # Service registry
+        self._registry = ServiceRegistry()
         
         logger.info("=" * 70)
-        logger.info("🚀 ENTERPRISE GATEWAY v43.0 initialized")
+        logger.info("🚀 ENTERPRISE GATEWAY v44.0 initialized")
         logger.info("   📦 SOLE entry point for all interactions")
-        logger.info("   🔒 Manages session locking/unlocking")
-        logger.info("   🔀 Routes to domain modules")
+        logger.info("   🔒 GENERIC session locking (all modules equal)")
+        logger.info("   🔀 Routes to any registered module")
+        logger.info("   🚫 NO special-case logic")
         logger.info("   🚫 NO business logic")
         logger.info("   🚫 NO SQL queries")
         logger.info("   🚫 NO analytics")
         logger.info("   📋 Shows Main Dashboard")
-        logger.info("   🚪 Only '99' exits")
+        logger.info("   🚪 Only '__EXIT__' unlocks")
         logger.info("=" * 70)
         
         # Log available modules
-        for key, config in self._modules.items():
-            logger.info(f"   {key}. {config.display_name} → {config.file}")
+        for item in self._registry.get_menu_items():
+            logger.info(f"   {item.id}. {item.name} → {item.file}")
     
     # ============================================================
     # SESSION MANAGEMENT
@@ -521,27 +733,26 @@ class AIProviderService:
             # Check if session expired
             if session.is_expired():
                 logger.info(f"⏰ Session expired for {sender}, creating new")
-                # Clean up expired session
                 del self._sessions[sender]
                 session = Session(sender=sender)
                 self._sessions[sender] = session
             
             return session
     
-    def _lock_session(self, sender: str, module_type: ModuleType, file: str) -> bool:
+    def _lock_session(self, sender: str, menu_item: MenuItem, service_instance: Any) -> bool:
         """Lock session to a module."""
         with self._session_lock:
-            if sender not in self._sessions:
-                self._sessions[sender] = Session(sender=sender)
+            session = self._get_session(sender)
+            session.lock(
+                module_type=menu_item.module_type,
+                module_name=menu_item.name,
+                file_name=menu_item.file,
+                menu_id=menu_item.id,
+                dashboard_name=menu_item.name,
+                service_instance=service_instance
+            )
             
-            session = self._sessions[sender]
-            session.locked = True
-            session.module = module_type
-            session.file = file
-            session.entered_at = datetime.now()
-            session.update_activity()
-            
-            logger.info(f"🔒 Session LOCKED for {sender} → {module_type.value} ({file})")
+            logger.info(f"🔒 Session LOCKED for {sender} → {menu_item.name} ({menu_item.file})")
             return True
     
     def _unlock_session(self, sender: str) -> bool:
@@ -551,13 +762,10 @@ class AIProviderService:
                 return False
             
             session = self._sessions[sender]
-            session.locked = False
-            session.module = None
-            session.file = None
-            session.entered_at = None
-            session.update_activity()
+            module_name = session.module_name
+            session.unlock()
             
-            logger.info(f"🔓 Session UNLOCKED for {sender}")
+            logger.info(f"🔓 Session UNLOCKED for {sender} from {module_name}")
             return True
     
     def _is_locked(self, sender: str) -> bool:
@@ -577,82 +785,35 @@ class AIProviderService:
             if not session.locked:
                 return None
             
-            return {
-                "module": session.module.value if session.module else None,
-                "file": session.file,
-                "entered_at": session.entered_at.isoformat() if session.entered_at else None,
-                "last_activity": session.last_activity.isoformat(),
-                "history_count": len(session.history)
-            }
+            return session.to_dict()
     
     # ============================================================
-    # MODULE ROUTING
+    # MODULE ROUTING - GENERIC
     # ============================================================
     
-    def _detect_dashboard(self, message: str) -> Optional[tuple[str, ModuleConfig]]:
-        """Detect which dashboard the user wants."""
-        message_clean = message.strip().lower()
+    def _detect_dashboard(self, message: str) -> Optional[tuple[MenuItem, Any]]:
+        """
+        Detect which dashboard the user wants - GENERIC.
         
-        # Check by number
-        if message_clean in self._modules:
-            return (message_clean, self._modules[message_clean])
-        
-        # Check by name
-        if message_clean in self._dashboard_names:
-            number = self._dashboard_names[message_clean]
-            return (number, self._modules[number])
-        
-        # Check for partial matches
-        for name, number in self._dashboard_names.items():
-            if name in message_clean:
-                return (number, self._modules[number])
-        
-        return None
-    
-    def _get_module_service(self, module_config: ModuleConfig):
-        """Get service instance for module."""
-        try:
-            return module_config.loader()
-        except Exception as e:
-            logger.error(f"❌ Module {module_config.display_name} load failed: {e}")
-            return None
+        Supports:
+        - Menu numbers: "1", "2", etc.
+        - Dashboard names: "DN Dashboard", "Warehouse Dashboard"
+        - Aliases: "dn", "warehouse", "pending dn"
+        """
+        return self._registry.get_service_by_text(message)
     
     def _forward_to_module(self, session: Session, message: str, sender: str) -> str:
-        """Forward message to locked module."""
-        if not session.file:
+        """Forward message to locked module - GENERIC."""
+        if not session.service_instance:
+            logger.error(f"❌ No service instance for {session.module_name}")
+            self._unlock_session(sender)
             return self._get_main_dashboard()
         
-        # Get service based on module
-        service = None
-        if session.module == ModuleType.NATIONAL:
-            service = self._loader.get_national_service()
-        elif session.module == ModuleType.DN:
-            service = self._loader.get_dn_service()
-        elif session.module == ModuleType.DEALER:
-            service = self._loader.get_dealer_service()
-        elif session.module == ModuleType.WAREHOUSE:
-            service = self._loader.get_warehouse_service()
-        elif session.module == ModuleType.PRODUCT:
-            service = self._loader.get_product_service()
-        elif session.module == ModuleType.CITY:
-            service = self._loader.get_city_service()
-        elif session.module == ModuleType.INVENTORY:
-            service = self._loader.get_inventory_service()
-        elif session.module == ModuleType.PGI:
-            service = self._loader.get_pgi_service()
-        elif session.module == ModuleType.POD:
-            service = self._loader.get_pod_service()
-        elif session.module == ModuleType.LOGISTICS:
-            service = self._loader.get_logistics_service()
-        
-        if not service:
-            logger.error(f"❌ Service {session.module.value} not available")
-            self._unlock_session(sender)
-            return "⚠️ Service is temporarily unavailable.\n\n" + self._get_main_dashboard()
+        service = session.service_instance
         
         # Check if service has process_whatsapp_query method
         if not hasattr(service, "process_whatsapp_query"):
-            logger.error(f"❌ Service {session.module.value} missing process_whatsapp_query")
+            logger.error(f"❌ Service {session.module_name} missing process_whatsapp_query")
             self._unlock_session(sender)
             return "⚠️ Service is misconfigured.\n\n" + self._get_main_dashboard()
         
@@ -660,9 +821,9 @@ class AIProviderService:
             # Forward to service
             result = service.process_whatsapp_query(message, sender)
             
-            # Check for exit command
-            if result == "__EXIT__" or result == "99":
-                logger.info(f"🚪 Module {session.module.value} requested exit")
+            # Check for exit signal
+            if result == EXIT_SIGNAL:
+                logger.info(f"🚪 Module {session.module_name} requested exit ({EXIT_SIGNAL})")
                 self._unlock_session(sender)
                 return self._get_main_dashboard()
             
@@ -670,12 +831,12 @@ class AIProviderService:
             session.update_activity()
             
             # Add to history
-            session.add_history(message, result[:200] if len(result) > 200 else result)
+            session.add_history(message, result)
             
             return result
             
         except Exception as e:
-            logger.error(f"❌ Module {session.module.value} error: {e}")
+            logger.error(f"❌ Module {session.module_name} error: {e}")
             self._unlock_session(sender)
             return f"⚠️ Service error: {str(e)[:200]}\n\n" + self._get_main_dashboard()
     
@@ -698,10 +859,9 @@ class AIProviderService:
         2. Check if session is locked
         3. If locked → FORWARD to module (NO ROUTING)
         4. If unlocked → Show Main Dashboard or Route
-        5. Handle "99" → Unlock and show Main Dashboard
-        6. Route to selected module
-        7. Lock session
-        8. Return response
+        5. Handle commands → Show Main Dashboard
+        6. Detect dashboard → Lock and Route
+        7. No detection → Show Main Dashboard
         """
         sender = sender or sender_id or "default"
         
@@ -715,81 +875,67 @@ class AIProviderService:
         session = self._get_session(sender)
         
         # ============================================================
-        # STEP 1: CHECK FOR EXIT COMMAND
-        # ============================================================
-        if message_clean == "99":
-            logger.info(f"🚪 Exit requested by {sender}")
-            self._unlock_session(sender)
-            return self._get_main_dashboard()
-        
-        # ============================================================
-        # STEP 2: CHECK IF SESSION IS LOCKED
+        # STEP 1: CHECK IF SESSION IS LOCKED
         # ============================================================
         if session.locked:
-            logger.info(f"🔒 Session LOCKED for {sender} → {session.module.value}")
+            logger.info(f"🔒 Session LOCKED for {sender} → {session.module_name}")
             
-            # Check if module wants to exit
-            result = self._forward_to_module(session, message_clean, sender)
+            # Check for manual exit (99) at gateway level
+            if message_clean == "99":
+                logger.info(f"🚪 Manual exit (99) requested by {sender}")
+                self._unlock_session(sender)
+                return self._get_main_dashboard()
             
-            # If result is the main dashboard, session was unlocked
-            if "AI LOGISTICS MENU" in result or "Main Dashboard" in result:
-                return result
-            
-            return result
+            # Forward to module
+            return self._forward_to_module(session, message_clean, sender)
         
         # ============================================================
-        # STEP 3: SESSION IDLE - SHOW MAIN DASHBOARD OR ROUTE
+        # STEP 2: SESSION IDLE - CHECK COMMANDS
         # ============================================================
         logger.info(f"🔄 Session IDLE for {sender}")
         
-        # Check if user wants to see menu
-        if message_clean.lower() in ["menu", "help", "options", "dashboard", "main"]:
+        # Check for menu commands
+        if message_clean.lower() in ["menu", "help", "options", "dashboard", "main", "0"]:
+            return self._get_main_dashboard()
+        
+        # Check for exit
+        if message_clean == "99":
             return self._get_main_dashboard()
         
         # ============================================================
-        # STEP 4: DETECT DASHBOARD
+        # STEP 3: DETECT DASHBOARD
         # ============================================================
         detected = self._detect_dashboard(message_clean)
         
         if detected:
-            number, module_config = detected
-            
-            # Get service instance
-            service = self._get_module_service(module_config)
-            
-            if not service:
-                return f"⚠️ {module_config.display_name} is temporarily unavailable.\n\n{self._get_main_dashboard()}"
-            
-            # Check if service has process_whatsapp_query method
-            if not hasattr(service, "process_whatsapp_query"):
-                return f"⚠️ {module_config.display_name} is misconfigured.\n\n{self._get_main_dashboard()}"
+            menu_item, service = detected
             
             # Lock session
-            self._lock_session(sender, module_config.module_type, module_config.file)
+            self._lock_session(sender, menu_item, service)
             
             try:
                 # Forward to service
                 result = service.process_whatsapp_query(message_clean, sender)
                 
                 # Check for immediate exit
-                if result == "__EXIT__" or result == "99":
+                if result == EXIT_SIGNAL:
                     self._unlock_session(sender)
                     return self._get_main_dashboard()
                 
                 # Update session
                 session = self._get_session(sender)
                 session.update_activity()
-                session.add_history(message_clean, result[:200] if len(result) > 200 else result)
+                session.add_history(message_clean, result)
                 
                 return result
                 
             except Exception as e:
-                logger.error(f"❌ Module {module_config.display_name} error: {e}")
+                logger.error(f"❌ Module {menu_item.name} error: {e}")
                 self._unlock_session(sender)
-                return f"⚠️ {module_config.display_name} error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
+                return f"⚠️ {menu_item.name} error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
         
         # ============================================================
-        # STEP 5: NO DASHBOARD DETECTED - SHOW MAIN DASHBOARD
+        # STEP 4: NO DASHBOARD DETECTED - SHOW MAIN DASHBOARD
         # ============================================================
         return self._get_out_of_box_response()
     
@@ -798,29 +944,24 @@ class AIProviderService:
     # ============================================================
     
     def _get_main_dashboard(self) -> str:
-        """Get the Main Dashboard."""
-        return "\n".join([
-            "🏠 *HPK Logistics AI*",
-            "",
-            "1️⃣ National Dashboard",
-            "2️⃣ DN Intelligence",
-            "3️⃣ Dealer Analytics",
-            "4️⃣ Warehouse Analytics",
-            "5️⃣ Product Analytics",
-            "6️⃣ City Analytics",
-            "7️⃣ Inventory Analytics",
-            "8️⃣ PGI Analytics",
-            "9️⃣ POD Analytics",
-            "🔟 Logistics Analytics",
+        """Get the Main Dashboard - GENERIC from registry."""
+        lines = ["🏠 *HPK Logistics AI*", ""]
+        
+        for item in self._registry.get_menu_items():
+            lines.append(f"{item.id}️⃣ {item.name}")
+        
+        lines.extend([
             "",
             "📌 *Commands:*",
-            "• Type a number (1-10) to enter a dashboard",
+            "• Type a number (1-{}) to enter a dashboard".format(len(self._registry.get_menu_items())),
             "• Type dashboard name (e.g., 'Warehouse Dashboard')",
             "• Type '99' to exit current dashboard",
             "• Type 'menu' or 'help' for this menu",
             "",
             "Reply with a number or dashboard name:"
         ])
+        
+        return "\n".join(lines)
     
     def _get_out_of_box_response(self) -> str:
         """Response when no dashboard detected."""
@@ -828,7 +969,7 @@ class AIProviderService:
             "❌ *Please select a valid option from the menu.*",
             "",
             "You can enter a dashboard by:",
-            "• Number (1-10)",
+            "• Number (1-{})".format(len(self._registry.get_menu_items())),
             "• Dashboard name (e.g., 'Warehouse Dashboard')",
             "",
             self._get_main_dashboard()
@@ -844,19 +985,13 @@ class AIProviderService:
             active_sessions = len(self._sessions)
             locked_sessions = sum(1 for s in self._sessions.values() if s.locked)
             session_details = {
-                sender: {
-                    "locked": session.locked,
-                    "module": session.module.value if session.module else None,
-                    "file": session.file,
-                    "last_activity": session.last_activity.isoformat(),
-                    "history_count": len(session.history)
-                }
+                sender: session.to_dict()
                 for sender, session in self._sessions.items()
             }
         
         return {
             "service": "ai_provider_service",
-            "version": "43.0",
+            "version": "44.0",
             "type": "enterprise_gateway",
             "status": "healthy",
             "active_sessions": active_sessions,
@@ -864,17 +999,19 @@ class AIProviderService:
             "session_details": session_details,
             "available_modules": [
                 {
-                    "number": config.number,
-                    "name": config.display_name,
-                    "file": config.file
+                    "id": item.id,
+                    "name": item.name,
+                    "file": item.file,
+                    "aliases": item.aliases
                 }
-                for config in self._modules.values()
+                for item in self._registry.get_menu_items()
             ],
             "features": {
-                "session_locking": True,
-                "module_routing": True,
-                "exit_99": True,
-                "main_dashboard": True
+                "generic_session_locking": True,
+                "generic_module_routing": True,
+                "exit_signal": EXIT_SIGNAL,
+                "main_dashboard": True,
+                "alias_detection": True
             }
         }
     
@@ -888,18 +1025,7 @@ class AIProviderService:
             if sender not in self._sessions:
                 return None
             
-            session = self._sessions[sender]
-            return {
-                "sender": session.sender,
-                "locked": session.locked,
-                "module": session.module.value if session.module else None,
-                "file": session.file,
-                "entered_at": session.entered_at.isoformat() if session.entered_at else None,
-                "last_activity": session.last_activity.isoformat(),
-                "is_expired": session.is_expired(),
-                "history_count": len(session.history),
-                "recent_history": session.history[-5:] if session.history else []
-            }
+            return self._sessions[sender].to_dict()
     
     def clear_session(self, sender: str) -> bool:
         """Clear session for debugging."""
@@ -954,6 +1080,9 @@ __all__ = [
     "AIProviderService",
     "ModuleType",
     "Session",
+    "MenuItem",
+    "ServiceRegistry",
     "get_ai_provider_service",
     "process_whatsapp_query",
+    "EXIT_SIGNAL",
 ]
