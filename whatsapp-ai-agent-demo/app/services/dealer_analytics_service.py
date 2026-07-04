@@ -1,32 +1,20 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: whatsapp-ai-agent-demo/app/services/dealer_analytics_service.py
-# VERSION: 3.1 - POSTGRESQL INTEGRATED (FIXED)
+# VERSION: 3.2 - FIXED DEALER DETECTION
 # ============================================================
 
 """
 ================================================================================
-DEALER ANALYTICS SERVICE - POSTGRESQL INTEGRATED
+DEALER ANALYTICS SERVICE - FIXED DEALER DETECTION
 ================================================================================
 
-This service queries PostgreSQL for real dealer data using your schema.
-
-DATABASE TABLE: delivery_reports
-    - customer_name: Dealer name
-    - dealer_code: Dealer code
-    - customer_code: Customer code
-    - dn_no: Delivery Note number
-    - dn_qty: Quantity
-    - dn_amount: Amount
-    - dn_create_date: Creation date
-    - good_issue_date: PGI date
-    - pod_date: POD date
-    - division: Division
-    - sales_office: Sales office
-    - sales_manager: Sales manager
-    - ship_to_city: City
-    - warehouse: Warehouse
-    - pending_flag: Pending status
+FIXES:
+1. Better filtering of actual dealers (not order descriptions)
+2. Uses dealer_code and customer_code as primary identifiers
+3. Filters out non-dealer records
+4. Better suggestions
+5. Handles partial matches properly
 
 ================================================================================
 """
@@ -59,57 +47,6 @@ try:
 except ImportError as e:
     DB_AVAILABLE = False
     logger.warning(f"⚠️ PostgreSQL not available: {e}")
-    logger.warning("   Falling back to sample data")
-
-# ============================================================
-# FALLBACK DATA (if PostgreSQL not available)
-# ============================================================
-
-FALLBACK_DEALERS = {
-    "arshad electronics-khi": {
-        "name": "Arshad Electronics-Khi",
-        "code": "DEAL_ARSHAD_ELECTRON",
-        "customer_code": "CUST_ARSHAD_ELECTRON",
-        "office": "Karachi Office",
-        "manager": "Traditional Channel",
-        "division": "Washing Machine",
-        "warehouse": "Karachi",
-        "warehouse_code": "KHI",
-        "city": "Karachi",
-        "revenue": 738427.00,
-        "avg_revenue_per_dn": 184606.75,
-        "total_units": 29,
-        "avg_units_per_dn": 7.25,
-        "total_dn": 4,
-        "pending_dn": 0,
-        "delivered_dn": 4,
-        "delivery_pct": 100.0,
-        "pgi_pct": 100.0,
-        "pod_pct": 100.0,
-        "avg_delivery_days": 0.0,
-        "avg_pod_days": 8.0,
-        "product_count": 6,
-        "top_product": "HWM 150-826S6 GC",
-        "warehouses_used": ["Karachi"],
-        "warehouse_count": 1,
-        "cities_served": ["Karachi"],
-        "city_count": 1,
-        "business_score": 85.0,
-        "risk_score": 15.0,
-        "first_order": "09-Jun-2026",
-        "last_order": "09-Jun-2026",
-        "latest_pod": "19-Jun-2026",
-        "latest_activity": "19-Jun-2026",
-        "insights": [
-            "💰 Revenue: PKR 0.74 Million",
-            "✅ 100% delivery success rate"
-        ],
-        "recommendations": [
-            "📊 Monitor performance metrics",
-            "📈 Review delivery efficiency"
-        ]
-    }
-}
 
 # ============================================================
 # UTILITY FUNCTIONS
@@ -161,12 +98,12 @@ def _date_text(value: Any) -> str:
     return _text(value, "N/A")
 
 # ============================================================
-# DEALER ANALYTICS SERVICE - POSTGRESQL
+# DEALER ANALYTICS SERVICE - FIXED
 # ============================================================
 
 class DealerAnalyticsService:
     """
-    Dealer Analytics Service with PostgreSQL integration
+    Dealer Analytics Service with improved dealer detection
     """
     
     _instance: Optional["DealerAnalyticsService"] = None
@@ -182,18 +119,19 @@ class DealerAnalyticsService:
         
         self._initialized = True
         self._service_name = "dealer_analytics"
-        self._version = "3.1"
+        self._version = "3.2"
         self._db_available = DB_AVAILABLE
         
         # Session state
         self._user_states: Dict[str, Dict] = {}
         
-        # Cache for dealer names
-        self._dealer_cache: Dict[str, str] = {}
+        # Dealer cache
+        self._dealer_cache: Dict[str, Dict] = {}
         self._code_cache: Dict[str, str] = {}
+        self._name_cache: Dict[str, str] = {}
         
-        # Load initial cache
-        self._load_dealer_cache()
+        # Load dealers
+        self._load_dealers()
         
         logger.info("=" * 60)
         logger.info(f"🚀 DealerAnalyticsService v{self._version} initialized")
@@ -211,59 +149,151 @@ class DealerAnalyticsService:
             logger.error(f"❌ Database session error: {e}")
             return None
     
-    def _load_dealer_cache(self):
-        """Load dealer names into cache for fast lookup"""
+    def _load_dealers(self):
+        """Load dealers from PostgreSQL with proper filtering"""
         if not self._db_available:
-            self._load_fallback_cache()
+            self._load_sample_dealers()
             return
         
         session = self._get_session()
         if not session:
-            self._load_fallback_cache()
+            self._load_sample_dealers()
             return
         
         try:
-            # Get unique dealer names and codes
+            # Get all distinct dealer records with proper filtering
+            # Only include records that look like actual dealers
             results = session.query(
                 DeliveryReport.customer_name,
                 DeliveryReport.dealer_code,
-                DeliveryReport.customer_code
+                DeliveryReport.customer_code,
+                DeliveryReport.sales_office,
+                DeliveryReport.sales_manager,
+                DeliveryReport.division,
+                DeliveryReport.ship_to_city,
+                DeliveryReport.warehouse,
+                DeliveryReport.warehouse_code,
+                func.count(func.distinct(DeliveryReport.dn_no)).label('dn_count'),
+                func.sum(DeliveryReport.dn_qty).label('total_units'),
+                func.sum(DeliveryReport.dn_amount).label('total_revenue')
             ).filter(
-                DeliveryReport.customer_name.isnot(None)
-            ).distinct().all()
+                # Filter out non-dealer records
+                DeliveryReport.customer_name.isnot(None),
+                DeliveryReport.customer_name != '',
+                # Dealer code should exist and be meaningful
+                DeliveryReport.dealer_code.isnot(None),
+                DeliveryReport.dealer_code != '',
+                # Exclude records that look like orders or descriptions
+                ~DeliveryReport.customer_name.like('PK%'),  # Exclude PK orders
+                ~DeliveryReport.customer_name.like('%-prepaid-%'),  # Exclude prepaid
+                ~DeliveryReport.customer_name.like('%Faiq%'),  # Exclude individual names
+                ~DeliveryReport.customer_name.like('%Alam%'),  # Exclude individual names
+                # Dealer code should start with DEAL_ or contain ELECTRON
+                or_(
+                    DeliveryReport.dealer_code.like('DEAL_%'),
+                    DeliveryReport.customer_name.ilike('%Electronics%'),
+                    DeliveryReport.customer_name.ilike('%Digital%'),
+                    DeliveryReport.customer_name.ilike('%Appliances%'),
+                    DeliveryReport.dealer_code.like('D%')
+                )
+            ).group_by(
+                DeliveryReport.customer_name,
+                DeliveryReport.dealer_code,
+                DeliveryReport.customer_code,
+                DeliveryReport.sales_office,
+                DeliveryReport.sales_manager,
+                DeliveryReport.division,
+                DeliveryReport.ship_to_city,
+                DeliveryReport.warehouse,
+                DeliveryReport.warehouse_code
+            ).order_by(
+                func.sum(DeliveryReport.dn_amount).desc()
+            ).all()
             
             session.close()
             
             for row in results:
                 name = _text(row.customer_name)
-                if name and name != "N/A":
+                dealer_code = _text(row.dealer_code)
+                customer_code = _text(row.customer_code)
+                
+                if name and name != "N/A" and len(name) > 3:
+                    # Store in cache
                     key = normalize_text(name)
-                    self._dealer_cache[key] = name
+                    self._dealer_cache[key] = {
+                        'name': name,
+                        'dealer_code': dealer_code,
+                        'customer_code': customer_code,
+                        'office': _text(row.sales_office),
+                        'manager': _text(row.sales_manager),
+                        'division': _text(row.division),
+                        'city': _text(row.ship_to_city),
+                        'warehouse': _text(row.warehouse),
+                        'warehouse_code': _text(row.warehouse_code),
+                        'dn_count': int(row.dn_count or 0),
+                        'total_units': int(row.total_units or 0),
+                        'total_revenue': float(row.total_revenue or 0)
+                    }
                     
-                    # Index by code
-                    if row.dealer_code:
-                        self._code_cache[row.dealer_code.lower()] = name
-                    if row.customer_code:
-                        self._code_cache[row.customer_code.lower()] = name
+                    # Index by codes
+                    if dealer_code and dealer_code != "N/A":
+                        self._code_cache[dealer_code.lower()] = name
+                    if customer_code and customer_code != "N/A":
+                        self._code_cache[customer_code.lower()] = name
+                    
+                    # Index by name parts
+                    self._name_cache[key] = name
             
-            logger.info(f"   📚 Loaded {len(self._dealer_cache)} dealers from PostgreSQL")
+            logger.info(f"   ✅ Loaded {len(self._dealer_cache)} dealers from PostgreSQL")
             
         except Exception as e:
-            logger.error(f"❌ Failed to load dealer cache: {e}")
+            logger.error(f"❌ Failed to load dealers: {e}")
             if session:
                 session.close()
-            self._load_fallback_cache()
+            self._load_sample_dealers()
     
-    def _load_fallback_cache(self):
-        """Load fallback dealer cache"""
-        for key, data in FALLBACK_DEALERS.items():
-            self._dealer_cache[normalize_text(key)] = data['name']
-            if data.get('code'):
-                self._code_cache[data['code'].lower()] = data['name']
+    def _load_sample_dealers(self):
+        """Load sample dealer data for testing"""
+        sample_dealers = {
+            "arshad electronics-khi": {
+                "name": "Arshad Electronics-Khi",
+                "dealer_code": "DEAL_ARSHAD_ELECTRON",
+                "customer_code": "CUST_ARSHAD_ELECTRON",
+                "office": "Karachi Office",
+                "manager": "Traditional Channel",
+                "division": "Washing Machine",
+                "city": "Karachi",
+                "warehouse": "Karachi",
+                "warehouse_code": "KHI",
+                "dn_count": 4,
+                "total_units": 29,
+                "total_revenue": 738427.00
+            },
+            "zoom appliances": {
+                "name": "Zoom Appliances",
+                "dealer_code": "DEAL_ZOOM_APP",
+                "customer_code": "CUST_ZOOM_APP",
+                "office": "Karachi Office",
+                "manager": "Ahmed Khan",
+                "division": "Electronics",
+                "city": "Karachi",
+                "warehouse": "Karachi",
+                "warehouse_code": "KHI",
+                "dn_count": 245,
+                "total_units": 1234,
+                "total_revenue": 15678900.50
+            }
+        }
+        
+        for key, data in sample_dealers.items():
+            self._dealer_cache[key] = data
+            if data.get('dealer_code'):
+                self._code_cache[data['dealer_code'].lower()] = data['name']
             if data.get('customer_code'):
                 self._code_cache[data['customer_code'].lower()] = data['name']
+            self._name_cache[key] = data['name']
         
-        logger.info(f"   📚 Loaded {len(self._dealer_cache)} dealers from fallback data")
+        logger.info(f"   📚 Loaded {len(self._dealer_cache)} sample dealers")
     
     # ============================================================
     # MAIN ENTRY POINT
@@ -310,12 +340,12 @@ class DealerAnalyticsService:
             return f"⚠️ An error occurred: {str(e)[:200]}\n\nPlease type '99' to exit."
     
     # ============================================================
-    # DEALER SEARCH - POSTGRESQL
+    # DEALER SEARCH - IMPROVED
     # ============================================================
     
     def search_dealer(self, query: str) -> Dict[str, Any]:
         """
-        Search for a dealer in PostgreSQL
+        Search for a dealer with improved matching
         """
         if not query or not query.strip():
             return {
@@ -326,30 +356,40 @@ class DealerAnalyticsService:
         query_clean = query.strip()
         query_normalized = normalize_text(query_clean)
         
-        logger.info(f"🔍 Searching PostgreSQL for: '{query_clean}'")
+        logger.info(f"🔍 Searching for: '{query_clean}'")
         
-        # First check cache for quick match
+        # Try exact match in cache
         if query_normalized in self._dealer_cache:
-            dealer_name = self._dealer_cache[query_normalized]
-            logger.info(f"   ✅ Found in cache: {dealer_name}")
-            return self._get_dealer_details(dealer_name)
+            dealer_data = self._dealer_cache[query_normalized]
+            logger.info(f"   ✅ Found in cache: {dealer_data['name']}")
+            return self._get_dealer_details(dealer_data['name'])
         
-        # Check code cache
+        # Try code match
         if query_clean.lower() in self._code_cache:
             dealer_name = self._code_cache[query_clean.lower()]
             logger.info(f"   ✅ Found by code: {dealer_name}")
             return self._get_dealer_details(dealer_name)
         
-        # Search in database
+        # Try partial match
+        for key, data in self._dealer_cache.items():
+            if query_normalized in key or key in query_normalized:
+                logger.info(f"   ✅ Partial match: {data['name']}")
+                return self._get_dealer_details(data['name'])
+        
+        # Try word match
+        query_words = set(query_normalized.split())
+        if len(query_words) >= 2:
+            for key, data in self._dealer_cache.items():
+                key_words = set(key.split())
+                if query_words & key_words:
+                    logger.info(f"   ✅ Word match: {data['name']}")
+                    return self._get_dealer_details(data['name'])
+        
+        # Search in database if available
         if self._db_available:
-            result = self._search_in_database(query_clean, query_normalized)
+            result = self._search_in_database(query_clean)
             if result and result['success']:
                 return result
-        
-        # Try fallback data
-        result = self._search_in_fallback(query_clean, query_normalized)
-        if result and result['success']:
-            return result
         
         # No match - get suggestions
         suggestions = self._get_suggestions(query_clean)
@@ -360,18 +400,81 @@ class DealerAnalyticsService:
             'suggestions': suggestions
         }
     
-    def _search_in_database(self, query: str, query_normalized: str) -> Optional[Dict[str, Any]]:
-        """Search dealer in PostgreSQL"""
+    def _search_in_database(self, query: str) -> Optional[Dict[str, Any]]:
+        """Search dealer in PostgreSQL with proper filtering"""
         session = self._get_session()
         if not session:
             return None
         
         try:
-            # Search by customer_name, dealer_code, or customer_code
             search_pattern = f"%{query}%"
             
-            # Get dealer summary
+            # Search for dealer by name, code, or customer code
             results = session.query(
+                DeliveryReport.customer_name,
+                DeliveryReport.dealer_code,
+                DeliveryReport.customer_code,
+                DeliveryReport.sales_office,
+                DeliveryReport.sales_manager,
+                DeliveryReport.division,
+                DeliveryReport.ship_to_city,
+                DeliveryReport.warehouse,
+                DeliveryReport.warehouse_code,
+                func.count(func.distinct(DeliveryReport.dn_no)).label('total_dn'),
+                func.sum(DeliveryReport.dn_qty).label('total_units'),
+                func.sum(DeliveryReport.dn_amount).label('total_revenue')
+            ).filter(
+                DeliveryReport.customer_name.isnot(None),
+                DeliveryReport.customer_name != '',
+                or_(
+                    DeliveryReport.customer_name.ilike(search_pattern),
+                    DeliveryReport.dealer_code.ilike(search_pattern),
+                    DeliveryReport.customer_code.ilike(search_pattern)
+                ),
+                # Only include records that look like dealers
+                or_(
+                    DeliveryReport.dealer_code.like('DEAL_%'),
+                    DeliveryReport.customer_name.ilike('%Electronics%'),
+                    DeliveryReport.customer_name.ilike('%Digital%'),
+                    DeliveryReport.customer_name.ilike('%Appliances%')
+                )
+            ).group_by(
+                DeliveryReport.customer_name,
+                DeliveryReport.dealer_code,
+                DeliveryReport.customer_code,
+                DeliveryReport.sales_office,
+                DeliveryReport.sales_manager,
+                DeliveryReport.division,
+                DeliveryReport.ship_to_city,
+                DeliveryReport.warehouse,
+                DeliveryReport.warehouse_code
+            ).limit(5).all()
+            
+            if not results:
+                session.close()
+                return None
+            
+            # Return first result
+            row = results[0]
+            dealer_name = _text(row.customer_name)
+            
+            session.close()
+            
+            return self._get_dealer_details(dealer_name)
+            
+        except Exception as e:
+            logger.error(f"❌ Database search error: {e}")
+            if session:
+                session.close()
+            return None
+    
+    def _get_dealer_details(self, dealer_name: str) -> Dict[str, Any]:
+        """Get full dealer details by name"""
+        session = self._get_session()
+        
+        try:
+            # Get dealer summary
+            summary = session.query(
                 DeliveryReport.customer_name,
                 DeliveryReport.dealer_code,
                 DeliveryReport.customer_code,
@@ -385,8 +488,6 @@ class DealerAnalyticsService:
                 func.sum(DeliveryReport.dn_qty).label('total_units'),
                 func.sum(DeliveryReport.dn_amount).label('total_revenue'),
                 func.count(func.distinct(DeliveryReport.customer_model)).label('product_count'),
-                func.count(func.distinct(DeliveryReport.warehouse)).label('warehouse_count'),
-                func.count(func.distinct(DeliveryReport.ship_to_city)).label('city_count'),
                 func.count(func.distinct(
                     func.case(
                         [(DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)],
@@ -394,11 +495,7 @@ class DealerAnalyticsService:
                     )
                 )).label('delivered_dn')
             ).filter(
-                or_(
-                    DeliveryReport.customer_name.ilike(search_pattern),
-                    DeliveryReport.dealer_code.ilike(search_pattern),
-                    DeliveryReport.customer_code.ilike(search_pattern)
-                )
+                DeliveryReport.customer_name == dealer_name
             ).group_by(
                 DeliveryReport.customer_name,
                 DeliveryReport.dealer_code,
@@ -411,16 +508,13 @@ class DealerAnalyticsService:
                 DeliveryReport.warehouse_code
             ).first()
             
-            if not results:
-                session.close()
-                return None
-            
-            # Extract data
-            dealer_name = _text(results.customer_name)
-            total_dn = int(results.total_dn or 0)
-            total_revenue = float(results.total_revenue or 0)
-            total_units = int(results.total_units or 0)
-            delivered_dn = int(results.delivered_dn or 0)
+            if not summary:
+                if session:
+                    session.close()
+                return {
+                    'success': False,
+                    'message': f"Dealer '{dealer_name}' found but details not available."
+                }
             
             # Get additional metrics
             metrics_sql = f"""
@@ -431,8 +525,7 @@ class DealerAnalyticsService:
                         THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date))/86400 END) as avg_pod_days,
                     MIN(dn_create_date) as first_order,
                     MAX(dn_create_date) as last_order,
-                    MAX(pod_date) as latest_pod,
-                    MAX(GREATEST(dn_create_date, good_issue_date, pod_date)) as latest_activity
+                    MAX(pod_date) as latest_pod
                 FROM delivery_reports
                 WHERE customer_name = '{dealer_name.replace("'", "''")}'
             """
@@ -458,7 +551,6 @@ class DealerAnalyticsService:
                 FROM delivery_reports
                 WHERE customer_name = '{dealer_name.replace("'", "''")}'
                 AND warehouse IS NOT NULL
-                ORDER BY warehouse
             """
             wh_result = session.execute(text(wh_sql))
             warehouses = [_text(row[0]) for row in wh_result.fetchall()]
@@ -469,7 +561,6 @@ class DealerAnalyticsService:
                 FROM delivery_reports
                 WHERE customer_name = '{dealer_name.replace("'", "''")}'
                 AND ship_to_city IS NOT NULL
-                ORDER BY ship_to_city
             """
             city_result = session.execute(text(city_sql))
             cities = [_text(row[0]) for row in city_result.fetchall()]
@@ -477,16 +568,21 @@ class DealerAnalyticsService:
             session.close()
             
             # Build profile
+            total_dn = int(summary.total_dn or 0)
+            total_revenue = float(summary.total_revenue or 0)
+            total_units = int(summary.total_units or 0)
+            delivered_dn = int(summary.delivered_dn or 0)
+            
             profile = {
                 'name': dealer_name,
-                'code': _text(results.dealer_code),
-                'customer_code': _text(results.customer_code),
-                'office': _text(results.sales_office),
-                'manager': _text(results.sales_manager),
-                'division': _text(results.division),
-                'city': _text(results.ship_to_city),
-                'warehouse': _text(results.warehouse),
-                'warehouse_code': _text(results.warehouse_code),
+                'code': _text(summary.dealer_code),
+                'customer_code': _text(summary.customer_code),
+                'office': _text(summary.sales_office),
+                'manager': _text(summary.sales_manager),
+                'division': _text(summary.division),
+                'city': _text(summary.ship_to_city),
+                'warehouse': _text(summary.warehouse),
+                'warehouse_code': _text(summary.warehouse_code),
                 'revenue': total_revenue,
                 'avg_revenue_per_dn': total_revenue / max(1, total_dn),
                 'total_units': total_units,
@@ -495,11 +591,11 @@ class DealerAnalyticsService:
                 'pending_dn': total_dn - delivered_dn,
                 'delivered_dn': delivered_dn,
                 'delivery_pct': _percent(delivered_dn, total_dn),
-                'pgi_pct': _percent(delivered_dn, total_dn),  # Approximate
+                'pgi_pct': _percent(delivered_dn, total_dn),
                 'pod_pct': _percent(delivered_dn, total_dn),
                 'avg_delivery_days': float(metrics_row[0] or 0) if metrics_row else 0,
                 'avg_pod_days': float(metrics_row[1] or 0) if metrics_row else 0,
-                'product_count': int(results.product_count or 0),
+                'product_count': int(summary.product_count or 0),
                 'top_product': _text(product_row[0]) if product_row else "N/A",
                 'warehouses_used': warehouses if warehouses else ["N/A"],
                 'warehouse_count': len(warehouses) or 1,
@@ -508,10 +604,10 @@ class DealerAnalyticsService:
                 'first_order': _date_text(metrics_row[2]) if metrics_row else "N/A",
                 'last_order': _date_text(metrics_row[3]) if metrics_row else "N/A",
                 'latest_pod': _date_text(metrics_row[4]) if metrics_row else "N/A",
-                'latest_activity': _date_text(metrics_row[5]) if metrics_row else "N/A",
+                'latest_activity': _date_text(metrics_row[4]) if metrics_row else "N/A",
             }
             
-            # Calculate business score
+            # Calculate scores
             score = (
                 profile['delivery_pct'] * 0.30 +
                 profile['pod_pct'] * 0.20 +
@@ -537,82 +633,13 @@ class DealerAnalyticsService:
             }
             
         except Exception as e:
-            logger.error(f"❌ Database search error: {e}", exc_info=True)
+            logger.error(f"❌ Error getting dealer details: {e}")
             if session:
                 session.close()
-            return None
-    
-    def _search_in_fallback(self, query: str, query_normalized: str) -> Optional[Dict[str, Any]]:
-        """Search in fallback data"""
-        for key, data in FALLBACK_DEALERS.items():
-            if query_normalized in key or key in query_normalized:
-                # Build profile from fallback data
-                profile = {
-                    'name': data['name'],
-                    'code': data.get('code', ''),
-                    'customer_code': data.get('customer_code', ''),
-                    'office': data.get('office', ''),
-                    'manager': data.get('manager', ''),
-                    'division': data.get('division', ''),
-                    'city': data.get('city', ''),
-                    'warehouse': data.get('warehouse', ''),
-                    'warehouse_code': data.get('warehouse_code', ''),
-                    'revenue': data.get('revenue', 0),
-                    'avg_revenue_per_dn': data.get('avg_revenue_per_dn', 0),
-                    'total_units': data.get('total_units', 0),
-                    'avg_units_per_dn': data.get('avg_units_per_dn', 0),
-                    'total_dn': data.get('total_dn', 0),
-                    'pending_dn': data.get('pending_dn', 0),
-                    'delivered_dn': data.get('delivered_dn', 0),
-                    'delivery_pct': data.get('delivery_pct', 0),
-                    'pgi_pct': data.get('pgi_pct', 0),
-                    'pod_pct': data.get('pod_pct', 0),
-                    'avg_delivery_days': data.get('avg_delivery_days', 0),
-                    'avg_pod_days': data.get('avg_pod_days', 0),
-                    'product_count': data.get('product_count', 0),
-                    'top_product': data.get('top_product', ''),
-                    'warehouses_used': data.get('warehouses_used', []),
-                    'warehouse_count': data.get('warehouse_count', 0),
-                    'cities_served': data.get('cities_served', []),
-                    'city_count': data.get('city_count', 0),
-                    'business_score': data.get('business_score', 0),
-                    'risk_score': data.get('risk_score', 0),
-                    'first_order': data.get('first_order', ''),
-                    'last_order': data.get('last_order', ''),
-                    'latest_pod': data.get('latest_pod', ''),
-                    'latest_activity': data.get('latest_activity', ''),
-                    'insights': data.get('insights', []),
-                    'recommendations': data.get('recommendations', [])
-                }
-                
-                dashboard = self._build_dashboard(profile)
-                
-                return {
-                    'success': True,
-                    'message': f"✅ Dealer found: {profile['name']}",
-                    'profile': profile,
-                    'dashboard': dashboard
-                }
-        
-        return None
-    
-    def _get_dealer_details(self, dealer_name: str) -> Dict[str, Any]:
-        """Get full dealer details by name"""
-        # Try database first
-        if self._db_available:
-            result = self._search_in_database(dealer_name, normalize_text(dealer_name))
-            if result and result['success']:
-                return result
-        
-        # Try fallback
-        result = self._search_in_fallback(dealer_name, normalize_text(dealer_name))
-        if result and result['success']:
-            return result
-        
-        return {
-            'success': False,
-            'message': f"Dealer '{dealer_name}' found but details not available."
-        }
+            return {
+                'success': False,
+                'message': f"Error retrieving dealer details: {str(e)[:100]}"
+            }
     
     def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
         """Get dealer suggestions"""
@@ -620,14 +647,14 @@ class DealerAnalyticsService:
         suggestions = []
         
         # Check cache
-        for key, name in self._dealer_cache.items():
+        for key, data in self._dealer_cache.items():
             if query_lower in key or key in query_lower:
-                if name not in suggestions:
-                    suggestions.append(name)
+                if data['name'] not in suggestions:
+                    suggestions.append(data['name'])
                     if len(suggestions) >= limit:
                         return suggestions
         
-        # Check database if needed
+        # Check database
         if len(suggestions) < limit and self._db_available:
             session = self._get_session()
             if session:
@@ -636,12 +663,18 @@ class DealerAnalyticsService:
                     results = session.query(
                         DeliveryReport.customer_name
                     ).filter(
-                        DeliveryReport.customer_name.ilike(search_pattern)
+                        DeliveryReport.customer_name.ilike(search_pattern),
+                        or_(
+                            DeliveryReport.dealer_code.like('DEAL_%'),
+                            DeliveryReport.customer_name.ilike('%Electronics%'),
+                            DeliveryReport.customer_name.ilike('%Digital%'),
+                            DeliveryReport.customer_name.ilike('%Appliances%')
+                        )
                     ).distinct().limit(limit - len(suggestions)).all()
                     
                     for row in results:
                         name = _text(row.customer_name)
-                        if name and name not in suggestions:
+                        if name and name not in suggestions and len(name) > 3:
                             suggestions.append(name)
                     
                     session.close()
@@ -680,11 +713,6 @@ class DealerAnalyticsService:
         
         if profile['product_count'] > 10:
             insights.append(f"📦 Wide product portfolio: {profile['product_count']} products")
-        
-        if profile['business_score'] >= 85:
-            insights.append("🌟 Excellent overall business health")
-        elif profile['business_score'] < 50:
-            insights.append("⚠️ Critical business health - immediate action required")
         
         if not insights:
             insights.append("📊 Performance is stable. Continue monitoring.")
@@ -918,19 +946,19 @@ __all__ = [
 
 if __name__ == "__main__":
     print("\n" + "=" * 60)
-    print("DEALER ANALYTICS SERVICE - POSTGRESQL TEST".center(60))
+    print("DEALER ANALYTICS SERVICE - TEST MODE".center(60))
     print("=" * 60)
     print()
     
     service = get_dealer_service()
     
-    # Show health status
+    # Show health
     health = service.health_check()
     print(f"📊 Health: {health}")
     print()
     
     # Test queries
-    test_queries = ["arshad", "Arshad", "DEAL_ARSHAD_ELECTRON", "CUST_ARSHAD_ELECTRON"]
+    test_queries = ["arshad", "super trading", "k3 electronics", "zoom"]
     
     for query in test_queries:
         print(f"\n🔍 Testing: '{query}'")
