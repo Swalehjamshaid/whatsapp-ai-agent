@@ -1,11 +1,11 @@
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 50.0 - ENTERPRISE GATEWAY (FIXED SESSION LOCKING)
+# VERSION: 51.0 - ENTERPRISE GATEWAY (ROBUST ERROR HANDLING)
 # ============================================================
 
 """
 File: app/services/ai_provider_service.py
-Version: 50.0 - ENTERPRISE GATEWAY (FIXED SESSION LOCKING)
+Version: 51.0 - ENTERPRISE GATEWAY (ROBUST ERROR HANDLING)
 
 ================================================================================
 PURPOSE
@@ -20,38 +20,14 @@ Its ONLY responsibilities are:
 4. ONLY "__EXIT__" or "99" unlocks the session and returns to Main Dashboard
 
 ================================================================================
-INTEGRATED SERVICES (7 Files)
+FIXES IN V51.0
 ================================================================================
 
-Menu ID | Dashboard Name          | Service File           | Loader Function
---------|-------------------------|------------------------|-------------------------------
-1       | National Dashboard      | national_kpi_service.py| get_national_kpi_service()
-2       | DN Dashboard            | dn_analysis.py (v31.0) | get_dn_analysis_service()
-3       | Dealer Dashboard        | dealer_service.py      | get_dealer_service()
-4       | Warehouse Dashboard     | warehouse_service.py   | get_warehouse_analytics_service()
-5       | Product Dashboard       | product_service.py     | get_product_analytics_service()
-6       | City Dashboard          | city_service.py        | get_city_analytics_service()
-7       | AI Chat                 | groq_service.py        | get_groq_service()
-
-================================================================================
-SESSION LOCKING
-================================================================================
-
-Once a user enters a module:
-- Session is LOCKED
-- ALL messages go directly to that module
-- NO routing occurs
-- Only "__EXIT__" or "99" unlocks
-
-================================================================================
-FIXES IN V50.0
-================================================================================
-
-1. Fixed session locking - session is now properly locked when entering a module
-2. Added debug logging for session state
-3. Fixed async/sync handling
-4. Added better error handling
-5. Fixed module forwarding
+1. Added robust error handling for all service calls
+2. Added fallback responses when services fail
+3. Fixed service loader imports with try/except
+4. Added detailed error logging
+5. Fixed synchronous processing
 
 ================================================================================
 STATUS: ENTERPRISE READY
@@ -65,6 +41,7 @@ import os
 import re
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -203,7 +180,7 @@ class MenuItem:
         return False
 
 # ============================================================
-# BLOCK 4: SERVICE REGISTRY - ALL 7 SERVICES
+# BLOCK 4: SERVICE REGISTRY - ALL 7 SERVICES WITH ERROR HANDLING
 # ============================================================
 
 class ServiceRegistry:
@@ -311,17 +288,33 @@ class ServiceRegistry:
             self._module_map[item.module_type] = item
     
     # ============================================================
-    # LOADER METHODS - All 7 services
+    # LOADER METHODS - All 7 services with error handling
     # ============================================================
+    
+    def _safe_import(self, module_name: str, function_name: str) -> Optional[Any]:
+        """Safely import a module and get a function."""
+        try:
+            module = __import__(module_name, fromlist=[function_name])
+            return getattr(module, function_name, None)
+        except ImportError as e:
+            logger.warning(f"⚠️ Could not import {module_name}: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"⚠️ Error importing {module_name}: {e}")
+            return None
     
     def _load_national_service(self):
         """Load National KPI service."""
         with self._cache_lock:
             if ModuleType.NATIONAL not in self._loader_cache:
                 try:
-                    from app.services.national_kpi_service import get_national_kpi_service
-                    self._loader_cache[ModuleType.NATIONAL] = get_national_kpi_service()
-                    logger.info("✅ National KPI service loaded")
+                    loader = self._safe_import("app.services.national_kpi_service", "get_national_kpi_service")
+                    if loader:
+                        self._loader_cache[ModuleType.NATIONAL] = loader()
+                        logger.info("✅ National KPI service loaded")
+                    else:
+                        self._loader_cache[ModuleType.NATIONAL] = None
+                        logger.warning("⚠️ National KPI service not available")
                 except Exception as e:
                     logger.error(f"❌ National KPI service load failed: {e}")
                     self._loader_cache[ModuleType.NATIONAL] = None
@@ -332,9 +325,13 @@ class ServiceRegistry:
         with self._cache_lock:
             if ModuleType.DN not in self._loader_cache:
                 try:
-                    from app.services.dn_analysis import get_dn_analysis_service
-                    self._loader_cache[ModuleType.DN] = get_dn_analysis_service()
-                    logger.info("✅ DN service loaded (v31.0)")
+                    loader = self._safe_import("app.services.dn_analysis", "get_dn_analysis_service")
+                    if loader:
+                        self._loader_cache[ModuleType.DN] = loader()
+                        logger.info("✅ DN service loaded (v31.0)")
+                    else:
+                        self._loader_cache[ModuleType.DN] = None
+                        logger.warning("⚠️ DN service not available")
                 except Exception as e:
                     logger.error(f"❌ DN service load failed: {e}")
                     self._loader_cache[ModuleType.DN] = None
@@ -345,9 +342,13 @@ class ServiceRegistry:
         with self._cache_lock:
             if ModuleType.DEALER not in self._loader_cache:
                 try:
-                    from app.services.dealer_service import get_dealer_service
-                    self._loader_cache[ModuleType.DEALER] = get_dealer_service()
-                    logger.info("✅ Dealer service loaded")
+                    loader = self._safe_import("app.services.dealer_service", "get_dealer_service")
+                    if loader:
+                        self._loader_cache[ModuleType.DEALER] = loader()
+                        logger.info("✅ Dealer service loaded")
+                    else:
+                        self._loader_cache[ModuleType.DEALER] = None
+                        logger.warning("⚠️ Dealer service not available")
                 except Exception as e:
                     logger.error(f"❌ Dealer service load failed: {e}")
                     self._loader_cache[ModuleType.DEALER] = None
@@ -358,9 +359,13 @@ class ServiceRegistry:
         with self._cache_lock:
             if ModuleType.WAREHOUSE not in self._loader_cache:
                 try:
-                    from app.services.warehouse_service import get_warehouse_analytics_service
-                    self._loader_cache[ModuleType.WAREHOUSE] = get_warehouse_analytics_service()
-                    logger.info("✅ Warehouse service loaded")
+                    loader = self._safe_import("app.services.warehouse_service", "get_warehouse_analytics_service")
+                    if loader:
+                        self._loader_cache[ModuleType.WAREHOUSE] = loader()
+                        logger.info("✅ Warehouse service loaded")
+                    else:
+                        self._loader_cache[ModuleType.WAREHOUSE] = None
+                        logger.warning("⚠️ Warehouse service not available")
                 except Exception as e:
                     logger.error(f"❌ Warehouse service load failed: {e}")
                     self._loader_cache[ModuleType.WAREHOUSE] = None
@@ -371,9 +376,13 @@ class ServiceRegistry:
         with self._cache_lock:
             if ModuleType.PRODUCT not in self._loader_cache:
                 try:
-                    from app.services.product_service import get_product_analytics_service
-                    self._loader_cache[ModuleType.PRODUCT] = get_product_analytics_service()
-                    logger.info("✅ Product service loaded")
+                    loader = self._safe_import("app.services.product_service", "get_product_analytics_service")
+                    if loader:
+                        self._loader_cache[ModuleType.PRODUCT] = loader()
+                        logger.info("✅ Product service loaded")
+                    else:
+                        self._loader_cache[ModuleType.PRODUCT] = None
+                        logger.warning("⚠️ Product service not available")
                 except Exception as e:
                     logger.error(f"❌ Product service load failed: {e}")
                     self._loader_cache[ModuleType.PRODUCT] = None
@@ -384,9 +393,13 @@ class ServiceRegistry:
         with self._cache_lock:
             if ModuleType.CITY not in self._loader_cache:
                 try:
-                    from app.services.city_service import get_city_analytics_service
-                    self._loader_cache[ModuleType.CITY] = get_city_analytics_service()
-                    logger.info("✅ City service loaded")
+                    loader = self._safe_import("app.services.city_service", "get_city_analytics_service")
+                    if loader:
+                        self._loader_cache[ModuleType.CITY] = loader()
+                        logger.info("✅ City service loaded")
+                    else:
+                        self._loader_cache[ModuleType.CITY] = None
+                        logger.warning("⚠️ City service not available")
                 except Exception as e:
                     logger.error(f"❌ City service load failed: {e}")
                     self._loader_cache[ModuleType.CITY] = None
@@ -397,9 +410,13 @@ class ServiceRegistry:
         with self._cache_lock:
             if ModuleType.AI not in self._loader_cache:
                 try:
-                    from app.services.groq_service import get_groq_service
-                    self._loader_cache[ModuleType.AI] = get_groq_service()
-                    logger.info("✅ AI Chat service loaded (Groq)")
+                    loader = self._safe_import("app.services.groq_service", "get_groq_service")
+                    if loader:
+                        self._loader_cache[ModuleType.AI] = loader()
+                        logger.info("✅ AI Chat service loaded (Groq)")
+                    else:
+                        self._loader_cache[ModuleType.AI] = None
+                        logger.warning("⚠️ AI Chat service not available")
                 except Exception as e:
                     logger.error(f"❌ AI Chat service load failed: {e}")
                     self._loader_cache[ModuleType.AI] = None
@@ -441,15 +458,19 @@ class ServiceRegistry:
     
     def get_service_by_text(self, text: str) -> Optional[tuple[MenuItem, Any]]:
         """Get service by text detection."""
-        item = self.detect_menu_item(text)
-        if not item:
+        try:
+            item = self.detect_menu_item(text)
+            if not item:
+                return None
+            
+            service = self.get_service(item.module_type)
+            if not service:
+                return None
+            
+            return (item, service)
+        except Exception as e:
+            logger.error(f"❌ get_service_by_text error: {e}")
             return None
-        
-        service = self.get_service(item.module_type)
-        if not service:
-            return None
-        
-        return (item, service)
 
 # ============================================================
 # BLOCK 5: MAIN GATEWAY SERVICE
@@ -494,7 +515,7 @@ class AIProviderService:
         self._registry = ServiceRegistry()
         
         logger.info("=" * 70)
-        logger.info("🚀 ENTERPRISE GATEWAY v50.0 initialized")
+        logger.info("🚀 ENTERPRISE GATEWAY v51.0 initialized")
         logger.info("   📦 SOLE entry point for all interactions")
         logger.info("   🔒 GENERIC session locking (all modules equal)")
         logger.info("   🔀 Routes to any registered module")
@@ -588,7 +609,11 @@ class AIProviderService:
         - Dashboard names: "National Dashboard", "Warehouse Dashboard"
         - Aliases: "national", "warehouse", "pending dn"
         """
-        return self._registry.get_service_by_text(message)
+        try:
+            return self._registry.get_service_by_text(message)
+        except Exception as e:
+            logger.error(f"❌ Dashboard detection error: {e}")
+            return None
     
     def _forward_to_module(self, session: Session, message: str, sender: str) -> str:
         """Forward message to locked module."""
@@ -626,7 +651,6 @@ class AIProviderService:
             
         except Exception as e:
             logger.error(f"❌ Module {session.module_name} error: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             self._unlock_session(sender)
             return f"⚠️ Service error: {str(e)[:200]}\n\n" + self._get_main_dashboard()
@@ -648,82 +672,99 @@ class AIProviderService:
         6. Detect dashboard → Lock and Route
         7. No detection → Show Main Dashboard
         """
-        if not message or not message.strip():
-            return self._get_main_dashboard()
-        
-        message_clean = message.strip()
-        logger.info(f"📨 Gateway received: '{message_clean}' from {sender}")
-        
-        # Get session
-        session = self._get_session(sender)
-        
-        # ============================================================
-        # STEP 1: CHECK IF SESSION IS LOCKED
-        # ============================================================
-        if session.locked:
-            logger.info(f"🔒 Session LOCKED for {sender} → {session.module_name}")
-            
-            # Check for manual exit (99) at gateway level
-            if message_clean == "99":
-                logger.info(f"🚪 Manual exit (99) requested by {sender}")
-                self._unlock_session(sender)
+        try:
+            if not message or not message.strip():
                 return self._get_main_dashboard()
             
-            # Forward to module
-            return self._forward_to_module(session, message_clean, sender)
-        
-        # ============================================================
-        # STEP 2: SESSION IDLE - CHECK COMMANDS
-        # ============================================================
-        logger.info(f"🔄 Session IDLE for {sender}")
-        
-        # Check for menu commands
-        if message_clean.lower() in ["menu", "help", "options", "dashboard", "main", "0"]:
-            return self._get_main_dashboard()
-        
-        # Check for exit
-        if message_clean == "99":
-            return self._get_main_dashboard()
-        
-        # ============================================================
-        # STEP 3: DETECT DASHBOARD
-        # ============================================================
-        detected = self._detect_dashboard(message_clean)
-        
-        if detected:
-            menu_item, service = detected
-            logger.info(f"🎯 Detected: {menu_item.name} (ID: {menu_item.id})")
+            message_clean = message.strip()
+            logger.info(f"📨 Gateway received: '{message_clean}' from {sender}")
             
-            # CRITICAL: Lock session BEFORE calling service
-            self._lock_session(sender, menu_item, service)
+            # Get session
+            session = self._get_session(sender)
             
-            try:
-                # Forward to service
-                result = service.process_whatsapp_query(message_clean, sender)
+            # ============================================================
+            # STEP 1: CHECK IF SESSION IS LOCKED
+            # ============================================================
+            if session.locked:
+                logger.info(f"🔒 Session LOCKED for {sender} → {session.module_name}")
                 
-                # Check for immediate exit
-                if result == EXIT_SIGNAL or result == "99":
+                # Check for manual exit (99) at gateway level
+                if message_clean == "99":
+                    logger.info(f"🚪 Manual exit (99) requested by {sender}")
                     self._unlock_session(sender)
                     return self._get_main_dashboard()
                 
-                # Update session
-                session = self._get_session(sender)
-                session.update_activity()
-                session.add_history(message_clean, result)
+                # Forward to module
+                return self._forward_to_module(session, message_clean, sender)
+            
+            # ============================================================
+            # STEP 2: SESSION IDLE - CHECK COMMANDS
+            # ============================================================
+            logger.info(f"🔄 Session IDLE for {sender}")
+            
+            # Check for menu commands
+            if message_clean.lower() in ["menu", "help", "options", "dashboard", "main", "0"]:
+                return self._get_main_dashboard()
+            
+            # Check for exit
+            if message_clean == "99":
+                return self._get_main_dashboard()
+            
+            # ============================================================
+            # STEP 3: DETECT DASHBOARD
+            # ============================================================
+            detected = self._detect_dashboard(message_clean)
+            
+            if detected:
+                menu_item, service = detected
+                logger.info(f"🎯 Detected: {menu_item.name} (ID: {menu_item.id})")
                 
-                return result
+                # CRITICAL: Lock session BEFORE calling service
+                self._lock_session(sender, menu_item, service)
                 
-            except Exception as e:
-                logger.error(f"❌ Module {menu_item.name} error: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-                self._unlock_session(sender)
-                return f"⚠️ {menu_item.name} error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
-        
-        # ============================================================
-        # STEP 4: NO DASHBOARD DETECTED - SHOW MAIN DASHBOARD
-        # ============================================================
-        return self._get_out_of_box_response()
+                try:
+                    # Forward to service
+                    result = service.process_whatsapp_query(message_clean, sender)
+                    
+                    # Check for immediate exit
+                    if result == EXIT_SIGNAL or result == "99":
+                        self._unlock_session(sender)
+                        return self._get_main_dashboard()
+                    
+                    # Update session
+                    session = self._get_session(sender)
+                    session.update_activity()
+                    session.add_history(message_clean, result)
+                    
+                    return result
+                    
+                except AttributeError as e:
+                    logger.error(f"❌ AttributeError in {menu_item.name}: {e}")
+                    logger.error(traceback.format_exc())
+                    self._unlock_session(sender)
+                    return f"⚠️ {menu_item.name} is not properly configured.\n\n{self._get_main_dashboard()}"
+                    
+                except TypeError as e:
+                    logger.error(f"❌ TypeError in {menu_item.name}: {e}")
+                    logger.error(traceback.format_exc())
+                    self._unlock_session(sender)
+                    return f"⚠️ {menu_item.name} method signature mismatch.\n\n{self._get_main_dashboard()}"
+                    
+                except Exception as e:
+                    logger.error(f"❌ Module {menu_item.name} error: {e}")
+                    logger.error(traceback.format_exc())
+                    self._unlock_session(sender)
+                    return f"⚠️ {menu_item.name} error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
+            
+            # ============================================================
+            # STEP 4: NO DASHBOARD DETECTED - SHOW MAIN DASHBOARD
+            # ============================================================
+            return self._get_out_of_box_response()
+            
+        except Exception as e:
+            logger.error(f"❌ Gateway error: {e}")
+            logger.error(traceback.format_exc())
+            return f"⚠️ System error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
     
     # ============================================================
     # RESPONSES
@@ -777,7 +818,7 @@ class AIProviderService:
         
         return {
             "service": "ai_provider_service",
-            "version": "50.0",
+            "version": "51.0",
             "type": "enterprise_gateway",
             "status": "healthy",
             "active_sessions": active_sessions,
@@ -850,7 +891,7 @@ def process_whatsapp_query(message: str, sender: str = "default") -> str:
         return service.process_whatsapp_query(message, sender)
     except Exception as e:
         logger.exception(f"Unexpected error: {e}")
-        return "⚠️ Service is temporarily unavailable. Please try again."
+        return "⚠️ Service is temporarily unavailable. Please try again later."
 
 
 # ============================================================
