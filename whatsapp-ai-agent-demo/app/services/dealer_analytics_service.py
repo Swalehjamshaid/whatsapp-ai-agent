@@ -1,159 +1,153 @@
+# ============================================================
+# FILE: app/services/ai_provider_service.py
+# VERSION: 64.0 - CORRECT DN FUNCTION NAME
+# ============================================================
+
 """
-File: app/services/dn_analysis.py
-Version: 31.0 - FIXED CONTEXT MEMORY
+File: app/services/ai_provider_service.py
+Version: 64.0 - CORRECT DN FUNCTION NAME
+
+================================================================================
+FIX: Changed DN function from get_dn_analytics_service to get_dn_analysis_service
+================================================================================
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-import re
 import threading
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional, Dict, List
+from enum import Enum
+from typing import Any, Dict, List, Optional, Callable
 
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# DATABASE IMPORTS
+# CONFIGURATION
 # ============================================================
 
-try:
-    from sqlalchemy import func, or_, desc
-    from sqlalchemy.orm import Session
-    from app.database import SessionLocal
-    from app.models import DeliveryReport
-    DB_AVAILABLE = True
-except ImportError:
-    DB_AVAILABLE = False
-    logger.warning("⚠️ Database not available")
+SESSION_TIMEOUT_SECONDS = int(os.getenv("SESSION_TIMEOUT_SECONDS", "1800"))  # 30 minutes
+EXIT_SIGNAL = "__EXIT__"
 
 # ============================================================
-# DATACLASSES
+# ENUMS
+# ============================================================
+
+class ModuleType(Enum):
+    """Available domain modules - EXACTLY 7"""
+    NATIONAL = "national"
+    DN = "dn"
+    DEALER = "dealer"
+    WAREHOUSE = "warehouse"
+    PRODUCT = "product"
+    CITY = "city"
+    AI = "ai"
+
+# ============================================================
+# DATA CLASSES
 # ============================================================
 
 @dataclass
-class DNContext:
-    """DN session context"""
-    current_dn: Optional[str] = None
-    in_menu: bool = False
-    last_command: Optional[str] = None
+class Session:
+    """Session state for a user."""
+    sender: str
+    locked: bool = False
+    module_type: Optional[ModuleType] = None
+    module_name: Optional[str] = None
+    file_name: Optional[str] = None
+    menu_id: Optional[int] = None
+    service_instance: Optional[Any] = None
+    entered_at: Optional[datetime] = None
+    last_activity: datetime = field(default_factory=datetime.now)
+    history: List[Dict[str, Any]] = field(default_factory=list)
+    
+    def update_activity(self):
+        self.last_activity = datetime.now()
+    
+    def is_expired(self, timeout_seconds: int = SESSION_TIMEOUT_SECONDS) -> bool:
+        elapsed = (datetime.now() - self.last_activity).total_seconds()
+        return elapsed > timeout_seconds
+    
+    def add_history(self, query: str, response: str):
+        self.history.append({
+            "query": query,
+            "response": response[:200] if len(response) > 200 else response,
+            "timestamp": datetime.now().isoformat()
+        })
+        if len(self.history) > 100:
+            self.history = self.history[-100:]
+    
+    def lock(self, module_type: ModuleType, module_name: str, file_name: str, 
+             menu_id: int, service_instance: Any):
+        self.locked = True
+        self.module_type = module_type
+        self.module_name = module_name
+        self.file_name = file_name
+        self.menu_id = menu_id
+        self.service_instance = service_instance
+        self.entered_at = datetime.now()
+        self.update_activity()
+        logger.info(f"🔒 Session LOCKED: {self.sender} → {module_name}")
+    
+    def unlock(self):
+        old_module = self.module_name
+        self.locked = False
+        self.module_type = None
+        self.module_name = None
+        self.file_name = None
+        self.menu_id = None
+        self.service_instance = None
+        self.entered_at = None
+        self.update_activity()
+        logger.info(f"🔓 Session UNLOCKED: {self.sender} from {old_module}")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "sender": self.sender,
+            "locked": self.locked,
+            "module_type": self.module_type.value if self.module_type else None,
+            "module_name": self.module_name,
+            "file_name": self.file_name,
+            "menu_id": self.menu_id,
+            "entered_at": self.entered_at.isoformat() if self.entered_at else None,
+            "last_activity": self.last_activity.isoformat(),
+            "history_count": len(self.history),
+            "is_expired": self.is_expired()
+        }
 
-# ============================================================
-# UTILITY FUNCTIONS
-# ============================================================
-
-def _text(value: Any, default: str = "N/A") -> str:
-    if value is None:
-        return default
-    return str(value).strip() or default
-
-def _extract_dn(text: str) -> Optional[str]:
-    match = re.search(r'\b(\d{8,12})\b', text)
-    return match.group(1) if match else None
-
-def _is_valid_dn(dn: str) -> bool:
-    if not dn:
+@dataclass
+class MenuItem:
+    """Menu item configuration - EXACTLY 7"""
+    id: int
+    name: str
+    aliases: List[str]
+    module_type: ModuleType
+    file: str
+    loader: Callable
+    
+    def matches(self, text: str) -> bool:
+        text_lower = text.strip().lower()
+        if text_lower == str(self.id):
+            return True
+        if text_lower == self.name.lower():
+            return True
+        for alias in self.aliases:
+            if text_lower == alias.lower():
+                return True
+            if alias.lower() in text_lower:
+                return True
         return False
-    cleaned = re.sub(r'[\s-]', '', dn)
-    return cleaned.isdigit() and 8 <= len(cleaned) <= 12
 
 # ============================================================
-# MENU RENDERER
+# SERVICE REGISTRY - ALL 7 SERVICES WITH CORRECT NAMES
 # ============================================================
 
-class DNMenuRenderer:
-    @staticmethod
-    def render_main_menu() -> str:
-        return "\n".join([
-            "📦 *DN ANALYTICS MENU*",
-            "",
-            "0. Main Menu",
-            "1. DN Dashboard",
-            "2. Pending DN",
-            "3. Search DN",
-            "99. Back to Main",
-            "",
-            "📌 *Quick Commands:*",
-            "• Type DN number for dashboard",
-            "• pending - Show pending DNs",
-            "• search [keyword] - Search DNs",
-            "",
-            "Reply with a number or DN number:"
-        ])
-    
-    @staticmethod
-    def render_dn_dashboard(data: Dict[str, Any]) -> str:
-        dn_no = data.get('dn_no', 'N/A')
-        return "\n".join([
-            f"📦 *DN Dashboard - {dn_no}*",
-            "",
-            "📊 *Key Information*",
-            f"Division: {data.get('division', 'N/A')}",
-            f"Order Type: {data.get('order_type', 'N/A')}",
-            f"Customer Code: {data.get('customer_code', 'N/A')}",
-            f"Dealer: {data.get('dealer', 'N/A')}",
-            f"DN Work: {data.get('dn_work', 'N/A')}",
-            "",
-            "0. Main Menu",
-            "99. Back"
-        ])
-    
-    @staticmethod
-    def render_pending_list(items: List[Dict[str, Any]]) -> str:
-        if not items:
-            return "📋 *Pending DNs*\n\n✅ No pending DNs found.\n\n0. Main Menu\n99. Back"
-        
-        lines = ["📋 *Pending DNs*", ""]
-        lines.append(f"Total: {len(items)}")
-        lines.append("")
-        
-        for i, item in enumerate(items[:15], 1):
-            dn_no = item.get('dn_no', 'N/A')
-            customer = item.get('customer_name', item.get('customer_code', 'N/A'))
-            status = item.get('delivery_status', 'Pending')
-            days = item.get('pending_days', 0)
-            lines.append(f"{i}. 📊 *DN {dn_no}*")
-            lines.append(f"   Customer: {customer}")
-            lines.append(f"   Status: {status}")
-            if days > 0:
-                lines.append(f"   Pending: {days} Days")
-            lines.append("")
-        
-        if len(items) > 15:
-            lines.append(f"... and {len(items) - 15} more")
-        
-        lines.extend(["", "0. Main Menu", "99. Back"])
-        return "\n".join(lines)
-    
-    @staticmethod
-    def render_search_results(query: str, items: List[Dict[str, Any]]) -> str:
-        if not items:
-            return f"🔍 No results found for '{query}'\n\n0. Main Menu\n99. Back"
-        
-        lines = [f"🔍 *Search Results for '{query}'*", ""]
-        lines.append(f"Found: {len(items)} DNs")
-        lines.append("")
-        
-        for i, item in enumerate(items[:15], 1):
-            dn_no = item.get('dn_no', 'N/A')
-            customer = item.get('customer_name', item.get('customer_code', 'N/A'))
-            status = item.get('delivery_status', 'Pending')
-            lines.append(f"{i}. *DN {dn_no}* - {customer} ({status})")
-        
-        if len(items) > 15:
-            lines.append(f"... and {len(items) - 15} more")
-        
-        lines.extend(["", "0. Main Menu", "99. Back"])
-        return "\n".join(lines)
-
-# ============================================================
-# MAIN DN SERVICE
-# ============================================================
-
-class DNAnalysisService:
-    _instance: Optional["DNAnalysisService"] = None
+class ServiceRegistry:
+    _instance: Optional["ServiceRegistry"] = None
     _lock = threading.Lock()
     
     def __new__(cls):
@@ -168,608 +162,488 @@ class DNAnalysisService:
             return
         
         self._initialized = True
-        self._service_name = "dn_analysis"
-        self._version = "31.0"
-        self._menu_renderer = DNMenuRenderer()
+        self._menu_items: List[MenuItem] = []
+        self._module_map: Dict[ModuleType, MenuItem] = {}
+        self._loader_cache: Dict[ModuleType, Any] = {}
+        self._cache_lock = threading.RLock()
         
-        # Context memory per session
-        self._contexts: Dict[str, DNContext] = {}
-        self._context_lock = threading.RLock()
+        self._register_all_modules()
         
-        logger.info("=" * 60)
-        logger.info("🚀 DN Service v31.0 initialized")
-        logger.info(f"   🗄️  Database: {'Connected' if DB_AVAILABLE else 'Fallback'}")
-        logger.info("=" * 60)
+        logger.info(f"📦 Service Registry initialized with {len(self._menu_items)} modules")
     
-    def _get_context(self, session_id: str) -> DNContext:
-        """Get or create context for session"""
-        with self._context_lock:
-            if session_id not in self._contexts:
-                self._contexts[session_id] = DNContext()
-            return self._contexts[session_id]
+    def _register_all_modules(self):
+        """Register ALL 7 modules with correct import paths."""
+        
+        # Define all 7 modules
+        module_defs = [
+            {
+                "id": 1,
+                "name": "National Dashboard",
+                "aliases": ["national", "national kpi", "kpi", "pakistan", "overall"],
+                "module_type": ModuleType.NATIONAL,
+                "file": "national_kpi_service.py",
+                "import_path": "app.services.national_kpi_service",
+                "function": "get_national_kpi_service"
+            },
+            {
+                "id": 2,
+                "name": "DN Intelligence Center",
+                "aliases": ["dn", "dn dashboard", "dn intelligence", "delivery", "delivery note", "pending dn"],
+                "module_type": ModuleType.DN,
+                "file": "dn_analysis.py",
+                "import_path": "app.services.dn_analysis",
+                "function": "get_dn_analysis_service"  # ← CORRECT FUNCTION NAME
+            },
+            {
+                "id": 3,
+                "name": "Dealer Dashboard",
+                "aliases": ["dealer", "dealer dashboard", "dealer analytics", "distributor"],
+                "module_type": ModuleType.DEALER,
+                "file": "dealer_analytics_service.py",
+                "import_path": "app.services.dealer_analytics_service",
+                "function": "get_dealer_service"
+            },
+            {
+                "id": 4,
+                "name": "Warehouse Dashboard",
+                "aliases": ["warehouse", "warehouse dashboard", "warehouse analytics", "warehouse report"],
+                "module_type": ModuleType.WAREHOUSE,
+                "file": "warehouse_service.py",
+                "import_path": "app.services.warehouse_service",
+                "function": "get_warehouse_analytics_service"
+            },
+            {
+                "id": 5,
+                "name": "Product Dashboard",
+                "aliases": ["product", "product dashboard", "material", "sku", "model"],
+                "module_type": ModuleType.PRODUCT,
+                "file": "product_service.py",
+                "import_path": "app.services.product_service",
+                "function": "get_product_analytics_service"
+            },
+            {
+                "id": 6,
+                "name": "City Dashboard",
+                "aliases": ["city", "city dashboard", "location", "region"],
+                "module_type": ModuleType.CITY,
+                "file": "city_service.py",
+                "import_path": "app.services.city_service",
+                "function": "get_city_analytics_service"
+            },
+            {
+                "id": 7,
+                "name": "AI Assistant",
+                "aliases": ["ai", "assistant", "general ai", "chat", "help"],
+                "module_type": ModuleType.AI,
+                "file": "groq_service.py",
+                "import_path": "app.services.groq_service",
+                "function": "get_groq_service"
+            },
+        ]
+        
+        for mod in module_defs:
+            try:
+                logger.info(f"🔍 Registering: {mod['name']}...")
+                
+                # Try to import the module
+                module = __import__(mod['import_path'], fromlist=[mod['function']])
+                loader_func = getattr(module, mod['function'], None)
+                
+                if loader_func:
+                    menu_item = MenuItem(
+                        id=mod['id'],
+                        name=mod['name'],
+                        aliases=mod['aliases'],
+                        module_type=mod['module_type'],
+                        file=mod['file'],
+                        loader=loader_func
+                    )
+                    self._menu_items.append(menu_item)
+                    self._module_map[mod['module_type']] = menu_item
+                    logger.info(f"✅ Registered: {mod['id']}. {mod['name']} → {mod['file']}")
+                else:
+                    logger.warning(f"⚠️ Skipping: {mod['name']} - function {mod['function']} not found")
+                    
+            except ImportError as e:
+                logger.warning(f"⚠️ Skipping: {mod['name']} - module not found: {e}")
+            except Exception as e:
+                logger.warning(f"⚠️ Skipping: {mod['name']} - error: {e}")
     
-    @staticmethod
-    def _get_session() -> Optional[Session]:
-        if not DB_AVAILABLE:
+    def get_menu_items(self) -> List[MenuItem]:
+        return self._menu_items
+    
+    def detect_menu_item(self, text: str) -> Optional[MenuItem]:
+        text_clean = text.strip()
+        for item in self._menu_items:
+            if item.matches(text_clean):
+                return item
+        return None
+    
+    def get_service(self, module_type: ModuleType) -> Optional[Any]:
+        item = self._module_map.get(module_type)
+        if not item:
             return None
+        
+        if module_type in self._loader_cache:
+            return self._loader_cache[module_type]
+        
         try:
-            return SessionLocal()
+            service = item.loader()
+            self._loader_cache[module_type] = service
+            logger.info(f"✅ Service loaded: {item.name}")
+            return service
         except Exception as e:
-            logger.error(f"Database session error: {e}")
+            logger.error(f"❌ Failed to load {item.name}: {e}")
+            self._loader_cache[module_type] = None
             return None
     
-    def get_main_menu(self) -> str:
-        return self._menu_renderer.render_main_menu()
-    
-    def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
-        if not message or not message.strip():
-            return self.get_main_menu()
-        
-        message_clean = message.strip()
-        logger.info(f"📦 DN Service: '{message_clean}' from {sender}")
-        
-        # Get context for this session
-        context = self._get_context(sender)
-        
-        # ============================================================
-        # STEP 1: Check for "99" - Exit
-        # ============================================================
-        if message_clean == "99":
-            # Clear context when exiting
-            context.current_dn = None
-            context.in_menu = False
-            return "99"
-        
-        # ============================================================
-        # STEP 2: Check for menu commands
-        # ============================================================
-        if message_clean.lower() in ["menu", "help", "options", "0"]:
-            context.in_menu = True
-            return self.get_main_menu()
-        
-        # ============================================================
-        # STEP 3: Check for menu options (1, 2, 3)
-        # ============================================================
-        if message_clean in ["1", "2", "3"]:
-            return self._handle_menu_option(sender, message_clean)
-        
-        # ============================================================
-        # STEP 4: Check for DN number (8-12 digits)
-        # ============================================================
-        dn = _extract_dn(message_clean)
-        if dn and _is_valid_dn(dn):
-            # Store this DN as the current context
-            context.current_dn = dn
-            return self._get_dn_dashboard(sender, dn)
-        
-        # ============================================================
-        # STEP 5: Check for "pending" command
-        # ============================================================
-        if message_clean.lower() in ["pending", "pending dn", "pending dns"]:
-            return self._get_pending_dns(sender)
-        
-        # ============================================================
-        # STEP 6: Check for "search" command
-        # ============================================================
-        if "search" in message_clean.lower():
-            query = message_clean.replace("search", "").strip()
-            if query:
-                return self._search_dns(sender, query)
-            return "🔍 Please specify what to search.\n\n0. Main Menu\n99. Back"
-        
-        # ============================================================
-        # STEP 7: Check if it's a follow-up question using current DN
-        # ============================================================
-        if context.current_dn:
-            # Check for status, revenue, units, customer, dealer commands
-            query_lower = message_clean.lower()
+    def get_service_by_text(self, text: str) -> Optional[tuple[MenuItem, Any]]:
+        try:
+            item = self.detect_menu_item(text)
+            if not item:
+                return None
             
-            if "status" in query_lower or "track" in query_lower:
-                return self._get_dn_status(sender, context.current_dn)
-            elif "revenue" in query_lower or "amount" in query_lower:
-                return self._get_dn_revenue(sender, context.current_dn)
-            elif "units" in query_lower or "quantity" in query_lower:
-                return self._get_dn_units(sender, context.current_dn)
-            elif "customer" in query_lower:
-                return self._get_dn_customer(sender, context.current_dn)
-            elif "dealer" in query_lower:
-                return self._get_dn_dealer(sender, context.current_dn)
-            elif "division" in query_lower:
-                return self._get_dn_division(sender, context.current_dn)
-            elif "order" in query_lower:
-                return self._get_dn_order_type(sender, context.current_dn)
-            elif "work" in query_lower:
-                return self._get_dn_work(sender, context.current_dn)
-        
-        # ============================================================
-        # STEP 8: Unknown - Show help
-        # ============================================================
-        return self._show_help()
+            service = self.get_service(item.module_type)
+            if not service:
+                return None
+            
+            return (item, service)
+        except Exception as e:
+            logger.error(f"❌ get_service_by_text error: {e}")
+            return None
+
+# ============================================================
+# MAIN GATEWAY SERVICE
+# ============================================================
+
+class AIProviderService:
+    _instance: Optional["AIProviderService"] = None
+    _lock = threading.Lock()
+    _initialized = False
     
-    def _show_help(self) -> str:
-        """Show help message"""
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def __init__(self):
+        if AIProviderService._initialized:
+            return
+        
+        self._initialized = True
+        
+        self._sessions: Dict[str, Session] = {}
+        self._session_lock = threading.RLock()
+        self._registry = ServiceRegistry()
+        
+        logger.info("=" * 70)
+        logger.info("🚀 ENTERPRISE GATEWAY v64.0 initialized")
+        logger.info(f"   📦 Registered {len(self._registry.get_menu_items())} services")
+        logger.info("   🔒 Session Locking: ✅")
+        logger.info("   🔀 Routes to 7 modules")
+        logger.info("   🌐 Async compatible")
+        logger.info("=" * 70)
+        
+        for item in self._registry.get_menu_items():
+            logger.info(f"   {item.id}. {item.name} → {item.file}")
+    
+    # ============================================================
+    # SESSION MANAGEMENT
+    # ============================================================
+    
+    def _get_session(self, sender: str) -> Session:
+        with self._session_lock:
+            if sender not in self._sessions:
+                self._sessions[sender] = Session(sender=sender)
+                logger.info(f"🆕 New session created for {sender}")
+                return self._sessions[sender]
+            
+            session = self._sessions[sender]
+            if session.is_expired():
+                logger.info(f"⏰ Session expired for {sender}, creating new")
+                del self._sessions[sender]
+                session = Session(sender=sender)
+                self._sessions[sender] = session
+            
+            return session
+    
+    def _lock_session(self, sender: str, menu_item: MenuItem, service_instance: Any) -> bool:
+        with self._session_lock:
+            session = self._get_session(sender)
+            session.lock(
+                module_type=menu_item.module_type,
+                module_name=menu_item.name,
+                file_name=menu_item.file,
+                menu_id=menu_item.id,
+                service_instance=service_instance
+            )
+            return True
+    
+    def _unlock_session(self, sender: str) -> bool:
+        with self._session_lock:
+            if sender not in self._sessions:
+                return False
+            session = self._sessions[sender]
+            session.unlock()
+            return True
+    
+    def _is_locked(self, sender: str) -> bool:
+        with self._session_lock:
+            if sender not in self._sessions:
+                return False
+            return self._sessions[sender].locked
+    
+    # ============================================================
+    # ROUTING
+    # ============================================================
+    
+    def _detect_dashboard(self, message: str) -> Optional[tuple[MenuItem, Any]]:
+        try:
+            return self._registry.get_service_by_text(message)
+        except Exception as e:
+            logger.error(f"❌ Dashboard detection error: {e}")
+            return None
+    
+    def _forward_to_module(self, session: Session, message: str, sender: str) -> str:
+        if not session.service_instance:
+            logger.error(f"❌ No service instance for {session.module_name}")
+            self._unlock_session(sender)
+            return self._get_main_dashboard()
+        
+        service = session.service_instance
+        
+        if not hasattr(service, "process_whatsapp_query"):
+            logger.error(f"❌ Service {session.module_name} missing process_whatsapp_query")
+            self._unlock_session(sender)
+            return "⚠️ Service is misconfigured.\n\n" + self._get_main_dashboard()
+        
+        try:
+            logger.info(f"📤 Forwarding to {session.module_name}: '{message}'")
+            result = service.process_whatsapp_query(message, sender)
+            
+            # Check for exit signal
+            if result == EXIT_SIGNAL or result == "99":
+                logger.info(f"🚪 Module {session.module_name} requested exit")
+                self._unlock_session(sender)
+                return self._get_main_dashboard()
+            
+            session.update_activity()
+            session.add_history(message, result)
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Module {session.module_name} error: {e}")
+            logger.error(traceback.format_exc())
+            self._unlock_session(sender)
+            return f"⚠️ Service error: {str(e)[:200]}\n\n" + self._get_main_dashboard()
+    
+    # ============================================================
+    # MAIN PROCESSING - SYNC ENTRY POINT
+    # ============================================================
+    
+    def process_whatsapp_query_sync(self, message: str, sender: str = "default") -> str:
+        """SYNC entry point - for internal use."""
+        try:
+            logger.info(f"📨 Gateway (sync) received: '{message}' from {sender}")
+            
+            if not message or not message.strip():
+                return self._get_main_dashboard()
+            
+            message_clean = message.strip()
+            session = self._get_session(sender)
+            
+            # STEP 1: CHECK IF SESSION IS LOCKED
+            if session.locked:
+                logger.info(f"🔒 Session LOCKED for {sender} → {session.module_name}")
+                
+                if message_clean == "99":
+                    logger.info(f"🚪 Manual exit (99) requested by {sender}")
+                    self._unlock_session(sender)
+                    return self._get_main_dashboard()
+                
+                return self._forward_to_module(session, message_clean, sender)
+            
+            # STEP 2: SESSION IDLE - CHECK COMMANDS
+            logger.info(f"🔄 Session IDLE for {sender}")
+            
+            if message_clean.lower() in ["menu", "help", "options", "dashboard", "main", "0"]:
+                return self._get_main_dashboard()
+            
+            # STEP 3: DETECT DASHBOARD
+            detected = self._detect_dashboard(message_clean)
+            
+            if detected:
+                menu_item, service = detected
+                logger.info(f"🎯 Detected: {menu_item.name} (ID: {menu_item.id})")
+                
+                self._lock_session(sender, menu_item, service)
+                
+                try:
+                    result = service.process_whatsapp_query(message_clean, sender)
+                    
+                    if result == EXIT_SIGNAL or result == "99":
+                        logger.info(f"🚪 Immediate exit from {menu_item.name}")
+                        self._unlock_session(sender)
+                        return self._get_main_dashboard()
+                    
+                    session = self._get_session(sender)
+                    session.update_activity()
+                    session.add_history(message_clean, result)
+                    return result
+                    
+                except Exception as e:
+                    logger.error(f"❌ Module {menu_item.name} error: {e}")
+                    logger.error(traceback.format_exc())
+                    self._unlock_session(sender)
+                    return f"⚠️ {menu_item.name} error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
+            
+            # STEP 4: NO DASHBOARD DETECTED
+            return self._get_out_of_box_response()
+            
+        except Exception as e:
+            logger.error(f"❌ Gateway error: {e}")
+            logger.error(traceback.format_exc())
+            return f"⚠️ System error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
+    
+    # ============================================================
+    # ASYNC ENTRY POINT - FOR WEBHOOK
+    # ============================================================
+    
+    async def process_whatsapp_query_async(self, message: str, sender: str = "default") -> str:
+        """
+        ASYNC entry point - Called by webhook.
+        """
+        try:
+            logger.info(f"📨 Gateway (async) received: '{message}' from {sender}")
+            
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                self.process_whatsapp_query_sync,
+                message,
+                sender
+            )
+            
+            logger.info(f"📤 Gateway (async) returning: {result[:100] if result else 'Empty'}...")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Gateway (async) error: {e}")
+            logger.error(traceback.format_exc())
+            return "⚠️ Service is temporarily unavailable. Please try again later."
+    
+    # ============================================================
+    # RESPONSES
+    # ============================================================
+    
+    def _get_main_dashboard(self) -> str:
+        lines = ["🏠 *HPK Logistics AI*", ""]
+        
+        # Show ALL registered modules in order
+        for item in self._registry.get_menu_items():
+            lines.append(f"{item.id}️⃣ {item.name}")
+        
+        lines.extend([
+            "",
+            "📌 *Commands:*",
+            "• Type a number (1-7) to enter a dashboard",
+            "• Type dashboard name (e.g., 'Warehouse Dashboard')",
+            "• Type '99' to exit current dashboard",
+            "• Type 'menu' or 'help' for this menu",
+            "",
+            "Reply with a number or dashboard name:"
+        ])
+        
+        return "\n".join(lines)
+    
+    def _get_out_of_box_response(self) -> str:
         return "\n".join([
-            "❌ I didn't understand that.",
+            "❌ *Please select a valid option from the menu.*",
             "",
-            "💡 *DN Commands:*",
-            "• Type a DN number (8-12 digits) for dashboard",
-            "• pending - Show pending DNs",
-            "• search [keyword] - Search DNs",
-            "• status - Status of current DN",
-            "• revenue - Revenue of current DN",
-            "• units - Units of current DN",
-            "• customer - Customer of current DN",
-            "• dealer - Dealer of current DN",
+            "You can enter a dashboard by:",
+            "• Number (1-7)",
+            "• Dashboard name (e.g., 'Warehouse Dashboard')",
             "",
-            "📌 *Current DN:*",
-            "• Use 'menu' to see all options",
-            "• Type '99' to return to main menu",
-            "",
-            "0. Main Menu",
-            "99. Back"
+            self._get_main_dashboard()
         ])
     
-    def _handle_menu_option(self, sender: str, option: str) -> str:
-        """Handle menu options"""
-        if option == "1":
-            return "🔍 *Enter DN number:*\n\nType an 8-12 digit DN number.\n\n0. Main Menu\n99. Back"
-        elif option == "2":
-            return self._get_pending_dns(sender)
-        elif option == "3":
-            return "🔍 *Search DNs:*\n\nType 'search [keyword]' to find DNs.\n\nExamples:\n• search Lahore\n• search 6243700919\n• search LALA KHAN\n\n0. Main Menu\n99. Back"
-        return self.get_main_menu()
-    
-    def _get_dn_dashboard(self, sender: str, dn_no: str) -> str:
-        """Get DN dashboard"""
-        session = self._get_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            result = session.query(
-                DeliveryReport.dn_no,
-                DeliveryReport.division,
-                DeliveryReport.order_type,
-                DeliveryReport.customer_code,
-                DeliveryReport.customer_name,
-                DeliveryReport.dealer,
-                DeliveryReport.dealer_code,
-                DeliveryReport.dn_work,
-                DeliveryReport.delivery_status,
-                DeliveryReport.dn_create_date,
-            ).filter(
-                DeliveryReport.dn_no == dn_no
-            ).first()
-            
-            session.close()
-            
-            if not result:
-                return f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu\n99. Back"
-            
-            data = {
-                'dn_no': _text(result.dn_no),
-                'division': _text(result.division),
-                'order_type': _text(result.order_type),
-                'customer_code': _text(result.customer_code),
-                'customer_name': _text(result.customer_name),
-                'dealer': _text(result.dealer),
-                'dealer_code': _text(result.dealer_code),
-                'dn_work': _text(result.dn_work),
-                'delivery_status': _text(result.delivery_status, 'Pending'),
-            }
-            
-            return self._menu_renderer.render_dn_dashboard(data)
-            
-        except Exception as e:
-            logger.error(f"Dashboard error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching DN {dn_no}\n\n0. Main Menu\n99. Back"
-    
-    def _get_dn_status(self, sender: str, dn_no: str) -> str:
-        """Get DN status"""
-        session = self._get_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            result = session.query(
-                DeliveryReport.delivery_status,
-                DeliveryReport.dn_create_date,
-                DeliveryReport.customer_name,
-            ).filter(
-                DeliveryReport.dn_no == dn_no
-            ).first()
-            
-            session.close()
-            
-            if not result:
-                return f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu\n99. Back"
-            
-            return "\n".join([
-                f"📊 *DN {dn_no} - Status*",
-                "",
-                f"Status: {_text(result.delivery_status, 'Pending')}",
-                f"Created: {_text(result.dn_create_date, 'N/A')}",
-                f"Customer: {_text(result.customer_name)}",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ])
-            
-        except Exception as e:
-            logger.error(f"Status error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching status for DN {dn_no}\n\n0. Main Menu\n99. Back"
-    
-    def _get_dn_revenue(self, sender: str, dn_no: str) -> str:
-        """Get DN revenue"""
-        session = self._get_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            result = session.query(
-                DeliveryReport.dn_amount,
-            ).filter(
-                DeliveryReport.dn_no == dn_no
-            ).first()
-            
-            session.close()
-            
-            if not result:
-                return f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu\n99. Back"
-            
-            amount = result.dn_amount or 0
-            return f"💰 *DN {dn_no} Revenue*\n\nPKR {amount:,.2f}\n\n0. Main Menu\n99. Back"
-            
-        except Exception as e:
-            logger.error(f"Revenue error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching revenue for DN {dn_no}\n\n0. Main Menu\n99. Back"
-    
-    def _get_dn_units(self, sender: str, dn_no: str) -> str:
-        """Get DN units"""
-        session = self._get_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            result = session.query(
-                DeliveryReport.dn_qty,
-            ).filter(
-                DeliveryReport.dn_no == dn_no
-            ).first()
-            
-            session.close()
-            
-            if not result:
-                return f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu\n99. Back"
-            
-            qty = result.dn_qty or 0
-            return f"📦 *DN {dn_no} Units*\n\n{qty:,}\n\n0. Main Menu\n99. Back"
-            
-        except Exception as e:
-            logger.error(f"Units error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching units for DN {dn_no}\n\n0. Main Menu\n99. Back"
-    
-    def _get_dn_customer(self, sender: str, dn_no: str) -> str:
-        """Get DN customer"""
-        session = self._get_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            result = session.query(
-                DeliveryReport.customer_name,
-                DeliveryReport.customer_code,
-            ).filter(
-                DeliveryReport.dn_no == dn_no
-            ).first()
-            
-            session.close()
-            
-            if not result:
-                return f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu\n99. Back"
-            
-            return "\n".join([
-                f"👤 *Customer - DN {dn_no}*",
-                "",
-                f"Name: {_text(result.customer_name)}",
-                f"Code: {_text(result.customer_code)}",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ])
-            
-        except Exception as e:
-            logger.error(f"Customer error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching customer for DN {dn_no}\n\n0. Main Menu\n99. Back"
-    
-    def _get_dn_dealer(self, sender: str, dn_no: str) -> str:
-        """Get DN dealer"""
-        session = self._get_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            result = session.query(
-                DeliveryReport.dealer,
-                DeliveryReport.dealer_code,
-            ).filter(
-                DeliveryReport.dn_no == dn_no
-            ).first()
-            
-            session.close()
-            
-            if not result:
-                return f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu\n99. Back"
-            
-            return "\n".join([
-                f"🏪 *Dealer - DN {dn_no}*",
-                "",
-                f"Name: {_text(result.dealer)}",
-                f"Code: {_text(result.dealer_code)}",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ])
-            
-        except Exception as e:
-            logger.error(f"Dealer error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching dealer for DN {dn_no}\n\n0. Main Menu\n99. Back"
-    
-    def _get_dn_division(self, sender: str, dn_no: str) -> str:
-        """Get DN division"""
-        session = self._get_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            result = session.query(
-                DeliveryReport.division,
-            ).filter(
-                DeliveryReport.dn_no == dn_no
-            ).first()
-            
-            session.close()
-            
-            if not result:
-                return f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu\n99. Back"
-            
-            return "\n".join([
-                f"📊 *Division - DN {dn_no}*",
-                "",
-                f"Division: {_text(result.division)}",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ])
-            
-        except Exception as e:
-            logger.error(f"Division error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching division for DN {dn_no}\n\n0. Main Menu\n99. Back"
-    
-    def _get_dn_order_type(self, sender: str, dn_no: str) -> str:
-        """Get DN order type"""
-        session = self._get_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            result = session.query(
-                DeliveryReport.order_type,
-            ).filter(
-                DeliveryReport.dn_no == dn_no
-            ).first()
-            
-            session.close()
-            
-            if not result:
-                return f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu\n99. Back"
-            
-            return "\n".join([
-                f"📋 *Order Type - DN {dn_no}*",
-                "",
-                f"Type: {_text(result.order_type)}",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ])
-            
-        except Exception as e:
-            logger.error(f"Order type error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching order type for DN {dn_no}\n\n0. Main Menu\n99. Back"
-    
-    def _get_dn_work(self, sender: str, dn_no: str) -> str:
-        """Get DN work"""
-        session = self._get_session()
-        if not session:
-            return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            result = session.query(
-                DeliveryReport.dn_work,
-            ).filter(
-                DeliveryReport.dn_no == dn_no
-            ).first()
-            
-            session.close()
-            
-            if not result:
-                return f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu\n99. Back"
-            
-            return "\n".join([
-                f"📝 *DN Work - DN {dn_no}*",
-                "",
-                f"Work: {_text(result.dn_work)}",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ])
-            
-        except Exception as e:
-            logger.error(f"Work error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error fetching work for DN {dn_no}\n\n0. Main Menu\n99. Back"
-    
-    def _get_pending_dns(self, sender: str) -> str:
-        """Get pending DNs"""
-        session = self._get_session()
-        if not session:
-            return "⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            from datetime import date, timedelta
-            
-            results = session.query(
-                DeliveryReport.dn_no,
-                DeliveryReport.customer_name,
-                DeliveryReport.customer_code,
-                DeliveryReport.delivery_status,
-                DeliveryReport.dn_create_date,
-            ).filter(
-                or_(
-                    DeliveryReport.pending_flag.is_(True),
-                    DeliveryReport.pod_date.is_(None)
-                )
-            ).order_by(
-                desc(DeliveryReport.dn_create_date)
-            ).limit(30).all()
-            
-            items = []
-            today = date.today()
-            for row in results:
-                days = (today - row.dn_create_date).days if row.dn_create_date else 0
-                items.append({
-                    'dn_no': _text(row.dn_no),
-                    'customer_name': _text(row.customer_name, row.customer_code),
-                    'customer_code': _text(row.customer_code),
-                    'delivery_status': _text(row.delivery_status, 'Pending'),
-                    'pending_days': days,
-                })
-            
-            session.close()
-            return self._menu_renderer.render_pending_list(items)
-            
-        except Exception as e:
-            logger.error(f"Pending error: {e}")
-            if session:
-                session.close()
-            return "⚠️ Error fetching pending DNs.\n\n0. Main Menu\n99. Back"
-    
-    def _search_dns(self, sender: str, query: str) -> str:
-        """Search DNs"""
-        session = self._get_session()
-        if not session:
-            return "⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
-        
-        try:
-            search_pattern = f"%{query}%"
-            results = session.query(
-                DeliveryReport.dn_no,
-                DeliveryReport.customer_name,
-                DeliveryReport.customer_code,
-                DeliveryReport.delivery_status,
-                DeliveryReport.division,
-            ).filter(
-                or_(
-                    DeliveryReport.dn_no.ilike(search_pattern),
-                    DeliveryReport.customer_name.ilike(search_pattern),
-                    DeliveryReport.customer_code.ilike(search_pattern),
-                    DeliveryReport.division.ilike(search_pattern),
-                    DeliveryReport.dealer.ilike(search_pattern),
-                    DeliveryReport.dn_work.ilike(search_pattern),
-                )
-            ).order_by(
-                desc(DeliveryReport.dn_create_date)
-            ).limit(30).all()
-            
-            items = []
-            for row in results:
-                items.append({
-                    'dn_no': _text(row.dn_no),
-                    'customer_name': _text(row.customer_name, row.customer_code),
-                    'customer_code': _text(row.customer_code),
-                    'delivery_status': _text(row.delivery_status, 'Pending'),
-                    'division': _text(row.division),
-                })
-            
-            session.close()
-            return self._menu_renderer.render_search_results(query, items)
-            
-        except Exception as e:
-            logger.error(f"Search error: {e}")
-            if session:
-                session.close()
-            return f"⚠️ Error searching for '{query}'\n\n0. Main Menu\n99. Back"
+    # ============================================================
+    # HEALTH CHECK
+    # ============================================================
     
     def health_check(self) -> Dict[str, Any]:
+        with self._session_lock:
+            active_sessions = len(self._sessions)
+            locked_sessions = sum(1 for s in self._sessions.values() if s.locked)
+        
         return {
-            "service": self._service_name,
-            "version": self._version,
+            "service": "ai_provider_service",
+            "version": "64.0",
+            "type": "enterprise_gateway",
             "status": "healthy",
-            "database": "connected" if DB_AVAILABLE else "disconnected",
-            "exit_command": "99",
-            "timestamp": datetime.now().isoformat()
+            "active_sessions": active_sessions,
+            "locked_sessions": locked_sessions,
+            "available_modules": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "file": item.file,
+                    "aliases": item.aliases
+                }
+                for item in self._registry.get_menu_items()
+            ]
         }
 
+
 # ============================================================
-# SERVICE SINGLETON
+# SINGLETON
 # ============================================================
 
-_service: Optional[DNAnalysisService] = None
+_ai_service: Optional[AIProviderService] = None
 _service_lock = threading.Lock()
 
-def get_dn_analysis_service() -> DNAnalysisService:
-    global _service
-    if _service is None:
+def get_ai_provider_service() -> AIProviderService:
+    global _ai_service
+    if _ai_service is None:
         with _service_lock:
-            if _service is None:
-                _service = DNAnalysisService()
-    return _service
+            if _ai_service is None:
+                _ai_service = AIProviderService()
+    return _ai_service
 
-def process_dn_menu(session_id: str, user_input: str) -> Dict[str, Any]:
-    service = get_dn_analysis_service()
-    result = service.process_whatsapp_query(user_input, session_id)
-    
-    if result == "99":
-        return {
-            "response": "99",
-            "menu_type": "dn_menu",
-            "action": "exit_to_main",
-            "data": {},
-            "exit_menu": True
-        }
-    
-    return {
-        "response": result,
-        "menu_type": "dn_menu",
-        "action": "dn_response",
-        "data": {},
-        "exit_menu": False
-    }
 
-def get_dn_main_menu() -> str:
-    service = get_dn_analysis_service()
-    return service.get_main_menu()
+# ============================================================
+# ENTRY POINT - FOR WEBHOOK
+# ============================================================
+
+async def process_whatsapp_query(message: str, sender: str = "default") -> str:
+    """
+    MAIN ENTRY POINT - Called by webhook.
+    
+    This is the function that the webhook calls:
+    response = await process_whatsapp_query(text, sender)
+    """
+    try:
+        logger.info(f"📨 process_whatsapp_query called: '{message}' from {sender}")
+        service = get_ai_provider_service()
+        return await service.process_whatsapp_query_async(message, sender)
+    except Exception as e:
+        logger.exception(f"Unexpected error in process_whatsapp_query: {e}")
+        return "⚠️ Service is temporarily unavailable. Please try again later."
+
+
+# ============================================================
+# EXPORTS
+# ============================================================
 
 __all__ = [
-    "DNAnalysisService",
-    "get_dn_analysis_service",
-    "process_dn_menu",
-    "get_dn_main_menu",
+    "AIProviderService",
+    "ModuleType",
+    "Session",
+    "MenuItem",
+    "ServiceRegistry",
+    "get_ai_provider_service",
+    "process_whatsapp_query",
+    "EXIT_SIGNAL",
 ]
