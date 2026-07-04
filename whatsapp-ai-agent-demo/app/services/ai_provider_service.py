@@ -1,25 +1,25 @@
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 62.0 - ALL 7 SERVICES ALIGNED
+# VERSION: 63.0 - FULL DN SERVICE INTEGRATION
 # ============================================================
 
 """
 File: app/services/ai_provider_service.py
-Version: 62.0 - ALL 7 SERVICES ALIGNED
+Version: 63.0 - FULL DN SERVICE INTEGRATION
 
 ================================================================================
-FIXED: All 7 services now properly aligned with correct file paths
+INTEGRATED SERVICES
 ================================================================================
 
-Menu | Dashboard Name          | Route To
------|-------------------------|------------------------------------------
-1    | National Dashboard      | national_kpi_service.py
-2    | DN Intelligence Center  | dn_analysis.py
-3    | Dealer Dashboard        | dealer_analytics_service.py
-4    | Warehouse Dashboard     | warehouse_service.py
-5    | Product Dashboard       | product_service.py
-6    | City Dashboard          | city_service.py
-7    | AI Assistant            | groq_service.py
+Menu | Dashboard Name          | Route To                    | Function
+-----|-------------------------|-----------------------------|-------------------------------
+1    | National Dashboard      | national_kpi_service.py     | get_national_kpi_service()
+2    | DN Intelligence Center  | dn_analysis.py              | get_dn_analytics_service()
+3    | Dealer Dashboard        | dealer_analytics_service.py | get_dealer_service()
+4    | Warehouse Dashboard     | warehouse_service.py        | get_warehouse_analytics_service()
+5    | Product Dashboard       | product_service.py          | get_product_analytics_service()
+6    | City Dashboard          | city_service.py             | get_city_analytics_service()
+7    | AI Assistant            | groq_service.py             | get_groq_service()
 
 ================================================================================
 STATUS: ENTERPRISE READY
@@ -186,9 +186,9 @@ class ServiceRegistry:
         logger.info(f"📦 Service Registry initialized with {len(self._menu_items)} modules")
     
     def _register_all_modules(self):
-        """Register ALL 7 modules with correct paths."""
+        """Register ALL 7 modules with correct import paths."""
         
-        # Define all 7 modules with their correct import paths
+        # Define all 7 modules
         module_defs = [
             {
                 "id": 1,
@@ -206,7 +206,7 @@ class ServiceRegistry:
                 "module_type": ModuleType.DN,
                 "file": "dn_analysis.py",
                 "import_path": "app.services.dn_analysis",
-                "function": "get_dn_analysis_service"
+                "function": "get_dn_analytics_service"
             },
             {
                 "id": 3,
@@ -264,14 +264,13 @@ class ServiceRegistry:
                 loader_func = getattr(module, mod['function'], None)
                 
                 if loader_func:
-                    # Create menu item with the loader
                     menu_item = MenuItem(
                         id=mod['id'],
                         name=mod['name'],
                         aliases=mod['aliases'],
                         module_type=mod['module_type'],
                         file=mod['file'],
-                        loader=loader_func  # Pass the function directly
+                        loader=loader_func
                     )
                     self._menu_items.append(menu_item)
                     self._module_map[mod['module_type']] = menu_item
@@ -283,7 +282,6 @@ class ServiceRegistry:
                 logger.warning(f"⚠️ Skipping: {mod['name']} - module not found: {e}")
             except Exception as e:
                 logger.warning(f"⚠️ Skipping: {mod['name']} - error: {e}")
-                logger.warning(f"   Traceback: {traceback.format_exc()}")
     
     def get_menu_items(self) -> List[MenuItem]:
         return self._menu_items
@@ -355,7 +353,7 @@ class AIProviderService:
         self._registry = ServiceRegistry()
         
         logger.info("=" * 70)
-        logger.info("🚀 ENTERPRISE GATEWAY v62.0 initialized")
+        logger.info("🚀 ENTERPRISE GATEWAY v63.0 initialized")
         logger.info(f"   📦 Registered {len(self._registry.get_menu_items())} services")
         logger.info("   🔒 Session Locking: ✅")
         logger.info("   🔀 Routes to 7 modules")
@@ -439,6 +437,7 @@ class AIProviderService:
             logger.info(f"📤 Forwarding to {session.module_name}: '{message}'")
             result = service.process_whatsapp_query(message, sender)
             
+            # Check for exit signal
             if result == EXIT_SIGNAL or result == "99":
                 logger.info(f"🚪 Module {session.module_name} requested exit")
                 self._unlock_session(sender)
@@ -595,7 +594,7 @@ class AIProviderService:
         
         return {
             "service": "ai_provider_service",
-            "version": "62.0",
+            "version": "63.0",
             "type": "enterprise_gateway",
             "status": "healthy",
             "active_sessions": active_sessions,
