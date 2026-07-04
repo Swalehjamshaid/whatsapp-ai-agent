@@ -1,38 +1,15 @@
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 67.0 - DEBUG VERSION WITH COMPREHENSIVE LOGGING
+# VERSION: 69.0 - FIXED DN FUNCTION NAME
 # ============================================================
 
 """
 File: app/services/ai_provider_service.py
-Version: 67.0 - DEBUG VERSION WITH COMPREHENSIVE LOGGING
+Version: 69.0 - FIXED DN FUNCTION NAME
 
 ================================================================================
-INTEGRATED SERVICES - ALL 7 WITH CORRECT FUNCTION NAMES
-================================================================================
-
-Menu | Dashboard Name          | Route To                    | Function
------|-------------------------|-----------------------------|-------------------------------
-1    | National Dashboard      | national_kpi_service.py     | get_national_kpi_service()
-2    | DN Intelligence Center  | dn_analysis.py              | get_dn_analysis_service()
-3    | Dealer Dashboard        | dealer_analytics_service.py | get_dealer_service()
-4    | Warehouse Dashboard     | warehouse_service.py        | get_warehouse_analytics_service()
-5    | Product Dashboard       | product_service.py          | get_product_analytics_service()
-6    | City Dashboard          | city_service.py             | get_city_analytics_service()
-7    | AI Assistant            | groq_service.py             | get_groq_service()
-
-================================================================================
-DEBUG FEATURES
-================================================================================
-
-1. Comprehensive logging at every step
-2. Error details returned to user for debugging
-3. Service loading status with detailed logs
-4. Session state logging
-5. Message flow tracking
-
-================================================================================
-STATUS: DEBUG VERSION
+FIX: Changed DN function from get_dn_analysis_service to get_dn_analytics_service
+     (matching dn_analysis.py v34.0)
 ================================================================================
 """
 
@@ -91,14 +68,10 @@ class Session:
     
     def update_activity(self):
         self.last_activity = datetime.now()
-        logger.debug(f"🔄 Activity updated for {self.sender}")
     
     def is_expired(self, timeout_seconds: int = SESSION_TIMEOUT_SECONDS) -> bool:
         elapsed = (datetime.now() - self.last_activity).total_seconds()
-        if elapsed > timeout_seconds:
-            logger.info(f"⏰ Session expired for {self.sender} (elapsed: {elapsed:.0f}s)")
-            return True
-        return False
+        return elapsed > timeout_seconds
     
     def add_history(self, query: str, response: str):
         self.history.append({
@@ -108,7 +81,6 @@ class Session:
         })
         if len(self.history) > 100:
             self.history = self.history[-100:]
-        logger.debug(f"📝 History added for {self.sender} ({len(self.history)} entries)")
     
     def lock(self, module_type: ModuleType, module_name: str, file_name: str, 
              menu_id: int, service_instance: Any):
@@ -120,7 +92,7 @@ class Session:
         self.service_instance = service_instance
         self.entered_at = datetime.now()
         self.update_activity()
-        logger.info(f"🔒 Session LOCKED: {self.sender} → {module_name} (ID: {menu_id})")
+        logger.info(f"🔒 Session LOCKED: {self.sender} → {module_name}")
     
     def unlock(self):
         old_module = self.module_name
@@ -161,22 +133,18 @@ class MenuItem:
     def matches(self, text: str) -> bool:
         text_lower = text.strip().lower()
         if text_lower == str(self.id):
-            logger.debug(f"✅ Matched by ID: {self.id}")
             return True
         if text_lower == self.name.lower():
-            logger.debug(f"✅ Matched by name: {self.name}")
             return True
         for alias in self.aliases:
             if text_lower == alias.lower():
-                logger.debug(f"✅ Matched by alias: {alias}")
                 return True
             if alias.lower() in text_lower:
-                logger.debug(f"✅ Matched by partial alias: {alias} in {text_lower}")
                 return True
         return False
 
 # ============================================================
-# SERVICE REGISTRY - ALL 7 SERVICES WITH DEBUG LOGGING
+# SERVICE REGISTRY - ALL 7 SERVICES WITH CORRECT NAMES
 # ============================================================
 
 class ServiceRegistry:
@@ -205,7 +173,7 @@ class ServiceRegistry:
         logger.info(f"📦 Service Registry initialized with {len(self._menu_items)} modules")
     
     def _register_all_modules(self):
-        """Register ALL 7 modules with correct import paths and debug logging."""
+        """Register ALL 7 modules with correct import paths."""
         
         # Define all 7 modules with CORRECT function names
         module_defs = [
@@ -225,7 +193,7 @@ class ServiceRegistry:
                 "module_type": ModuleType.DN,
                 "file": "dn_analysis.py",
                 "import_path": "app.services.dn_analysis",
-                "function": "get_dn_analysis_service"
+                "function": "get_dn_analytics_service"  # ← FIXED: matches v34.0
             },
             {
                 "id": 3,
@@ -279,12 +247,8 @@ class ServiceRegistry:
                 logger.info(f"🔍 Registering: {mod['name']}...")
                 
                 # Try to import the module
-                logger.debug(f"   Importing: {mod['import_path']}")
                 module = __import__(mod['import_path'], fromlist=[mod['function']])
-                logger.debug(f"   Module imported: {module}")
-                
                 loader_func = getattr(module, mod['function'], None)
-                logger.debug(f"   Loader function: {loader_func}")
                 
                 if loader_func:
                     menu_item = MenuItem(
@@ -298,87 +262,55 @@ class ServiceRegistry:
                     self._menu_items.append(menu_item)
                     self._module_map[mod['module_type']] = menu_item
                     logger.info(f"✅ Registered: {mod['id']}. {mod['name']} → {mod['file']}")
-                    
-                    # Try to load the service immediately to catch errors early
-                    try:
-                        logger.debug(f"   Testing service load: {mod['name']}")
-                        test_service = loader_func()
-                        if test_service:
-                            logger.info(f"   ✅ Service instance created: {type(test_service).__name__}")
-                            if hasattr(test_service, "process_whatsapp_query"):
-                                logger.info(f"   ✅ process_whatsapp_query method found")
-                            else:
-                                logger.warning(f"   ⚠️ process_whatsapp_query method NOT found")
-                        else:
-                            logger.warning(f"   ⚠️ Service loader returned None")
-                    except Exception as e:
-                        logger.error(f"   ❌ Service instantiation failed: {e}")
-                        logger.error(f"   Traceback: {traceback.format_exc()}")
-                        
                 else:
                     logger.warning(f"⚠️ Skipping: {mod['name']} - function {mod['function']} not found")
-                    logger.warning(f"   Available attributes in {mod['import_path']}: {[a for a in dir(module) if not a.startswith('_')]}")
                     
             except ImportError as e:
                 logger.warning(f"⚠️ Skipping: {mod['name']} - module not found: {e}")
-                logger.warning(f"   Import path: {mod['import_path']}")
             except Exception as e:
                 logger.warning(f"⚠️ Skipping: {mod['name']} - error: {e}")
-                logger.warning(f"   Traceback: {traceback.format_exc()}")
     
     def get_menu_items(self) -> List[MenuItem]:
         return self._menu_items
     
     def detect_menu_item(self, text: str) -> Optional[MenuItem]:
         text_clean = text.strip()
-        logger.debug(f"🔍 Detecting menu item for: '{text_clean}'")
         for item in self._menu_items:
             if item.matches(text_clean):
-                logger.info(f"✅ Detected: {item.name} (ID: {item.id})")
                 return item
-        logger.info(f"❌ No menu item found for: '{text_clean}'")
         return None
     
     def get_service(self, module_type: ModuleType) -> Optional[Any]:
         item = self._module_map.get(module_type)
         if not item:
-            logger.error(f"❌ No menu item for module type: {module_type}")
             return None
         
         if module_type in self._loader_cache:
-            logger.debug(f"✅ Service cached: {item.name}")
             return self._loader_cache[module_type]
         
         try:
-            logger.info(f"🔍 Loading service: {item.name}")
             service = item.loader()
             self._loader_cache[module_type] = service
             logger.info(f"✅ Service loaded: {item.name}")
             return service
         except Exception as e:
             logger.error(f"❌ Failed to load {item.name}: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
             self._loader_cache[module_type] = None
             return None
     
     def get_service_by_text(self, text: str) -> Optional[tuple[MenuItem, Any]]:
         try:
-            logger.info(f"🔍 get_service_by_text: '{text}'")
             item = self.detect_menu_item(text)
             if not item:
-                logger.info(f"❌ No menu item found for: '{text}'")
                 return None
             
             service = self.get_service(item.module_type)
             if not service:
-                logger.warning(f"⚠️ Service not available for {item.name}")
                 return None
             
-            logger.info(f"✅ Service found for {item.name}")
             return (item, service)
         except Exception as e:
             logger.error(f"❌ get_service_by_text error: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
 
 # ============================================================
@@ -409,7 +341,7 @@ class AIProviderService:
         
         registered_count = len(self._registry.get_menu_items())
         logger.info("=" * 70)
-        logger.info("🚀 ENTERPRISE GATEWAY v67.0 (DEBUG) initialized")
+        logger.info("🚀 ENTERPRISE GATEWAY v69.0 initialized")
         logger.info(f"   📦 Registered {registered_count}/7 services")
         logger.info("   🔒 Session Locking: ✅")
         logger.info("   🔀 Routes to registered modules")
@@ -418,9 +350,6 @@ class AIProviderService:
         
         for item in self._registry.get_menu_items():
             logger.info(f"   {item.id}. {item.name} → {item.file}")
-        
-        if registered_count < 7:
-            logger.warning(f"⚠️ Only {registered_count} of 7 services loaded successfully!")
     
     # ============================================================
     # SESSION MANAGEMENT
@@ -474,43 +403,28 @@ class AIProviderService:
     
     def _detect_dashboard(self, message: str) -> Optional[tuple[MenuItem, Any]]:
         try:
-            logger.info(f"🔍 _detect_dashboard: '{message}'")
-            result = self._registry.get_service_by_text(message)
-            if result:
-                menu_item, service = result
-                logger.info(f"✅ Dashboard detected: {menu_item.name}")
-            else:
-                logger.info(f"❌ No dashboard detected for: '{message}'")
-            return result
+            return self._registry.get_service_by_text(message)
         except Exception as e:
             logger.error(f"❌ Dashboard detection error: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
     
     def _forward_to_module(self, session: Session, message: str, sender: str) -> str:
-        logger.info(f"📤 _forward_to_module: {session.module_name} → '{message}'")
-        
         if not session.service_instance:
             logger.error(f"❌ No service instance for {session.module_name}")
             self._unlock_session(sender)
             return self._get_main_dashboard()
         
         service = session.service_instance
-        logger.info(f"🔍 Service type: {type(service)}")
-        logger.info(f"🔍 Has process_whatsapp_query: {hasattr(service, 'process_whatsapp_query')}")
         
         if not hasattr(service, "process_whatsapp_query"):
             logger.error(f"❌ Service {session.module_name} missing process_whatsapp_query")
-            logger.error(f"   Available methods: {dir(service)}")
             self._unlock_session(sender)
             return "⚠️ Service is misconfigured.\n\n" + self._get_main_dashboard()
         
         try:
             logger.info(f"📤 Forwarding to {session.module_name}: '{message}'")
             result = service.process_whatsapp_query(message, sender)
-            logger.info(f"📥 Response from {session.module_name}: {result[:100] if result else 'Empty'}...")
             
-            # Check for exit signal
             if result == EXIT_SIGNAL or result == "99":
                 logger.info(f"🚪 Module {session.module_name} requested exit")
                 self._unlock_session(sender)
@@ -522,10 +436,9 @@ class AIProviderService:
             
         except Exception as e:
             logger.error(f"❌ Module {session.module_name} error: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(traceback.format_exc())
             self._unlock_session(sender)
-            error_msg = str(e)[:200]
-            return f"⚠️ Service error: {error_msg}\n\n" + self._get_main_dashboard()
+            return f"⚠️ Service error: {str(e)[:200]}\n\n" + self._get_main_dashboard()
     
     # ============================================================
     # MAIN PROCESSING - SYNC ENTRY POINT
@@ -537,7 +450,6 @@ class AIProviderService:
             logger.info(f"📨 Gateway (sync) received: '{message}' from {sender}")
             
             if not message or not message.strip():
-                logger.info("📨 Empty message, returning main dashboard")
                 return self._get_main_dashboard()
             
             message_clean = message.strip()
@@ -558,11 +470,9 @@ class AIProviderService:
             logger.info(f"🔄 Session IDLE for {sender}")
             
             if message_clean.lower() in ["menu", "help", "options", "dashboard", "main", "0"]:
-                logger.info(f"📋 Showing main dashboard (command: {message_clean})")
                 return self._get_main_dashboard()
             
             # STEP 3: DETECT DASHBOARD
-            logger.info(f"🔍 Detecting dashboard for: '{message_clean}'")
             detected = self._detect_dashboard(message_clean)
             
             if detected:
@@ -572,9 +482,7 @@ class AIProviderService:
                 self._lock_session(sender, menu_item, service)
                 
                 try:
-                    logger.info(f"📤 Calling {menu_item.name}.process_whatsapp_query...")
                     result = service.process_whatsapp_query(message_clean, sender)
-                    logger.info(f"📥 Response: {result[:100] if result else 'Empty'}...")
                     
                     if result == EXIT_SIGNAL or result == "99":
                         logger.info(f"🚪 Immediate exit from {menu_item.name}")
@@ -588,20 +496,17 @@ class AIProviderService:
                     
                 except Exception as e:
                     logger.error(f"❌ Module {menu_item.name} error: {e}")
-                    logger.error(f"Traceback: {traceback.format_exc()}")
+                    logger.error(traceback.format_exc())
                     self._unlock_session(sender)
-                    error_msg = str(e)[:200]
-                    return f"⚠️ {menu_item.name} error: {error_msg}\n\n{self._get_main_dashboard()}"
+                    return f"⚠️ {menu_item.name} error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
             
             # STEP 4: NO DASHBOARD DETECTED
-            logger.info(f"❌ No dashboard detected for: '{message_clean}'")
             return self._get_out_of_box_response()
             
         except Exception as e:
             logger.error(f"❌ Gateway error: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            error_msg = str(e)[:200]
-            return f"⚠️ System error: {error_msg}\n\n{self._get_main_dashboard()}"
+            logger.error(traceback.format_exc())
+            return f"⚠️ System error: {str(e)[:200]}\n\n{self._get_main_dashboard()}"
     
     # ============================================================
     # ASYNC ENTRY POINT - FOR WEBHOOK
@@ -627,8 +532,8 @@ class AIProviderService:
             
         except Exception as e:
             logger.error(f"❌ Gateway (async) error: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return f"⚠️ Service temporarily unavailable: {str(e)[:100]}"
+            logger.error(traceback.format_exc())
+            return "⚠️ Service is temporarily unavailable. Please try again later."
     
     # ============================================================
     # RESPONSES
@@ -637,6 +542,7 @@ class AIProviderService:
     def _get_main_dashboard(self) -> str:
         lines = ["🏠 *HPK Logistics AI*", ""]
         
+        # Show ALL registered modules in order
         for item in self._registry.get_menu_items():
             lines.append(f"{item.id}️⃣ {item.name}")
         
@@ -675,12 +581,11 @@ class AIProviderService:
         
         return {
             "service": "ai_provider_service",
-            "version": "67.0",
+            "version": "69.0",
             "type": "enterprise_gateway",
             "status": "healthy",
             "active_sessions": active_sessions,
             "locked_sessions": locked_sessions,
-            "registered_services": len(self._registry.get_menu_items()),
             "available_modules": [
                 {
                     "id": item.id,
@@ -723,12 +628,10 @@ async def process_whatsapp_query(message: str, sender: str = "default") -> str:
     try:
         logger.info(f"📨 process_whatsapp_query called: '{message}' from {sender}")
         service = get_ai_provider_service()
-        result = await service.process_whatsapp_query_async(message, sender)
-        logger.info(f"📤 process_whatsapp_query returning: {result[:100] if result else 'Empty'}...")
-        return result
+        return await service.process_whatsapp_query_async(message, sender)
     except Exception as e:
         logger.exception(f"Unexpected error in process_whatsapp_query: {e}")
-        return f"⚠️ Service error: {str(e)[:100]}"
+        return "⚠️ Service is temporarily unavailable. Please try again later."
 
 
 # ============================================================
@@ -742,12 +645,10 @@ def process_whatsapp_query_sync(message: str, sender: str = "default") -> str:
     try:
         logger.info(f"📨 process_whatsapp_query_sync called: '{message}' from {sender}")
         service = get_ai_provider_service()
-        result = service.process_whatsapp_query_sync(message, sender)
-        logger.info(f"📤 process_whatsapp_query_sync returning: {result[:100] if result else 'Empty'}...")
-        return result
+        return service.process_whatsapp_query_sync(message, sender)
     except Exception as e:
         logger.exception(f"Unexpected error in process_whatsapp_query_sync: {e}")
-        return f"⚠️ Service error: {str(e)[:100]}"
+        return "⚠️ Service is temporarily unavailable. Please try again later."
 
 
 # ============================================================
