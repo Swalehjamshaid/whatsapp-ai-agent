@@ -11,23 +11,23 @@ DEALER INTELLIGENCE GATEWAY - ENTERPRISE EDITION v8.2
 ================================================================================
 
 This service orchestrates the complete dealer intelligence workflow with:
-    ✅ PostgreSQL as single source of truth
-    ✅ In-memory search index for lightning-fast searches
-    ✅ Redis cache for distributed caching (optional)
-    ✅ Multi-level search strategy (code → exact → partial → fuzzy → phonetic)
-    ✅ 70% similarity threshold for fuzzy matching
-    ✅ Automatic cache refresh every 15 minutes
-    ✅ Comprehensive diagnostic logging
-    ✅ Multiple matches support with numbered selection
-    ✅ Enterprise data aggregation from DeliveryReport model
-    ✅ WhatsApp-optimized formatting with emojis
-    ✅ Enhanced error handling with specific error messages
-    ✅ Full PostgreSQL integration
-    ✅ Soundex phonetic search
-    ✅ Abbreviation expansion
-    ✅ City-suffix aware matching (e.g. "-Khi", "-Lhr") <-- NEW in 8.2
-    ✅ Bidirectional partial matching <-- NEW in 8.2
-    ✅ Performance monitoring
+    âœ… PostgreSQL as single source of truth
+    âœ… In-memory search index for lightning-fast searches
+    âœ… Redis cache for distributed caching (optional)
+    âœ… Multi-level search strategy (code â†’ exact â†’ partial â†’ fuzzy â†’ phonetic)
+    âœ… 70% similarity threshold for fuzzy matching
+    âœ… Automatic cache refresh every 15 minutes
+    âœ… Comprehensive diagnostic logging
+    âœ… Multiple matches support with numbered selection
+    âœ… Enterprise data aggregation from DeliveryReport model
+    âœ… WhatsApp-optimized formatting with emojis
+    âœ… Enhanced error handling with specific error messages
+    âœ… Full PostgreSQL integration
+    âœ… Soundex phonetic search
+    âœ… Abbreviation expansion
+    âœ… City-suffix aware matching (e.g. "-Khi", "-Lhr") <-- NEW in 8.2
+    âœ… Bidirectional partial matching <-- NEW in 8.2
+    âœ… Performance monitoring
 
 SOURCE OF TRUTH: PostgreSQL (DeliveryReport model)
 ================================================================================
@@ -305,17 +305,17 @@ class DealerSearchEngine:
     Enterprise Dealer Search Engine with PostgreSQL integration
 
     Features:
-        ✅ PostgreSQL as source of truth
-        ✅ In-memory search index for lightning-fast searches
-        ✅ Multi-level search strategy
-        ✅ 70% similarity threshold
-        ✅ Automatic cache refresh every 15 minutes
-        ✅ Comprehensive logging
-        ✅ Redis caching support (optional)
-        ✅ Phonetic search (Soundex)
-        ✅ Abbreviation expansion
-        ✅ City-suffix aware matching (NEW)
-        ✅ Performance monitoring
+        âœ… PostgreSQL as source of truth
+        âœ… In-memory search index for lightning-fast searches
+        âœ… Multi-level search strategy
+        âœ… 70% similarity threshold
+        âœ… Automatic cache refresh every 15 minutes
+        âœ… Comprehensive logging
+        âœ… Redis caching support (optional)
+        âœ… Phonetic search (Soundex)
+        âœ… Abbreviation expansion
+        âœ… City-suffix aware matching (NEW)
+        âœ… Performance monitoring
     """
 
     def __init__(self, enable_redis: bool = False):
@@ -350,9 +350,9 @@ class DealerSearchEngine:
                     decode_responses=True
                 )
                 self._redis_client.ping()
-                logger.info("✅ Redis connected for caching")
+                logger.info("âœ… Redis connected for caching")
             except Exception as e:
-                logger.warning(f"⚠️ Redis connection failed: {e}")
+                logger.warning(f"âš ï¸ Redis connection failed: {e}")
                 self._enable_redis = False
 
         # Build initial index from PostgreSQL
@@ -370,9 +370,9 @@ class DealerSearchEngine:
 
     def _show_startup_banner(self):
         """Display startup banner with system status"""
-        print("\n" + "━" * 70)
+        print("\n" + "â”" * 70)
         print("DEALER SEARCH ENGINE - POSTGRESQL".center(70))
-        print("━" * 70)
+        print("â”" * 70)
 
         try:
             with self._get_session() as session:
@@ -385,28 +385,28 @@ class DealerSearchEngine:
             unique_dealers = 0
             unique_codes = 0
             self._postgresql_connected = False
-            logger.error(f"❌ PostgreSQL connection failed: {e}")
+            logger.error(f"âŒ PostgreSQL connection failed: {e}")
 
-        print(f"\nDatabase Status      : {'✅ Connected' if self._postgresql_connected else '❌ Disconnected'}")
+        print(f"\nDatabase Status      : {'âœ… Connected' if self._postgresql_connected else 'âŒ Disconnected'}")
         print(f"Total Records        : {total_records:,}")
         print(f"Unique Dealers       : {unique_dealers:,}")
         print(f"Unique Dealer Codes  : {unique_codes:,}")
-        print(f"Search Index         : {'✅ Ready' if self._index else '❌ Empty'}")
-        print(f"Search Cache         : {'✅ Loaded' if self._index else '❌ Empty'}")
-        print(f"Fuzzy Search         : {'✅ Enabled' if self._index else '❌ Disabled'}")
-        print(f"Partial Search       : {'✅ Enabled' if self._index else '❌ Disabled'}")
-        print(f"Alias Search         : {'✅ Enabled' if self._index else '❌ Disabled'}")
-        print(f"Phonetic Search      : {'✅ Enabled' if self._index else '❌ Disabled'}")
-        print(f"Abbreviation Search  : {'✅ Enabled' if self._index else '❌ Disabled'}")
+        print(f"Search Index         : {'âœ… Ready' if self._index else 'âŒ Empty'}")
+        print(f"Search Cache         : {'âœ… Loaded' if self._index else 'âŒ Empty'}")
+        print(f"Fuzzy Search         : {'âœ… Enabled' if self._index else 'âŒ Disabled'}")
+        print(f"Partial Search       : {'âœ… Enabled' if self._index else 'âŒ Disabled'}")
+        print(f"Alias Search         : {'âœ… Enabled' if self._index else 'âŒ Disabled'}")
+        print(f"Phonetic Search      : {'âœ… Enabled' if self._index else 'âŒ Disabled'}")
+        print(f"Abbreviation Search  : {'âœ… Enabled' if self._index else 'âŒ Disabled'}")
         print(f"Similarity Threshold : {SIMILARITY_THRESHOLD * 100:.0f}%")
         print(f"Auto Refresh         : Every {SEARCH_CACHE_REFRESH_MINUTES} minutes")
-        print(f"Redis Cache          : {'✅ Enabled' if self._enable_redis else '❌ Disabled'}")
-        print(f"\nSystem Status        : {'✅ READY' if self._index else '❌ NOT READY'}")
-        print("━" * 70 + "\n")
+        print(f"Redis Cache          : {'âœ… Enabled' if self._enable_redis else 'âŒ Disabled'}")
+        print(f"\nSystem Status        : {'âœ… READY' if self._index else 'âŒ NOT READY'}")
+        print("â”" * 70 + "\n")
 
     def _build_index_from_postgresql(self):
         """Build in-memory search index from PostgreSQL"""
-        logger.info("🔨 Building dealer search index from PostgreSQL...")
+        logger.info("ðŸ”¨ Building dealer search index from PostgreSQL...")
         start_time = time.time()
 
         try:
@@ -429,7 +429,7 @@ class DealerSearchEngine:
                 ).distinct().all()
 
             if not dealers:
-                logger.warning("⚠️ No dealers found in PostgreSQL database")
+                logger.warning("âš ï¸ No dealers found in PostgreSQL database")
                 self._postgresql_connected = False
                 return
 
@@ -445,12 +445,23 @@ class DealerSearchEngine:
                 phonetic_index = defaultdict(list)
                 abbreviation_index = defaultdict(list)
 
+                skipped_count = 0
+                collision_count = 0
+                seen_keys = set()
+
                 for dealer in dealers:
-                    customer_name = _text(dealer.customer_name)
-                    dealer_code = _text(dealer.dealer_code)
-                    customer_code = _text(dealer.customer_code)
+                    customer_name = _text(dealer.customer_name, default="")
+                    # CRITICAL FIX: _text() defaults to the literal string
+                    # "Unknown" for NULL values. Using that default here meant
+                    # every dealer with a NULL dealer_code/customer_code ended
+                    # up with the truthy string "Unknown" instead of an empty
+                    # string, causing them to all collide on the same
+                    # dictionary key below and silently overwrite each other.
+                    dealer_code = _text(dealer.dealer_code, default="")
+                    customer_code = _text(dealer.customer_code, default="")
 
                     if not customer_name and not dealer_code:
+                        skipped_count += 1
                         continue
 
                     # Normalize name
@@ -472,33 +483,64 @@ class DealerSearchEngine:
                         sales_channel="Traditional Channel"
                     )
 
-                    # Add to indexes
-                    key = dealer_code or customer_name
+                    # Build the primary index key. Prefer dealer_code, but
+                    # ALWAYS fall back to a key that includes customer_name
+                    # (and customer_code as a tiebreaker) so two different
+                    # dealers can never collide just because both happen to
+                    # be missing a dealer_code â€” the exact bug that caused
+                    # entries to vanish silently.
+                    if dealer_code:
+                        primary_key = dealer_code
+                    else:
+                        primary_key = f"{customer_name}::{customer_code}" if customer_code else customer_name
+
+                    # If this exact key was already used by a *different*
+                    # dealer_code/customer_name combination, disambiguate
+                    # with a numeric suffix instead of overwriting.
+                    lookup_key = primary_key
+                    if lookup_key in seen_keys:
+                        collision_count += 1
+                        suffix = 2
+                        while f"{primary_key}__{suffix}" in seen_keys:
+                            suffix += 1
+                        lookup_key = f"{primary_key}__{suffix}"
+                        logger.warning(
+                            f"âš ï¸ Duplicate index key '{primary_key}' for dealer "
+                            f"'{customer_name}' â€” disambiguated as '{lookup_key}' "
+                            f"to avoid overwriting an existing entry"
+                        )
+                    seen_keys.add(lookup_key)
+                    key = lookup_key
                     index[key] = entry
 
                     if normalized:
-                        normalized_index[normalized] = dealer_code or customer_name
+                        # Multiple dealers can legitimately normalize to the
+                        # same name (branches in different cities); keep the
+                        # first one mapped here since exact-match is only a
+                        # first-pass shortcut â€” fuzzy/partial/token matching
+                        # below still finds the others.
+                        normalized_index.setdefault(normalized, key)
 
                     if dealer_code:
-                        code_index[dealer_code.upper()] = dealer_code or customer_name
+                        code_index.setdefault(dealer_code.upper(), key)
 
                     if customer_code:
-                        customer_code_index[customer_code.upper()] = dealer_code or customer_name
+                        customer_code_index.setdefault(customer_code.upper(), key)
 
                     # Generate aliases
                     aliases = self._generate_aliases(customer_name)
                     for alias in aliases:
-                        alias_index[alias].append(dealer_code or customer_name)
+                        alias_index[alias].append(key)
 
                     # Generate phonetic keys (Soundex)
                     phonetic_key = self._get_soundex(customer_name)
                     if phonetic_key:
-                        phonetic_index[phonetic_key].append(dealer_code or customer_name)
+                        phonetic_index[phonetic_key].append(key)
 
                     # Generate abbreviations
                     abbreviations = self._generate_abbreviations(customer_name)
                     for abbr in abbreviations:
-                        abbreviation_index[abbr].append(dealer_code or customer_name)
+                        abbreviation_index[abbr].append(key)
 
                 # Update indexes
                 self._index = index
@@ -510,15 +552,29 @@ class DealerSearchEngine:
                 self._abbreviation_index = abbreviation_index
                 self._last_refresh = datetime.now()
 
+                if collision_count > 0:
+                    logger.warning(
+                        f"âš ï¸ Index build encountered {collision_count} key "
+                        f"collision(s) that were disambiguated instead of "
+                        f"overwriting entries. Consider cleaning up duplicate "
+                        f"or missing dealer_code/customer_code values in the "
+                        f"source data."
+                    )
+                if skipped_count > 0:
+                    logger.warning(
+                        f"âš ï¸ Skipped {skipped_count} row(s) with neither "
+                        f"customer_name nor dealer_code during index build."
+                    )
+
             elapsed = time.time() - start_time
-            logger.info(f"✅ Search index built: {len(self._index)} dealers in {elapsed*1000:.0f}ms")
+            logger.info(f"âœ… Search index built: {len(self._index)} dealers in {elapsed*1000:.0f}ms")
 
             # Push to Redis if enabled
             if self._enable_redis and self._redis_client:
                 self._push_index_to_redis()
 
         except Exception as e:
-            logger.error(f"❌ Failed to build search index from PostgreSQL: {e}")
+            logger.error(f"âŒ Failed to build search index from PostgreSQL: {e}")
             logger.error(traceback.format_exc())
             self._postgresql_connected = False
 
@@ -535,9 +591,9 @@ class DealerSearchEngine:
                 pipeline.hset('dealer_index', key, json.dumps(asdict(entry), default=str))
 
             pipeline.execute()
-            logger.info("✅ Search index pushed to Redis")
+            logger.info("âœ… Search index pushed to Redis")
         except Exception as e:
-            logger.error(f"❌ Failed to push index to Redis: {e}")
+            logger.error(f"âŒ Failed to push index to Redis: {e}")
 
     def _start_auto_refresh(self):
         """Start automatic cache refresh thread"""
@@ -545,12 +601,12 @@ class DealerSearchEngine:
             while not self._stop_refresh.is_set():
                 self._stop_refresh.wait(SEARCH_CACHE_REFRESH_MINUTES * 60)
                 if not self._stop_refresh.is_set():
-                    logger.info("🔄 Auto-refreshing search index from PostgreSQL...")
+                    logger.info("ðŸ”„ Auto-refreshing search index from PostgreSQL...")
                     self._build_index_from_postgresql()
 
         self._refresh_thread = Thread(target=refresh_worker, daemon=True)
         self._refresh_thread.start()
-        logger.info(f"🔄 Auto-refresh started (every {SEARCH_CACHE_REFRESH_MINUTES} minutes)")
+        logger.info(f"ðŸ”„ Auto-refresh started (every {SEARCH_CACHE_REFRESH_MINUTES} minutes)")
 
     # ============================================================
     # SEARCH METHODS
@@ -568,12 +624,12 @@ class DealerSearchEngine:
                 cached_result = self._get_from_redis(query)
                 if cached_result:
                     self._cache_hits += 1
-                    logger.info(f"✅ Redis cache hit for '{query}'")
+                    logger.info(f"âœ… Redis cache hit for '{query}'")
                     return cached_result
 
             self._cache_misses += 1
             normalized_query = self._normalize_text(query)
-            logger.info(f"🔍 Search started: '{query}' → normalized: '{normalized_query}'")
+            logger.info(f"ðŸ” Search started: '{query}' â†’ normalized: '{normalized_query}'")
 
             if not normalized_query:
                 return DealerSearchResult(
@@ -638,7 +694,7 @@ class DealerSearchEngine:
             suggestions = self._get_suggestions(normalized_query)
             elapsed = time.time() - start_time
 
-            logger.info(f"❌ Search failed: '{query}' - No matches found")
+            logger.info(f"âŒ Search failed: '{query}' - No matches found")
 
             result = DealerSearchResult(
                 success=False,
@@ -655,7 +711,7 @@ class DealerSearchEngine:
             return result
 
         except Exception as e:
-            logger.error(f"❌ Search error: {e}")
+            logger.error(f"âŒ Search error: {e}")
             logger.error(traceback.format_exc())
             elapsed = time.time() - start_time
             return DealerSearchResult(
@@ -735,7 +791,7 @@ class DealerSearchEngine:
                 if pos == 0:
                     score += 0.2
 
-            # Direction 2 (NEW): name is a substring of query — this is the
+            # Direction 2 (NEW): name is a substring of query â€” this is the
             # case that was failing, e.g. query "arshad electronics khi"
             # contains the shorter stored name "arshad electronics"
             if name_lower and name_lower in query_lower:
@@ -1037,7 +1093,7 @@ class DealerSearchEngine:
 
         self._avg_search_time = ((self._avg_search_time * (self._search_count - 1)) + elapsed) / self._search_count
 
-        logger.info(f"✅ Match found: '{entry.customer_name}' ({match_type}) - {confidence*100:.0f}% confidence")
+        logger.info(f"âœ… Match found: '{entry.customer_name}' ({match_type}) - {confidence*100:.0f}% confidence")
 
         result = DealerSearchResult(
             success=True,
@@ -1111,7 +1167,7 @@ class DealerSearchEngine:
 
     def refresh_index(self):
         """Manually refresh the search index from PostgreSQL"""
-        logger.info("🔄 Manual refresh requested")
+        logger.info("ðŸ”„ Manual refresh requested")
         self._build_index_from_postgresql()
 
     def stop_auto_refresh(self):
@@ -1119,7 +1175,7 @@ class DealerSearchEngine:
         self._stop_refresh.set()
         if self._refresh_thread:
             self._refresh_thread.join(timeout=5)
-        logger.info("🔄 Auto-refresh stopped")
+        logger.info("ðŸ”„ Auto-refresh stopped")
 
     # ============================================================
     # STATISTICS
@@ -1197,7 +1253,7 @@ class DealerDashboardBuilder:
                 cache_age = (datetime.now() - self._cache_time[cache_key]).seconds
                 if cache_age < CACHE_TTL:
                     self._cache_hits += 1
-                    logger.info(f"✅ Dashboard cache hit for {dealer_code}")
+                    logger.info(f"âœ… Dashboard cache hit for {dealer_code}")
                     return self._cache[cache_key]
             self._cache_misses += 1
 
@@ -1246,7 +1302,7 @@ class DealerDashboardBuilder:
                 result = query.first()
 
                 if not result:
-                    logger.error(f"❌ No data found for dealer: {dealer_code}")
+                    logger.error(f"âŒ No data found for dealer: {dealer_code}")
                     return None
 
                 # Build identity
@@ -1353,11 +1409,11 @@ class DealerDashboardBuilder:
                     self._cache[cache_key] = dashboard
                     self._cache_time[cache_key] = datetime.now()
 
-                logger.info(f"✅ Dashboard built for {identity.customer_name}")
+                logger.info(f"âœ… Dashboard built for {identity.customer_name}")
                 return dashboard
 
         except Exception as e:
-            logger.error(f"❌ Failed to build dashboard: {e}")
+            logger.error(f"âŒ Failed to build dashboard: {e}")
             logger.error(traceback.format_exc())
             return None
 
@@ -1627,75 +1683,75 @@ class DealerDashboardBuilder:
 
         # Delivery insights
         if delivery.delivery_rate >= 95:
-            insights.append("✅ Strong delivery performance")
+            insights.append("âœ… Strong delivery performance")
         elif delivery.delivery_rate >= 90:
-            insights.append("✅ Good delivery performance")
+            insights.append("âœ… Good delivery performance")
         elif delivery.delivery_rate < 80:
-            insights.append("⚠️ Delivery rate requires attention")
+            insights.append("âš ï¸ Delivery rate requires attention")
 
         if delivery.pgi_rate >= 95:
-            insights.append("✅ Excellent PGI completion")
+            insights.append("âœ… Excellent PGI completion")
         elif delivery.pgi_rate < 80:
-            insights.append("⚠️ PGI completion requires attention")
+            insights.append("âš ï¸ PGI completion requires attention")
 
         if delivery.pod_rate >= 90:
-            insights.append("✅ Excellent POD completion")
+            insights.append("âœ… Excellent POD completion")
         elif delivery.pod_rate < 70:
-            insights.append("⚠️ POD completion requires attention")
+            insights.append("âš ï¸ POD completion requires attention")
 
         if delivery.pending_dn > 0:
-            insights.append(f"⚠️ {delivery.pending_dn} pending deliveries require attention")
+            insights.append(f"âš ï¸ {delivery.pending_dn} pending deliveries require attention")
 
         # Business insights
         if business.total_revenue > 10000000:
-            insights.append("📈 Revenue is above dealer average")
+            insights.append("ðŸ“ˆ Revenue is above dealer average")
         elif business.total_revenue > 5000000:
-            insights.append("📈 Revenue is at dealer average")
+            insights.append("ðŸ“ˆ Revenue is at dealer average")
 
         if business.total_units > 1000:
-            insights.append(f"📦 Strong sales volume: {business.total_units:,} units")
+            insights.append(f"ðŸ“¦ Strong sales volume: {business.total_units:,} units")
 
         if business.yoy_growth > 10:
-            insights.append(f"📈 Strong YoY growth: {business.yoy_growth:.1f}%")
+            insights.append(f"ðŸ“ˆ Strong YoY growth: {business.yoy_growth:.1f}%")
         elif business.yoy_growth < -5:
-            insights.append(f"⚠️ Declining YoY growth: {business.yoy_growth:.1f}%")
+            insights.append(f"âš ï¸ Declining YoY growth: {business.yoy_growth:.1f}%")
 
         if business.target_achievement > 90:
-            insights.append(f"🎯 Target achievement: {business.target_achievement:.1f}%")
+            insights.append(f"ðŸŽ¯ Target achievement: {business.target_achievement:.1f}%")
 
         # Product insights
         if product.products_sold > 15:
-            insights.append("📦 Strong product portfolio across multiple models")
+            insights.append("ðŸ“¦ Strong product portfolio across multiple models")
         elif product.products_sold > 5:
-            insights.append("📦 Healthy product portfolio")
+            insights.append("ðŸ“¦ Healthy product portfolio")
 
         if product.top_product != "N/A":
-            insights.append(f"🏆 Top product: {product.top_product}")
+            insights.append(f"ðŸ† Top product: {product.top_product}")
 
         # Operation insights
         if operation.cities_served > 5:
-            insights.append(f"🌍 Wide coverage across {operation.cities_served} cities")
+            insights.append(f"ðŸŒ Wide coverage across {operation.cities_served} cities")
 
         if operation.warehouses_used > 1:
-            insights.append(f"🏭 {operation.warehouses_used} warehouses utilization")
+            insights.append(f"ðŸ­ {operation.warehouses_used} warehouses utilization")
 
         if operation.warehouse_distribution:
-            insights.append("🏭 Primary warehouse utilization is excellent")
+            insights.append("ðŸ­ Primary warehouse utilization is excellent")
 
         # Performance insights
         if performance.business_score >= 90:
-            insights.append("⭐ Platinum performance tier")
+            insights.append("â­ Platinum performance tier")
         elif performance.business_score >= 80:
-            insights.append("⭐ Gold performance tier")
+            insights.append("â­ Gold performance tier")
 
         # Ensure at least 6 insights
         if len(insights) < 6:
             insights.extend([
-                "✅ Strong delivery performance",
-                "✅ Excellent PGI completion",
-                "📈 Revenue is above dealer average",
-                "🏭 Primary warehouse utilization is excellent",
-                "📦 Strong product portfolio across multiple models"
+                "âœ… Strong delivery performance",
+                "âœ… Excellent PGI completion",
+                "ðŸ“ˆ Revenue is above dealer average",
+                "ðŸ­ Primary warehouse utilization is excellent",
+                "ðŸ“¦ Strong product portfolio across multiple models"
             ])
 
         return insights[:8]
@@ -1708,30 +1764,30 @@ class DealerDashboardBuilder:
         for insight in insights:
             if "requires attention" in insight:
                 if "delivery" in insight.lower():
-                    recommendations.append("📋 Improve delivery processes and monitoring")
+                    recommendations.append("ðŸ“‹ Improve delivery processes and monitoring")
                 elif "pgi" in insight.lower():
-                    recommendations.append("📋 Enhance PGI completion processes")
+                    recommendations.append("ðŸ“‹ Enhance PGI completion processes")
                 elif "pod" in insight.lower():
-                    recommendations.append("📋 Strengthen POD documentation")
+                    recommendations.append("ðŸ“‹ Strengthen POD documentation")
                 elif "pending" in insight.lower():
-                    recommendations.append("📋 Clear pending deliveries immediately")
+                    recommendations.append("ðŸ“‹ Clear pending deliveries immediately")
 
             if "declining" in insight:
-                recommendations.append("📋 Review and adjust business strategy for growth")
+                recommendations.append("ðŸ“‹ Review and adjust business strategy for growth")
 
         # Performance-based recommendations
         if performance.business_score < 70:
-            recommendations.append("📋 Implement performance improvement plan")
+            recommendations.append("ðŸ“‹ Implement performance improvement plan")
 
         if performance.risk_score > 30:
-            recommendations.append("📋 Conduct risk assessment and mitigation")
+            recommendations.append("ðŸ“‹ Conduct risk assessment and mitigation")
 
         # Ensure at least 3 recommendations
         if len(recommendations) < 3:
             recommendations.extend([
-                "📋 Monitor delivery performance metrics",
-                "📋 Review revenue growth strategies",
-                "📋 Optimize warehouse utilization"
+                "ðŸ“‹ Monitor delivery performance metrics",
+                "ðŸ“‹ Review revenue growth strategies",
+                "ðŸ“‹ Optimize warehouse utilization"
             ])
 
         return recommendations[:5]
@@ -1764,7 +1820,7 @@ class DealerDashboardBuilder:
         with self._lock:
             self._cache.clear()
             self._cache_time.clear()
-            logger.info("📊 Dashboard cache cleared")
+            logger.info("ðŸ“Š Dashboard cache cleared")
 
 # ============================================================
 # BLOCK 6: DEALER ANALYTICS SERVICE (IMPROVED)
@@ -1775,16 +1831,16 @@ class DealerAnalyticsService:
     Dealer Intelligence Gateway - Enterprise Edition v8.2
 
     Features:
-        ✅ PostgreSQL as source of truth
-        ✅ In-memory search engine with PostgreSQL integration
-        ✅ Session management
-        ✅ Dashboard generation from PostgreSQL
-        ✅ WhatsApp formatting with exact requested format
-        ✅ Enhanced error handling with specific error messages
-        ✅ Full PostgreSQL integration
-        ✅ Redis caching support
-        ✅ Performance monitoring
-        ✅ Analytics tracking
+        âœ… PostgreSQL as source of truth
+        âœ… In-memory search engine with PostgreSQL integration
+        âœ… Session management
+        âœ… Dashboard generation from PostgreSQL
+        âœ… WhatsApp formatting with exact requested format
+        âœ… Enhanced error handling with specific error messages
+        âœ… Full PostgreSQL integration
+        âœ… Redis caching support
+        âœ… Performance monitoring
+        âœ… Analytics tracking
     """
 
     _instance: Optional["DealerAnalyticsService"] = None
@@ -1823,26 +1879,26 @@ class DealerAnalyticsService:
         self._show_startup_info()
 
         logger.info("=" * 70)
-        logger.info("🚀 DEALER INTELLIGENCE GATEWAY v8.2")
-        logger.info("   🎯 Enterprise Production Ready")
-        logger.info("   🗄️  PostgreSQL: Single Source of Truth")
-        logger.info("   🔍 In-Memory Search Index: ✅")
-        logger.info("   🔄 Auto-Refresh: Every 15 minutes")
-        logger.info("   🎯 Similarity Threshold: 70%")
-        logger.info(f"   💾 Redis Cache: {'✅ Enabled' if REDIS_ENABLED else '❌ Disabled'}")
+        logger.info("ðŸš€ DEALER INTELLIGENCE GATEWAY v8.2")
+        logger.info("   ðŸŽ¯ Enterprise Production Ready")
+        logger.info("   ðŸ—„ï¸  PostgreSQL: Single Source of Truth")
+        logger.info("   ðŸ” In-Memory Search Index: âœ…")
+        logger.info("   ðŸ”„ Auto-Refresh: Every 15 minutes")
+        logger.info("   ðŸŽ¯ Similarity Threshold: 70%")
+        logger.info(f"   ðŸ’¾ Redis Cache: {'âœ… Enabled' if REDIS_ENABLED else 'âŒ Disabled'}")
         logger.info("=" * 70)
 
     def _show_startup_info(self):
         """Display startup information"""
         print("\n" + "=" * 70)
-        print("🏢 DEALER INTELLIGENCE GATEWAY v8.2".center(70))
+        print("ðŸ¢ DEALER INTELLIGENCE GATEWAY v8.2".center(70))
         print("=" * 70)
-        print(f"🚀 Started: {self._startup_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"🗄️  PostgreSQL: {'✅' if self._search_engine._postgresql_connected else '❌'}")
-        print(f"🔍 Search Engine: {'✅' if self._search_engine else '❌'}")
-        print(f"📊 Dashboard Builder: {'✅' if self._dashboard_builder else '❌'}")
-        print(f"💾 Session: ✅ Memory")
-        print(f"💾 Redis Cache: {'✅ Enabled' if REDIS_ENABLED else '❌ Disabled'}")
+        print(f"ðŸš€ Started: {self._startup_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"ðŸ—„ï¸  PostgreSQL: {'âœ…' if self._search_engine._postgresql_connected else 'âŒ'}")
+        print(f"ðŸ” Search Engine: {'âœ…' if self._search_engine else 'âŒ'}")
+        print(f"ðŸ“Š Dashboard Builder: {'âœ…' if self._dashboard_builder else 'âŒ'}")
+        print(f"ðŸ’¾ Session: âœ… Memory")
+        print(f"ðŸ’¾ Redis Cache: {'âœ… Enabled' if REDIS_ENABLED else 'âŒ Disabled'}")
         print("=" * 70 + "\n")
 
     # ============================================================
@@ -1856,7 +1912,7 @@ class DealerAnalyticsService:
         self._analytics["total_queries"] += 1
 
         try:
-            logger.info(f"📨 Received: '{message}' from {sender}")
+            logger.info(f"ðŸ“¨ Received: '{message}' from {sender}")
 
             if not message or not message.strip():
                 return self._show_welcome()
@@ -1865,7 +1921,7 @@ class DealerAnalyticsService:
 
             # Check for exit
             if self._is_exit_command(message_clean):
-                logger.info(f"🚪 Exit requested by {sender}")
+                logger.info(f"ðŸšª Exit requested by {sender}")
                 return EXIT_SIGNAL
 
             # Check for help/welcome
@@ -1922,14 +1978,14 @@ class DealerAnalyticsService:
             self._update_performance_metrics(elapsed)
             self._success_count += 1
 
-            logger.info(f"✅ Dashboard returned in {elapsed*1000:.0f}ms")
+            logger.info(f"âœ… Dashboard returned in {elapsed*1000:.0f}ms")
 
             return response
 
         except Exception as e:
             self._error_count += 1
             self._analytics["failed_queries"] += 1
-            logger.error(f"❌ process_whatsapp_query error: {e}")
+            logger.error(f"âŒ process_whatsapp_query error: {e}")
             logger.error(traceback.format_exc())
             return self._format_error(str(e)[:100])
 
@@ -1948,7 +2004,7 @@ class DealerAnalyticsService:
         try:
             result = self._search_engine.search_dealer(query, use_redis=REDIS_ENABLED)
 
-            logger.info(f"🔍 Search completed in {result.search_time_ms:.0f}ms")
+            logger.info(f"ðŸ” Search completed in {result.search_time_ms:.0f}ms")
             logger.info(f"   Match: {result.match_type if result.success else 'None'}")
             logger.info(f"   Confidence: {result.confidence*100:.0f}%")
 
@@ -1958,7 +2014,7 @@ class DealerAnalyticsService:
             return result
 
         except Exception as e:
-            logger.error(f"❌ Search error: {e}")
+            logger.error(f"âŒ Search error: {e}")
             return DealerSearchResult(
                 success=False,
                 message=str(e)
@@ -1972,14 +2028,14 @@ class DealerAnalyticsService:
                        context: DealerContext) -> Optional[DealerDashboard]:
         """Load dealer dashboard from PostgreSQL"""
         if not self._dashboard_builder:
-            logger.error("❌ Dashboard builder not available")
+            logger.error("âŒ Dashboard builder not available")
             return None
 
         try:
             dealer_code = search_result.dealer_code
             customer_code = search_result.customer_code
 
-            logger.info(f"📊 Loading dashboard from PostgreSQL for {search_result.customer_name}")
+            logger.info(f"ðŸ“Š Loading dashboard from PostgreSQL for {search_result.customer_name}")
 
             dashboard = self._dashboard_builder.build(dealer_code, customer_code)
 
@@ -1992,12 +2048,12 @@ class DealerAnalyticsService:
                 context.sales_manager = dashboard.identity.sales_manager
                 context.sales_channel = dashboard.identity.sales_channel
             else:
-                logger.warning(f"⚠️ No data found in PostgreSQL for {search_result.customer_name}")
+                logger.warning(f"âš ï¸ No data found in PostgreSQL for {search_result.customer_name}")
 
             return dashboard
 
         except Exception as e:
-            logger.error(f"❌ Failed to load dashboard: {e}")
+            logger.error(f"âŒ Failed to load dashboard: {e}")
             logger.error(traceback.format_exc())
             return None
 
@@ -2009,7 +2065,7 @@ class DealerAnalyticsService:
         """Get or create session"""
         if user_id not in self._sessions:
             self._sessions[user_id] = DealerContext()
-            logger.info(f"🆕 New session created for {user_id}")
+            logger.info(f"ðŸ†• New session created for {user_id}")
         return self._sessions[user_id]
 
     def _update_session_context(self, context: DealerContext, search_result: DealerSearchResult):
@@ -2020,7 +2076,7 @@ class DealerAnalyticsService:
         context.last_query = search_result.customer_name
         context.search_count += 1
         context.last_activity = datetime.now()
-        logger.info(f"💾 Session updated for {search_result.customer_name}")
+        logger.info(f"ðŸ’¾ Session updated for {search_result.customer_name}")
 
     # ============================================================
     # HANDLE SELECTION
@@ -2031,14 +2087,14 @@ class DealerAnalyticsService:
         context = self._sessions.get(sender)
         if not context or not context.pending_matches:
             return "\n".join([
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-                "⚠️ NO PENDING SELECTION",
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
+                "âš ï¸ NO PENDING SELECTION",
+                "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
                 "",
                 "Please enter a dealer name to search.",
                 "",
-                "99️⃣ Return to Main Menu",
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                "99ï¸âƒ£ Return to Main Menu",
+                "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”"
             ])
 
         if selection < 1 or selection > len(context.pending_matches):
@@ -2079,24 +2135,24 @@ class DealerAnalyticsService:
         lines = []
 
         # HEADER
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("🏢 DEALER INTELLIGENCE")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸ¢ DEALER INTELLIGENCE")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         lines.append("")
 
         # DEALER INFORMATION
-        lines.append("👤 Dealer")
+        lines.append("ðŸ‘¤ Dealer")
         lines.append(dashboard.identity.customer_name)
         lines.append("")
-        lines.append("🆔 Dealer Code")
+        lines.append("ðŸ†” Dealer Code")
         lines.append(dashboard.identity.dealer_code)
         lines.append("")
-        lines.append("🆔 Customer Code")
+        lines.append("ðŸ†” Customer Code")
         lines.append(dashboard.identity.customer_code)
         lines.append("")
 
         # LOCATION
-        lines.append("📍 LOCATION")
+        lines.append("ðŸ“ LOCATION")
         lines.append("")
         lines.append("City")
         lines.append(dashboard.identity.city)
@@ -2110,67 +2166,67 @@ class DealerAnalyticsService:
         lines.append("Delivery Location")
         lines.append(dashboard.identity.delivery_location)
         lines.append("")
-        lines.append("👔 Sales Office")
+        lines.append("ðŸ‘” Sales Office")
         lines.append(dashboard.identity.sales_office)
         lines.append("")
-        lines.append("👨‍💼 Sales Channel")
+        lines.append("ðŸ‘¨â€ðŸ’¼ Sales Channel")
         lines.append(dashboard.identity.sales_channel)
         lines.append("")
 
         # DELIVERY SUMMARY
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("📦 DELIVERY SUMMARY")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸ“¦ DELIVERY SUMMARY")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         lines.append("")
-        lines.append(f"🚚 Total DN           : {dashboard.delivery.total_dn}")
-        lines.append(f"✅ Delivered DN       : {dashboard.delivery.delivered_dn}")
-        lines.append(f"⏳ Pending DN         : {dashboard.delivery.pending_dn}")
+        lines.append(f"ðŸšš Total DN           : {dashboard.delivery.total_dn}")
+        lines.append(f"âœ… Delivered DN       : {dashboard.delivery.delivered_dn}")
+        lines.append(f"â³ Pending DN         : {dashboard.delivery.pending_dn}")
         lines.append("")
-        lines.append(f"📤 PGI Completed      : {dashboard.delivery.pgi_completed}")
-        lines.append(f"📥 POD Completed      : {dashboard.delivery.pod_completed}")
+        lines.append(f"ðŸ“¤ PGI Completed      : {dashboard.delivery.pgi_completed}")
+        lines.append(f"ðŸ“¥ POD Completed      : {dashboard.delivery.pod_completed}")
         lines.append("")
-        lines.append(f"📊 Delivery Rate      : {dashboard.delivery.delivery_rate:.2f}%")
-        lines.append(f"📊 PGI Rate           : {dashboard.delivery.pgi_rate:.2f}%")
-        lines.append(f"📊 POD Rate           : {dashboard.delivery.pod_rate:.2f}%")
+        lines.append(f"ðŸ“Š Delivery Rate      : {dashboard.delivery.delivery_rate:.2f}%")
+        lines.append(f"ðŸ“Š PGI Rate           : {dashboard.delivery.pgi_rate:.2f}%")
+        lines.append(f"ðŸ“Š POD Rate           : {dashboard.delivery.pod_rate:.2f}%")
         lines.append("")
-        lines.append(f"🚚 Avg Delivery Days  : {dashboard.delivery.avg_delivery_days:.1f} Days")
-        lines.append(f"📥 Avg POD Days       : {dashboard.delivery.avg_pod_days:.1f} Days")
+        lines.append(f"ðŸšš Avg Delivery Days  : {dashboard.delivery.avg_delivery_days:.1f} Days")
+        lines.append(f"ðŸ“¥ Avg POD Days       : {dashboard.delivery.avg_pod_days:.1f} Days")
         lines.append("")
 
         # BUSINESS SUMMARY
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("💰 BUSINESS SUMMARY")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸ’° BUSINESS SUMMARY")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         lines.append("")
-        lines.append("💵 Total Revenue")
+        lines.append("ðŸ’µ Total Revenue")
         lines.append(format_currency(dashboard.business.total_revenue))
         lines.append("")
-        lines.append("📦 Total Units Sold")
+        lines.append("ðŸ“¦ Total Units Sold")
         lines.append(f"{dashboard.business.total_units:,}")
         lines.append("")
-        lines.append("📄 Total Delivery Notes")
+        lines.append("ðŸ“„ Total Delivery Notes")
         lines.append(f"{dashboard.business.total_dn}")
         lines.append("")
-        lines.append("💰 Average Revenue / DN")
+        lines.append("ðŸ’° Average Revenue / DN")
         lines.append(format_currency(dashboard.business.avg_revenue_per_dn))
         lines.append("")
-        lines.append("📦 Average Units / DN")
+        lines.append("ðŸ“¦ Average Units / DN")
         lines.append(f"{dashboard.business.avg_units_per_dn:.2f}")
         lines.append("")
-        lines.append("📈 Year-over-Year Growth")
+        lines.append("ðŸ“ˆ Year-over-Year Growth")
         lines.append(f"{dashboard.business.yoy_growth:.1f}%")
         lines.append("")
-        lines.append("🎯 Target Achievement")
+        lines.append("ðŸŽ¯ Target Achievement")
         lines.append(f"{dashboard.business.target_achievement:.1f}%")
         lines.append("")
-        lines.append("📊 Monthly Growth")
+        lines.append("ðŸ“Š Monthly Growth")
         lines.append(f"{dashboard.business.monthly_growth:.1f}%")
         lines.append("")
 
         # PRODUCT SUMMARY
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("📦 PRODUCT SUMMARY")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸ“¦ PRODUCT SUMMARY")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         lines.append("")
         lines.append("Products Sold")
         lines.append(str(dashboard.product.products_sold))
@@ -2195,9 +2251,9 @@ class DealerAnalyticsService:
         lines.append("")
 
         # OPERATION SUMMARY
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("📍 OPERATION SUMMARY")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸ“ OPERATION SUMMARY")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         lines.append("")
         lines.append("Cities Served")
         lines.append(str(dashboard.operation.cities_served))
@@ -2219,13 +2275,13 @@ class DealerAnalyticsService:
         lines.append("")
 
         # PERFORMANCE
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("📈 PERFORMANCE")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸ“ˆ PERFORMANCE")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         lines.append("")
 
         score = dashboard.performance.business_score
-        score_emoji = "🟢" if score >= 90 else "🟡" if score >= 70 else "🔴"
+        score_emoji = "ðŸŸ¢" if score >= 90 else "ðŸŸ¡" if score >= 70 else "ðŸ”´"
         lines.append("Business Score")
         lines.append(f"{score} / 100 {score_emoji}")
         lines.append("")
@@ -2250,9 +2306,9 @@ class DealerAnalyticsService:
 
         # BUSINESS INSIGHTS
         if dashboard.insights:
-            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-            lines.append("💡 BUSINESS INSIGHTS")
-            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+            lines.append("ðŸ’¡ BUSINESS INSIGHTS")
+            lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
             lines.append("")
             for insight in dashboard.insights[:8]:
                 lines.append(insight)
@@ -2260,18 +2316,18 @@ class DealerAnalyticsService:
 
         # RECOMMENDATIONS
         if dashboard.recommendations:
-            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-            lines.append("📋 RECOMMENDATIONS")
-            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+            lines.append("ðŸ“‹ RECOMMENDATIONS")
+            lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
             lines.append("")
             for rec in dashboard.recommendations[:5]:
                 lines.append(rec)
                 lines.append("")
 
         # FOOTER
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("💬 Type '99' to return to Main Menu")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸ’¬ Type '99' to return to Main Menu")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
 
         return "\n".join(lines)
 
@@ -2282,24 +2338,24 @@ class DealerAnalyticsService:
     def _format_no_data_error(self, dealer_name: str) -> str:
         """Format error when no data is found for dealer"""
         return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "⚠️ NO DATA AVAILABLE",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
+            "âš ï¸ NO DATA AVAILABLE",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
             "",
             f"We found '{dealer_name}' in our records but no delivery data is available.",
             "",
-            "💡 Possible reasons:",
-            "• No delivery reports have been imported for this dealer",
-            "• The dealer has no recent transactions",
-            "• Data import may be incomplete",
+            "ðŸ’¡ Possible reasons:",
+            "â€¢ No delivery reports have been imported for this dealer",
+            "â€¢ The dealer has no recent transactions",
+            "â€¢ Data import may be incomplete",
             "",
-            "📝 Try searching for:",
-            "• Arshad Electronics-Khi",
-            "• Zoom Appliances",
-            "• Metro Electronics",
+            "ðŸ“ Try searching for:",
+            "â€¢ Arshad Electronics-Khi",
+            "â€¢ Zoom Appliances",
+            "â€¢ Metro Electronics",
             "",
-            "99️⃣ Return to Main Menu",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "99ï¸âƒ£ Return to Main Menu",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”"
         ])
 
     # ============================================================
@@ -2309,60 +2365,60 @@ class DealerAnalyticsService:
     def _format_not_found(self, query: str, search_result: DealerSearchResult, sender: str = "default") -> str:
         """Format dealer not found response"""
         lines = []
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("🔍 DEALER NOT FOUND")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸ” DEALER NOT FOUND")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         lines.append("")
         lines.append(f"We couldn't find '{query}' in our records.")
         lines.append("")
 
         if search_result.suggestions:
-            lines.append("💡 Did you mean:")
+            lines.append("ðŸ’¡ Did you mean:")
             lines.append("")
             for i, suggestion in enumerate(search_result.suggestions[:5], 1):
                 confidence = suggestion.get('confidence', 0)
                 name = suggestion.get('customer_name', 'Unknown')
                 lines.append(f"{i}. {name} ({confidence:.0f}% match)")
             lines.append("")
-            lines.append("💬 Type the number to select a dealer")
+            lines.append("ðŸ’¬ Type the number to select a dealer")
             lines.append("")
 
-            # Store suggestions for selection — bug fix: use the actual
+            # Store suggestions for selection â€” bug fix: use the actual
             # sender's session key instead of the hardcoded "default"
             context = self._get_or_create_session(sender)
             context.pending_matches = search_result.suggestions[:5]
             self._sessions[sender] = context
         else:
-            lines.append("💡 Suggestions:")
-            lines.append("• Check the spelling")
-            lines.append("• Try searching by Dealer Code")
-            lines.append("• Try searching by Customer Code")
-            lines.append("• Use partial name search")
+            lines.append("ðŸ’¡ Suggestions:")
+            lines.append("â€¢ Check the spelling")
+            lines.append("â€¢ Try searching by Dealer Code")
+            lines.append("â€¢ Try searching by Customer Code")
+            lines.append("â€¢ Use partial name search")
             lines.append("")
-            lines.append("📝 Examples:")
-            lines.append("• Arshad Electronics-Khi")
-            lines.append("• Zoom Appliances")
-            lines.append("• RUBA Digital")
+            lines.append("ðŸ“ Examples:")
+            lines.append("â€¢ Arshad Electronics-Khi")
+            lines.append("â€¢ Zoom Appliances")
+            lines.append("â€¢ RUBA Digital")
             lines.append("")
 
-        lines.append("99️⃣ Return to Main Menu")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("99ï¸âƒ£ Return to Main Menu")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
 
         return "\n".join(lines)
 
     def _format_error(self, error_message: str) -> str:
         """Format error response"""
         return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "⚠️ ERROR",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
+            "âš ï¸ ERROR",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
             "",
             "An error occurred while processing your request.",
             "",
             f"Error: {error_message}",
             "",
             "Please try again or type '99' to exit.",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”"
         ])
 
     # ============================================================
@@ -2391,40 +2447,40 @@ class DealerAnalyticsService:
     def _show_welcome(self, sender: str = None) -> str:
         """Show welcome message"""
         return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "🏢 DEALER SEARCH",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
+            "ðŸ¢ DEALER SEARCH",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
             "",
             "Please write the Dealer Name.",
             "",
             "Examples:",
-            "• Arshad Electronics-Khi",
-            "• Zoom Appliances",
-            "• RUBA Digital",
-            "• Metro Electronics",
-            "• Friends Electronics",
+            "â€¢ Arshad Electronics-Khi",
+            "â€¢ Zoom Appliances",
+            "â€¢ RUBA Digital",
+            "â€¢ Metro Electronics",
+            "â€¢ Friends Electronics",
             "",
             "Supported Search:",
-            "✓ Dealer Name",
-            "✓ Dealer Code",
-            "✓ Customer Code",
-            "✓ Partial Search",
-            "✓ Alias",
-            "✓ Smart Match (70%)",
-            "✓ Phonetic (Soundex)",
-            "✓ Abbreviations",
-            "✓ City Suffix (e.g. -Khi, -Lhr)",
+            "âœ“ Dealer Name",
+            "âœ“ Dealer Code",
+            "âœ“ Customer Code",
+            "âœ“ Partial Search",
+            "âœ“ Alias",
+            "âœ“ Smart Match (70%)",
+            "âœ“ Phonetic (Soundex)",
+            "âœ“ Abbreviations",
+            "âœ“ City Suffix (e.g. -Khi, -Lhr)",
             "",
-            "99️⃣ Main Menu",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "99ï¸âƒ£ Main Menu",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”"
         ])
 
     def _show_examples(self) -> str:
         """Show example dealer names"""
         return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "📝 DEALER EXAMPLES",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
+            "ðŸ“ DEALER EXAMPLES",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
             "",
             "Try searching for:",
             "",
@@ -2437,13 +2493,13 @@ class DealerAnalyticsService:
             "7. Galaxy Electronics",
             "8. Star Traders",
             "",
-            "💡 You can also search by:",
-            "• Dealer Code (e.g., DLR-045)",
-            "• Customer Code (e.g., CUST-789)",
-            "• Abbreviations (e.g., AE for Arshad Electronics)",
+            "ðŸ’¡ You can also search by:",
+            "â€¢ Dealer Code (e.g., DLR-045)",
+            "â€¢ Customer Code (e.g., CUST-789)",
+            "â€¢ Abbreviations (e.g., AE for Arshad Electronics)",
             "",
-            "99️⃣ Return to Main Menu",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "99ï¸âƒ£ Return to Main Menu",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”"
         ])
 
     # ============================================================
@@ -2529,7 +2585,7 @@ class DealerAnalyticsService:
         """Clear all caches"""
         self._sessions.clear()
         self._dashboard_builder.clear_cache()
-        logger.info("💾 All caches cleared")
+        logger.info("ðŸ’¾ All caches cleared")
 
     def get_analytics(self) -> Dict[str, Any]:
         """Get analytics data"""
@@ -2590,7 +2646,7 @@ if __name__ == "__main__":
 
     # Show health
     health = service.health_check()
-    print("📊 Health Check:")
+    print("ðŸ“Š Health Check:")
     print(json.dumps(health, indent=2, default=str))
     print()
 
@@ -2599,22 +2655,22 @@ if __name__ == "__main__":
     print()
 
     # Interactive test
-    print("🔍 INTERACTIVE TEST MODE")
+    print("ðŸ” INTERACTIVE TEST MODE")
     print("Enter dealer name to search (or 99 to exit)")
     print()
 
     while True:
         try:
-            query = input("🔍 Enter Dealer Name: ").strip()
+            query = input("ðŸ” Enter Dealer Name: ").strip()
 
             if query == "99":
-                print("\n👋 Goodbye!")
+                print("\nðŸ‘‹ Goodbye!")
                 break
 
             if not query:
                 continue
 
-            print("\n⏳ Processing...\n")
+            print("\nâ³ Processing...\n")
             result = service.process_whatsapp_query(query, "test_user")
 
             if result == EXIT_SIGNAL:
@@ -2625,8 +2681,8 @@ if __name__ == "__main__":
             print()
 
         except KeyboardInterrupt:
-            print("\n\n👋 Goodbye!")
+            print("\n\nðŸ‘‹ Goodbye!")
             break
         except Exception as e:
-            print(f"\n❌ Error: {e}\n")
+            print(f"\nâŒ Error: {e}\n")
             traceback.print_exc()
