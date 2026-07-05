@@ -13,7 +13,6 @@
 # - ✅ PRESERVED: All existing functionality
 # - ✅ PRESERVED: All webhook, AI, analytics services
 # - ✅ All v16.2 improvements preserved
-# - ✅ FIXED: Logging configuration bug
 # ==========================================================
 
 from __future__ import annotations
@@ -33,24 +32,7 @@ from threading import Lock
 
 
 # ==========================================================
-# BLOCK 1: LOGGING CONFIGURATION (FIXED)
-# ==========================================================
-
-import logging
-
-# Configure logging FIRST before anything else
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
-
-# Create logger for this module
-logger = logging.getLogger(__name__)
-
-
-# ==========================================================
-# BLOCK 2: GLOBAL CRASH HANDLER
+# BLOCK 1: GLOBAL CRASH HANDLER
 # ==========================================================
 
 def handle_uncaught_exception(exc_type, exc_value, exc_traceback):
@@ -84,7 +66,7 @@ sys.excepthook = handle_uncaught_exception
 
 
 # ==========================================================
-# BLOCK 3: STARTUP CHECKPOINTS
+# BLOCK 2: STARTUP CHECKPOINTS
 # ==========================================================
 
 print("=" * 60)
@@ -101,7 +83,7 @@ print("=" * 60)
 
 
 # ==========================================================
-# BLOCK 4: FASTAPI IMPORTS
+# BLOCK 3: FASTAPI IMPORTS
 # ==========================================================
 
 print("CHECKPOINT 1 - IMPORTING FASTAPI MODULES")
@@ -110,7 +92,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
-from loguru import logger as loguru_logger
+from loguru import logger
 from cachetools import TTLCache
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -148,7 +130,7 @@ print("✅ FastAPI modules imported")
 
 
 # ==========================================================
-# BLOCK 5: CONFIGURATION LOADING
+# BLOCK 4: CONFIGURATION LOADING
 # ==========================================================
 
 print("CHECKPOINT 2 - LOADING CONFIG")
@@ -157,7 +139,7 @@ print(f"✅ Config loaded - ENVIRONMENT: {config.ENVIRONMENT}")
 
 
 # ==========================================================
-# BLOCK 6: DATABASE IMPORT (Module level)
+# BLOCK 5: DATABASE IMPORT (Module level)
 # ==========================================================
 
 print("CHECKPOINT 3 - IMPORTING DATABASE (MODULE LEVEL)")
@@ -182,7 +164,7 @@ except Exception as e:
 
 
 # ==========================================================
-# BLOCK 7: CACHE TTL
+# BLOCK 6: CACHE TTL
 # ==========================================================
 
 CACHE_TTL = getattr(config, 'CACHE_TTL', 300)
@@ -190,7 +172,7 @@ print(f"✅ CACHE_TTL = {CACHE_TTL}s (defined at module level)")
 
 
 # ==========================================================
-# BLOCK 8: CHAT SERVICE IMPORT
+# BLOCK 7: CHAT SERVICE IMPORT
 # ==========================================================
 
 print("CHECKPOINT 4 - IMPORTING SERVICES")
@@ -217,7 +199,7 @@ print("=" * 60)
 
 
 # ==========================================================
-# BLOCK 9: PRE-FLIGHT CHECK FUNCTION
+# BLOCK 8: PRE-FLIGHT CHECK FUNCTION
 # ==========================================================
 
 def preflight_check() -> Dict[str, Any]:
@@ -308,7 +290,7 @@ def preflight_check() -> Dict[str, Any]:
 
 
 # ==========================================================
-# BLOCK 10: EXECUTE PRE-FLIGHT CHECK
+# BLOCK 9: EXECUTE PRE-FLIGHT CHECK
 # ==========================================================
 
 preflight_result = preflight_check()
@@ -316,7 +298,7 @@ print(f"✅ PRE-FLIGHT RESULT: {preflight_result['status']}")
 
 
 # ==========================================================
-# BLOCK 11: INITIALIZE ALL SERVICES
+# BLOCK 10: INITIALIZE ALL SERVICES
 # ==========================================================
 
 def initialize_all_services_sync():
@@ -430,7 +412,7 @@ def initialize_all_services_sync():
 
 
 # ==========================================================
-# BLOCK 12: LIFESPAN HANDLER (FIXED)
+# BLOCK 11: LIFESPAN HANDLER
 # ==========================================================
 
 @asynccontextmanager
@@ -528,7 +510,7 @@ async def lifespan(app: FastAPI):
 
 
 # ==========================================================
-# BLOCK 13: CREATE FASTAPI APP WITH LIFESPAN
+# BLOCK 12: CREATE FASTAPI APP WITH LIFESPAN
 # ==========================================================
 
 app = FastAPI(
@@ -543,7 +525,7 @@ app = FastAPI(
 
 
 # ==========================================================
-# BLOCK 14: TEMPLATES SETUP
+# BLOCK 13: TEMPLATES SETUP
 # ==========================================================
 
 templates = Jinja2Templates(
@@ -556,7 +538,7 @@ logger.info("✅ Jinja2Templates initialized for dashboard")
 
 
 # ==========================================================
-# BLOCK 15: WEBHOOK ROUTER REGISTRATION
+# BLOCK 14: WEBHOOK ROUTER REGISTRATION
 # ==========================================================
 
 print("=" * 60)
@@ -618,7 +600,7 @@ print("=" * 60)
 
 
 # ==========================================================
-# BLOCK 16: UPLOAD ROUTER REGISTRATION (NEW - v16.3)
+# BLOCK 15: UPLOAD ROUTER REGISTRATION (NEW - v16.3)
 # ==========================================================
 
 print("=" * 60)
@@ -739,7 +721,7 @@ print("=" * 60)
 
 
 # ==========================================================
-# BLOCK 17: FALLBACK WEBHOOK ENDPOINTS (Preserved)
+# BLOCK 16: FALLBACK WEBHOOK ENDPOINTS (Preserved)
 # ==========================================================
 
 if webhook_router is None:
@@ -834,7 +816,7 @@ if webhook_router is None:
 
 
 # ==========================================================
-# BLOCK 18: DEBUG AND TEST ENDPOINTS
+# BLOCK 17: DEBUG AND TEST ENDPOINTS
 # ==========================================================
 
 @app.get("/raw-ping")
@@ -917,7 +899,7 @@ async def debug_service_status():
 
 
 # ==========================================================
-# BLOCK 19: FORCE LOAD SERVICES ENDPOINT
+# BLOCK 18: FORCE LOAD SERVICES ENDPOINT
 # ==========================================================
 
 @app.get("/force-load-services")
@@ -943,7 +925,7 @@ async def force_load_services():
 
 
 # ==========================================================
-# BLOCK 20: WEBHOOK INTEGRATION ENDPOINT
+# BLOCK 19: WEBHOOK INTEGRATION ENDPOINT
 # ==========================================================
 
 @app.get("/webhook-stats")
@@ -975,7 +957,7 @@ async def webhook_integration_stats():
 
 
 # ==========================================================
-# BLOCK 21: UPLOAD STATUS ENDPOINT (Direct - Diagnostic)
+# BLOCK 20: UPLOAD STATUS ENDPOINT (Direct - Diagnostic)
 # ==========================================================
 
 @app.get("/upload/status-direct")
@@ -995,7 +977,7 @@ async def upload_status_direct():
 
 
 # ==========================================================
-# BLOCK 22: ROOT ROUTE - DASHBOARD
+# BLOCK 21: ROOT ROUTE - DASHBOARD
 # ==========================================================
 
 @app.get("/")
@@ -1065,7 +1047,7 @@ async def root(request: Request):
 
 
 # ==========================================================
-# BLOCK 23: DASHBOARD ENDPOINT
+# BLOCK 22: DASHBOARD ENDPOINT
 # ==========================================================
 
 @app.get("/dashboard")
@@ -1112,7 +1094,7 @@ async def dashboard(request: Request):
 
 
 # ==========================================================
-# BLOCK 24: SIMPLE ENDPOINTS (Preserved)
+# BLOCK 23: SIMPLE ENDPOINTS (Preserved)
 # ==========================================================
 
 @app.get("/alive")
@@ -1165,7 +1147,7 @@ async def startup_check():
 
 
 # ==========================================================
-# BLOCK 25: GLOBAL EXCEPTION HANDLER
+# BLOCK 24: GLOBAL EXCEPTION HANDLER
 # ==========================================================
 
 @app.exception_handler(Exception)
@@ -1193,7 +1175,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ==========================================================
-# BLOCK 26: CORS CONFIGURATION (Preserved)
+# BLOCK 25: CORS CONFIGURATION (Preserved)
 # ==========================================================
 
 FRONTEND_URL = getattr(config, 'FRONTEND_URL', os.getenv("FRONTEND_URL", "http://localhost:3000"))
@@ -1218,7 +1200,7 @@ else:
 
 
 # ==========================================================
-# BLOCK 27: RATE LIMITER (Preserved)
+# BLOCK 26: RATE LIMITER (Preserved)
 # ==========================================================
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["5 per second"])
@@ -1228,7 +1210,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 # ==========================================================
-# BLOCK 28: CRASH CLASSIFICATION (Preserved)
+# BLOCK 27: CRASH CLASSIFICATION (Preserved)
 # ==========================================================
 
 class CrashType:
@@ -1270,7 +1252,7 @@ def classify_crash(exc: Exception) -> str:
 
 
 # ==========================================================
-# BLOCK 29: FILE RANKING SYSTEM (Preserved)
+# BLOCK 28: FILE RANKING SYSTEM (Preserved)
 # ==========================================================
 
 CRASH_SCORE = defaultdict(int)
@@ -1284,7 +1266,7 @@ def get_top_crash_files(limit: int = 5) -> List[Tuple[str, int]]:
 
 
 # ==========================================================
-# BLOCK 30: IMPORT DEPENDENCY SCANNER (Preserved)
+# BLOCK 29: IMPORT DEPENDENCY SCANNER (Preserved)
 # ==========================================================
 
 IMPORT_TREE = {}
@@ -1333,7 +1315,7 @@ def print_import_tree(module_name: str, indent: str = ""):
 
 
 # ==========================================================
-# BLOCK 31: CONSTRUCTOR STEP-BY-STEP TRACKING (Preserved)
+# BLOCK 30: CONSTRUCTOR STEP-BY-STEP TRACKING (Preserved)
 # ==========================================================
 
 class ConstructorTracker:
@@ -1370,14 +1352,14 @@ class ConstructorTracker:
 
 
 # ==========================================================
-# BLOCK 32: RUNTIME DIAGNOSTICS (Preserved)
+# BLOCK 31: RUNTIME DIAGNOSTICS (Preserved)
 # ==========================================================
 
 LAST_REQUEST_ERROR = None
 
 
 # ==========================================================
-# BLOCK 33: CRASH LOCATION FUNCTIONS (Preserved)
+# BLOCK 32: CRASH LOCATION FUNCTIONS (Preserved)
 # ==========================================================
 
 def crash_location(exc: Exception) -> Optional[Dict[str, Any]]:
@@ -1414,7 +1396,7 @@ def full_crash_analysis(exc: Exception, max_frames: int = 10) -> List[Dict[str, 
 
 
 # ==========================================================
-# BLOCK 34: ROOT CAUSE STORAGE (Preserved)
+# BLOCK 33: ROOT CAUSE STORAGE (Preserved)
 # ==========================================================
 
 _ROOT_CAUSE = None
@@ -1454,7 +1436,7 @@ def get_root_cause() -> Optional[Dict[str, Any]]:
 
 
 # ==========================================================
-# BLOCK 35: CRASH HISTORY (Preserved)
+# BLOCK 34: CRASH HISTORY (Preserved)
 # ==========================================================
 
 MAX_CRASH_HISTORY = 100
@@ -1503,7 +1485,7 @@ def write_crash_report(exc: Exception, stage: str = "unknown"):
 
 
 # ==========================================================
-# BLOCK 36: MODULE FINGERPRINTING (Preserved)
+# BLOCK 35: MODULE FINGERPRINTING (Preserved)
 # ==========================================================
 
 MODULE_FINGERPRINTS = {}
@@ -1521,7 +1503,7 @@ def update_module_fingerprint(module_name: str, status: str, import_time: float 
 
 
 # ==========================================================
-# BLOCK 37: ENHANCED IMPORT DIAGNOSTICS (Preserved)
+# BLOCK 36: ENHANCED IMPORT DIAGNOSTICS (Preserved)
 # ==========================================================
 
 def diagnose_import(module_name: str, use_cache: bool = True):
@@ -1557,7 +1539,7 @@ def diagnose_import(module_name: str, use_cache: bool = True):
 
 
 # ==========================================================
-# BLOCK 38: ENHANCED CONSTRUCTOR DIAGNOSTICS (Preserved)
+# BLOCK 37: ENHANCED CONSTRUCTOR DIAGNOSTICS (Preserved)
 # ==========================================================
 
 def diagnose_constructor(service_name: str, constructor_func, *args, **kwargs):
@@ -1586,7 +1568,7 @@ def diagnose_constructor(service_name: str, constructor_func, *args, **kwargs):
 
 
 # ==========================================================
-# BLOCK 39: SERVICE FILES TO DIAGNOSE (Preserved)
+# BLOCK 38: SERVICE FILES TO DIAGNOSE (Preserved)
 # ==========================================================
 
 ALL_FILES_TO_DIAGNOSE = [
@@ -1605,7 +1587,7 @@ ALL_FILES_TO_DIAGNOSE = [
 
 
 # ==========================================================
-# BLOCK 40: STARTUP DIAGNOSTICS REGISTRY (Preserved)
+# BLOCK 39: STARTUP DIAGNOSTICS REGISTRY (Preserved)
 # ==========================================================
 
 STARTUP_DIAGNOSTICS = {
@@ -1621,7 +1603,7 @@ STARTUP_DIAGNOSTICS = {
 
 
 # ==========================================================
-# BLOCK 41: THREAD-SAFE METRICS (Preserved)
+# BLOCK 40: THREAD-SAFE METRICS (Preserved)
 # ==========================================================
 
 class ThreadSafeMetrics:
@@ -1665,7 +1647,7 @@ request_metrics = ThreadSafeMetrics()
 
 
 # ==========================================================
-# BLOCK 42: PROMETHEUS METRICS (Preserved)
+# BLOCK 41: PROMETHEUS METRICS (Preserved)
 # ==========================================================
 
 whatsapp_messages_total = Counter('whatsapp_messages_total', 'Total WhatsApp messages', ['type'])
@@ -1676,7 +1658,7 @@ active_requests = Gauge('active_requests', 'Active requests')
 
 
 # ==========================================================
-# BLOCK 43: SERVICE REGISTRY (Preserved)
+# BLOCK 42: SERVICE REGISTRY (Preserved)
 # ==========================================================
 
 class ServiceRegistry:
@@ -1698,7 +1680,7 @@ class ServiceRegistry:
 
 
 # ==========================================================
-# BLOCK 44: HELPER FUNCTIONS (Preserved)
+# BLOCK 43: HELPER FUNCTIONS (Preserved)
 # ==========================================================
 
 def diagnose_service(service_name: str, func, *args, **kwargs):
@@ -1763,21 +1745,20 @@ def print_dependency_tree():
 ║  ✅ PRESERVED: All webhook, AI, analytics services              ║
 ║  ✅ All v16.2 improvements preserved                             ║
 ║  ✅ WhatsApp integration 100% protected                          ║
-║  ✅ FIXED: Logging configuration bug                             ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
     logger.info(tree)
 
 
 # ==========================================================
-# BLOCK 45: CACHE (Preserved)
+# BLOCK 44: CACHE (Preserved)
 # ==========================================================
 
 dashboard_cache = TTLCache(maxsize=100, ttl=CACHE_TTL)
 
 
 # ==========================================================
-# BLOCK 46: DIAGNOSTICS ENDPOINTS (Preserved)
+# BLOCK 45: DIAGNOSTICS ENDPOINTS (Preserved)
 # ==========================================================
 
 @app.get("/root-cause", tags=["Diagnostics"])
@@ -1849,7 +1830,7 @@ async def crash_classification():
 
 
 # ==========================================================
-# BLOCK 47: REQUEST MODELS (Preserved)
+# BLOCK 46: REQUEST MODELS (Preserved)
 # ==========================================================
 
 from pydantic import BaseModel, Field
@@ -1865,7 +1846,7 @@ class ChatResponse(BaseModel):
 
 
 # ==========================================================
-# BLOCK 48: CHAT ENDPOINT (Preserved)
+# BLOCK 47: CHAT ENDPOINT (Preserved)
 # ==========================================================
 
 @app.get("/chat-status", tags=["Chat"])
@@ -1878,7 +1859,7 @@ async def chat_status():
 
 
 # ==========================================================
-# BLOCK 49: CRASH TEST ENDPOINT (Preserved)
+# BLOCK 48: CRASH TEST ENDPOINT (Preserved)
 # ==========================================================
 
 if config.ENVIRONMENT != "production":
@@ -1888,7 +1869,7 @@ if config.ENVIRONMENT != "production":
 
 
 # ==========================================================
-# BLOCK 50: ENTRY POINT (Preserved)
+# BLOCK 49: ENTRY POINT (Preserved)
 # ==========================================================
 
 if __name__ == "__main__":
@@ -1900,7 +1881,7 @@ if __name__ == "__main__":
 
 
 # ==========================================================
-# BLOCK 51: INITIALIZATION LOG (Preserved)
+# BLOCK 50: INITIALIZATION LOG (Preserved)
 # ==========================================================
 
 try:
