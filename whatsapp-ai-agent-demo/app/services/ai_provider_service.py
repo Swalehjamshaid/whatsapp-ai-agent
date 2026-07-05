@@ -1464,3 +1464,76 @@ if __name__ == "__main__":
             break
         except Exception as e:
             print(f"\n❌ Error: {e}\n")
+
+# ============================================================
+# Add this to the END of app/services/ai_provider_service.py
+# ============================================================
+
+import logging
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+# Singleton instance
+_whatsapp_provider_instance = None
+
+def get_whatsapp_provider_service():
+    """
+    Get or create the WhatsApp provider service instance.
+    
+    Returns:
+        The WhatsAppProviderService instance
+    """
+    global _whatsapp_provider_instance
+    
+    if _whatsapp_provider_instance is None:
+        try:
+            # Try to import and create the service
+            from app.services.ai_provider_service import WhatsAppProviderService
+            _whatsapp_provider_instance = WhatsAppProviderService()
+            logger.info("✅ WhatsApp Provider Service initialized successfully")
+        except ImportError:
+            try:
+                # Try alternative class name
+                from app.services.ai_provider_service import AIProviderService
+                _whatsapp_provider_instance = AIProviderService()
+                logger.info("✅ AI Provider Service initialized successfully")
+            except ImportError as e:
+                logger.error(f"❌ Failed to import Provider Service: {e}")
+                raise
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Provider Service: {e}")
+            raise
+    
+    return _whatsapp_provider_instance
+
+
+async def process_whatsapp_query(message: str, sender: str) -> str:
+    """
+    Process a WhatsApp query using the provider service.
+    This is used by the fallback handler in main.py.
+    
+    Args:
+        message: The user's message
+        sender: The sender's phone number
+        
+    Returns:
+        The response message
+    """
+    try:
+        provider = get_whatsapp_provider_service()
+        
+        # Check if provider has the method
+        if hasattr(provider, 'process_whatsapp_query'):
+            return provider.process_whatsapp_query(message, sender)
+        elif hasattr(provider, 'process_query'):
+            return provider.process_query(message, sender)
+        else:
+            # Try to import dealer service directly as fallback
+            from app.services.dealer_analytics_service import get_dealer_service
+            dealer_service = get_dealer_service()
+            return dealer_service.process_whatsapp_query(message, sender)
+            
+    except Exception as e:
+        logger.error(f"❌ Error processing query: {e}")
+        return "⚠️ I'm having trouble processing your request. Please try again later."
