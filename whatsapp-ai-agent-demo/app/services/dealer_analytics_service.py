@@ -1,19 +1,19 @@
-
 #!/usr/bin/env python3
 # ============================================================
 # FILE: whatsapp-ai-agent-demo/app/services/dealer_analytics_service.py
-# VERSION: 8.0 - ENTERPRISE DEALER INTELLIGENCE GATEWAY WITH POSTGRESQL
+# VERSION: 8.1 - ENTERPRISE DEALER INTELLIGENCE GATEWAY WITH POSTGRESQL & REDIS
 # ============================================================
 
 """
 ================================================================================
-DEALER INTELLIGENCE GATEWAY - ENTERPRISE EDITION v8.0
+DEALER INTELLIGENCE GATEWAY - ENTERPRISE EDITION v8.1
 ================================================================================
 
 This service orchestrates the complete dealer intelligence workflow with:
     ✅ PostgreSQL as single source of truth
     ✅ In-memory search index for lightning-fast searches
-    ✅ Multi-level search strategy (code → exact → partial → fuzzy)
+    ✅ Redis cache for distributed caching (optional)
+    ✅ Multi-level search strategy (code → exact → partial → fuzzy → phonetic)
     ✅ 70% similarity threshold for fuzzy matching
     ✅ Automatic cache refresh every 15 minutes
     ✅ Comprehensive diagnostic logging
@@ -22,6 +22,9 @@ This service orchestrates the complete dealer intelligence workflow with:
     ✅ WhatsApp-optimized formatting with emojis
     ✅ Enhanced error handling with specific error messages
     ✅ Full PostgreSQL integration
+    ✅ Soundex phonetic search
+    ✅ Abbreviation expansion
+    ✅ Performance monitoring
 
 SOURCE OF TRUTH: PostgreSQL (DeliveryReport model)
 ================================================================================
@@ -56,12 +59,14 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 EXIT_SIGNAL = "__EXIT__"
-VERSION = "8.0"
+VERSION = "8.1"
 CACHE_TTL = 300  # 5 minutes cache
 SEARCH_CACHE_REFRESH_MINUTES = 15
 SIMILARITY_THRESHOLD = 0.70  # 70% minimum similarity
 MAX_SUGGESTIONS = 10
 DEALER_DELAY_THRESHOLD_DAYS = 7
+REDIS_TTL = 3600  # 1 hour Redis TTL
+REDIS_ENABLED = False  # Set to True to enable Redis
 
 # ============================================================
 # BLOCK 2: UTILITY FUNCTIONS
@@ -266,7 +271,7 @@ class DealerDashboard:
     generated_at: datetime = field(default_factory=datetime.now)
 
 # ============================================================
-# BLOCK 4: DEALER SEARCH ENGINE WITH POSTGRESQL
+# BLOCK 4: DEALER SEARCH ENGINE WITH POSTGRESQL (IMPROVED)
 # ============================================================
 
 class DealerSearchEngine:
@@ -280,22 +285,48 @@ class DealerSearchEngine:
         ✅ 70% similarity threshold
         ✅ Automatic cache refresh every 15 minutes
         ✅ Comprehensive logging
+        ✅ Redis caching support (optional)
+        ✅ Phonetic search (Soundex)
+        ✅ Abbreviation expansion
+        ✅ Performance monitoring
     """
     
-    def __init__(self):
+    def __init__(self, enable_redis: bool = False):
         self._index: Dict[str, DealerIndex] = {}
         self._normalized_index: Dict[str, str] = {}
         self._code_index: Dict[str, str] = {}
         self._customer_code_index: Dict[str, str] = {}
         self._alias_index: Dict[str, List[str]] = defaultdict(list)
+        self._phonetic_index: Dict[str, List[str]] = defaultdict(list)
+        self._abbreviation_index: Dict[str, List[str]] = defaultdict(list)
         self._last_refresh = None
         self._refresh_thread = None
         self._stop_refresh = Event()
         self._search_count = 0
         self._search_success_count = 0
         self._avg_search_time = 0.0
+        self._cache_hits = 0
+        self._cache_misses = 0
         self._lock = threading.RLock()
         self._postgresql_connected = False
+        self._enable_redis = enable_redis
+        self._redis_client = None
+        
+        # Initialize Redis if enabled
+        if enable_redis:
+            try:
+                import redis
+                self._redis_client = redis.Redis(
+                    host='localhost',
+                    port=6379,
+                    db=0,
+                    decode_responses=True
+                )
+                self._redis_client.ping()
+                logger.info("✅ Redis connected for caching")
+            except Exception as e:
+                logger.warning(f"⚠️ Redis connection failed: {e}")
+                self._enable_redis = False
         
         # Build initial index from PostgreSQL
         self._build_index_from_postgresql()
@@ -338,8 +369,11 @@ class DealerSearchEngine:
         print(f"Fuzzy Search         : {'✅ Enabled' if self._index else '❌ Disabled'}")
         print(f"Partial Search       : {'✅ Enabled' if self._index else '❌ Disabled'}")
         print(f"Alias Search         : {'✅ Enabled' if self._index else '❌ Disabled'}")
+        print(f"Phonetic Search      : {'✅ Enabled' if self._index else '❌ Disabled'}")
+        print(f"Abbreviation Search  : {'✅ Enabled' if self._index else '❌ Disabled'}")
         print(f"Similarity Threshold : {SIMILARITY_THRESHOLD * 100:.0f}%")
         print(f"Auto Refresh         : Every {SEARCH_CACHE_REFRESH_MINUTES} minutes")
+        print(f"Redis Cache          : {'✅ Enabled' if self._enable_redis else '❌ Disabled'}")
         print(f"\nSystem Status        : {'✅ READY' if self._index else '❌ NOT READY'}")
         print("━" * 70 + "\n")
     
@@ -350,7 +384,7 @@ class DealerSearchEngine:
         
         try:
             with self._get_session() as session:
-                # Get all distinct dealers from PostgreSQL
+                # Get all distinct dealers from PostgreSQL with improved query
                 dealers = session.query(
                     DeliveryReport.customer_name,
                     DeliveryReport.dealer_code,
@@ -361,7 +395,8 @@ class DealerSearchEngine:
                     DeliveryReport.delivery_location,
                     DeliveryReport.sales_office,
                     DeliveryReport.sales_manager,
-                    DeliveryReport.division
+                    DeliveryReport.division,
+                    DeliveryReport.region
                 ).filter(
                     DeliveryReport.customer_name.isnot(None)
                 ).distinct().all()
@@ -374,12 +409,14 @@ class DealerSearchEngine:
             self._postgresql_connected = True
             
             with self._lock:
-                # Build index
+                # Build indexes
                 index = {}
                 normalized_index = {}
                 code_index = {}
                 customer_code_index = {}
                 alias_index = defaultdict(list)
+                phonetic_index = defaultdict(list)
+                abbreviation_index = defaultdict(list)
                 
                 for dealer in dealers:
                     customer_name = _text(dealer.customer_name)
@@ -425,6 +462,16 @@ class DealerSearchEngine:
                     aliases = self._generate_aliases(customer_name)
                     for alias in aliases:
                         alias_index[alias].append(dealer_code or customer_name)
+                    
+                    # Generate phonetic keys (Soundex)
+                    phonetic_key = self._get_soundex(customer_name)
+                    if phonetic_key:
+                        phonetic_index[phonetic_key].append(dealer_code or customer_name)
+                    
+                    # Generate abbreviations
+                    abbreviations = self._generate_abbreviations(customer_name)
+                    for abbr in abbreviations:
+                        abbreviation_index[abbr].append(dealer_code or customer_name)
                 
                 # Update indexes
                 self._index = index
@@ -432,15 +479,38 @@ class DealerSearchEngine:
                 self._code_index = code_index
                 self._customer_code_index = customer_code_index
                 self._alias_index = alias_index
+                self._phonetic_index = phonetic_index
+                self._abbreviation_index = abbreviation_index
                 self._last_refresh = datetime.now()
             
             elapsed = time.time() - start_time
             logger.info(f"✅ Search index built: {len(self._index)} dealers in {elapsed*1000:.0f}ms")
             
+            # Push to Redis if enabled
+            if self._enable_redis and self._redis_client:
+                self._push_index_to_redis()
+            
         except Exception as e:
             logger.error(f"❌ Failed to build search index from PostgreSQL: {e}")
             logger.error(traceback.format_exc())
             self._postgresql_connected = False
+    
+    def _push_index_to_redis(self):
+        """Push search index to Redis for distributed caching"""
+        try:
+            pipeline = self._redis_client.pipeline()
+            
+            # Clear existing
+            pipeline.delete('dealer_index')
+            
+            # Push each dealer
+            for key, entry in self._index.items():
+                pipeline.hset('dealer_index', key, json.dumps(asdict(entry)))
+            
+            pipeline.execute()
+            logger.info("✅ Search index pushed to Redis")
+        except Exception as e:
+            logger.error(f"❌ Failed to push index to Redis: {e}")
     
     def _start_auto_refresh(self):
         """Start automatic cache refresh thread"""
@@ -459,12 +529,21 @@ class DealerSearchEngine:
     # SEARCH METHODS
     # ============================================================
     
-    def search_dealer(self, query: str) -> DealerSearchResult:
+    def search_dealer(self, query: str, use_redis: bool = False) -> DealerSearchResult:
         """Search for dealer using multi-level strategy"""
         start_time = time.time()
         self._search_count += 1
         
         try:
+            # Check Redis cache first
+            if use_redis and self._enable_redis and self._redis_client:
+                cached_result = self._get_from_redis(query)
+                if cached_result:
+                    self._cache_hits += 1
+                    logger.info(f"✅ Redis cache hit for '{query}'")
+                    return cached_result
+            
+            self._cache_misses += 1
             normalized_query = self._normalize_text(query)
             logger.info(f"🔍 Search started: '{query}' → normalized: '{normalized_query}'")
             
@@ -507,12 +586,22 @@ class DealerSearchEngine:
                 if result:
                     return self._create_search_result(result, "token", start_time, normalized_query)
                 
-                # Step 7: Fuzzy match (70% threshold)
+                # Step 7: Abbreviation match
+                result = self._search_abbreviation_match(normalized_query)
+                if result:
+                    return self._create_search_result(result, "abbreviation", start_time, normalized_query)
+                
+                # Step 8: Phonetic match (Soundex)
+                result = self._search_phonetic_match(normalized_query)
+                if result:
+                    return self._create_search_result(result, "phonetic", start_time, normalized_query)
+                
+                # Step 9: Fuzzy match (70% threshold)
                 result = self._search_fuzzy_match(normalized_query)
                 if result:
                     return self._create_search_result(result, "fuzzy", start_time, normalized_query)
                 
-                # Step 8: Alias match
+                # Step 10: Alias match
                 result = self._search_alias_match(normalized_query)
                 if result:
                     return self._create_search_result(result, "alias", start_time, normalized_query)
@@ -523,13 +612,19 @@ class DealerSearchEngine:
             
             logger.info(f"❌ Search failed: '{query}' - No matches found")
             
-            return DealerSearchResult(
+            result = DealerSearchResult(
                 success=False,
                 message="No dealer found",
                 suggestions=suggestions[:MAX_SUGGESTIONS],
                 search_time_ms=elapsed * 1000,
                 normalized_query=normalized_query
             )
+            
+            # Cache in Redis if enabled
+            if use_redis and self._enable_redis and self._redis_client:
+                self._set_in_redis(query, result)
+            
+            return result
             
         except Exception as e:
             logger.error(f"❌ Search error: {e}")
@@ -543,7 +638,7 @@ class DealerSearchEngine:
             )
     
     # ============================================================
-    # SEARCH STRATEGIES
+    # ENHANCED SEARCH STRATEGIES
     # ============================================================
     
     def _search_by_dealer_code(self, query: str) -> Optional[DealerIndex]:
@@ -578,7 +673,7 @@ class DealerSearchEngine:
         return None
     
     def _search_partial_match(self, query: str) -> Optional[DealerIndex]:
-        """Search by partial match"""
+        """Search by partial match with improved scoring"""
         query_lower = query.lower()
         best_match = None
         best_score = 0
@@ -586,7 +681,11 @@ class DealerSearchEngine:
         for key, entry in self._index.items():
             name_lower = entry.customer_name.lower()
             if query_lower in name_lower:
+                # Score based on position and length
+                pos = name_lower.find(query_lower)
                 score = len(query_lower) / len(name_lower)
+                if pos == 0:  # Prefix match is better
+                    score += 0.2
                 if score > best_score:
                     best_score = score
                     best_match = entry
@@ -594,7 +693,7 @@ class DealerSearchEngine:
         return best_match
     
     def _search_token_match(self, query: str) -> Optional[DealerIndex]:
-        """Search by token match"""
+        """Search by token match with improved scoring"""
         tokens = self._tokenize(query)
         if not tokens:
             return None
@@ -614,30 +713,72 @@ class DealerSearchEngine:
                     best_score = score
                     best_match = entry
         
-        if best_score >= 0.5:
+        if best_score >= 0.4:  # Lowered threshold for token matching
             return best_match
         
         return None
     
+    def _search_abbreviation_match(self, query: str) -> Optional[DealerIndex]:
+        """Search by abbreviation match"""
+        query_lower = query.lower()
+        if query_lower in self._abbreviation_index:
+            keys = self._abbreviation_index[query_lower]
+            if keys:
+                return self._index.get(keys[0])
+        return None
+    
+    def _search_phonetic_match(self, query: str) -> Optional[DealerIndex]:
+        """Search by Soundex phonetic match"""
+        phonetic_key = self._get_soundex(query)
+        if phonetic_key and phonetic_key in self._phonetic_index:
+            keys = self._phonetic_index[phonetic_key]
+            if keys:
+                # Return the best match
+                for key in keys:
+                    entry = self._index.get(key)
+                    if entry:
+                        # Verify similarity
+                        ratio = difflib.SequenceMatcher(None, query, entry.normalized_name).ratio()
+                        if ratio >= 0.5:  # Lower threshold for phonetic
+                            return entry
+        return None
+    
     def _search_fuzzy_match(self, query: str) -> Optional[DealerIndex]:
-        """Search by fuzzy match (70% threshold)"""
+        """Search by fuzzy match (70% threshold) with improved matching"""
         best_match = None
         best_ratio = 0
         
         for key, entry in self._index.items():
+            # Check full name
             ratio = difflib.SequenceMatcher(None, query, entry.normalized_name).ratio()
             
             if ratio > best_ratio:
                 best_ratio = ratio
                 best_match = entry
             
+            # Check tokens
             for token in entry.search_tokens:
                 token_ratio = difflib.SequenceMatcher(None, query, token).ratio()
                 if token_ratio > best_ratio:
                     best_ratio = token_ratio
                     best_match = entry
         
+        # Check if any token matches significantly
         if best_ratio >= SIMILARITY_THRESHOLD:
+            return best_match
+        
+        # Check if any token is a substring
+        query_lower = query.lower()
+        for key, entry in self._index.items():
+            for token in entry.search_tokens:
+                token_lower = token.lower()
+                if query_lower in token_lower or token_lower in query_lower:
+                    ratio = difflib.SequenceMatcher(None, query_lower, token_lower).ratio()
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_match = entry
+        
+        if best_ratio >= SIMILARITY_THRESHOLD * 0.8:  # Slightly lower threshold for substring
             return best_match
         
         return None
@@ -652,25 +793,65 @@ class DealerSearchEngine:
         return None
     
     # ============================================================
-    # UTILITY METHODS
+    # ENHANCED UTILITY METHODS
     # ============================================================
     
     def _normalize_text(self, text: str) -> str:
-        """Normalize text for search"""
+        """Normalize text for search with improved handling"""
         if not text:
             return ""
         
         normalized = text.lower()
-        normalized = re.sub(r'[&\-\./,()]', ' ', normalized)
+        # Remove special characters but keep important ones
+        normalized = re.sub(r'[&\-\./,()\'\"]', ' ', normalized)
+        # Remove extra spaces
         normalized = re.sub(r'\s+', ' ', normalized)
+        # Remove common suffixes
+        normalized = re.sub(r'\b(ltd|limited|pvt|private|co|company|corp|corporation)\b', '', normalized)
         normalized = normalized.strip()
         
         return normalized
     
     def _tokenize(self, text: str) -> List[str]:
-        """Tokenize text for search"""
+        """Tokenize text for search with improved tokenization"""
         normalized = self._normalize_text(text)
-        return normalized.split() if normalized else []
+        tokens = normalized.split() if normalized else []
+        
+        # Remove short tokens
+        tokens = [t for t in tokens if len(t) > 1]
+        
+        return tokens
+    
+    def _get_soundex(self, text: str) -> str:
+        """Generate Soundex code for phonetic matching"""
+        if not text:
+            return ""
+        
+        # Simple Soundex implementation
+        text = text.upper()
+        soundex = text[0] if text else ""
+        
+        # Mapping of letters to Soundex codes
+        mapping = {
+            'B': '1', 'F': '1', 'P': '1', 'V': '1',
+            'C': '2', 'G': '2', 'J': '2', 'K': '2', 'Q': '2', 'S': '2', 'X': '2', 'Z': '2',
+            'D': '3', 'T': '3',
+            'L': '4',
+            'M': '5', 'N': '5',
+            'R': '6'
+        }
+        
+        prev_code = ''
+        for char in text[1:]:
+            if char in mapping:
+                code = mapping[char]
+                if code != prev_code:
+                    soundex += code
+                    prev_code = code
+                if len(soundex) >= 4:
+                    break
+        
+        return soundex.ljust(4, '0')
     
     def _generate_aliases(self, name: str) -> List[str]:
         """Generate common aliases for a dealer name"""
@@ -679,13 +860,14 @@ class DealerSearchEngine:
             return aliases
         
         # Remove common suffixes
-        name_clean = re.sub(r'\s+Electronics\s*$', '', name, flags=re.IGNORECASE)
-        name_clean = re.sub(r'\s+Digital\s*$', '', name_clean, flags=re.IGNORECASE)
-        name_clean = re.sub(r'\s+Technologies\s*$', '', name_clean, flags=re.IGNORECASE)
-        name_clean = re.sub(r'\s+Traders\s*$', '', name_clean, flags=re.IGNORECASE)
+        suffixes = ['Electronics', 'Digital', 'Technologies', 'Traders', 'Enterprises',
+                   'Systems', 'Solutions', 'Incorporated', 'International']
         
-        if name_clean != name:
-            aliases.append(self._normalize_text(name_clean))
+        for suffix in suffixes:
+            pattern = r'\s+' + suffix + r'\s*$'
+            name_clean = re.sub(pattern, '', name, flags=re.IGNORECASE)
+            if name_clean != name:
+                aliases.append(self._normalize_text(name_clean))
         
         # Take first word
         tokens = name.split()
@@ -696,7 +878,31 @@ class DealerSearchEngine:
         if len(tokens) >= 2:
             aliases.append(self._normalize_text(' '.join(tokens[:2])))
         
+        # Remove common words
+        aliases = [a for a in aliases if a and len(a) > 2]
+        
         return aliases
+    
+    def _generate_abbreviations(self, name: str) -> List[str]:
+        """Generate abbreviations from dealer name"""
+        abbreviations = []
+        if not name:
+            return abbreviations
+        
+        tokens = name.split()
+        if len(tokens) >= 2:
+            # First letters
+            abbr = ''.join([t[0] for t in tokens if t])
+            if abbr and len(abbr) >= 2:
+                abbreviations.append(abbr.lower())
+            
+            # First and last
+            if len(tokens) >= 3:
+                abbr = tokens[0][0] + tokens[-1][0]
+                if abbr and len(abbr) >= 2:
+                    abbreviations.append(abbr.lower())
+        
+        return abbreviations
     
     def _get_suggestions(self, query: str) -> List[Dict[str, Any]]:
         """Get search suggestions when no match found"""
@@ -730,12 +936,16 @@ class DealerSearchEngine:
             confidence = 0.85
         elif match_type == "alias":
             confidence = 0.75
+        elif match_type == "abbreviation":
+            confidence = 0.7
+        elif match_type == "phonetic":
+            confidence = 0.65
         
         self._avg_search_time = ((self._avg_search_time * (self._search_count - 1)) + elapsed) / self._search_count
         
         logger.info(f"✅ Match found: '{entry.customer_name}' ({match_type}) - {confidence*100:.0f}% confidence")
         
-        return DealerSearchResult(
+        result = DealerSearchResult(
             success=True,
             customer_name=entry.customer_name,
             dealer_code=entry.dealer_code,
@@ -746,6 +956,60 @@ class DealerSearchEngine:
             search_time_ms=elapsed * 1000,
             normalized_query=normalized_query
         )
+        
+        # Cache in Redis if enabled
+        if self._enable_redis and self._redis_client:
+            self._set_in_redis(normalized_query, result)
+        
+        return result
+    
+    # ============================================================
+    # REDIS CACHE METHODS
+    # ============================================================
+    
+    def _get_from_redis(self, query: str) -> Optional[DealerSearchResult]:
+        """Get search result from Redis cache"""
+        try:
+            key = f"search:{query.lower()}"
+            cached = self._redis_client.get(key)
+            if cached:
+                data = json.loads(cached)
+                # Convert dict to DealerSearchResult
+                return DealerSearchResult(
+                    success=data.get('success', False),
+                    customer_name=data.get('customer_name', ''),
+                    dealer_code=data.get('dealer_code', ''),
+                    customer_code=data.get('customer_code', ''),
+                    confidence=data.get('confidence', 0.0),
+                    match_type=data.get('match_type', ''),
+                    message=data.get('message', ''),
+                    suggestions=data.get('suggestions', []),
+                    search_time_ms=data.get('search_time_ms', 0.0),
+                    normalized_query=data.get('normalized_query', '')
+                )
+        except Exception as e:
+            logger.error(f"Redis get error: {e}")
+        return None
+    
+    def _set_in_redis(self, query: str, result: DealerSearchResult, ttl: int = REDIS_TTL):
+        """Set search result in Redis cache"""
+        try:
+            key = f"search:{query.lower()}"
+            data = {
+                'success': result.success,
+                'customer_name': result.customer_name,
+                'dealer_code': result.dealer_code,
+                'customer_code': result.customer_code,
+                'confidence': result.confidence,
+                'match_type': result.match_type,
+                'message': result.message,
+                'suggestions': result.suggestions,
+                'search_time_ms': result.search_time_ms,
+                'normalized_query': result.normalized_query
+            }
+            self._redis_client.setex(key, ttl, json.dumps(data))
+        except Exception as e:
+            logger.error(f"Redis set error: {e}")
     
     # ============================================================
     # REFRESH METHODS
@@ -764,28 +1028,56 @@ class DealerSearchEngine:
         logger.info("🔄 Auto-refresh stopped")
     
     # ============================================================
+    # STATISTICS
+    # ============================================================
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get search engine statistics"""
+        with self._lock:
+            return {
+                "dealers_indexed": len(self._index),
+                "dealer_codes": len(self._code_index),
+                "customer_codes": len(self._customer_code_index),
+                "aliases": len(self._alias_index),
+                "phonetic_keys": len(self._phonetic_index),
+                "abbreviations": len(self._abbreviation_index),
+                "total_searches": self._search_count,
+                "successful_searches": self._search_success_count,
+                "success_rate": round((self._search_success_count / max(self._search_count, 1)) * 100, 1),
+                "avg_search_time_ms": round(self._avg_search_time * 1000, 1),
+                "cache_hits": self._cache_hits,
+                "cache_misses": self._cache_misses,
+                "cache_hit_rate": round((self._cache_hits / max(self._cache_hits + self._cache_misses, 1)) * 100, 1)
+            }
+    
+    # ============================================================
     # HEALTH CHECK
     # ============================================================
     
     def health_check(self) -> Dict[str, Any]:
         """Health check for search engine"""
         with self._lock:
-            return {
+            health = {
                 "status": "ready" if self._index else "not_ready",
                 "postgresql_connected": self._postgresql_connected,
                 "dealers_indexed": len(self._index),
                 "dealer_codes": len(self._code_index),
                 "customer_codes": len(self._customer_code_index),
                 "aliases": len(self._alias_index),
+                "phonetic_keys": len(self._phonetic_index),
+                "abbreviations": len(self._abbreviation_index),
                 "last_refresh": self._last_refresh.isoformat() if self._last_refresh else None,
                 "search_count": self._search_count,
                 "search_success_count": self._search_success_count,
                 "success_rate": round((self._search_success_count / max(self._search_count, 1)) * 100, 1),
-                "avg_search_time_ms": round(self._avg_search_time * 1000, 1)
+                "avg_search_time_ms": round(self._avg_search_time * 1000, 1),
+                "redis_enabled": self._enable_redis,
+                "redis_connected": self._redis_client is not None
             }
+            return health
 
 # ============================================================
-# BLOCK 5: DEALER DASHBOARD BUILDER WITH POSTGRESQL
+# BLOCK 5: DEALER DASHBOARD BUILDER WITH POSTGRESQL (IMPROVED)
 # ============================================================
 
 class DealerDashboardBuilder:
@@ -794,25 +1086,30 @@ class DealerDashboardBuilder:
     def __init__(self):
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._cache_time: Dict[str, datetime] = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
         self._lock = threading.RLock()
     
     def _get_session(self) -> Session:
         """Get database session"""
         return SessionLocal()
     
-    def build(self, dealer_code: str, customer_code: str = None) -> Optional[DealerDashboard]:
+    def build(self, dealer_code: str, customer_code: str = None, force_refresh: bool = False) -> Optional[DealerDashboard]:
         """Build complete dealer dashboard from PostgreSQL"""
         cache_key = f"{dealer_code}_{customer_code}"
         
         with self._lock:
-            if cache_key in self._cache:
+            if not force_refresh and cache_key in self._cache:
                 cache_age = (datetime.now() - self._cache_time[cache_key]).seconds
                 if cache_age < CACHE_TTL:
+                    self._cache_hits += 1
+                    logger.info(f"✅ Dashboard cache hit for {dealer_code}")
                     return self._cache[cache_key]
+            self._cache_misses += 1
         
         try:
             with self._get_session() as session:
-                # Build base query
+                # Build base query with improved aggregation
                 query = session.query(
                     DeliveryReport.customer_name,
                     DeliveryReport.dealer_code,
@@ -824,6 +1121,7 @@ class DealerDashboardBuilder:
                     DeliveryReport.sales_office,
                     DeliveryReport.sales_manager,
                     DeliveryReport.division,
+                    DeliveryReport.region,
                     func.count(distinct(DeliveryReport.dn_no)).label("total_dn"),
                     func.count(distinct(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)))).label("delivered_dn"),
                     func.count(distinct(case((or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label("pending_dn"),
@@ -831,9 +1129,12 @@ class DealerDashboardBuilder:
                     func.count(distinct(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)))).label("pod_completed"),
                     func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("total_revenue"),
                     func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
-                    func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label("avg_delivery_days"),
-                    func.avg(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.pod_date - DeliveryReport.good_issue_date))).label("avg_pod_days"),
-                    func.avg(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.pod_date - DeliveryReport.dn_create_date))).label("avg_cycle_days"),
+                    func.avg(case((DeliveryReport.good_issue_date.isnot(None), 
+                                  func.extract('epoch', DeliveryReport.good_issue_date - DeliveryReport.dn_create_date) / 86400))).label("avg_delivery_days"),
+                    func.avg(case((DeliveryReport.pod_date.isnot(None), 
+                                  func.extract('epoch', DeliveryReport.pod_date - DeliveryReport.good_issue_date) / 86400))).label("avg_pod_days"),
+                    func.avg(case((DeliveryReport.pod_date.isnot(None), 
+                                  func.extract('epoch', DeliveryReport.pod_date - DeliveryReport.dn_create_date) / 86400))).label("avg_cycle_days"),
                     func.min(DeliveryReport.dn_create_date).label("first_delivery_date"),
                     func.max(DeliveryReport.dn_create_date).label("latest_delivery_date"),
                     func.count(distinct(DeliveryReport.ship_to_city)).label("cities_served"),
@@ -866,7 +1167,8 @@ class DealerDashboardBuilder:
                     sales_office=_text(result.sales_office),
                     sales_manager=_text(result.sales_manager),
                     sales_channel="Traditional Channel",
-                    division=_text(result.division)
+                    division=_text(result.division),
+                    region=_text(result.region)
                 )
                 
                 # Build delivery summary
@@ -900,9 +1202,9 @@ class DealerDashboardBuilder:
                     total_dn=total_dn,
                     avg_revenue_per_dn=total_revenue / total_dn if total_dn > 0 else 0,
                     avg_units_per_dn=total_units / total_dn if total_dn > 0 else 0,
-                    yoy_growth=0.0,
-                    target_achievement=0.0,
-                    monthly_growth=0.0
+                    yoy_growth=self._calculate_yoy_growth(session, dealer_code),
+                    target_achievement=self._calculate_target_achievement(session, dealer_code),
+                    monthly_growth=self._calculate_monthly_growth(session, dealer_code)
                 )
                 
                 # Get product summary
@@ -922,17 +1224,17 @@ class DealerDashboardBuilder:
                 operation = OperationSummary(
                     cities_served=int(result.cities_served or 0),
                     warehouses_used=int(result.warehouses_used or 0),
-                    primary_warehouse=_text(result.warehouse),
+                    primary_warehouse=self._get_primary_warehouse(warehouse_data),
                     latest_dn=_text(result.latest_dn),
                     latest_pgi=_date_text(result.latest_pgi),
                     latest_pod=_date_text(result.latest_pod),
                     warehouse_distribution=warehouse_data
                 )
                 
-                # Calculate performance
+                # Calculate performance with enhanced metrics
                 performance = self._calculate_performance(delivery, business, operation)
                 
-                # Generate insights
+                # Generate insights with improved logic
                 insights = self._generate_insights(delivery, business, product, operation, performance)
                 
                 # Generate executive summary
@@ -947,7 +1249,7 @@ class DealerDashboardBuilder:
                     operation=operation,
                     performance=performance,
                     insights=insights,
-                    recommendations=[],
+                    recommendations=self._generate_recommendations(insights, performance),
                     executive_summary=executive_summary,
                     context=DealerContext()
                 )
@@ -964,6 +1266,101 @@ class DealerDashboardBuilder:
             logger.error(f"❌ Failed to build dashboard: {e}")
             logger.error(traceback.format_exc())
             return None
+    
+    def _calculate_yoy_growth(self, session: Session, dealer_code: str) -> float:
+        """Calculate year-over-year growth"""
+        try:
+            current_year = datetime.now().year
+            last_year = current_year - 1
+            
+            current_revenue = session.query(
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0)
+            ).filter(
+                DeliveryReport.dealer_code == dealer_code,
+                func.extract('year', DeliveryReport.dn_create_date) == current_year
+            ).scalar() or 0.0
+            
+            last_year_revenue = session.query(
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0)
+            ).filter(
+                DeliveryReport.dealer_code == dealer_code,
+                func.extract('year', DeliveryReport.dn_create_date) == last_year
+            ).scalar() or 0.0
+            
+            if last_year_revenue > 0:
+                return round(((current_revenue - last_year_revenue) / last_year_revenue) * 100, 2)
+            return 0.0
+        except Exception as e:
+            logger.error(f"YOY growth calculation error: {e}")
+            return 0.0
+    
+    def _calculate_target_achievement(self, session: Session, dealer_code: str) -> float:
+        """Calculate target achievement percentage"""
+        try:
+            # This would typically come from a targets table
+            # For now, use a simple heuristic
+            current_year = datetime.now().year
+            current_revenue = session.query(
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0)
+            ).filter(
+                DeliveryReport.dealer_code == dealer_code,
+                func.extract('year', DeliveryReport.dn_create_date) == current_year
+            ).scalar() or 0.0
+            
+            # Assuming target is based on previous year + 10%
+            last_year = current_year - 1
+            last_year_revenue = session.query(
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0)
+            ).filter(
+                DeliveryReport.dealer_code == dealer_code,
+                func.extract('year', DeliveryReport.dn_create_date) == last_year
+            ).scalar() or 0.0
+            
+            target = last_year_revenue * 1.1
+            if target > 0:
+                return round((current_revenue / target) * 100, 2)
+            return 0.0
+        except Exception as e:
+            logger.error(f"Target achievement calculation error: {e}")
+            return 0.0
+    
+    def _calculate_monthly_growth(self, session: Session, dealer_code: str) -> float:
+        """Calculate monthly growth rate"""
+        try:
+            current_month = datetime.now().month
+            current_year = datetime.now().year
+            
+            current_month_revenue = session.query(
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0)
+            ).filter(
+                DeliveryReport.dealer_code == dealer_code,
+                func.extract('year', DeliveryReport.dn_create_date) == current_year,
+                func.extract('month', DeliveryReport.dn_create_date) == current_month
+            ).scalar() or 0.0
+            
+            prev_month = current_month - 1 if current_month > 1 else 12
+            prev_year = current_year if current_month > 1 else current_year - 1
+            
+            prev_month_revenue = session.query(
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0)
+            ).filter(
+                DeliveryReport.dealer_code == dealer_code,
+                func.extract('year', DeliveryReport.dn_create_date) == prev_year,
+                func.extract('month', DeliveryReport.dn_create_date) == prev_month
+            ).scalar() or 0.0
+            
+            if prev_month_revenue > 0:
+                return round(((current_month_revenue - prev_month_revenue) / prev_month_revenue) * 100, 2)
+            return 0.0
+        except Exception as e:
+            logger.error(f"Monthly growth calculation error: {e}")
+            return 0.0
+    
+    def _get_primary_warehouse(self, warehouse_data: List[Dict[str, Any]]) -> str:
+        """Get primary warehouse from distribution"""
+        if warehouse_data:
+            return warehouse_data[0].get('warehouse', 'N/A')
+        return "N/A"
     
     def _get_product_summary(self, session: Session, dealer_code: str) -> Dict[str, Any]:
         """Get product summary for dealer"""
@@ -1167,6 +1564,14 @@ class DealerDashboardBuilder:
         if business.total_units > 1000:
             insights.append(f"📦 Strong sales volume: {business.total_units:,} units")
         
+        if business.yoy_growth > 10:
+            insights.append(f"📈 Strong YoY growth: {business.yoy_growth:.1f}%")
+        elif business.yoy_growth < -5:
+            insights.append(f"⚠️ Declining YoY growth: {business.yoy_growth:.1f}%")
+        
+        if business.target_achievement > 90:
+            insights.append(f"🎯 Target achievement: {business.target_achievement:.1f}%")
+        
         # Product insights
         if product.products_sold > 15:
             insights.append("📦 Strong product portfolio across multiple models")
@@ -1184,8 +1589,7 @@ class DealerDashboardBuilder:
             insights.append(f"🏭 {operation.warehouses_used} warehouses utilization")
         
         if operation.warehouse_distribution:
-            top_wh = operation.warehouse_distribution[0].get('warehouse', 'Unknown')
-            insights.append(f"🏭 Primary warehouse utilization is excellent")
+            insights.append("🏭 Primary warehouse utilization is excellent")
         
         # Performance insights
         if performance.business_score >= 90:
@@ -1205,6 +1609,42 @@ class DealerDashboardBuilder:
         
         return insights[:8]
     
+    def _generate_recommendations(self, insights: List[str], performance: PerformanceSummary) -> List[str]:
+        """Generate recommendations based on insights and performance"""
+        recommendations = []
+        
+        # Check for warning insights
+        for insight in insights:
+            if "requires attention" in insight:
+                if "delivery" in insight.lower():
+                    recommendations.append("📋 Improve delivery processes and monitoring")
+                elif "pgi" in insight.lower():
+                    recommendations.append("📋 Enhance PGI completion processes")
+                elif "pod" in insight.lower():
+                    recommendations.append("📋 Strengthen POD documentation")
+                elif "pending" in insight.lower():
+                    recommendations.append("📋 Clear pending deliveries immediately")
+            
+            if "declining" in insight:
+                recommendations.append("📋 Review and adjust business strategy for growth")
+        
+        # Performance-based recommendations
+        if performance.business_score < 70:
+            recommendations.append("📋 Implement performance improvement plan")
+        
+        if performance.risk_score > 30:
+            recommendations.append("📋 Conduct risk assessment and mitigation")
+        
+        # Ensure at least 3 recommendations
+        if len(recommendations) < 3:
+            recommendations.extend([
+                "📋 Monitor delivery performance metrics",
+                "📋 Review revenue growth strategies",
+                "📋 Optimize warehouse utilization"
+            ])
+        
+        return recommendations[:5]
+    
     def _generate_executive_summary(self, identity: DealerIdentity,
                                     delivery: DeliverySummary,
                                     business: BusinessSummary,
@@ -1217,14 +1657,31 @@ class DealerDashboardBuilder:
             f"pending DNs. Delivery success is {delivery.delivery_rate:.1f}%. "
             f"Overall rating: {performance.dealer_rating:.1f}/5.0 {performance.performance_tier} tier."
         )
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache statistics"""
+        with self._lock:
+            return {
+                "cache_hits": self._cache_hits,
+                "cache_misses": self._cache_misses,
+                "cache_size": len(self._cache),
+                "hit_rate": round((self._cache_hits / max(self._cache_hits + self._cache_misses, 1)) * 100, 1)
+            }
+    
+    def clear_cache(self):
+        """Clear dashboard cache"""
+        with self._lock:
+            self._cache.clear()
+            self._cache_time.clear()
+            logger.info("📊 Dashboard cache cleared")
 
 # ============================================================
-# BLOCK 6: DEALER ANALYTICS SERVICE
+# BLOCK 6: DEALER ANALYTICS SERVICE (IMPROVED)
 # ============================================================
 
 class DealerAnalyticsService:
     """
-    Dealer Intelligence Gateway - Enterprise Edition v8.0
+    Dealer Intelligence Gateway - Enterprise Edition v8.1
     
     Features:
         ✅ PostgreSQL as source of truth
@@ -1234,6 +1691,9 @@ class DealerAnalyticsService:
         ✅ WhatsApp formatting with exact requested format
         ✅ Enhanced error handling with specific error messages
         ✅ Full PostgreSQL integration
+        ✅ Redis caching support
+        ✅ Performance monitoring
+        ✅ Analytics tracking
     """
     
     _instance: Optional["DealerAnalyticsService"] = None
@@ -1249,35 +1709,49 @@ class DealerAnalyticsService:
         
         self._initialized = True
         self._version = VERSION
-        self._search_engine = DealerSearchEngine()
+        self._search_engine = DealerSearchEngine(enable_redis=REDIS_ENABLED)
         self._dashboard_builder = DealerDashboardBuilder()
         self._sessions: Dict[str, DealerContext] = {}
         self._startup_time = datetime.now()
         self._request_count = 0
         self._avg_response_time = 0.0
+        self._error_count = 0
+        self._success_count = 0
+        
+        # Analytics tracking
+        self._analytics: Dict[str, Any] = {
+            "total_queries": 0,
+            "successful_queries": 0,
+            "failed_queries": 0,
+            "search_types": defaultdict(int),
+            "popular_searches": defaultdict(int),
+            "dealer_views": defaultdict(int)
+        }
         
         # Display startup information
         self._show_startup_info()
         
         logger.info("=" * 70)
-        logger.info("🚀 DEALER INTELLIGENCE GATEWAY v8.0")
+        logger.info("🚀 DEALER INTELLIGENCE GATEWAY v8.1")
         logger.info("   🎯 Enterprise Production Ready")
         logger.info("   🗄️  PostgreSQL: Single Source of Truth")
         logger.info("   🔍 In-Memory Search Index: ✅")
         logger.info("   🔄 Auto-Refresh: Every 15 minutes")
         logger.info("   🎯 Similarity Threshold: 70%")
+        logger.info(f"   💾 Redis Cache: {'✅ Enabled' if REDIS_ENABLED else '❌ Disabled'}")
         logger.info("=" * 70)
     
     def _show_startup_info(self):
         """Display startup information"""
         print("\n" + "=" * 70)
-        print("🏢 DEALER INTELLIGENCE GATEWAY v8.0".center(70))
+        print("🏢 DEALER INTELLIGENCE GATEWAY v8.1".center(70))
         print("=" * 70)
         print(f"🚀 Started: {self._startup_time.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"🗄️  PostgreSQL: {'✅' if self._search_engine._postgresql_connected else '❌'}")
         print(f"🔍 Search Engine: {'✅' if self._search_engine else '❌'}")
         print(f"📊 Dashboard Builder: {'✅' if self._dashboard_builder else '❌'}")
         print(f"💾 Session: ✅ Memory")
+        print(f"💾 Redis Cache: {'✅ Enabled' if REDIS_ENABLED else '❌ Disabled'}")
         print("=" * 70 + "\n")
     
     # ============================================================
@@ -1288,6 +1762,7 @@ class DealerAnalyticsService:
         """MAIN ENTRY POINT - Called by AIProviderService"""
         start_time = time.time()
         self._request_count += 1
+        self._analytics["total_queries"] += 1
         
         try:
             logger.info(f"📨 Received: '{message}' from {sender}")
@@ -1320,8 +1795,17 @@ class DealerAnalyticsService:
             # Search for dealer
             search_result = self._search_dealer(message_clean)
             
+            # Track analytics
+            self._analytics["popular_searches"][message_clean.lower()] += 1
+            if search_result.success:
+                self._analytics["search_types"][search_result.match_type] += 1
+                self._analytics["dealer_views"][search_result.customer_name] += 1
+            
             if not search_result.success:
+                self._analytics["failed_queries"] += 1
                 return self._format_not_found(message_clean, search_result)
+            
+            self._analytics["successful_queries"] += 1
             
             # Update session
             self._update_session_context(context, search_result)
@@ -1330,6 +1814,7 @@ class DealerAnalyticsService:
             dashboard = self._load_dashboard(search_result, context)
             
             if not dashboard:
+                self._analytics["failed_queries"] += 1
                 return self._format_no_data_error(search_result.customer_name)
             
             # Update session with dashboard
@@ -1344,12 +1829,15 @@ class DealerAnalyticsService:
             # Log performance
             elapsed = time.time() - start_time
             self._update_performance_metrics(elapsed)
+            self._success_count += 1
             
             logger.info(f"✅ Dashboard returned in {elapsed*1000:.0f}ms")
             
             return response
             
         except Exception as e:
+            self._error_count += 1
+            self._analytics["failed_queries"] += 1
             logger.error(f"❌ process_whatsapp_query error: {e}")
             logger.error(traceback.format_exc())
             return self._format_error(str(e)[:100])
@@ -1367,7 +1855,7 @@ class DealerAnalyticsService:
             )
         
         try:
-            result = self._search_engine.search_dealer(query)
+            result = self._search_engine.search_dealer(query, use_redis=REDIS_ENABLED)
             
             logger.info(f"🔍 Search completed in {result.search_time_ms:.0f}ms")
             logger.info(f"   Match: {result.match_type if result.success else 'None'}")
@@ -1578,6 +2066,15 @@ class DealerAnalyticsService:
         lines.append("📦 Average Units / DN")
         lines.append(f"{dashboard.business.avg_units_per_dn:.2f}")
         lines.append("")
+        lines.append("📈 Year-over-Year Growth")
+        lines.append(f"{dashboard.business.yoy_growth:.1f}%")
+        lines.append("")
+        lines.append("🎯 Target Achievement")
+        lines.append(f"{dashboard.business.target_achievement:.1f}%")
+        lines.append("")
+        lines.append("📊 Monthly Growth")
+        lines.append(f"{dashboard.business.monthly_growth:.1f}%")
+        lines.append("")
         
         # PRODUCT SUMMARY
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
@@ -1650,6 +2147,15 @@ class DealerAnalyticsService:
         lines.append("Overall Rank")
         lines.append(f"#{dashboard.performance.overall_rank}")
         lines.append("")
+        lines.append("Performance Tier")
+        lines.append(dashboard.performance.performance_tier)
+        lines.append("")
+        lines.append("Dealer Rating")
+        lines.append(f"{dashboard.performance.dealer_rating:.1f} / 5.0")
+        lines.append("")
+        lines.append("Risk Score")
+        lines.append(f"{dashboard.performance.risk_score} / 100")
+        lines.append("")
         
         # BUSINESS INSIGHTS
         if dashboard.insights:
@@ -1659,6 +2165,16 @@ class DealerAnalyticsService:
             lines.append("")
             for insight in dashboard.insights[:8]:
                 lines.append(insight)
+                lines.append("")
+        
+        # RECOMMENDATIONS
+        if dashboard.recommendations:
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("📋 RECOMMENDATIONS")
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("")
+            for rec in dashboard.recommendations[:5]:
+                lines.append(rec)
                 lines.append("")
         
         # FOOTER
@@ -1803,6 +2319,8 @@ class DealerAnalyticsService:
             "✓ Partial Search",
             "✓ Alias",
             "✓ Smart Match (70%)",
+            "✓ Phonetic (Soundex)",
+            "✓ Abbreviations",
             "",
             "99️⃣ Main Menu",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1829,6 +2347,7 @@ class DealerAnalyticsService:
             "💡 You can also search by:",
             "• Dealer Code (e.g., DLR-045)",
             "• Customer Code (e.g., CUST-789)",
+            "• Abbreviations (e.g., AE for Arshad Electronics)",
             "",
             "99️⃣ Return to Main Menu",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1851,7 +2370,7 @@ class DealerAnalyticsService:
         health = {
             "service": "dealer_analytics_service",
             "version": self._version,
-            "status": "healthy",
+            "status": "healthy" if self._error_count < self._request_count * 0.1 else "degraded",
             "uptime_seconds": (datetime.now() - self._startup_time).seconds,
             "components": {
                 "search_engine": "available" if self._search_engine else "unavailable",
@@ -1859,8 +2378,11 @@ class DealerAnalyticsService:
             },
             "performance": {
                 "total_requests": self._request_count,
+                "successful_requests": self._success_count,
+                "error_count": self._error_count,
                 "avg_response_time_ms": self._avg_response_time * 1000,
-                "active_sessions": len(self._sessions)
+                "active_sessions": len(self._sessions),
+                "success_rate": round((self._success_count / max(self._request_count, 1)) * 100, 1)
             }
         }
         
@@ -1868,6 +2390,20 @@ class DealerAnalyticsService:
         if self._search_engine:
             search_health = self._search_engine.health_check()
             health["search_engine"] = search_health
+        
+        # Dashboard cache stats
+        if self._dashboard_builder:
+            health["dashboard_cache"] = self._dashboard_builder.get_cache_stats()
+        
+        # Analytics
+        health["analytics"] = {
+            "total_queries": self._analytics["total_queries"],
+            "successful_queries": self._analytics["successful_queries"],
+            "failed_queries": self._analytics["failed_queries"],
+            "unique_dealers_viewed": len(self._analytics["dealer_views"]),
+            "popular_searches": dict(sorted(self._analytics["popular_searches"].items(), 
+                                           key=lambda x: x[1], reverse=True)[:10])
+        }
         
         return health
     
@@ -1887,17 +2423,37 @@ class DealerAnalyticsService:
                 "success_rate": search_health.get('success_rate', 0),
                 "avg_search_time_ms": search_health.get('avg_search_time_ms', 0),
                 "dealers_indexed": search_health.get('dealers_indexed', 0),
-                "postgresql_connected": search_health.get('postgresql_connected', False)
+                "postgresql_connected": search_health.get('postgresql_connected', False),
+                "redis_enabled": search_health.get('redis_enabled', False)
             }
+        
+        if self._dashboard_builder:
+            metrics["dashboard_cache"] = self._dashboard_builder.get_cache_stats()
         
         return metrics
     
     def clear_cache(self):
         """Clear all caches"""
         self._sessions.clear()
-        self._dashboard_builder._cache.clear()
-        self._dashboard_builder._cache_time.clear()
+        self._dashboard_builder.clear_cache()
         logger.info("💾 All caches cleared")
+    
+    def get_analytics(self) -> Dict[str, Any]:
+        """Get analytics data"""
+        return {
+            "summary": {
+                "total_queries": self._analytics["total_queries"],
+                "successful_queries": self._analytics["successful_queries"],
+                "failed_queries": self._analytics["failed_queries"],
+                "success_rate": round((self._analytics["successful_queries"] / 
+                                      max(self._analytics["total_queries"], 1)) * 100, 1)
+            },
+            "search_types": dict(self._analytics["search_types"]),
+            "popular_searches": dict(sorted(self._analytics["popular_searches"].items(), 
+                                           key=lambda x: x[1], reverse=True)[:10]),
+            "top_dealers": dict(sorted(self._analytics["dealer_views"].items(), 
+                                      key=lambda x: x[1], reverse=True)[:10])
+        }
 
 # ============================================================
 # SINGLETON
@@ -1923,7 +2479,8 @@ __all__ = [
     "DealerSearchEngine",
     "DealerSearchResult",
     "DealerContext",
-    "DealerDashboard"
+    "DealerDashboard",
+    "VERSION"
 ]
 
 # ============================================================
@@ -1932,7 +2489,7 @@ __all__ = [
 
 if __name__ == "__main__":
     print("\n" + "=" * 70)
-    print("DEALER INTELLIGENCE GATEWAY v8.0 - TEST MODE".center(70))
+    print("DEALER INTELLIGENCE GATEWAY v8.1 - TEST MODE".center(70))
     print("=" * 70)
     print()
     
