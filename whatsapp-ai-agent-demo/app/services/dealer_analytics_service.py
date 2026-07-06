@@ -797,10 +797,23 @@ class DealerAnalyticsService:
                 "sales_office": "Karachi Office",
                 "sales_manager": "Traditional Channel",
             }
+        if "super trading" in normalized:
+            return {
+                "customer_name": dealer_name,
+                "dealer_code": "Z50",
+                "customer_code": "Z50",
+                "warehouse": "Skardu",
+                "warehouse_code": "SKU",
+                "city": "Skardu",
+                "business_type": "Traditional Channel",
+                "sales_office": "Skardu Office",
+                "sales_manager": "Regional Manager",
+            }
+        clean_code = "".join(ch for ch in dealer_name.upper() if ch.isalnum())
         return {
             "customer_name": dealer_name,
-            "dealer_code": f"DEAL_{dealer_name.upper().replace(' ', '_')[:20]}",
-            "customer_code": f"CUST_{dealer_name.upper().replace(' ', '_')[:20]}",
+            "dealer_code": f"DEAL_{clean_code[:20]}",
+            "customer_code": f"CUST_{clean_code[:20]}",
             "warehouse": "Karachi Warehouse (KHI)",
             "warehouse_code": "KHI",
             "city": "Karachi",
@@ -830,22 +843,40 @@ class DealerAnalyticsService:
                 "avg_pod_days": 3.0,
                 "on_time_pct": 96.0,
             }
+        if "super trading" in normalized:
+            return {
+                "total_dn": 156,
+                "delivered_dn": 104,
+                "pending_dn": 52,
+                "pgi_pending": 32,
+                "pod_pending": 20,
+                "total_qty": 1850,
+                "total_revenue": 45680000.0,
+                "avg_dn_value": 292820.0,
+                "avg_units_per_dn": 12.0,
+                "highest_dn_value": 1150000.0,
+                "lowest_dn_value": 22000.0,
+                "delivery_pct": 66.7,
+                "avg_delivery_days": 3.2,
+                "avg_pod_days": 4.5,
+                "on_time_pct": 72.0,
+            }
         return {
-            "total_dn": 92,
-            "delivered_dn": 84,
+            "total_dn": 96,
+            "delivered_dn": 88,
             "pending_dn": 8,
             "pgi_pending": 3,
             "pod_pending": 5,
-            "total_qty": 890,
-            "total_revenue": 18200000.0,
-            "avg_dn_value": 197800.0,
-            "avg_units_per_dn": 9.0,
-            "highest_dn_value": 675000.0,
-            "lowest_dn_value": 15000.0,
-            "delivery_pct": 91.3,
-            "avg_delivery_days": 2.6,
-            "avg_pod_days": 3.4,
-            "on_time_pct": 93.0,
+            "total_qty": 1012,
+            "total_revenue": 21450000.0,
+            "avg_dn_value": 223400.0,
+            "avg_units_per_dn": 10.0,
+            "highest_dn_value": 785000.0,
+            "lowest_dn_value": 18000.0,
+            "delivery_pct": 91.7,
+            "avg_delivery_days": 2.3,
+            "avg_pod_days": 3.1,
+            "on_time_pct": 94.0,
         }
 
     def _build_top_models_from_query(self, q: str) -> List[Dict[str, Any]]:
@@ -859,15 +890,32 @@ class DealerAnalyticsService:
                 {"model": "HWM150-826S6 GC", "units": 130, "revenue": 5200000.0},
                 {"model": "HMW-20MXP3", "units": 110, "revenue": 4100000.0},
             ]
+        if "super trading" in normalized:
+            return [
+                {"model": "Refrigerator 500L", "units": 580, "revenue": 18500000.0},
+                {"model": "Washing Machine 8kg", "units": 720, "revenue": 15800000.0},
+                {"model": "Freezer 300L", "units": 320, "revenue": 7200000.0},
+                {"model": "Air Cooler 12k", "units": 180, "revenue": 2700000.0},
+                {"model": "Other Products", "units": 50, "revenue": 1480000.0},
+            ]
         return [
-            {"model": "WM-5000 Series", "units": 140, "revenue": 5600000.0},
-            {"model": "FR-1200", "units": 98, "revenue": 4300000.0},
-            {"model": "AC-1800", "units": 74, "revenue": 3200000.0},
-            {"model": "SP-900", "units": 60, "revenue": 2100000.0},
-            {"model": "HW-700", "units": 48, "revenue": 1800000.0},
+            {"model": "WM-5000 Series", "units": 142, "revenue": 5700000.0},
+            {"model": "FR-1200", "units": 95, "revenue": 4400000.0},
+            {"model": "AC-1800", "units": 78, "revenue": 3350000.0},
+            {"model": "SP-900", "units": 61, "revenue": 2200000.0},
+            {"model": "HW-700", "units": 49, "revenue": 1900000.0},
         ]
 
     def _build_divisions_from_query(self, q: str) -> List[Dict[str, Any]]:
+        dealer_name = (q or "Dealer").strip()
+        normalized = dealer_name.lower()
+        if "super trading" in normalized:
+            return [
+                {"division": "Refrigerator", "share_pct": 31},
+                {"division": "Washing Machine", "share_pct": 39},
+                {"division": "Freezer", "share_pct": 17},
+                {"division": "Air Cooler", "share_pct": 13},
+            ]
         return [
             {"division": "Washing Machine", "share_pct": 72},
             {"division": "Small Appliances", "share_pct": 18},
@@ -876,19 +924,38 @@ class DealerAnalyticsService:
         ]
 
     def _build_warehouse_perf_from_query(self, q: str) -> Dict[str, Any]:
-        return {"primary_warehouse": "Karachi Warehouse", "contribution_pct": 100.0, "rank": "#3 Nationally"}
+        dealer_name = (q or "Dealer").strip()
+        normalized = dealer_name.lower()
+        if "super trading" in normalized:
+            return {"primary_warehouse": "Skardu", "contribution_pct": 100.0, "rank": "#12 Nationally"}
+        return {"primary_warehouse": "Karachi Warehouse", "contribution_pct": 100.0, "rank": "#4 Nationally"}
 
     def _build_latest_activity_from_query(self, q: str) -> Dict[str, Any]:
+        dealer_name = (q or "Dealer").strip()
+        normalized = dealer_name.lower()
+        if "super trading" in normalized:
+            return {"last_dn": "7156328941", "last_pgi": "02-Jul-2026", "last_pod": "N/A", "latest_status": "⏳ Pending Delivery"}
         return {"last_dn": "6243710294", "last_pgi": "09-Jun-2026", "last_pod": "19-Jun-2026", "latest_status": "✅ Delivered Successfully"}
 
     def _build_business_perf_from_query(self, q: str) -> Dict[str, Any]:
+        dealer_name = (q or "Dealer").strip()
+        normalized = dealer_name.lower()
+        if "super trading" in normalized:
+            return {
+                "business_score": "78 / 100",
+                "rating": "⭐⭐⭐",
+                "tier": "B+",
+                "revenue_rank": "#24 Nationally",
+                "growth": "+8%",
+                "risk_level": "🟡 Moderate",
+            }
         return {
-            "business_score": "94 / 100",
-            "rating": "⭐⭐⭐⭐⭐",
-            "tier": "A+",
-            "revenue_rank": "#15 Nationally",
-            "growth": "+18%",
-            "risk_level": "🟢 Low",
+            "business_score": "92 / 100",
+            "rating": "⭐⭐⭐⭐",
+            "tier": "A",
+            "revenue_rank": "#18 Nationally",
+            "growth": "+12%",
+            "risk_level": "🟡 Moderate",
         }
 
     def _handle_dealer_request(self, q: str, sender: str = "default", **kwargs: Any) -> str:
