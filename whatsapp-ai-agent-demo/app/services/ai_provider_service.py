@@ -404,7 +404,7 @@ class AIProviderService:
             return "\n".join(lines)
         
         # Build clean menu
-        lines.append("📦 DN INTELLIGENCE CENTER")
+        lines.append(""📦 Logistics Intelligence Center"")
         lines.append("")
         lines.append("Please choose from:")
         lines.append("")
@@ -643,7 +643,7 @@ async def process_whatsapp_query(message: str, sender: str) -> str:
         logger.error(f"❌ Fatal error in process_whatsapp_query: {e}")
         logger.error(traceback.format_exc())
         return "\n".join([
-            "📦 DN INTELLIGENCE CENTER",
+            ""📦 Logistics Intelligence Center"",
             "",
             "⚠️ Service is temporarily unavailable.",
             "",
