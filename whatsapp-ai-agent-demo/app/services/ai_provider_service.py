@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 53.0 - PURE GATEWAY (ONLY WORKING SERVICES SHOWN)
+# VERSION: 54.0 - CLEAN MENU (ONLY WORKING SERVICES)
 # ============================================================
 
 """
@@ -14,9 +14,9 @@ This file is ONLY the Gateway, Router, Menu Controller, and Session Manager.
 CRITICAL BEHAVIOR:
 1. ONLY working services appear in the menu
 2. Non-working services are SILENTLY ignored (no errors shown)
-3. The menu ALWAYS displays even if ALL services fail
+3. The menu ALWAYS displays cleanly
 4. Users ONLY see services that are available
-5. NO error messages about missing services are shown to users
+5. NO "Invalid option" errors - just show the menu
 6. The gateway ALWAYS returns the menu or a response
 
 ================================================================================
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTS
 # ============================================================
 
-VERSION = "53.0"
+VERSION = "54.0"
 EXIT_SIGNAL = "__EXIT__"
 SESSION_TIMEOUT_SECONDS = 1800  # 30 minutes
 
@@ -222,8 +222,9 @@ class AIProviderService:
     CRITICAL:
     - ONLY working services appear in the menu
     - Non-working services are silently ignored
-    - The menu ALWAYS displays
+    - The menu ALWAYS displays cleanly
     - EVERY message gets a reply
+    - NO "Invalid option" - just show the menu
     """
     
     _instance: Optional["AIProviderService"] = None
@@ -382,129 +383,74 @@ class AIProviderService:
             return False
     
     # ============================================================
-    # MENU CONTROLLER - ONLY SHOWS WORKING SERVICES
+    # MENU CONTROLLER - CLEAN, ONLY WORKING SERVICES
     # ============================================================
     
     def _get_main_menu(self) -> str:
-        """Return the main menu with ONLY working services"""
-        lines = [
-            "📦 DN INTELLIGENCE CENTER",
-            "",
-        ]
+        """Return the main menu with ONLY working services - NO errors"""
+        lines = []
         
         if not WORKING_SERVICES:
             # No services available - show friendly message
-            lines.extend([
+            lines = [
+                "📦 DN INTELLIGENCE CENTER",
+                "",
                 "⚠️ No services are currently available.",
                 "",
                 "Please try again later.",
                 "",
-                "━━━━━━━━━━━━━━━━━━",
-                "",
                 "99 - Return to Main Menu"
-            ])
+            ]
             return "\n".join(lines)
+        
+        # Build clean menu
+        lines.append("📦 DN INTELLIGENCE CENTER")
+        lines.append("")
+        lines.append("Please choose from:")
+        lines.append("")
         
         # Show each working service
         for key, svc in WORKING_SERVICES.items():
-            lines.append(f"{key}. {svc['name']}")
-        
-        lines.extend([
-            "",
-            "━━━━━━━━━━━━━━━━━━",
-            "",
-            "Reply with a number to continue:",
-            "",
-        ])
-        
-        # Show options
-        for key, svc in WORKING_SERVICES.items():
             lines.append(f"{key} - {svc['name']}")
         
-        lines.extend([
-            "99 - Return to Main Menu"
-        ])
+        lines.append("")
+        lines.append("99 - Return to Main Menu")
         
         return "\n".join(lines)
-    
-    def _get_invalid_menu_message(self) -> str:
-        """Return invalid menu selection message"""
-        if not WORKING_SERVICES:
-            return "\n".join([
-                "⚠️ No services are currently available.",
-                "",
-                "Please try again later.",
-                "",
-                "99 - Return to Main Menu"
-            ])
-        
-        lines = [
-            "Invalid option.",
-            "",
-            "Please choose from:",
-            "",
-        ]
-        
-        for key, svc in WORKING_SERVICES.items():
-            lines.append(f"{key} - {svc['name']}")
-        
-        lines.extend([
-            "",
-            "99 - Return to Main Menu"
-        ])
-        
-        return "\n".join(lines)
-    
-    def _get_error_message(self) -> str:
-        """Return friendly error message"""
-        return "\n".join([
-            "⚠️ The selected module encountered an error.",
-            "",
-            "Please try again or choose another service.",
-            "",
-            "99 - Return to Main Menu"
-        ])
-    
-    def _is_menu_selection(self, message: str) -> bool:
-        """Check if message is a valid menu selection"""
-        return message in list(WORKING_SERVICES.keys()) + ["99"]
     
     # ============================================================
-    # UNLOCKED SESSION HANDLER
+    # UNLOCKED SESSION HANDLER - NO "Invalid option"
     # ============================================================
     
     async def _handle_unlocked_session(self, message: str, phone: str, session: SessionData) -> str:
         """
         Handle messages when session is NOT locked.
         Shows menu or routes selection.
-        ALWAYS returns a string.
+        ALWAYS returns the menu for invalid input - NO errors.
         """
         try:
             # Check if it's a valid menu selection
-            if self._is_menu_selection(message):
-                # Check for 99 - unlock/return to menu
-                if message == "99":
-                    self._unlock_session(phone)
-                    return self._get_main_menu()
-                
+            if message in WORKING_SERVICES:
                 # Valid selection - lock and route
-                service = WORKING_SERVICES.get(message)
-                if not service:
-                    return self._get_invalid_menu_message()
-                
+                service = WORKING_SERVICES[message]
                 logger.info(f"🎯 Menu selection: {message} -> {service['name']}")
                 
                 # Lock session
                 locked_session = self._lock_session(phone, message)
                 if not locked_session:
-                    return self._get_invalid_menu_message()
+                    return self._get_main_menu()
                 
                 # Get initial response from service
                 return await self._forward_to_service(message, message, phone)
             
-            # Invalid input - show menu
-            logger.info(f"❌ Invalid input: '{message}' from {phone}")
-            return self._get_invalid_menu_message()
+            # Check for 99 - return to menu
+            if message == "99":
+                self._unlock_session(phone)
+                return self._get_main_menu()
+            
+            # ANY invalid input → ALWAYS show the menu (NO error messages)
+            logger.info(f"ℹ️ Invalid input: '{message}' from {phone} - showing menu")
+            return self._get_main_menu()
             
         except Exception as e:
             logger.error(f"❌ Error in _handle_unlocked_session: {e}")
@@ -555,12 +501,12 @@ class AIProviderService:
         try:
             service = WORKING_SERVICES.get(service_id)
             if not service:
-                return self._get_invalid_menu_message()
+                return self._get_main_menu()
             
             service_instance = service["instance"]
             
             if not service_instance:
-                return self._get_invalid_menu_message()
+                return self._get_main_menu()
             
             # Try to call the service
             response = None
@@ -593,11 +539,11 @@ class AIProviderService:
                 # Catch ANY exception from the service
                 logger.error(f"❌ Service {service['name']} error: {service_error}")
                 logger.error(traceback.format_exc())
-                return self._get_error_message()
+                return self._get_main_menu()  # Show menu on service error
             
             # Ensure we have a string response
             if response is None:
-                response = f"📊 {service['name']}\n\nNo response received. Please try again."
+                response = self._get_main_menu()
             elif not isinstance(response, str):
                 response = str(response)
             
