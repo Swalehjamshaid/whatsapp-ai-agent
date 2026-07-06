@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 2.0 - ENTERPRISE AI GATEWAY SERVICE
+# VERSION: 2.1 - ENTERPRISE AI GATEWAY SERVICE (FULL)
 # ============================================================
 
 """
@@ -30,6 +30,7 @@ Features:
     ✅ Comprehensive logging
     ✅ Enterprise-grade performance
     ✅ Graceful service degradation
+    ✅ All 7 services integrated
 ================================================================================
 """
 
@@ -43,63 +44,77 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# SERVICE IMPORTS
+# SERVICE IMPORTS - ALL 7 SERVICES
 # ============================================================
 
+# 1. Dealer Analytics Service (Primary)
 try:
     from app.services.dealer_analytics_service import get_dealer_service, EXIT_SIGNAL
     DEALER_AVAILABLE = True
+    logger.info("✅ Dealer Analytics Service loaded")
 except ImportError as e:
     logger.warning(f"⚠️ Dealer Analytics Service not available: {e}")
     get_dealer_service = None
     EXIT_SIGNAL = "__EXIT__"
     DEALER_AVAILABLE = False
 
+# 2. National KPI Service
 try:
     from app.services.national_kpi_service import get_kpi_service
     KPI_AVAILABLE = True
-except ImportError:
-    logger.warning("⚠️ National KPI Service not available")
+    logger.info("✅ National KPI Service loaded")
+except ImportError as e:
+    logger.warning(f"⚠️ National KPI Service not available: {e}")
     get_kpi_service = None
     KPI_AVAILABLE = False
 
+# 3. DN Analysis Service
 try:
     from app.services.dn_analysis import get_dn_analysis_service
     DN_AVAILABLE = True
-except ImportError:
-    logger.warning("⚠️ DN Analysis Service not available")
+    logger.info("✅ DN Analysis Service loaded")
+except ImportError as e:
+    logger.warning(f"⚠️ DN Analysis Service not available: {e}")
     get_dn_analysis_service = None
     DN_AVAILABLE = False
 
+# 4. Warehouse Service
 try:
     from app.services.warehouse_service import get_warehouse_service
     WAREHOUSE_AVAILABLE = True
-except ImportError:
-    logger.warning("⚠️ Warehouse Service not available")
+    logger.info("✅ Warehouse Service loaded")
+except ImportError as e:
+    logger.warning(f"⚠️ Warehouse Service not available: {e}")
     get_warehouse_service = None
     WAREHOUSE_AVAILABLE = False
 
+# 5. Product Service
 try:
     from app.services.product_service import get_product_service
     PRODUCT_AVAILABLE = True
-except ImportError:
-    logger.warning("⚠️ Product Service not available")
+    logger.info("✅ Product Service loaded")
+except ImportError as e:
+    logger.warning(f"⚠️ Product Service not available: {e}")
     get_product_service = None
     PRODUCT_AVAILABLE = False
 
+# 6. City Service
 try:
     from app.services.city_service import get_city_service
     CITY_AVAILABLE = True
-except ImportError:
-    logger.warning("⚠️ City Service not available")
+    logger.info("✅ City Service loaded")
+except ImportError as e:
+    logger.warning(f"⚠️ City Service not available: {e}")
     get_city_service = None
     CITY_AVAILABLE = False
 
+# 7. Groq AI Service (Fallback)
 try:
     from app.services.groq_service import get_groq_service
     GROQ_AVAILABLE = True
-except ImportError:
-    logger.warning("⚠️ Groq Service not available")
+    logger.info("✅ Groq AI Service loaded")
+except ImportError as e:
+    logger.warning(f"⚠️ Groq AI Service not available: {e}")
     get_groq_service = None
     GROQ_AVAILABLE = False
 
@@ -107,7 +122,7 @@ except ImportError:
 # CONSTANTS
 # ============================================================
 
-VERSION = "2.0"
+VERSION = "2.1"
 MAX_RESPONSE_LENGTH = 4096  # WhatsApp limit
 
 # Intent patterns with priority scoring
@@ -152,6 +167,7 @@ INTENT_PATTERNS = {
     ],
     "kpi": [
         (r'(?i)^\s*kpi\s*$', 10),
+        (r'(?i)^\s*kpis\s*$', 10),
         (r'(?i)performance', 7),
         (r'(?i)metrics', 7),
         (r'(?i)statistics', 6),
@@ -160,6 +176,7 @@ INTENT_PATTERNS = {
         (r'(?i)company.?wide', 6),
         (r'(?i)total\s+(?:sales|delivery|performance)', 8),
         (r'(?i)dashboard', 5),
+        (r'(?i)key\s+performance', 8),
     ],
     "dn": [
         (r'(?i)dn[:\s]*[A-Za-z0-9\-]+', 10),
@@ -178,6 +195,7 @@ INTENT_PATTERNS = {
         (r'(?i)warehouse\s+performance', 8),
         (r'(?i)warehouse\s+metrics', 8),
         (r'(?i)stock\s+level', 7),
+        (r'(?i)inventory\s+status', 7),
     ],
     "product": [
         (r'(?i)product', 5),
@@ -188,6 +206,7 @@ INTENT_PATTERNS = {
         (r'(?i)product\s+performance', 8),
         (r'(?i)top\s+product', 7),
         (r'(?i)best\s+selling', 7),
+        (r'(?i)product\s+analytics', 8),
     ],
     "city": [
         (r'(?i)city', 5),
@@ -197,6 +216,7 @@ INTENT_PATTERNS = {
         (r'(?i)sales\s+by\s+city', 8),
         (r'(?i)city\s+performance', 8),
         (r'(?i)regional\s+sales', 7),
+        (r'(?i)city\s+analytics', 8),
     ]
 }
 
@@ -296,10 +316,24 @@ class AIProviderService:
         print("=" * 70)
         print("📋 SERVICES AVAILABLE:")
         print("-" * 70)
-        for service, available in self._services_available.items():
+        
+        # Show all 7 services
+        service_names = {
+            "dealer": "Dealer Analytics",
+            "kpi": "National KPI",
+            "dn": "DN Analysis",
+            "warehouse": "Warehouse",
+            "product": "Product Analytics",
+            "city": "City Analytics",
+            "groq": "Groq AI (Fallback)"
+        }
+        
+        for service_key, display_name in service_names.items():
+            available = self._services_available.get(service_key, False)
             status = "✅" if available else "❌"
-            name = service.upper().ljust(12)
+            name = display_name.ljust(20)
             print(f"  {status}  {name} : {'Available' if available else 'Not Available'}")
+        
         print("-" * 70)
         print(f"  📊 Started at: {self._startup.strftime('%Y-%m-%d %H:%M:%S')}")
         print("=" * 70 + "\n")
@@ -541,11 +575,11 @@ class AIProviderService:
             threading.Timer(3600, self._cleanup_sessions).start()
     
     # ============================================================
-    # SERVICE HANDLERS
+    # SERVICE HANDLERS - ALL 7 SERVICES
     # ============================================================
     
     def _handle_dealer_query(self, message: str, sender: str, session: SessionData) -> str:
-        """Route to Dealer Analytics Service"""
+        """Route to Dealer Analytics Service (Service 1)"""
         try:
             if not self._services_available["dealer"]:
                 return self._get_service_unavailable_message("Dealer Analytics")
@@ -580,7 +614,7 @@ class AIProviderService:
             return self._get_error_message()
     
     def _handle_kpi_query(self, message: str, session: SessionData) -> str:
-        """Route to National KPI Service"""
+        """Route to National KPI Service (Service 2)"""
         try:
             if not self._services_available["kpi"]:
                 return self._get_service_unavailable_message("National KPI")
@@ -594,6 +628,8 @@ class AIProviderService:
                     return service.process_query(message)
                 elif hasattr(service, 'get_kpi_dashboard'):
                     return service.get_kpi_dashboard()
+                elif hasattr(service, 'get_dashboard'):
+                    return service.get_dashboard()
                 else:
                     return "📊 National KPI Dashboard\n\nPlease wait while we fetch the data..."
             else:
@@ -603,7 +639,7 @@ class AIProviderService:
             return self._get_error_message()
     
     def _handle_dn_query(self, message: str, session: SessionData) -> str:
-        """Route to DN Analysis Service"""
+        """Route to DN Analysis Service (Service 3)"""
         try:
             if not self._services_available["dn"]:
                 return self._get_service_unavailable_message("DN Analysis")
@@ -622,6 +658,12 @@ class AIProviderService:
                         return service.analyze_dn(dn_match.group())
                     else:
                         return "📦 Please provide a valid Delivery Note number.\n\nExample: DN-12345"
+                elif hasattr(service, 'track_dn'):
+                    dn_match = re.search(r'[A-Za-z0-9\-]{6,}', message)
+                    if dn_match:
+                        return service.track_dn(dn_match.group())
+                    else:
+                        return "📦 Please provide a valid Delivery Note number.\n\nExample: DN-12345"
                 else:
                     return "📦 DN Analysis\n\nPlease provide a Delivery Note number to track."
             else:
@@ -631,7 +673,7 @@ class AIProviderService:
             return self._get_error_message()
     
     def _handle_warehouse_query(self, message: str, session: SessionData) -> str:
-        """Route to Warehouse Service"""
+        """Route to Warehouse Service (Service 4)"""
         try:
             if not self._services_available["warehouse"]:
                 return self._get_service_unavailable_message("Warehouse")
@@ -645,6 +687,8 @@ class AIProviderService:
                     return service.process_query(message)
                 elif hasattr(service, 'get_warehouse_dashboard'):
                     return service.get_warehouse_dashboard()
+                elif hasattr(service, 'get_dashboard'):
+                    return service.get_dashboard()
                 else:
                     return "🏭 Warehouse Intelligence\n\nPlease wait while we fetch the data..."
             else:
@@ -654,10 +698,10 @@ class AIProviderService:
             return self._get_error_message()
     
     def _handle_product_query(self, message: str, session: SessionData) -> str:
-        """Route to Product Service"""
+        """Route to Product Service (Service 5)"""
         try:
             if not self._services_available["product"]:
-                return self._get_service_unavailable_message("Product")
+                return self._get_service_unavailable_message("Product Analytics")
             
             if "product" not in self._service_instances:
                 self._service_instances["product"] = get_product_service()
@@ -668,19 +712,21 @@ class AIProviderService:
                     return service.process_query(message)
                 elif hasattr(service, 'get_product_analytics'):
                     return service.get_product_analytics()
+                elif hasattr(service, 'get_analytics'):
+                    return service.get_analytics()
                 else:
                     return "📦 Product Analytics\n\nPlease wait while we fetch the data..."
             else:
-                return self._get_service_unavailable_message("Product")
+                return self._get_service_unavailable_message("Product Analytics")
         except Exception as e:
             logger.error(f"❌ Product service error: {e}")
             return self._get_error_message()
     
     def _handle_city_query(self, message: str, session: SessionData) -> str:
-        """Route to City Service"""
+        """Route to City Service (Service 6)"""
         try:
             if not self._services_available["city"]:
-                return self._get_service_unavailable_message("City")
+                return self._get_service_unavailable_message("City Analytics")
             
             if "city" not in self._service_instances:
                 self._service_instances["city"] = get_city_service()
@@ -691,16 +737,18 @@ class AIProviderService:
                     return service.process_query(message)
                 elif hasattr(service, 'get_city_analytics'):
                     return service.get_city_analytics()
+                elif hasattr(service, 'get_analytics'):
+                    return service.get_analytics()
                 else:
                     return "📍 City Analytics\n\nPlease wait while we fetch the data..."
             else:
-                return self._get_service_unavailable_message("City")
+                return self._get_service_unavailable_message("City Analytics")
         except Exception as e:
             logger.error(f"❌ City service error: {e}")
             return self._get_error_message()
     
     def _handle_ai_query(self, message: str, session: SessionData) -> str:
-        """Route to Groq AI Service"""
+        """Route to Groq AI Service (Service 7 - Fallback)"""
         try:
             if not self._services_available["groq"]:
                 return self._get_service_unavailable_message("AI Assistant")
@@ -714,6 +762,8 @@ class AIProviderService:
                     return service.process_query(message)
                 elif hasattr(service, 'generate_response'):
                     return service.generate_response(message)
+                elif hasattr(service, 'chat'):
+                    return service.chat(message)
                 else:
                     return "🤖 AI Assistant\n\nHow can I help you today?"
             else:
