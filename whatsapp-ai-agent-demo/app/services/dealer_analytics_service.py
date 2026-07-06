@@ -165,6 +165,67 @@ GROQ_MODEL = "mixtral-8x7b-32768"
 FALLBACK_COORDINATES = (30.3753, 69.3451)
 
 # ============================================================
+# BLOCK 2A: UTILITY FUNCTIONS
+# ============================================================
+
+def _safe_str(value: Any, default: str = "") -> str:
+    """Safely convert to string"""
+    if value is None:
+        return default
+    try:
+        result = str(value).strip()
+        return result if result else default
+    except (TypeError, ValueError):
+        return default
+
+def _safe_float(value: Any) -> float:
+    """Safely convert to float"""
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+def _safe_int(value: Any) -> int:
+    """Safely convert to integer"""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+def _calc_pct(numerator: Any, denominator: Any) -> float:
+    """Calculate percentage safely"""
+    num = _safe_float(numerator)
+    den = _safe_float(denominator)
+    return round((num / den * 100), 2) if den > 0 else 0.0
+
+def _format_date(value: Any) -> str:
+    """Format date for display"""
+    if isinstance(value, (date, datetime)):
+        return value.strftime("%d-%b-%Y")
+    return _safe_str(value, "N/A")
+
+def _format_currency(amount: float) -> str:
+    """Format currency in PKR"""
+    if amount >= 100_000_000:
+        return f"PKR {amount/100_000_000:.2f}Cr"
+    elif amount >= 1_000_000:
+        return f"PKR {amount/1_000_000:.2f}M"
+    elif amount >= 1_000:
+        return f"PKR {amount/1_000:.2f}K"
+    else:
+        return f"PKR {amount:,.0f}"
+
+def _normalize_text(text: str) -> str:
+    """Normalize text for search - PRESERVES hyphens"""
+    if not text:
+        return ""
+    normalized = text.lower()
+    normalized = re.sub(r'[&\./,()\'\"]', ' ', normalized)
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    return normalized
+
+
+# ============================================================
 # BLOCK 3: ENUMS
 # ============================================================
 
