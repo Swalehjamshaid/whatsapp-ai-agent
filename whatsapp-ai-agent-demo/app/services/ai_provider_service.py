@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 55.0 - PROFESSIONAL LOGISTICS INTELLIGENCE CENTER
+# VERSION: 57.0 - ALL 7 SERVICES WORKING
 # ============================================================
 
 """
@@ -12,12 +12,12 @@ AI PROVIDER SERVICE - PURE GATEWAY & SESSION MANAGER
 This file is ONLY the Gateway, Router, Menu Controller, and Session Manager.
 
 CRITICAL BEHAVIOR:
-1. ONLY working services appear in the menu
-2. Non-working services are SILENTLY ignored (no errors shown)
-3. The menu ALWAYS displays cleanly
-4. Users ONLY see services that are available
-5. NO "Invalid option" errors - just show the menu
-6. Professional header: 📦 LOGISTICS INTELLIGENCE CENTER
+1. ✅ ALL 7 services appear in the menu
+2. ✅ Working services show with ✅
+3. ✅ Non-working services show with ❌
+4. ✅ The menu ALWAYS displays cleanly
+5. ✅ NO "Invalid option" errors - just show the menu
+6. ✅ Professional header: 📦 LOGISTICS INTELLIGENCE CENTER
 
 ================================================================================
 """
@@ -31,29 +31,31 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 # ============================================================
-# LOGGING SETUP
+# BLOCK 1: LOGGING SETUP
 # ============================================================
 
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# CONSTANTS
+# BLOCK 2: CONSTANTS
 # ============================================================
 
-VERSION = "55.0"
+VERSION = "57.0"
 EXIT_SIGNAL = "__EXIT__"
 SESSION_TIMEOUT_SECONDS = 1800  # 30 minutes
 
 # ============================================================
-# SERVICE LOADING - SILENT FAILURES
+# BLOCK 3: SERVICE LOADING - ALL 7 SERVICES
 # ============================================================
 
-# Each service is loaded silently. If it fails, it's simply not added.
-# NO ERRORS are shown to users.
+# Each service is loaded independently.
+# If a service fails, it shows ❌ in menu but doesn't break the app.
 
 WORKING_SERVICES = {}
 
-# 1. National KPI Service
+# ---------------------------------------------------------------------
+# SERVICE 1: National KPI Service
+# ---------------------------------------------------------------------
 try:
     from app.services.national_kpi_service import get_kpi_service
     service = get_kpi_service()
@@ -61,14 +63,30 @@ try:
         WORKING_SERVICES["1"] = {
             "id": "1",
             "name": "National KPI",
-            "instance": service
+            "instance": service,
+            "working": True
         }
         logger.info("✅ National KPI Service loaded")
+    else:
+        WORKING_SERVICES["1"] = {
+            "id": "1",
+            "name": "National KPI",
+            "instance": None,
+            "working": False
+        }
+        logger.warning("⚠️ National KPI Service returned None")
 except Exception as e:
-    # SILENT FAIL - service not added to menu
+    WORKING_SERVICES["1"] = {
+        "id": "1",
+        "name": "National KPI",
+        "instance": None,
+        "working": False
+    }
     logger.warning(f"⚠️ National KPI Service skipped: {e}")
 
-# 2. DN Analysis Service
+# ---------------------------------------------------------------------
+# SERVICE 2: DN Analysis Service
+# ---------------------------------------------------------------------
 try:
     from app.services.dn_analysis import get_dn_analysis_service
     service = get_dn_analysis_service()
@@ -76,14 +94,30 @@ try:
         WORKING_SERVICES["2"] = {
             "id": "2",
             "name": "DN Analysis",
-            "instance": service
+            "instance": service,
+            "working": True
         }
         logger.info("✅ DN Analysis Service loaded")
+    else:
+        WORKING_SERVICES["2"] = {
+            "id": "2",
+            "name": "DN Analysis",
+            "instance": None,
+            "working": False
+        }
+        logger.warning("⚠️ DN Analysis Service returned None")
 except Exception as e:
-    # SILENT FAIL - service not added to menu
+    WORKING_SERVICES["2"] = {
+        "id": "2",
+        "name": "DN Analysis",
+        "instance": None,
+        "working": False
+    }
     logger.warning(f"⚠️ DN Analysis Service skipped: {e}")
 
-# 3. Dealer Analytics Service
+# ---------------------------------------------------------------------
+# SERVICE 3: Dealer Analytics Service
+# ---------------------------------------------------------------------
 try:
     from app.services.dealer_analytics_service import get_dealer_service
     service = get_dealer_service()
@@ -91,14 +125,30 @@ try:
         WORKING_SERVICES["3"] = {
             "id": "3",
             "name": "Dealer Analytics",
-            "instance": service
+            "instance": service,
+            "working": True
         }
         logger.info("✅ Dealer Analytics Service loaded")
+    else:
+        WORKING_SERVICES["3"] = {
+            "id": "3",
+            "name": "Dealer Analytics",
+            "instance": None,
+            "working": False
+        }
+        logger.warning("⚠️ Dealer Analytics Service returned None")
 except Exception as e:
-    # SILENT FAIL - service not added to menu
+    WORKING_SERVICES["3"] = {
+        "id": "3",
+        "name": "Dealer Analytics",
+        "instance": None,
+        "working": False
+    }
     logger.warning(f"⚠️ Dealer Analytics Service skipped: {e}")
 
-# 4. Warehouse Service
+# ---------------------------------------------------------------------
+# SERVICE 4: Warehouse Service
+# ---------------------------------------------------------------------
 try:
     from app.services.warehouse_service import get_warehouse_analytics_service
     service = get_warehouse_analytics_service()
@@ -106,14 +156,30 @@ try:
         WORKING_SERVICES["4"] = {
             "id": "4",
             "name": "Warehouse Analytics",
-            "instance": service
+            "instance": service,
+            "working": True
         }
         logger.info("✅ Warehouse Service loaded")
+    else:
+        WORKING_SERVICES["4"] = {
+            "id": "4",
+            "name": "Warehouse Analytics",
+            "instance": None,
+            "working": False
+        }
+        logger.warning("⚠️ Warehouse Service returned None")
 except Exception as e:
-    # SILENT FAIL - service not added to menu
+    WORKING_SERVICES["4"] = {
+        "id": "4",
+        "name": "Warehouse Analytics",
+        "instance": None,
+        "working": False
+    }
     logger.warning(f"⚠️ Warehouse Service skipped: {e}")
 
-# 5. Product Service
+# ---------------------------------------------------------------------
+# SERVICE 5: Product Service
+# ---------------------------------------------------------------------
 try:
     from app.services.product_service import get_product_analytics_service
     service = get_product_analytics_service()
@@ -121,14 +187,30 @@ try:
         WORKING_SERVICES["5"] = {
             "id": "5",
             "name": "Product Analytics",
-            "instance": service
+            "instance": service,
+            "working": True
         }
         logger.info("✅ Product Service loaded")
+    else:
+        WORKING_SERVICES["5"] = {
+            "id": "5",
+            "name": "Product Analytics",
+            "instance": None,
+            "working": False
+        }
+        logger.warning("⚠️ Product Service returned None")
 except Exception as e:
-    # SILENT FAIL - service not added to menu
+    WORKING_SERVICES["5"] = {
+        "id": "5",
+        "name": "Product Analytics",
+        "instance": None,
+        "working": False
+    }
     logger.warning(f"⚠️ Product Service skipped: {e}")
 
-# 6. City Service
+# ---------------------------------------------------------------------
+# SERVICE 6: City Service
+# ---------------------------------------------------------------------
 try:
     from app.services.city_service import get_city_analytics_service
     service = get_city_analytics_service()
@@ -136,14 +218,30 @@ try:
         WORKING_SERVICES["6"] = {
             "id": "6",
             "name": "City Analytics",
-            "instance": service
+            "instance": service,
+            "working": True
         }
         logger.info("✅ City Service loaded")
+    else:
+        WORKING_SERVICES["6"] = {
+            "id": "6",
+            "name": "City Analytics",
+            "instance": None,
+            "working": False
+        }
+        logger.warning("⚠️ City Service returned None")
 except Exception as e:
-    # SILENT FAIL - service not added to menu
+    WORKING_SERVICES["6"] = {
+        "id": "6",
+        "name": "City Analytics",
+        "instance": None,
+        "working": False
+    }
     logger.warning(f"⚠️ City Service skipped: {e}")
 
-# 7. Groq AI Service
+# ---------------------------------------------------------------------
+# SERVICE 7: AI Assistant (Groq)
+# ---------------------------------------------------------------------
 try:
     from app.services.groq_service import get_groq_service
     service = get_groq_service()
@@ -151,15 +249,43 @@ try:
         WORKING_SERVICES["7"] = {
             "id": "7",
             "name": "AI Assistant",
-            "instance": service
+            "instance": service,
+            "working": True
         }
         logger.info("✅ AI Assistant Service loaded")
+    else:
+        WORKING_SERVICES["7"] = {
+            "id": "7",
+            "name": "AI Assistant",
+            "instance": None,
+            "working": False
+        }
+        logger.warning("⚠️ AI Assistant Service returned None")
 except Exception as e:
-    # SILENT FAIL - service not added to menu
+    WORKING_SERVICES["7"] = {
+        "id": "7",
+        "name": "AI Assistant",
+        "instance": None,
+        "working": False
+    }
     logger.warning(f"⚠️ AI Assistant Service skipped: {e}")
 
 # ============================================================
-# SESSION DATA CLASS - LIGHTWEIGHT
+# BLOCK 4: SERVICE STATUS SUMMARY
+# ============================================================
+
+working_count = sum(1 for svc in WORKING_SERVICES.values() if svc.get("working", False))
+total_count = len(WORKING_SERVICES)
+logger.info(f"📊 Services loaded: {working_count}/{total_count} working")
+
+if working_count == 0:
+    logger.error("❌ No services loaded! Check service files.")
+else:
+    working_names = [svc["name"] for svc in WORKING_SERVICES.values() if svc.get("working", False)]
+    logger.info(f"✅ Working services: {', '.join(working_names)}")
+
+# ============================================================
+# BLOCK 5: SESSION DATA CLASS - LIGHTWEIGHT
 # ============================================================
 
 class SessionData:
@@ -209,7 +335,7 @@ class SessionData:
         }
 
 # ============================================================
-# MAIN GATEWAY SERVICE
+# BLOCK 6: MAIN GATEWAY SERVICE
 # ============================================================
 
 class AIProviderService:
@@ -220,11 +346,10 @@ class AIProviderService:
     It ONLY routes messages to the appropriate services.
     
     CRITICAL:
-    - ONLY working services appear in the menu
-    - Non-working services are silently ignored
+    - ALL services appear in the menu (✅ working, ❌ not working)
+    - Non-working services show ❌ but don't break the app
     - The menu ALWAYS displays cleanly
     - EVERY message gets a reply
-    - NO "Invalid option" - just show the menu
     """
     
     _instance: Optional["AIProviderService"] = None
@@ -250,26 +375,28 @@ class AIProviderService:
         self._show_startup()
     
     def _show_startup(self):
-        """Display startup information - only shows working services"""
+        """Display startup information - shows ALL services with status"""
         print("\n" + "=" * 70)
         print(f"🤖 AI PROVIDER GATEWAY v{self._version}".center(70))
         print("=" * 70)
-        print("📋 WORKING SERVICES:")
+        print("📋 ALL SERVICES:")
         print("-" * 70)
         
-        if not WORKING_SERVICES:
-            print("  ⚠️ No services available - only menu will be shown")
-        else:
-            for key, svc in WORKING_SERVICES.items():
-                print(f"  {key}. ✅ {svc['name']}")
+        for key, svc in WORKING_SERVICES.items():
+            if svc.get("working", False):
+                status = "✅ WORKING"
+            else:
+                status = "❌ NOT WORKING"
+            print(f"  {key}. {status}  {svc['name']}")
         
         print("-" * 70)
-        print(f"  ✅ Working: {len(WORKING_SERVICES)} services")
+        working_count = sum(1 for svc in WORKING_SERVICES.values() if svc.get("working", False))
+        print(f"  ✅ Working: {working_count}/{len(WORKING_SERVICES)} services")
         print(f"  🕐 Started at: {self._startup.strftime('%Y-%m-%d %H:%M:%S')}")
         print("=" * 70 + "\n")
     
     # ============================================================
-    # MAIN ENTRY POINT - DO NOT CHANGE SIGNATURE
+    # BLOCK 7: MAIN ENTRY POINT
     # ============================================================
     
     async def process_whatsapp_query(self, message: str, sender: str) -> str:
@@ -290,43 +417,33 @@ class AIProviderService:
         try:
             logger.info(f"📨 Incoming: '{message}' from {sender}")
             
-            # Handle empty message
             if not message or not message.strip():
                 return self._get_main_menu()
             
             msg = message.strip()
-            
-            # Get or create session
             session = self._get_or_create_session(sender)
             
-            # Check if session is expired
             if session.is_expired():
                 logger.info(f"⏰ Session expired for {sender}")
                 self._clear_session(sender)
                 return self._get_main_menu()
             
-            # Update activity timestamp
             session.update_activity()
             
-            # Check if session is locked
             if session.locked:
-                # Session is locked - forward directly to locked service
                 logger.info(f"🔒 Session locked to {session.locked_service_name} for {sender}")
-                response = await self._forward_to_locked_service(msg, session)
-                return response
+                return await self._forward_to_locked_service(msg, session)
             
-            # Session is NOT locked - handle menu or routing
             return await self._handle_unlocked_session(msg, sender, session)
             
         except Exception as e:
-            # CRITICAL: ALWAYS return a response, never let an exception escape
             self._error_count += 1
             logger.error(f"❌ Fatal error: {e}")
             logger.error(traceback.format_exc())
-            return self._get_main_menu()  # Always show menu on error
+            return self._get_main_menu()
     
     # ============================================================
-    # SESSION MANAGEMENT
+    # BLOCK 8: SESSION MANAGEMENT
     # ============================================================
     
     def _get_or_create_session(self, phone: str) -> SessionData:
@@ -354,7 +471,7 @@ class AIProviderService:
             
             session = self._sessions[phone]
             service = WORKING_SERVICES.get(service_id)
-            if not service:
+            if not service or not service.get("working", False):
                 return None
             
             session.lock(service_id, service["name"])
@@ -383,33 +500,16 @@ class AIProviderService:
             return False
     
     # ============================================================
-    # MENU CONTROLLER - PROFESSIONAL HEADER
+    # BLOCK 9: MENU CONTROLLER - SHOWS ALL SERVICES
     # ============================================================
     
     def _get_main_menu(self) -> str:
-        """Return the main menu with professional header"""
+        """Return the main menu with ALL services (✅ working, ❌ not working)"""
         lines = []
         
-        # Professional header with separator
         SEPARATOR = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         HEADER = "     📦  LOGISTICS INTELLIGENCE CENTER"
         
-        if not WORKING_SERVICES:
-            # No services available - show friendly message
-            lines = [
-                SEPARATOR,
-                HEADER,
-                SEPARATOR,
-                "",
-                "⚠️ No services are currently available.",
-                "",
-                "Please try again later.",
-                "",
-                "99 - Return to Main Menu"
-            ]
-            return "\n".join(lines)
-        
-        # Build clean menu with professional header
         lines.append(SEPARATOR)
         lines.append(HEADER)
         lines.append(SEPARATOR)
@@ -417,17 +517,24 @@ class AIProviderService:
         lines.append("Please choose from:")
         lines.append("")
         
-        # Show each working service
+        # Show ALL services with status
         for key, svc in WORKING_SERVICES.items():
-            lines.append(f"{key} - {svc['name']}")
+            if svc.get("working", False):
+                status = "✅"
+            else:
+                status = "❌"
+            lines.append(f"{key}. {status} {svc['name']}")
         
         lines.append("")
         lines.append("99 - Return to Main Menu")
+        lines.append("")
+        lines.append("📌 Services with ✅ are working")
+        lines.append("📌 Services with ❌ are currently unavailable")
         
         return "\n".join(lines)
     
     # ============================================================
-    # UNLOCKED SESSION HANDLER - NO "Invalid option"
+    # BLOCK 10: UNLOCKED SESSION HANDLER
     # ============================================================
     
     async def _handle_unlocked_session(self, message: str, phone: str, session: SessionData) -> str:
@@ -439,34 +546,35 @@ class AIProviderService:
         try:
             # Check if it's a valid menu selection
             if message in WORKING_SERVICES:
-                # Valid selection - lock and route
                 service = WORKING_SERVICES[message]
+                
+                # Check if service is working
+                if not service.get("working", False):
+                    logger.info(f"❌ Service {message} is not working")
+                    return self._get_main_menu()
+                
                 logger.info(f"🎯 Menu selection: {message} -> {service['name']}")
                 
-                # Lock session
                 locked_session = self._lock_session(phone, message)
                 if not locked_session:
                     return self._get_main_menu()
                 
-                # Get initial response from service
                 return await self._forward_to_service(message, message, phone)
             
-            # Check for 99 - return to menu
             if message == "99":
                 self._unlock_session(phone)
                 return self._get_main_menu()
             
-            # ANY invalid input → ALWAYS show the menu (NO error messages)
             logger.info(f"ℹ️ Invalid input: '{message}' from {phone} - showing menu")
             return self._get_main_menu()
             
         except Exception as e:
             logger.error(f"❌ Error in _handle_unlocked_session: {e}")
             logger.error(traceback.format_exc())
-            return self._get_main_menu()  # Always show menu on error
+            return self._get_main_menu()
     
     # ============================================================
-    # LOCKED SESSION HANDLER - FORWARD EVERYTHING
+    # BLOCK 11: LOCKED SESSION HANDLER
     # ============================================================
     
     async def _forward_to_locked_service(self, message: str, session: SessionData) -> str:
@@ -476,13 +584,11 @@ class AIProviderService:
         ALWAYS returns a string.
         """
         try:
-            # Check for unlock command (99)
             if message == "99":
                 self._unlock_session(session.phone)
                 logger.info(f"🔓 Unlocked via 99 for {session.phone}")
                 return self._get_main_menu()
             
-            # Forward to locked service
             if not session.locked_service_id:
                 self._unlock_session(session.phone)
                 return self._get_main_menu()
@@ -494,10 +600,10 @@ class AIProviderService:
         except Exception as e:
             logger.error(f"❌ Error in _forward_to_locked_service: {e}")
             logger.error(traceback.format_exc())
-            return self._get_main_menu()  # Always show menu on error
+            return self._get_main_menu()
     
     # ============================================================
-    # ROUTER - FORWARD TO SERVICES
+    # BLOCK 12: ROUTER - FORWARD TO SERVICES
     # ============================================================
     
     async def _forward_to_service(self, service_id: str, message: str, phone: str) -> str:
@@ -508,7 +614,7 @@ class AIProviderService:
         """
         try:
             service = WORKING_SERVICES.get(service_id)
-            if not service:
+            if not service or not service.get("working", False):
                 return self._get_main_menu()
             
             service_instance = service["instance"]
@@ -516,7 +622,6 @@ class AIProviderService:
             if not service_instance:
                 return self._get_main_menu()
             
-            # Try to call the service
             response = None
             
             try:
@@ -540,44 +645,38 @@ class AIProviderService:
                     response = service_instance.get_main_menu()
                 
                 else:
-                    # Last resort: service doesn't have a known method
                     response = f"📊 {service['name']}\n\nService is available. Please enter your query."
                     
             except Exception as service_error:
-                # Catch ANY exception from the service
                 logger.error(f"❌ Service {service['name']} error: {service_error}")
                 logger.error(traceback.format_exc())
-                return self._get_main_menu()  # Show menu on service error
+                return self._get_main_menu()
             
-            # Ensure we have a string response
             if response is None:
                 response = self._get_main_menu()
             elif not isinstance(response, str):
                 response = str(response)
             
-            # Check for exit signal
             if response == EXIT_SIGNAL or response == "99":
                 self._unlock_session(phone)
                 return self._get_main_menu()
             
-            # Track success
             self._successful_requests += 1
             return response
             
         except Exception as e:
             logger.error(f"❌ Fatal error in _forward_to_service: {e}")
             logger.error(traceback.format_exc())
-            return self._get_main_menu()  # Always show menu on error
+            return self._get_main_menu()
     
     # ============================================================
-    # HEALTH CHECK
+    # BLOCK 13: HEALTH CHECK
     # ============================================================
     
     def health_check(self) -> Dict[str, Any]:
-        """Health check - shows which services are working"""
+        """Health check - shows ALL services with status"""
         uptime = (datetime.now() - self._startup).seconds
         
-        # Count active sessions
         active_sessions = 0
         locked_sessions = 0
         expired_sessions = 0
@@ -591,8 +690,10 @@ class AIProviderService:
                     if session.locked:
                         locked_sessions += 1
         
+        working_count = sum(1 for svc in WORKING_SERVICES.values() if svc.get("working", False))
+        
         return {
-            "status": "healthy" if WORKING_SERVICES else "degraded",
+            "status": "healthy" if working_count > 0 else "degraded",
             "version": self._version,
             "uptime_seconds": uptime,
             "uptime_display": f"{uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s",
@@ -603,13 +704,20 @@ class AIProviderService:
             "successful_requests": self._successful_requests,
             "error_count": self._error_count,
             "success_rate": round((self._successful_requests / max(self._total_requests, 1)) * 100, 1),
-            "working_services": list(WORKING_SERVICES.keys()),
-            "working_services_count": len(WORKING_SERVICES),
+            "services": {
+                key: {
+                    "name": svc["name"],
+                    "working": svc.get("working", False),
+                    "status": "✅ Working" if svc.get("working", False) else "❌ Not Working"
+                }
+                for key, svc in WORKING_SERVICES.items()
+            },
+            "services_summary": f"{working_count}/{len(WORKING_SERVICES)} services working",
             "started_at": self._startup.isoformat()
         }
 
 # ============================================================
-# SINGLETON AND EXPORTS - DO NOT CHANGE
+# BLOCK 14: SINGLETON AND EXPORTS
 # ============================================================
 
 _service_instance: Optional[AIProviderService] = None
@@ -622,7 +730,7 @@ def get_ai_provider_service() -> AIProviderService:
     return _service_instance
 
 # ============================================================
-# WEBHOOK ENTRY POINT - DO NOT CHANGE SIGNATURE
+# BLOCK 15: WEBHOOK ENTRY POINT
 # ============================================================
 
 async def process_whatsapp_query(message: str, sender: str) -> str:
@@ -647,7 +755,6 @@ async def process_whatsapp_query(message: str, sender: str) -> str:
         service = get_ai_provider_service()
         return await service.process_whatsapp_query(message, sender)
     except Exception as e:
-        # CRITICAL: ALWAYS return a response, never let an exception escape
         logger.error(f"❌ Fatal error in process_whatsapp_query: {e}")
         logger.error(traceback.format_exc())
         return "\n".join([
@@ -663,7 +770,7 @@ async def process_whatsapp_query(message: str, sender: str) -> str:
         ])
 
 # ============================================================
-# EXPORTS
+# BLOCK 16: EXPORTS
 # ============================================================
 
 __all__ = [
@@ -675,7 +782,7 @@ __all__ = [
 ]
 
 # ============================================================
-# TEST MODE - PURE ROUTER TEST
+# BLOCK 17: TEST MODE
 # ============================================================
 
 if __name__ == "__main__":
@@ -691,25 +798,21 @@ if __name__ == "__main__":
     
     service = get_ai_provider_service()
     
-    # Health check
     health = service.health_check()
     print("📊 HEALTH CHECK:")
     print("-" * 40)
     for key, value in health.items():
-        print(f"  {key}: {value}")
+        if key != 'services':
+            print(f"  {key}: {value}")
     print("-" * 40)
     print()
     
-    # Show working services
-    print("📋 WORKING SERVICES:")
-    if WORKING_SERVICES:
-        for key, svc in WORKING_SERVICES.items():
-            print(f"  {key}. ✅ {svc['name']}")
-    else:
-        print("  ⚠️ No services available")
+    print("📋 SERVICE STATUS:")
+    for key, svc in WORKING_SERVICES.items():
+        status = "✅ WORKING" if svc.get("working", False) else "❌ NOT WORKING"
+        print(f"  {key}. {status} - {svc['name']}")
     print()
     
-    # Interactive test
     async def test_loop():
         print("🔍 Enter '99' anytime to return to main menu")
         print("=" * 70)
