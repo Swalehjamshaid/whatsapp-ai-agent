@@ -393,7 +393,7 @@ class AIProviderService:
         if not WORKING_SERVICES:
             # No services available - show friendly message
             lines = [
-                "📦 DN INTELLIGENCE CENTER",
+                "📦 Logistics Intelligence Center"
                 "",
                 "⚠️ No services are currently available.",
                 "",
