@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 54.0 - CLEAN MENU (ONLY WORKING SERVICES)
+# VERSION: 55.0 - PROFESSIONAL LOGISTICS INTELLIGENCE CENTER
 # ============================================================
 
 """
@@ -17,7 +17,7 @@ CRITICAL BEHAVIOR:
 3. The menu ALWAYS displays cleanly
 4. Users ONLY see services that are available
 5. NO "Invalid option" errors - just show the menu
-6. The gateway ALWAYS returns the menu or a response
+6. Professional header: 📦 LOGISTICS INTELLIGENCE CENTER
 
 ================================================================================
 """
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTS
 # ============================================================
 
-VERSION = "54.0"
+VERSION = "55.0"
 EXIT_SIGNAL = "__EXIT__"
 SESSION_TIMEOUT_SECONDS = 1800  # 30 minutes
 
@@ -383,17 +383,23 @@ class AIProviderService:
             return False
     
     # ============================================================
-    # MENU CONTROLLER - CLEAN, ONLY WORKING SERVICES
+    # MENU CONTROLLER - PROFESSIONAL HEADER
     # ============================================================
     
     def _get_main_menu(self) -> str:
-        """Return the main menu with ONLY working services - NO errors"""
+        """Return the main menu with professional header"""
         lines = []
+        
+        # Professional header with separator
+        SEPARATOR = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        HEADER = "     📦  LOGISTICS INTELLIGENCE CENTER"
         
         if not WORKING_SERVICES:
             # No services available - show friendly message
             lines = [
-                "📦 Logistics Intelligence Center"
+                SEPARATOR,
+                HEADER,
+                SEPARATOR,
                 "",
                 "⚠️ No services are currently available.",
                 "",
@@ -403,8 +409,10 @@ class AIProviderService:
             ]
             return "\n".join(lines)
         
-        # Build clean menu
-        lines.append(""📦 Logistics Intelligence Center"")
+        # Build clean menu with professional header
+        lines.append(SEPARATOR)
+        lines.append(HEADER)
+        lines.append(SEPARATOR)
         lines.append("")
         lines.append("Please choose from:")
         lines.append("")
@@ -643,7 +651,9 @@ async def process_whatsapp_query(message: str, sender: str) -> str:
         logger.error(f"❌ Fatal error in process_whatsapp_query: {e}")
         logger.error(traceback.format_exc())
         return "\n".join([
-            ""📦 Logistics Intelligence Center"",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "     📦  LOGISTICS INTELLIGENCE CENTER",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
             "⚠️ Service is temporarily unavailable.",
             "",
