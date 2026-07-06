@@ -224,6 +224,68 @@ def _normalize_text(text: str) -> str:
     normalized = re.sub(r'\s+', ' ', normalized).strip()
     return normalized
 
+# ============================================================
+# BLOCK 2B: COORDINATES & CITY NAMES
+# ============================================================
+
+# Warehouse coordinates
+WAREHOUSE_COORDINATES: Dict[str, Tuple[float, float]] = {
+    "karachi": (24.8607, 67.0011),
+    "lahore": (31.5204, 74.3587),
+    "rawalpindi": (33.5651, 73.0169),
+    "islamabad": (33.6844, 73.0479),
+    "multan": (30.1575, 71.5249),
+    "peshawar": (34.0151, 71.5249),
+    "quetta": (30.1798, 66.9750),
+    "hyderabad": (25.3960, 68.3578),
+    "faisalabad": (31.4504, 73.1350),
+    "sialkot": (32.4945, 74.5229),
+    "gujranwala": (32.1617, 74.1883),
+    "bahawalpur": (29.3956, 71.6836),
+    "sukkur": (27.7060, 68.8530),
+    "dg khan": (30.0430, 70.6402),
+    "abbottabad": (34.1490, 73.2210),
+    "gwadar": (25.1260, 62.3250),
+    "gilgit": (35.9208, 74.3144),
+}
+
+# City coordinates
+CITY_COORDINATES: Dict[str, Tuple[float, float]] = {
+    "karachi": (24.8607, 67.0011),
+    "lahore": (31.5204, 74.3587),
+    "rawalpindi": (33.5651, 73.0169),
+    "islamabad": (33.6844, 73.0479),
+    "multan": (30.1575, 71.5249),
+    "peshawar": (34.0151, 71.5249),
+    "quetta": (30.1798, 66.9750),
+    "hyderabad": (25.3960, 68.3578),
+    "faisalabad": (31.4504, 73.1350),
+    "sialkot": (32.4945, 74.5229),
+    "gujranwala": (32.1617, 74.1883),
+    "bahawalpur": (29.3956, 71.6836),
+    "sukkur": (27.7060, 68.8530),
+    "dg khan": (30.0430, 70.6402),
+    "abbottabad": (34.1490, 73.2210),
+    "gwadar": (25.1260, 62.3250),
+    "gilgit": (35.9208, 74.3144),
+}
+
+# City abbreviations
+CITY_ABBREVIATIONS = {
+    'khi': 'karachi',
+    'lhr': 'lahore',
+    'isb': 'islamabad',
+    'rwp': 'rawalpindi',
+    'fsd': 'faisalabad',
+    'mul': 'multan',
+    'pes': 'peshawar',
+    'que': 'quetta',
+    'hyd': 'hyderabad',
+    'guj': 'gujranwala',
+    'skt': 'sialkot',
+}
+
+CITY_NAMES = set(CITY_ABBREVIATIONS.values())
 
 # ============================================================
 # BLOCK 3: ENUMS
