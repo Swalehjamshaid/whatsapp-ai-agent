@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 50.0 - PURE GATEWAY & SESSION MANAGER
+# VERSION: 51.0 - PURE GATEWAY WITH SERVICE STATUS DISPLAY
 # ============================================================
 
 """
@@ -11,35 +11,26 @@ AI PROVIDER SERVICE - PURE GATEWAY & SESSION MANAGER
 
 This file is ONLY the Gateway, Router, Menu Controller, and Session Manager.
 
-It does NOT:
-- Execute SQL
-- Detect business intent
-- Calculate KPI
-- Search dealer/warehouse/city/DN
-- Answer AI questions
-- Create analytics
-- Build dashboards
+It shows:
+- ✅ Which services are working (green check)
+- ❌ Which services are NOT working (red X)
 
 It ONLY:
 - Receives WhatsApp messages from webhook.py
 - Manages sessions
-- Shows Main Menu
-- Locks selected modules
-- Forwards messages to services
+- Shows Main Menu with service status
+- Locks selected modules (only if working)
+- Forwards messages to working services
 - Unlocks on 99
 
-Architecture:
-    WhatsApp → webhook.py → process_whatsapp_query() → 
-        Session Manager → Menu Controller → Router → Service
-
 Services:
-    1 → national_kpi_service.py
-    2 → dn_analysis.py
-    3 → dealer_analytics_service.py
-    4 → warehouse_service.py
-    5 → product_service.py
-    6 → city_service.py
-    7 → groq_service.py
+    1 → National KPI Service      (✅ Working / ❌ Not Working)
+    2 → DN Analysis Service       (✅ Working / ❌ Not Working)
+    3 → Dealer Analytics Service  (✅ Working / ❌ Not Working)
+    4 → Warehouse Service         (✅ Working / ❌ Not Working)
+    5 → Product Service           (✅ Working / ❌ Not Working)
+    6 → City Service              (✅ Working / ❌ Not Working)
+    7 → AI Assistant (Groq)       (✅ Working / ❌ Not Working)
 ================================================================================
 """
 
@@ -47,10 +38,8 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from typing import Optional, Dict, Any
 from datetime import datetime
-import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +47,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTS
 # ============================================================
 
-VERSION = "50.0"
+VERSION = "51.0"
 EXIT_SIGNAL = "__EXIT__"
 SESSION_TIMEOUT_SECONDS = 1800  # 30 minutes
 
@@ -66,76 +55,71 @@ SESSION_TIMEOUT_SECONDS = 1800  # 30 minutes
 # SERVICE IMPORTS - PUBLIC ENTRY FUNCTIONS ONLY
 # ============================================================
 
+# Track which services are available
+SERVICE_STATUS = {}
+
 # 1. National KPI Service
 try:
-    from app.services.national_kpi_service import get_national_kpi_service
-    KPI_AVAILABLE = True
+    from app.services.national_kpi_service import get_kpi_service
+    SERVICE_STATUS["1"] = {"name": "National KPI", "available": True, "getter": get_kpi_service}
     logger.info("✅ National KPI Service loaded")
 except ImportError as e:
+    SERVICE_STATUS["1"] = {"name": "National KPI", "available": False, "getter": None, "error": str(e)}
     logger.warning(f"⚠️ National KPI Service not available: {e}")
-    get_national_kpi_service = None
-    KPI_AVAILABLE = False
 
 # 2. DN Analysis Service
 try:
     from app.services.dn_analysis import get_dn_analysis_service
-    DN_AVAILABLE = True
+    SERVICE_STATUS["2"] = {"name": "DN Analysis", "available": True, "getter": get_dn_analysis_service}
     logger.info("✅ DN Analysis Service loaded")
 except ImportError as e:
+    SERVICE_STATUS["2"] = {"name": "DN Analysis", "available": False, "getter": None, "error": str(e)}
     logger.warning(f"⚠️ DN Analysis Service not available: {e}")
-    get_dn_analysis_service = None
-    DN_AVAILABLE = False
 
 # 3. Dealer Analytics Service
 try:
     from app.services.dealer_analytics_service import get_dealer_service, EXIT_SIGNAL
-    DEALER_AVAILABLE = True
+    SERVICE_STATUS["3"] = {"name": "Dealer Analytics", "available": True, "getter": get_dealer_service}
     logger.info("✅ Dealer Analytics Service loaded")
 except ImportError as e:
+    SERVICE_STATUS["3"] = {"name": "Dealer Analytics", "available": False, "getter": None, "error": str(e)}
     logger.warning(f"⚠️ Dealer Analytics Service not available: {e}")
-    get_dealer_service = None
-    EXIT_SIGNAL = "__EXIT__"
-    DEALER_AVAILABLE = False
 
 # 4. Warehouse Service
 try:
     from app.services.warehouse_service import get_warehouse_analytics_service
-    WAREHOUSE_AVAILABLE = True
+    SERVICE_STATUS["4"] = {"name": "Warehouse Analytics", "available": True, "getter": get_warehouse_analytics_service}
     logger.info("✅ Warehouse Service loaded")
 except ImportError as e:
+    SERVICE_STATUS["4"] = {"name": "Warehouse Analytics", "available": False, "getter": None, "error": str(e)}
     logger.warning(f"⚠️ Warehouse Service not available: {e}")
-    get_warehouse_analytics_service = None
-    WAREHOUSE_AVAILABLE = False
 
 # 5. Product Service
 try:
     from app.services.product_service import get_product_analytics_service
-    PRODUCT_AVAILABLE = True
+    SERVICE_STATUS["5"] = {"name": "Product Analytics", "available": True, "getter": get_product_analytics_service}
     logger.info("✅ Product Service loaded")
 except ImportError as e:
+    SERVICE_STATUS["5"] = {"name": "Product Analytics", "available": False, "getter": None, "error": str(e)}
     logger.warning(f"⚠️ Product Service not available: {e}")
-    get_product_analytics_service = None
-    PRODUCT_AVAILABLE = False
 
 # 6. City Service
 try:
     from app.services.city_service import get_city_analytics_service
-    CITY_AVAILABLE = True
+    SERVICE_STATUS["6"] = {"name": "City Analytics", "available": True, "getter": get_city_analytics_service}
     logger.info("✅ City Service loaded")
 except ImportError as e:
+    SERVICE_STATUS["6"] = {"name": "City Analytics", "available": False, "getter": None, "error": str(e)}
     logger.warning(f"⚠️ City Service not available: {e}")
-    get_city_analytics_service = None
-    CITY_AVAILABLE = False
 
 # 7. Groq AI Service
 try:
     from app.services.groq_service import get_groq_service
-    GROQ_AVAILABLE = True
+    SERVICE_STATUS["7"] = {"name": "AI Assistant", "available": True, "getter": get_groq_service}
     logger.info("✅ Groq AI Service loaded")
 except ImportError as e:
+    SERVICE_STATUS["7"] = {"name": "AI Assistant", "available": False, "getter": None, "error": str(e)}
     logger.warning(f"⚠️ Groq AI Service not available: {e}")
-    get_groq_service = None
-    GROQ_AVAILABLE = False
 
 # ============================================================
 # SESSION DATA CLASS
@@ -209,67 +193,39 @@ class AIProviderService:
         self._total_requests = 0
         self._successful_requests = 0
         
-        # Service mapping - Menu ID → (Service Name, Availability, Getter, Handler)
-        self._services = {
-            "1": {
-                "name": "National KPI",
-                "available": KPI_AVAILABLE,
-                "getter": get_national_kpi_service,
-                "handler": self._handle_kpi
-            },
-            "2": {
-                "name": "DN Analysis",
-                "available": DN_AVAILABLE,
-                "getter": get_dn_analysis_service,
-                "handler": self._handle_dn
-            },
-            "3": {
-                "name": "Dealer Analytics",
-                "available": DEALER_AVAILABLE,
-                "getter": get_dealer_service,
-                "handler": self._handle_dealer
-            },
-            "4": {
-                "name": "Warehouse Analytics",
-                "available": WAREHOUSE_AVAILABLE,
-                "getter": get_warehouse_analytics_service,
-                "handler": self._handle_warehouse
-            },
-            "5": {
-                "name": "Product Analytics",
-                "available": PRODUCT_AVAILABLE,
-                "getter": get_product_analytics_service,
-                "handler": self._handle_product
-            },
-            "6": {
-                "name": "City Analytics",
-                "available": CITY_AVAILABLE,
-                "getter": get_city_analytics_service,
-                "handler": self._handle_city
-            },
-            "7": {
-                "name": "AI Assistant",
-                "available": GROQ_AVAILABLE,
-                "getter": get_groq_service,
-                "handler": self._handle_ai
-            }
-        }
-        
         self._show_startup()
     
     def _show_startup(self):
-        """Display startup information"""
+        """Display startup information with service status"""
         print("\n" + "=" * 70)
         print(f"🤖 AI PROVIDER GATEWAY v{self._version} - PURE ROUTER".center(70))
         print("=" * 70)
-        print("📋 SERVICES AVAILABLE:")
+        print("📋 SERVICES STATUS:")
         print("-" * 70)
         
-        for key, svc in self._services.items():
-            status = "✅" if svc["available"] else "❌"
-            print(f"  {key}. {status} {svc['name']}")
+        # Count working services
+        working_count = 0
+        total_count = 0
+        
+        for key, svc in SERVICE_STATUS.items():
+            total_count += 1
+            if svc["available"]:
+                working_count += 1
+                status = "✅ WORKING"
+            else:
+                status = "❌ NOT WORKING"
+                error = svc.get("error", "Unknown error")
+                if "get_kpi_service" in error:
+                    error = "Missing get_kpi_service() function"
+                elif "get_national_kpi_service" in error:
+                    error = "Missing get_national_kpi_service() function"
+            
+            print(f"  {key}. {status}  {svc['name']}")
+            if not svc["available"]:
+                print(f"     Error: {error[:80]}...")
         
         print("-" * 70)
+        print(f"  ✅ Working: {working_count}/{total_count} services")
         print(f"  🕐 Started at: {self._startup.strftime('%Y-%m-%d %H:%M:%S')}")
         print("=" * 70 + "\n")
     
@@ -337,7 +293,6 @@ class AIProviderService:
         with self._lock:
             if phone in self._sessions:
                 session = self._sessions[phone]
-                # Check if session is expired
                 if session.is_expired():
                     logger.info(f"⏰ Session expired for {phone}, creating new")
                     del self._sessions[phone]
@@ -345,7 +300,6 @@ class AIProviderService:
                     self._sessions[phone] = session
                 return session
             
-            # Create new session
             session = SessionData(phone)
             self._sessions[phone] = session
             logger.info(f"🆕 New session created for {phone}")
@@ -358,11 +312,10 @@ class AIProviderService:
                 return None
             
             session = self._sessions[phone]
-            service = self._services.get(menu_id)
+            service = SERVICE_STATUS.get(menu_id)
             if not service or not service["available"]:
                 return None
             
-            # Get service instance
             service_instance = service["getter"]()
             if not service_instance:
                 return None
@@ -397,52 +350,52 @@ class AIProviderService:
     # ============================================================
     
     def _get_main_menu(self) -> str:
-        """Return the exact main menu"""
-        return "\n".join([
+        """Return the exact main menu with service status"""
+        lines = [
             "📦 DN INTELLIGENCE CENTER",
             "",
-            "1. National KPI Dashboard",
-            "",
-            "2. DN Analysis",
-            "",
-            "3. Dealer Analytics",
-            "",
-            "4. Warehouse Analytics",
-            "",
-            "5. Product Analytics",
-            "",
-            "6. City Analytics",
-            "",
-            "7. AI Assistant",
+        ]
+        
+        # Show each service with status
+        for key, svc in SERVICE_STATUS.items():
+            if svc["available"]:
+                status = "✅"
+            else:
+                status = "❌"
+            lines.append(f"{key}. {status} {svc['name']}")
+        
+        lines.extend([
             "",
             "━━━━━━━━━━━━━━━━━━",
             "",
             "Reply with:",
             "",
-            "1 - National KPI",
-            "2 - DN Analysis",
-            "3 - Dealer Analytics",
-            "4 - Warehouse Analytics",
-            "5 - Product Analytics",
-            "6 - City Analytics",
-            "7 - AI Assistant",
-            "99 - Return to Main Menu"
         ])
+        
+        for key, svc in SERVICE_STATUS.items():
+            lines.append(f"{key} - {svc['name']}")
+        
+        lines.extend([
+            "99 - Return to Main Menu",
+            "",
+            "📌 Services with ✅ are working",
+            "📌 Services with ❌ are currently unavailable"
+        ])
+        
+        return "\n".join(lines)
     
     def _get_invalid_menu_message(self) -> str:
         """Return invalid menu selection message"""
         return "\n".join([
             "Invalid option.",
             "",
-            "Please choose:",
+            "Please choose a working service:",
             "",
-            "1 - National KPI",
-            "2 - DN Analysis",
-            "3 - Dealer Analytics",
-            "4 - Warehouse Analytics",
-            "5 - Product Analytics",
-            "6 - City Analytics",
-            "7 - AI Assistant",
+        ] + [
+            f"{key} - {svc['name']} {'✅' if svc['available'] else '❌'}"
+            for key, svc in SERVICE_STATUS.items()
+        ] + [
+            "",
             "99 - Return to Main Menu"
         ])
     
@@ -459,16 +412,16 @@ class AIProviderService:
     def _get_service_unavailable_message(self, service_name: str) -> str:
         """Return service unavailable message"""
         return "\n".join([
-            f"⚠️ {service_name} is currently unavailable.",
+            f"❌ {service_name} is currently unavailable.",
             "",
-            "Please select another option or try again later.",
+            "Please select another service or try again later.",
             "",
             "Reply 99 to return to the main menu."
         ])
     
     def _is_menu_selection(self, message: str) -> bool:
         """Check if message is a valid menu selection"""
-        return message in ["1", "2", "3", "4", "5", "6", "7", "99"]
+        return message in list(SERVICE_STATUS.keys()) + ["99"]
     
     # ============================================================
     # UNLOCKED SESSION HANDLER
@@ -487,7 +440,7 @@ class AIProviderService:
                 return self._get_main_menu()
             
             # Valid selection 1-7 - lock and route
-            service = self._services.get(message)
+            service = SERVICE_STATUS.get(message)
             if not service:
                 return self._get_invalid_menu_message()
             
@@ -520,7 +473,6 @@ class AIProviderService:
         """
         # Check for unlock command (99)
         if message == "99":
-            # Unlock and show menu
             self._unlock_session(session.phone)
             logger.info(f"🔓 Unlocked via 99 for {session.phone}")
             return self._get_main_menu()
@@ -544,7 +496,7 @@ class AIProviderService:
         PURE ROUTING - NO BUSINESS LOGIC.
         """
         try:
-            service = self._services.get(service_key)
+            service = SERVICE_STATUS.get(service_key)
             if not service or not service["available"]:
                 return self._get_service_unavailable_message(
                     service["name"] if service else "Service"
@@ -557,8 +509,19 @@ class AIProviderService:
             if not service_instance:
                 return self._get_service_unavailable_message(service["name"])
             
-            # Call service handler
-            response = await service["handler"](service_instance, message, phone)
+            # Call service handler - check which method exists
+            response = None
+            
+            if hasattr(service_instance, 'process_whatsapp_query'):
+                response = service_instance.process_whatsapp_query(message, phone)
+            elif hasattr(service_instance, 'process_query'):
+                response = service_instance.process_query(message)
+            elif hasattr(service_instance, 'get_kpi_dashboard'):
+                response = service_instance.get_kpi_dashboard()
+            elif hasattr(service_instance, 'get_main_menu'):
+                response = service_instance.get_main_menu()
+            else:
+                response = f"📊 {service['name']} Service\n\nPlease wait while we fetch the data..."
             
             # Check for exit signal
             if response == EXIT_SIGNAL or response == "99":
@@ -575,118 +538,11 @@ class AIProviderService:
             return self._get_error_message()
     
     # ============================================================
-    # SERVICE HANDLERS - PURE FORWARDING
-    # ============================================================
-    
-    async def _handle_kpi(self, service: Any, message: str, phone: str) -> str:
-        """Forward to National KPI Service"""
-        try:
-            if hasattr(service, 'process_whatsapp_query'):
-                return service.process_whatsapp_query(message, phone)
-            elif hasattr(service, 'process_query'):
-                return service.process_query(message)
-            elif hasattr(service, 'get_kpi_dashboard'):
-                return service.get_kpi_dashboard()
-            else:
-                return "📊 National KPI Dashboard\n\nPlease wait while we fetch the data..."
-        except Exception as e:
-            logger.error(f"KPI handler error: {e}")
-            return self._get_error_message()
-    
-    async def _handle_dn(self, service: Any, message: str, phone: str) -> str:
-        """Forward to DN Analysis Service"""
-        try:
-            if hasattr(service, 'process_whatsapp_query'):
-                return service.process_whatsapp_query(message, phone)
-            elif hasattr(service, 'process_query'):
-                return service.process_query(message)
-            elif hasattr(service, 'analyze_dn'):
-                return service.analyze_dn(message)
-            else:
-                return "📦 DN Analysis\n\nPlease provide a Delivery Note number to track."
-        except Exception as e:
-            logger.error(f"DN handler error: {e}")
-            return self._get_error_message()
-    
-    async def _handle_dealer(self, service: Any, message: str, phone: str) -> str:
-        """Forward to Dealer Analytics Service"""
-        try:
-            if hasattr(service, 'process_whatsapp_query'):
-                return service.process_whatsapp_query(message, phone)
-            elif hasattr(service, 'process_query'):
-                return service.process_query(message)
-            else:
-                return "👤 Dealer Analytics\n\nPlease enter a dealer name to search."
-        except Exception as e:
-            logger.error(f"Dealer handler error: {e}")
-            return self._get_error_message()
-    
-    async def _handle_warehouse(self, service: Any, message: str, phone: str) -> str:
-        """Forward to Warehouse Service"""
-        try:
-            if hasattr(service, 'process_whatsapp_query'):
-                return service.process_whatsapp_query(message, phone)
-            elif hasattr(service, 'process_query'):
-                return service.process_query(message)
-            elif hasattr(service, 'get_warehouse_dashboard'):
-                return service.get_warehouse_dashboard(message)
-            else:
-                return "🏭 Warehouse Analytics\n\nPlease wait while we fetch the data..."
-        except Exception as e:
-            logger.error(f"Warehouse handler error: {e}")
-            return self._get_error_message()
-    
-    async def _handle_product(self, service: Any, message: str, phone: str) -> str:
-        """Forward to Product Service"""
-        try:
-            if hasattr(service, 'process_whatsapp_query'):
-                return service.process_whatsapp_query(message, phone)
-            elif hasattr(service, 'process_query'):
-                return service.process_query(message)
-            elif hasattr(service, 'get_product_dashboard'):
-                return service.get_product_dashboard(message)
-            else:
-                return "📦 Product Analytics\n\nPlease wait while we fetch the data..."
-        except Exception as e:
-            logger.error(f"Product handler error: {e}")
-            return self._get_error_message()
-    
-    async def _handle_city(self, service: Any, message: str, phone: str) -> str:
-        """Forward to City Service"""
-        try:
-            if hasattr(service, 'process_whatsapp_query'):
-                return service.process_whatsapp_query(message, phone)
-            elif hasattr(service, 'process_query'):
-                return service.process_query(message)
-            elif hasattr(service, 'get_city_dashboard'):
-                return service.get_city_dashboard(message)
-            else:
-                return "📍 City Analytics\n\nPlease wait while we fetch the data..."
-        except Exception as e:
-            logger.error(f"City handler error: {e}")
-            return self._get_error_message()
-    
-    async def _handle_ai(self, service: Any, message: str, phone: str) -> str:
-        """Forward to Groq AI Service"""
-        try:
-            if hasattr(service, 'process_whatsapp_query'):
-                return service.process_whatsapp_query(message, phone)
-            elif hasattr(service, 'process_query'):
-                return service.process_query(message)
-            elif hasattr(service, 'generate_response'):
-                return service.generate_response(message)
-            else:
-                return "🤖 AI Assistant\n\nHow can I help you today?"
-        except Exception as e:
-            logger.error(f"AI handler error: {e}")
-            return self._get_error_message()
-    
-    # ============================================================
     # HEALTH CHECK
     # ============================================================
     
     def health_check(self) -> Dict[str, Any]:
-        """Health check - no business logic, only status"""
+        """Health check - shows which services are working"""
         uptime = (datetime.now() - self._startup).seconds
         
         # Count active sessions
@@ -703,8 +559,12 @@ class AIProviderService:
                     if session.locked:
                         locked_sessions += 1
         
+        # Count working services
+        working_services = sum(1 for svc in SERVICE_STATUS.values() if svc["available"])
+        total_services = len(SERVICE_STATUS)
+        
         return {
-            "status": "healthy",
+            "status": "healthy" if working_services > 0 else "degraded",
             "version": self._version,
             "uptime_seconds": uptime,
             "uptime_display": f"{uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s",
@@ -714,9 +574,15 @@ class AIProviderService:
             "total_requests": self._total_requests,
             "successful_requests": self._successful_requests,
             "success_rate": round((self._successful_requests / max(self._total_requests, 1)) * 100, 1),
-            "services_available": {
-                key: svc["available"] for key, svc in self._services.items()
+            "services": {
+                key: {
+                    "name": svc["name"],
+                    "available": svc["available"],
+                    "status": "✅ Working" if svc["available"] else "❌ Not Working"
+                }
+                for key, svc in SERVICE_STATUS.items()
             },
+            "services_summary": f"{working_services}/{total_services} services working",
             "started_at": self._startup.isoformat()
         }
 
@@ -766,7 +632,8 @@ __all__ = [
     "AIProviderService",
     "get_ai_provider_service",
     "process_whatsapp_query",
-    "VERSION"
+    "VERSION",
+    "SERVICE_STATUS"
 ]
 
 # ============================================================
@@ -791,9 +658,16 @@ if __name__ == "__main__":
     print("📊 HEALTH CHECK:")
     print("-" * 40)
     for key, value in health.items():
-        if key != 'services_available':
+        if key != 'services':
             print(f"  {key}: {value}")
     print("-" * 40)
+    print()
+    
+    # Show service status
+    print("📋 SERVICE STATUS:")
+    for key, svc in SERVICE_STATUS.items():
+        status = "✅ WORKING" if svc["available"] else "❌ NOT WORKING"
+        print(f"  {key}. {status} - {svc['name']}")
     print()
     
     # Interactive test
