@@ -65,7 +65,11 @@ from enum import Enum
 # ============================================================
 # BLOCK 1: IMPORTS
 # ============================================================
-
+from sqlalchemy.orm import Session
+# SQLAlchemy
+from sqlalchemy import func, distinct, case, or_, and_, desc, asc, text, nullif, Index
+from sqlalchemy.orm import Session  # ← ADD THIS LINE
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 import os
 import logging
 import math
