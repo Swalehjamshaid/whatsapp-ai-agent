@@ -44,6 +44,10 @@ SEARCH STRATEGIES (Priority Order):
 ================================================================================
 """
 
+# ============================================================
+# BLOCK 1: IMPORTS
+# ============================================================
+
 from __future__ import annotations
 
 import logging
@@ -66,13 +70,13 @@ from app.database import SessionLocal
 from app.models import DeliveryReport
 
 # ============================================================
-# LOGGING SETUP
+# BLOCK 2: LOGGING SETUP
 # ============================================================
 
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# CONSTANTS
+# BLOCK 3: CONSTANTS
 # ============================================================
 
 EXIT_SIGNAL = "__EXIT__"
@@ -133,7 +137,7 @@ DEALER_SUFFIXES = [
 ]
 
 # ============================================================
-# UTILITY FUNCTIONS
+# BLOCK 4: UTILITY FUNCTIONS
 # ============================================================
 
 def _safe_str(value: Any, default: str = "") -> str:
@@ -295,7 +299,7 @@ def _get_distance_info(warehouse: str, city: str) -> Dict[str, Any]:
     }
 
 # ============================================================
-# DATA CLASSES
+# BLOCK 5: DATA CLASSES
 # ============================================================
 
 @dataclass
@@ -410,7 +414,7 @@ class DealerDashboard:
     generated_at: datetime = field(default_factory=datetime.now)
 
 # ============================================================
-# DEALER REPOSITORY - ALL SQL QUERIES
+# BLOCK 6: DEALER REPOSITORY - ALL SQL QUERIES
 # ============================================================
 
 class DealerRepository:
@@ -425,7 +429,7 @@ class DealerRepository:
         self.session = session
     
     # ============================================================
-    # SEARCH METHODS
+    # SUB-BLOCK 6A: SEARCH METHODS
     # ============================================================
     
     def get_dealer_by_code(self, dealer_code: str) -> Optional[Dict[str, Any]]:
@@ -596,7 +600,6 @@ class DealerRepository:
         if not soundex:
             return []
         
-        # PostgreSQL Soundex function
         results = self.session.query(
             DeliveryReport.customer_name,
             DeliveryReport.dealer_code,
@@ -615,7 +618,7 @@ class DealerRepository:
         return [self._row_to_dict(row) for row in results if row]
     
     # ============================================================
-    # DASHBOARD QUERIES
+    # SUB-BLOCK 6B: DASHBOARD QUERIES
     # ============================================================
     
     def get_dealer_identity(self, dealer_code: str, customer_code: str = None) -> Optional[Dict[str, Any]]:
@@ -1034,6 +1037,10 @@ class DealerRepository:
             logger.error(f"Dashboard error: {e}")
             return None
     
+    # ============================================================
+    # SUB-BLOCK 6C: HELPER METHODS
+    # ============================================================
+    
     def _row_to_dict(self, row) -> Dict[str, Any]:
         """Convert SQLAlchemy row to dict"""
         if not row:
@@ -1150,7 +1157,7 @@ class DealerRepository:
         )
 
 # ============================================================
-# DEALER SEARCH ENGINE
+# BLOCK 7: DEALER SEARCH ENGINE
 # ============================================================
 
 class DealerSearchEngine:
@@ -1359,7 +1366,7 @@ class DealerSearchEngine:
             )
 
 # ============================================================
-# DEALER DASHBOARD BUILDER
+# BLOCK 8: DEALER DASHBOARD BUILDER
 # ============================================================
 
 class DealerDashboardBuilder:
@@ -1446,7 +1453,7 @@ class DealerDashboardBuilder:
             logger.info("Dashboard cache cleared")
 
 # ============================================================
-# WHATSAPP FORMATTER
+# BLOCK 9: WHATSAPP FORMATTER
 # ============================================================
 
 class WhatsAppFormatter:
@@ -1634,7 +1641,7 @@ class WhatsAppFormatter:
         return "\n".join(lines)
 
 # ============================================================
-# MAIN DEALER ANALYTICS SERVICE
+# BLOCK 10: MAIN DEALER ANALYTICS SERVICE
 # ============================================================
 
 class DealerAnalyticsService:
@@ -1687,7 +1694,7 @@ class DealerAnalyticsService:
         logger.info("=" * 70)
     
     # ============================================================
-    # MAIN ENTRY POINT
+    # SUB-BLOCK 10A: MAIN ENTRY POINT
     # ============================================================
     
     async def handle_message(self, message: str, sender: str = "default") -> str:
@@ -1772,7 +1779,7 @@ class DealerAnalyticsService:
             return self._format_error(str(e)[:100])
     
     # ============================================================
-    # SESSION MANAGEMENT
+    # SUB-BLOCK 10B: SESSION MANAGEMENT
     # ============================================================
     
     def _get_session(self, user_id: str) -> Dict[str, Any]:
@@ -1790,7 +1797,7 @@ class DealerAnalyticsService:
         return self._sessions[user_id]
     
     # ============================================================
-    # HANDLE SELECTION
+    # SUB-BLOCK 10C: HANDLE SELECTION
     # ============================================================
     
     def _handle_selection(self, selection: int, sender: str) -> str:
@@ -1836,7 +1843,7 @@ class DealerAnalyticsService:
         return self._formatter.format_dashboard(dashboard)
     
     # ============================================================
-    # WELCOME AND EXAMPLES
+    # SUB-BLOCK 10D: WELCOME AND EXAMPLES
     # ============================================================
     
     def _get_welcome_message(self) -> str:
@@ -1885,7 +1892,7 @@ class DealerAnalyticsService:
         ])
     
     # ============================================================
-    # ERROR FORMATTING
+    # SUB-BLOCK 10E: ERROR FORMATTING
     # ============================================================
     
     def _format_not_found(self, query: str, search_result: DealerSearchResult, sender: str) -> str:
@@ -1959,7 +1966,7 @@ class DealerAnalyticsService:
         ])
     
     # ============================================================
-    # HEALTH CHECK
+    # SUB-BLOCK 10F: HEALTH CHECK
     # ============================================================
     
     def health_check(self) -> Dict[str, Any]:
@@ -1981,7 +1988,7 @@ class DealerAnalyticsService:
         }
 
 # ============================================================
-# SINGLETON
+# BLOCK 11: SINGLETON
 # ============================================================
 
 _service: Optional[DealerAnalyticsService] = None
@@ -1994,7 +2001,7 @@ def get_dealer_service() -> DealerAnalyticsService:
     return _service
 
 # ============================================================
-# EXPORTS
+# BLOCK 12: EXPORTS
 # ============================================================
 
 __all__ = [
@@ -2005,7 +2012,7 @@ __all__ = [
 ]
 
 # ============================================================
-# TEST MODE
+# BLOCK 13: TEST MODE
 # ============================================================
 
 if __name__ == "__main__":
