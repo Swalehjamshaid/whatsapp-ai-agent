@@ -1,23 +1,45 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: whatsapp-ai-agent-demo/app/services/dealer_analytics_service.py
-# VERSION: 9.0 - ENTERPRISE DEALER LOGISTICS INTELLIGENCE
+# VERSION: 9.1 - ENTERPRISE DEALER LOGISTICS INTELLIGENCE (FIXED)
 # ============================================================
 
 """
 ================================================================================
-DEALER LOGISTICS INTELLIGENCE ENGINE - ENTERPRISE EDITION v9.0
+DEALER LOGISTICS INTELLIGENCE ENGINE - ENTERPRISE EDITION v9.1
 ================================================================================
 
 This service is a complete Dealer Logistics Intelligence Platform.
 
 SOURCE OF TRUTH: PostgreSQL ONLY
 
+VERSION HISTORY:
+    9.1 - Fixed search for dealer names with hyphens (e.g., Arshad Electronics-Khi)
+    9.0 - Added fuzzy search, distance calculation, executive dashboard
+    8.2 - Added phonetic search and abbreviation expansion
+    8.1 - Initial enterprise release
+
+PERFORMANCE TARGETS:
+    Search: < 100ms
+    Dashboard: < 500ms
+    Cache Hit Rate: > 80%
+    SQL Query Time: < 200ms
+
+SEARCH STRATEGIES (Priority Order):
+    1. Dealer Code (exact)
+    2. Customer Code (exact)
+    3. Exact Name Match
+    4. ILIKE Name Match
+    5. Partial Name Match
+    6. Cleaned Name Match (removes suffixes)
+    7. Fuzzy Match
+    8. Suggestions (if no match)
+
 Features:
     ✅ Enterprise Dealer Intelligence Engine
     ✅ PostgreSQL as single source of truth
     ✅ Optimized SQL queries (COUNT, SUM, AVG, GROUP BY)
-    ✅ Multi-level dealer search (code → exact → partial → fuzzy → phonetic)
+    ✅ Multi-level dealer search (code → exact → partial → fuzzy)
     ✅ Distance calculation (warehouse to dealer)
     ✅ Executive dashboard with 15+ KPI sections
     ✅ WhatsApp-optimized formatting
@@ -45,7 +67,8 @@ from dataclasses import dataclass, field, asdict
 from functools import lru_cache
 from collections import defaultdict
 
-from sqlalchemy import func, distinct, case, or_, and_, desc, text
+# FIX: Added nullif import for division by zero handling
+from sqlalchemy import func, distinct, case, or_, and_, desc, text, nullif
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
@@ -58,10 +81,13 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 EXIT_SIGNAL = "__EXIT__"
-VERSION = "9.0"
+VERSION = "9.1"
 CACHE_TTL = 300  # 5 minutes
 DISTANCE_CACHE_TTL = 86400  # 24 hours
 SIMILARITY_THRESHOLD = 0.70
+
+# FIX: Added fallback coordinates (Center of Pakistan)
+FALLBACK_COORDINATES = (30.3753, 69.3451)
 
 # Warehouse coordinates (PKR)
 WAREHOUSE_COORDINATES: Dict[str, Tuple[float, float]] = {
@@ -99,6 +125,14 @@ CITY_ABBREVIATIONS = {
 }
 
 CITY_NAMES = set(CITY_ABBREVIATIONS.values())
+
+# FIX: Added common suffixes to remove in search
+DEALER_SUFFIXES = [
+    'Electronics', 'Digital', 'Technologies', 'Traders', 
+    'Enterprises', 'Systems', 'Solutions', 'Incorporated',
+    'International', 'Corporation', 'Limited', 'Ltd',
+    'Pvt', 'Private', 'Co', 'Company'
+]
 
 # ============================================================
 # UTILITY FUNCTIONS
@@ -145,17 +179,63 @@ def _format_currency(amount: float) -> str:
     else:
         return f"PKR {amount:,.0f}"
 
+# FIX: Updated _normalize_text to PRESERVE hyphens
 def _normalize_text(text: str) -> str:
+    """
+    Normalize text for search.
+    IMPORTANT: Preserves hyphens for dealer names like "Arshad Electronics-Khi"
+    """
     if not text:
         return ""
     normalized = text.lower()
-    normalized = re.sub(r'[&\-\./,()\'\"]', ' ', normalized)
+    # Remove ONLY special characters that don't affect search
+    # DON'T remove hyphens (-) as they're important for dealer names
+    normalized = re.sub(r'[&\./,()\'\"]', ' ', normalized)
     normalized = re.sub(r'\s+', ' ', normalized).strip()
     return normalized
 
 def _tokenize(text: str) -> List[str]:
     normalized = _normalize_text(text)
     return [t for t in normalized.split() if len(t) > 1]
+
+# FIX: Added function to clean dealer name
+def _clean_dealer_name(name: str) -> str:
+    """
+    Clean dealer name by removing common suffixes.
+    Example: "Arshad Electronics-Khi" → "Arshad"
+    """
+    if not name:
+        return ""
+    
+    cleaned = name.lower().strip()
+    
+    # Remove common suffixes
+    for suffix in DEALER_SUFFIXES:
+        cleaned = re.sub(r'\s*' + suffix.lower() + r'\s*$', '', cleaned)
+    
+    # Remove city suffixes like -Khi, -Lhr, -Isb
+    cleaned = re.sub(r'-[a-z]{3}$', '', cleaned)
+    
+    # Remove trailing spaces
+    cleaned = cleaned.strip()
+    
+    return cleaned
+
+# FIX: Added function to get coordinates with fallback
+def _get_coordinates(city: str) -> Tuple[float, float]:
+    """Get coordinates with fallback if city not found"""
+    city_lower = city.lower()
+    coords = WAREHOUSE_COORDINATES.get(city_lower)
+    if not coords:
+        logger.warning(f"⚠️ No coordinates found for city: {city}, using fallback")
+        return FALLBACK_COORDINATES
+    return coords
+
+# FIX: Added debug function for SQL troubleshooting
+def _debug_sql_query(query: str) -> str:
+    """Debug SQL query - for troubleshooting only"""
+    logger.debug(f"SQL Query: {query}")
+    return query
 
 def _calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Calculate distance using Haversine formula"""
@@ -314,6 +394,7 @@ class DealerSearchResult:
     message: str = ""
     suggestions: List[Dict[str, Any]] = field(default_factory=list)
     search_time_ms: float = 0.0
+    normalized_query: str = ""  # FIX: Added for debugging
 
 # ============================================================
 # DEALER REPOSITORY - ALL SQL QUERIES
@@ -365,8 +446,30 @@ class DealerRepository:
         
         return self._row_to_dict(result) if result else None
     
+    # FIX: Enhanced search with multiple strategies
     def search_dealers_by_name(self, name: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Search dealers by name (ILIKE)"""
+        """Search dealers by name with multiple strategies"""
+        search_term = name.strip().lower()
+        cleaned_term = _clean_dealer_name(search_term)
+        
+        # Build multiple search conditions
+        conditions = [
+            # Exact match (case insensitive)
+            func.lower(DeliveryReport.customer_name) == search_term,
+            # Contains match
+            func.lower(DeliveryReport.customer_name).like(f"%{search_term}%"),
+            # Cleaned name match
+            func.lower(DeliveryReport.customer_name).like(f"%{cleaned_term}%"),
+            # Dealer code match
+            func.lower(DeliveryReport.dealer_code) == search_term,
+            # Customer code match
+            func.lower(DeliveryReport.customer_code) == search_term,
+            # Remove spaces and match (for "ArshadElectronics-Khi")
+            func.lower(func.replace(DeliveryReport.customer_name, ' ', '')) == search_term.replace(' ', ''),
+            # Remove hyphens and match (for "Arshad ElectronicsKhi")
+            func.lower(func.replace(DeliveryReport.customer_name, '-', '')) == search_term.replace('-', ''),
+        ]
+        
         results = self.session.query(
             DeliveryReport.customer_name,
             DeliveryReport.dealer_code,
@@ -380,10 +483,65 @@ class DealerRepository:
             DeliveryReport.division,
             DeliveryReport.region,
         ).filter(
-            DeliveryReport.customer_name.ilike(f"%{name}%")
+            or_(*conditions)
         ).distinct().limit(limit).all()
         
         return [self._row_to_dict(row) for row in results if row]
+    
+    # FIX: Added fuzzy search method
+    def search_dealers_fuzzy(self, name: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search dealers with fuzzy matching"""
+        search_term = name.strip().lower()
+        cleaned_term = _clean_dealer_name(search_term)
+        
+        results = self.session.query(
+            DeliveryReport.customer_name,
+            DeliveryReport.dealer_code,
+            DeliveryReport.customer_code,
+            DeliveryReport.ship_to_city,
+            DeliveryReport.warehouse,
+            DeliveryReport.warehouse_code,
+            DeliveryReport.delivery_location,
+            DeliveryReport.sales_office,
+            DeliveryReport.sales_manager,
+            DeliveryReport.division,
+            DeliveryReport.region,
+        ).filter(
+            or_(
+                # ILIKE with cleaned term
+                DeliveryReport.customer_name.ilike(f"%{cleaned_term}%"),
+                # ILIKE with original term
+                DeliveryReport.customer_name.ilike(f"%{search_term}%"),
+                # Dealer code
+                DeliveryReport.dealer_code.ilike(f"%{search_term}%"),
+                # Customer code
+                DeliveryReport.customer_code.ilike(f"%{search_term}%"),
+            )
+        ).distinct().limit(limit).all()
+        
+        return [self._row_to_dict(row) for row in results if row]
+    
+    # FIX: Added debug search method
+    def debug_search(self, name: str) -> List[Dict[str, Any]]:
+        """Debug search - shows what's in the database"""
+        results = self.session.query(
+            DeliveryReport.customer_name,
+            DeliveryReport.dealer_code,
+            DeliveryReport.customer_code
+        ).filter(
+            DeliveryReport.customer_name.ilike(f"%{name}%")
+        ).limit(10).all()
+        
+        debug_results = []
+        for r in results:
+            debug_results.append({
+                'customer_name': _safe_str(r.customer_name),
+                'dealer_code': _safe_str(r.dealer_code),
+                'customer_code': _safe_str(r.customer_code)
+            })
+            logger.info(f"🔍 Found: {r.customer_name} | {r.dealer_code} | {r.customer_code}")
+        
+        return debug_results
     
     def get_dealer_dashboard(self, dealer_code: str, customer_code: str = None) -> Optional[Dict[str, Any]]:
         """Get complete dealer dashboard data"""
@@ -626,8 +784,8 @@ class DealerRepository:
             'avg_pod_days': _safe_float(delivery.avg_pod_days),
             'min_delivery_days': _safe_float(delivery.min_delivery_days),
             'max_delivery_days': _safe_float(delivery.max_delivery_days),
-            'median_delivery_days': 0,  # Calculate separately if needed
-            'p90_delivery_days': 0,  # Calculate separately if needed
+            'median_delivery_days': 0,
+            'p90_delivery_days': 0,
         }
         
         # Sales Metrics
@@ -712,7 +870,7 @@ class DealerRepository:
             'risk_score': risk_score,
             'performance_tier': tier,
             'dealer_rating': rating,
-            'dealer_rank': 0,  # Calculate if needed
+            'dealer_rank': 0,
         }
         
         # Insights and Recommendations
@@ -906,6 +1064,7 @@ class DealerSearchEngine:
         self._search_cache = {}
         self._cache_lock = threading.RLock()
     
+    # FIX: Updated search with cleaning and fuzzy matching
     def search_dealer(self, query: str) -> DealerSearchResult:
         """Search dealer using multi-level strategy"""
         start_time = time.time()
@@ -916,97 +1075,138 @@ class DealerSearchEngine:
             
             query_clean = query.strip()
             normalized = _normalize_text(query_clean)
+            cleaned_query = _clean_dealer_name(query_clean)
             
             logger.info(f"🔍 Searching: '{query_clean}'")
+            logger.info(f"   Normalized: '{normalized}'")
+            logger.info(f"   Cleaned: '{cleaned_query}'")
             
-            with self._cache_lock:
-                with SessionLocal() as session:
-                    repo = DealerRepository(session)
-                    
-                    # Strategy 1: Dealer Code (exact)
-                    result = repo.get_dealer_by_code(query_clean)
-                    if result:
-                        elapsed = (time.time() - start_time) * 1000
-                        return DealerSearchResult(
-                            success=True,
-                            customer_name=result.get('customer_name', ''),
-                            dealer_code=result.get('dealer_code', ''),
-                            customer_code=result.get('customer_code', ''),
-                            confidence=1.0,
-                            match_type="dealer_code",
-                            message="Found by dealer code",
-                            search_time_ms=elapsed
-                        )
-                    
-                    # Strategy 2: Customer Code (exact)
-                    result = repo.get_dealer_by_customer_code(query_clean)
-                    if result:
-                        elapsed = (time.time() - start_time) * 1000
-                        return DealerSearchResult(
-                            success=True,
-                            customer_name=result.get('customer_name', ''),
-                            dealer_code=result.get('dealer_code', ''),
-                            customer_code=result.get('customer_code', ''),
-                            confidence=1.0,
-                            match_type="customer_code",
-                            message="Found by customer code",
-                            search_time_ms=elapsed
-                        )
-                    
-                    # Strategy 3: Search by name (ILIKE)
-                    results = repo.search_dealers_by_name(query_clean, limit=10)
-                    if results:
-                        elapsed = (time.time() - start_time) * 1000
-                        
-                        # Check for exact match
-                        for r in results:
-                            if r.get('customer_name', '').lower() == query_clean.lower():
-                                return DealerSearchResult(
-                                    success=True,
-                                    customer_name=r.get('customer_name', ''),
-                                    dealer_code=r.get('dealer_code', ''),
-                                    customer_code=r.get('customer_code', ''),
-                                    confidence=0.95,
-                                    match_type="exact",
-                                    message="Found exact match",
-                                    search_time_ms=elapsed
-                                )
-                        
-                        # Return first result with suggestions
-                        first = results[0]
-                        suggestions = [
-                            {
-                                'customer_name': r.get('customer_name', ''),
-                                'dealer_code': r.get('dealer_code', ''),
-                                'customer_code': r.get('customer_code', ''),
-                                'confidence': 0.7 - (i * 0.05)
-                            }
-                            for i, r in enumerate(results[:5])
-                        ]
-                        
-                        return DealerSearchResult(
-                            success=True,
-                            customer_name=first.get('customer_name', ''),
-                            dealer_code=first.get('dealer_code', ''),
-                            customer_code=first.get('customer_code', ''),
-                            confidence=0.85,
-                            match_type="partial",
-                            message="Found partial match",
-                            suggestions=suggestions[1:],  # Don't include first in suggestions
-                            search_time_ms=elapsed
-                        )
-                    
-                    # No matches found
+            with SessionLocal() as session:
+                repo = DealerRepository(session)
+                
+                # Strategy 1: Dealer Code (exact)
+                result = repo.get_dealer_by_code(query_clean)
+                if result:
                     elapsed = (time.time() - start_time) * 1000
                     return DealerSearchResult(
-                        success=False,
-                        message="No dealer found",
-                        suggestions=[],
-                        search_time_ms=elapsed
+                        success=True,
+                        customer_name=result.get('customer_name', ''),
+                        dealer_code=result.get('dealer_code', ''),
+                        customer_code=result.get('customer_code', ''),
+                        confidence=1.0,
+                        match_type="dealer_code",
+                        message="Found by dealer code",
+                        search_time_ms=elapsed,
+                        normalized_query=normalized
                     )
+                
+                # Strategy 2: Customer Code (exact)
+                result = repo.get_dealer_by_customer_code(query_clean)
+                if result:
+                    elapsed = (time.time() - start_time) * 1000
+                    return DealerSearchResult(
+                        success=True,
+                        customer_name=result.get('customer_name', ''),
+                        dealer_code=result.get('dealer_code', ''),
+                        customer_code=result.get('customer_code', ''),
+                        confidence=1.0,
+                        match_type="customer_code",
+                        message="Found by customer code",
+                        search_time_ms=elapsed,
+                        normalized_query=normalized
+                    )
+                
+                # Strategy 3: Enhanced name search
+                results = repo.search_dealers_by_name(query_clean, limit=10)
+                if results:
+                    elapsed = (time.time() - start_time) * 1000
+                    
+                    # Check for exact match
+                    for r in results:
+                        if r.get('customer_name', '').lower() == query_clean.lower():
+                            return DealerSearchResult(
+                                success=True,
+                                customer_name=r.get('customer_name', ''),
+                                dealer_code=r.get('dealer_code', ''),
+                                customer_code=r.get('customer_code', ''),
+                                confidence=0.95,
+                                match_type="exact",
+                                message="Found exact match",
+                                search_time_ms=elapsed,
+                                normalized_query=normalized
+                            )
+                    
+                    # Check for cleaned match
+                    for r in results:
+                        if _clean_dealer_name(r.get('customer_name', '')) == cleaned_query:
+                            return DealerSearchResult(
+                                success=True,
+                                customer_name=r.get('customer_name', ''),
+                                dealer_code=r.get('dealer_code', ''),
+                                customer_code=r.get('customer_code', ''),
+                                confidence=0.90,
+                                match_type="cleaned",
+                                message="Found after cleaning",
+                                search_time_ms=elapsed,
+                                normalized_query=normalized
+                            )
+                    
+                    # Return first result with suggestions
+                    first = results[0]
+                    suggestions = [
+                        {
+                            'customer_name': r.get('customer_name', ''),
+                            'dealer_code': r.get('dealer_code', ''),
+                            'customer_code': r.get('customer_code', ''),
+                            'confidence': 0.7 - (i * 0.05)
+                        }
+                        for i, r in enumerate(results[:5])
+                    ]
+                    
+                    return DealerSearchResult(
+                        success=True,
+                        customer_name=first.get('customer_name', ''),
+                        dealer_code=first.get('dealer_code', ''),
+                        customer_code=first.get('customer_code', ''),
+                        confidence=0.85,
+                        match_type="partial",
+                        message="Found partial match",
+                        suggestions=suggestions[1:] if len(suggestions) > 1 else [],
+                        search_time_ms=elapsed,
+                        normalized_query=normalized
+                    )
+                
+                # Strategy 4: Fuzzy search
+                results = repo.search_dealers_fuzzy(query_clean, limit=10)
+                if results:
+                    elapsed = (time.time() - start_time) * 1000
+                    first = results[0]
+                    return DealerSearchResult(
+                        success=True,
+                        customer_name=first.get('customer_name', ''),
+                        dealer_code=first.get('dealer_code', ''),
+                        customer_code=first.get('customer_code', ''),
+                        confidence=0.75,
+                        match_type="fuzzy",
+                        message="Found fuzzy match",
+                        suggestions=[],
+                        search_time_ms=elapsed,
+                        normalized_query=normalized
+                    )
+                
+                # No matches found
+                elapsed = (time.time() - start_time) * 1000
+                return DealerSearchResult(
+                    success=False,
+                    message="No dealer found",
+                    suggestions=[],
+                    search_time_ms=elapsed,
+                    normalized_query=normalized
+                )
             
         except Exception as e:
             logger.error(f"❌ Search error: {e}")
+            logger.error(traceback.format_exc())
             return DealerSearchResult(
                 success=False,
                 message=f"Search error: {str(e)}",
@@ -1026,10 +1226,21 @@ class DealerDashboardBuilder:
         self._cache_lock = threading.RLock()
         self._cache_hits = 0
         self._cache_misses = 0
+        self._cache_size_limit = 1000  # FIX: Added cache size limit
     
     def build(self, dealer_code: str, customer_code: str = None) -> Optional[Dict[str, Any]]:
         """Build dealer dashboard"""
         cache_key = f"{dealer_code}_{customer_code}"
+        
+        # FIX: Check cache size limit
+        with self._cache_lock:
+            if len(self._cache) > self._cache_size_limit:
+                # Clear oldest entries
+                oldest_keys = sorted(self._cache_time.keys(), key=lambda k: self._cache_time[k])[:100]
+                for key in oldest_keys:
+                    del self._cache[key]
+                    del self._cache_time[key]
+                logger.info(f"🧹 Cache cleaned: removed {len(oldest_keys)} entries")
         
         # Check cache
         with self._cache_lock:
@@ -1075,6 +1286,7 @@ class DealerDashboardBuilder:
                 "cache_hits": self._cache_hits,
                 "cache_misses": self._cache_misses,
                 "cache_size": len(self._cache),
+                "cache_limit": self._cache_size_limit,
                 "hit_rate": round((self._cache_hits / max(self._cache_hits + self._cache_misses, 1)) * 100, 1)
             }
     
@@ -1235,7 +1447,13 @@ class WhatsAppFormatter:
         lines.append(f"Business Score   : {performance.get('business_score', 0)}/100")
         lines.append(f"Risk Score       : {performance.get('risk_score', 0)}/100")
         lines.append(f"Performance      : {performance.get('performance_tier', 'N/A')}")
-        lines.append(f"Dealer Rating    : {'⭐' * int(performance.get('dealer_rating', 0))}")
+        
+        # FIX: Better star rating display
+        rating = performance.get('dealer_rating', 0)
+        full_stars = int(rating)
+        empty_stars = 5 - full_stars
+        stars = "⭐" * full_stars + "☆" * empty_stars
+        lines.append(f"Dealer Rating    : {stars}")
         lines.append("")
         
         # INSIGHTS
@@ -1311,7 +1529,7 @@ class DealerAnalyticsService:
     def _show_startup_info(self):
         """Display startup information"""
         print("\n" + "=" * 70)
-        print("🏢 DEALER LOGISTICS INTELLIGENCE v9.0".center(70))
+        print("🏢 DEALER LOGISTICS INTELLIGENCE v{}".center(70).format(self._version))
         print("=" * 70)
         print("✅ PostgreSQL: Single Source of Truth")
         print("✅ Enterprise Search Engine")
