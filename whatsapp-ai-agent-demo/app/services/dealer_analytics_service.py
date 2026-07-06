@@ -26,9 +26,9 @@ PERFORMANCE TARGETS:
     Scales to: 500,000+ records
 
 ARCHITECTURE:
-    WhatsApp → Webhook → AI Provider → Dealer Analytics Service →
-        Dealer Search Engine → Dealer Repository → PostgreSQL →
-        Dashboard Builder → WhatsApp Formatter → User
+    WhatsApp â†’ Webhook â†’ AI Provider â†’ Dealer Analytics Service â†’
+        Dealer Search Engine â†’ Dealer Repository â†’ PostgreSQL â†’
+        Dashboard Builder â†’ WhatsApp Formatter â†’ User
 
 SEARCH STRATEGIES (Priority Order):
     1. Dealer Code (exact)
@@ -242,7 +242,7 @@ def _get_coordinates(city: str) -> Tuple[float, float]:
     city_lower = city.lower()
     coords = WAREHOUSE_COORDINATES.get(city_lower)
     if not coords:
-        logger.warning(f"⚠️ No coordinates for city: {city}, using fallback")
+        logger.warning(f"âš ï¸ No coordinates for city: {city}, using fallback")
         return FALLBACK_COORDINATES
     return coords
 
@@ -437,7 +437,7 @@ class DealerRepository:
             DeliveryReport.sales_office,
             DeliveryReport.sales_manager,
             DeliveryReport.division,
-            DeliveryReport.region,
+            text("''").label('region'),
         ).filter(
             DeliveryReport.dealer_code == dealer_code
         ).first()
@@ -456,7 +456,7 @@ class DealerRepository:
             DeliveryReport.sales_office,
             DeliveryReport.sales_manager,
             DeliveryReport.division,
-            DeliveryReport.region,
+            text("''").label('region'),
         ).filter(
             DeliveryReport.customer_code == customer_code
         ).first()
@@ -475,7 +475,7 @@ class DealerRepository:
             DeliveryReport.sales_office,
             DeliveryReport.sales_manager,
             DeliveryReport.division,
-            DeliveryReport.region,
+            text("''").label('region'),
         ).filter(
             func.lower(DeliveryReport.customer_name) == name.lower()
         ).first()
@@ -494,7 +494,7 @@ class DealerRepository:
             DeliveryReport.sales_office,
             DeliveryReport.sales_manager,
             DeliveryReport.division,
-            DeliveryReport.region,
+            text("''").label('region'),
         ).filter(
             DeliveryReport.customer_name.ilike(f"%{name}%")
         ).distinct().limit(limit).all()
@@ -526,7 +526,7 @@ class DealerRepository:
             DeliveryReport.sales_office,
             DeliveryReport.sales_manager,
             DeliveryReport.division,
-            DeliveryReport.region,
+            text("''").label('region'),
         ).filter(
             or_(*conditions)
         ).distinct().limit(limit).all()
@@ -553,7 +553,7 @@ class DealerRepository:
             DeliveryReport.sales_office,
             DeliveryReport.sales_manager,
             DeliveryReport.division,
-            DeliveryReport.region,
+            text("''").label('region'),
         ).filter(
             or_(*conditions)
         ).distinct().limit(limit).all()
@@ -575,7 +575,7 @@ class DealerRepository:
             DeliveryReport.sales_office,
             DeliveryReport.sales_manager,
             DeliveryReport.division,
-            DeliveryReport.region,
+            text("''").label('region'),
         ).filter(
             or_(
                 DeliveryReport.customer_name.ilike(f"%{cleaned_term}%"),
@@ -604,7 +604,7 @@ class DealerRepository:
             DeliveryReport.sales_office,
             DeliveryReport.sales_manager,
             DeliveryReport.division,
-            DeliveryReport.region,
+            text("''").label('region'),
         ).filter(
             func.soundex(DeliveryReport.customer_name) == soundex
         ).distinct().limit(limit).all()
@@ -631,7 +631,7 @@ class DealerRepository:
             DeliveryReport.sales_office,
             DeliveryReport.sales_manager,
             DeliveryReport.division,
-            DeliveryReport.region,
+            text("''").label('region'),
         ).filter(*filters).first()
         return self._row_to_dict(result) if result else None
     
@@ -1027,7 +1027,7 @@ class DealerRepository:
             )
             
         except Exception as e:
-            logger.error(f"❌ Dashboard error: {e}")
+            logger.error(f"âŒ Dashboard error: {e}")
             return None
     
     def _row_to_dict(self, row) -> Dict[str, Any]:
@@ -1053,39 +1053,39 @@ class DealerRepository:
         insights = []
         
         if delivery.delivery_rate >= 95:
-            insights.append("✅ Excellent delivery performance")
+            insights.append("âœ… Excellent delivery performance")
         elif delivery.delivery_rate >= 85:
-            insights.append("✅ Good delivery performance")
+            insights.append("âœ… Good delivery performance")
         elif delivery.delivery_rate < 75:
-            insights.append("⚠️ Delivery rate needs improvement")
+            insights.append("âš ï¸ Delivery rate needs improvement")
         
         if delivery.pod_rate >= 95:
-            insights.append("✅ Excellent POD completion")
+            insights.append("âœ… Excellent POD completion")
         elif delivery.pod_rate < 80:
-            insights.append("⚠️ POD completion needs attention")
+            insights.append("âš ï¸ POD completion needs attention")
         
         if delivery.pending_dn > 10:
-            insights.append(f"⚠️ {delivery.pending_dn} pending deliveries")
+            insights.append(f"âš ï¸ {delivery.pending_dn} pending deliveries")
         elif delivery.pending_dn > 0:
-            insights.append(f"📋 {delivery.pending_dn} pending deliveries")
+            insights.append(f"ðŸ“‹ {delivery.pending_dn} pending deliveries")
         
         if sales.total_revenue > 10_000_000:
-            insights.append("📈 Revenue is above dealer average")
+            insights.append("ðŸ“ˆ Revenue is above dealer average")
         elif sales.total_revenue > 5_000_000:
-            insights.append("📈 Revenue is at dealer average")
+            insights.append("ðŸ“ˆ Revenue is at dealer average")
         
         if sales.total_quantity > 1000:
-            insights.append(f"📦 Strong sales: {sales.total_quantity:,} units")
+            insights.append(f"ðŸ“¦ Strong sales: {sales.total_quantity:,} units")
         
         if product.total_models > 15:
-            insights.append("📦 Strong product portfolio")
+            insights.append("ðŸ“¦ Strong product portfolio")
         elif product.total_models > 5:
-            insights.append("📦 Healthy product portfolio")
+            insights.append("ðŸ“¦ Healthy product portfolio")
         
         if delivery.avg_delivery_days <= 2:
-            insights.append(f"🚚 Fast delivery: {delivery.avg_delivery_days:.1f} days")
+            insights.append(f"ðŸšš Fast delivery: {delivery.avg_delivery_days:.1f} days")
         elif delivery.avg_delivery_days > 5:
-            insights.append("⚠️ Delivery speed needs improvement")
+            insights.append("âš ï¸ Delivery speed needs improvement")
         
         return insights[:8]
     
@@ -1094,30 +1094,30 @@ class DealerRepository:
         recs = []
         
         if delivery.pending_dn > 10:
-            recs.append("📋 Resolve pending deliveries")
+            recs.append("ðŸ“‹ Resolve pending deliveries")
         elif delivery.pending_dn > 5:
-            recs.append("📋 Clear pending deliveries")
+            recs.append("ðŸ“‹ Clear pending deliveries")
         
         if delivery.delivery_rate < 80:
-            recs.append("📋 Improve delivery processes")
+            recs.append("ðŸ“‹ Improve delivery processes")
         
         if delivery.pod_rate < 85:
-            recs.append("📋 Focus on POD completion")
+            recs.append("ðŸ“‹ Focus on POD completion")
         
         if performance.business_score < 70:
-            recs.append("📋 Implement performance improvement plan")
+            recs.append("ðŸ“‹ Implement performance improvement plan")
         
         if sales.total_revenue < 1_000_000:
-            recs.append("📋 Review revenue growth strategies")
+            recs.append("ðŸ“‹ Review revenue growth strategies")
         
         if performance.risk_score > 30:
-            recs.append("📋 Conduct risk assessment")
+            recs.append("ðŸ“‹ Conduct risk assessment")
         
         if not recs:
             recs.extend([
-                "📋 Maintain current performance",
-                "📋 Monitor delivery metrics",
-                "📋 Explore growth opportunities"
+                "ðŸ“‹ Maintain current performance",
+                "ðŸ“‹ Monitor delivery metrics",
+                "ðŸ“‹ Explore growth opportunities"
             ])
         
         return recs[:5]
@@ -1181,7 +1181,7 @@ class DealerSearchEngine:
             normalized = _normalize_text(query_clean)
             cleaned_query = _clean_dealer_name(query_clean)
             
-            logger.info(f"🔍 Searching: '{query_clean}'")
+            logger.info(f"ðŸ” Searching: '{query_clean}'")
             logger.info(f"   Normalized: '{normalized}'")
             logger.info(f"   Cleaned: '{cleaned_query}'")
             
@@ -1346,7 +1346,7 @@ class DealerSearchEngine:
                 )
             
         except Exception as e:
-            logger.error(f"❌ Search error: {e}")
+            logger.error(f"âŒ Search error: {e}")
             logger.error(traceback.format_exc())
             return DealerSearchResult(
                 success=False,
@@ -1386,18 +1386,18 @@ class DealerDashboardBuilder:
                 for key in oldest_keys:
                     del self._cache[key]
                     del self._cache_time[key]
-                logger.info(f"🧹 Cache cleaned: removed {len(oldest_keys)} entries")
+                logger.info(f"ðŸ§¹ Cache cleaned: removed {len(oldest_keys)} entries")
             
             if cache_key in self._cache:
                 cache_age = (datetime.now() - self._cache_time[cache_key]).seconds
                 if cache_age < CACHE_TTL:
                     self._cache_hits += 1
-                    logger.info(f"✅ Dashboard cache hit for {dealer_code}")
+                    logger.info(f"âœ… Dashboard cache hit for {dealer_code}")
                     return self._cache[cache_key]
             self._cache_misses += 1
         
         try:
-            logger.info(f"📊 Building dashboard for {dealer_code}")
+            logger.info(f"ðŸ“Š Building dashboard for {dealer_code}")
             start_time = time.time()
             
             with SessionLocal() as session:
@@ -1405,11 +1405,11 @@ class DealerDashboardBuilder:
                 dashboard = repo.get_complete_dashboard(dealer_code, customer_code)
                 
                 if not dashboard:
-                    logger.warning(f"⚠️ No dashboard data for {dealer_code}")
+                    logger.warning(f"âš ï¸ No dashboard data for {dealer_code}")
                     return None
             
             elapsed = (time.time() - start_time) * 1000
-            logger.info(f"✅ Dashboard built in {elapsed:.0f}ms")
+            logger.info(f"âœ… Dashboard built in {elapsed:.0f}ms")
             
             # Cache
             with self._cache_lock:
@@ -1419,7 +1419,7 @@ class DealerDashboardBuilder:
             return dashboard
             
         except Exception as e:
-            logger.error(f"❌ Dashboard error: {e}")
+            logger.error(f"âŒ Dashboard error: {e}")
             logger.error(traceback.format_exc())
             return None
     
@@ -1439,7 +1439,7 @@ class DealerDashboardBuilder:
         with self._cache_lock:
             self._cache.clear()
             self._cache_time.clear()
-            logger.info("📊 Dashboard cache cleared")
+            logger.info("ðŸ“Š Dashboard cache cleared")
 
 # ============================================================
 # WHATSAPP FORMATTER
@@ -1467,9 +1467,9 @@ class WhatsAppFormatter:
         lines = []
         
         # HEADER
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("🏢 DEALER DASHBOARD")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸ¢ DEALER DASHBOARD")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         lines.append("")
         
         # DEALER INFORMATION
@@ -1484,9 +1484,9 @@ class WhatsAppFormatter:
         lines.append("")
         
         # LOCATION
-        lines.append("━━━━━━━━━━━━━━━━")
-        lines.append("📍 LOCATION")
-        lines.append("━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸ“ LOCATION")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         lines.append("")
         lines.append("Warehouse")
         lines.append(identity.warehouse)
@@ -1511,9 +1511,9 @@ class WhatsAppFormatter:
         lines.append("")
         
         # DELIVERY PERFORMANCE
-        lines.append("━━━━━━━━━━━━━━━━")
-        lines.append("🚚 DELIVERY PERFORMANCE")
-        lines.append("━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸšš DELIVERY PERFORMANCE")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         lines.append("")
         lines.append(f"Total DN        : {delivery.total_dn:,}")
         lines.append(f"Delivered       : {delivery.delivered_dn:,}")
@@ -1527,9 +1527,9 @@ class WhatsAppFormatter:
         lines.append("")
         
         # SALES PERFORMANCE
-        lines.append("━━━━━━━━━━━━━━━━")
-        lines.append("💰 SALES PERFORMANCE")
-        lines.append("━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸ’° SALES PERFORMANCE")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         lines.append("")
         lines.append(f"Total Quantity  : {sales.total_quantity:,} Units")
         lines.append(f"Total Sales     : {_format_currency(sales.total_revenue)}")
@@ -1538,9 +1538,9 @@ class WhatsAppFormatter:
         lines.append("")
         
         # DELIVERY TIMES
-        lines.append("━━━━━━━━━━━━━━━━")
-        lines.append("⏱️ DELIVERY TIMES")
-        lines.append("━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("â±ï¸ DELIVERY TIMES")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         lines.append("")
         lines.append(f"Avg Delivery    : {delivery.avg_delivery_days:.1f} Days")
         lines.append(f"Avg POD         : {delivery.avg_pod_days:.1f} Days")
@@ -1554,9 +1554,9 @@ class WhatsAppFormatter:
         
         # TOP MODELS
         if product.top_models:
-            lines.append("━━━━━━━━━━━━━━━━")
-            lines.append("🏷️ TOP MODELS")
-            lines.append("━━━━━━━━━━━━━━━━")
+            lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+            lines.append("ðŸ·ï¸ TOP MODELS")
+            lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
             lines.append("")
             for i, model in enumerate(product.top_models[:5], 1):
                 lines.append(f"{i}. {model.get('model', 'N/A')}")
@@ -1566,9 +1566,9 @@ class WhatsAppFormatter:
         
         # WAREHOUSE
         if warehouse.warehouse_distribution:
-            lines.append("━━━━━━━━━━━━━━━━")
-            lines.append("🏭 WAREHOUSE")
-            lines.append("━━━━━━━━━━━━━━━━")
+            lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+            lines.append("ðŸ­ WAREHOUSE")
+            lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
             lines.append("")
             for wh in warehouse.warehouse_distribution[:3]:
                 lines.append(wh.get('warehouse', 'N/A'))
@@ -1578,9 +1578,9 @@ class WhatsAppFormatter:
         
         # CITY
         if city.top_destination_cities:
-            lines.append("━━━━━━━━━━━━━━━━")
-            lines.append("📍 TOP CITIES")
-            lines.append("━━━━━━━━━━━━━━━━")
+            lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+            lines.append("ðŸ“ TOP CITIES")
+            lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
             lines.append("")
             for i, c in enumerate(city.top_destination_cities[:3], 1):
                 lines.append(f"{i}. {c.get('city', 'N/A')}")
@@ -1588,9 +1588,9 @@ class WhatsAppFormatter:
                 lines.append("")
         
         # PERFORMANCE
-        lines.append("━━━━━━━━━━━━━━━━")
-        lines.append("📈 PERFORMANCE")
-        lines.append("━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸ“ˆ PERFORMANCE")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         lines.append("")
         lines.append(f"Business Score   : {performance.business_score}/100")
         lines.append(f"Risk Score       : {performance.risk_score}/100")
@@ -1598,15 +1598,15 @@ class WhatsAppFormatter:
         
         full_stars = int(performance.dealer_rating)
         empty_stars = 5 - full_stars
-        stars = "⭐" * full_stars + "☆" * empty_stars
+        stars = "â­" * full_stars + "â˜†" * empty_stars
         lines.append(f"Dealer Rating    : {stars}")
         lines.append("")
         
         # INSIGHTS
         if dashboard.insights:
-            lines.append("━━━━━━━━━━━━━━━━")
-            lines.append("💡 INSIGHTS")
-            lines.append("━━━━━━━━━━━━━━━━")
+            lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+            lines.append("ðŸ’¡ INSIGHTS")
+            lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
             lines.append("")
             for insight in dashboard.insights[:3]:
                 lines.append(insight)
@@ -1614,18 +1614,18 @@ class WhatsAppFormatter:
         
         # RECOMMENDATIONS
         if dashboard.recommendations:
-            lines.append("━━━━━━━━━━━━━━━━")
-            lines.append("📋 RECOMMENDATIONS")
-            lines.append("━━━━━━━━━━━━━━━━")
+            lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+            lines.append("ðŸ“‹ RECOMMENDATIONS")
+            lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
             lines.append("")
             for rec in dashboard.recommendations[:3]:
                 lines.append(rec)
                 lines.append("")
         
         # FOOTER
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("💬 Type '99' to return to Main Menu")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸ’¬ Type '99' to return to Main Menu")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         
         return "\n".join(lines)
 
@@ -1671,16 +1671,16 @@ class DealerAnalyticsService:
     
     def _show_startup_info(self):
         """Display startup information"""
-        print("\n" + "=" * 70)
-        print("🏢 DEALER LOGISTICS INTELLIGENCE v{}".center(70).format(self._version))
-        print("=" * 70)
-        print("🗄️  PostgreSQL: Single Source of Truth")
-        print("🔍 Search Engine: 9 Strategies")
-        print("📊 Dashboard: 15+ KPI Sections")
-        print("📱 WhatsApp Optimized")
-        print("💾 Cache: 5 minutes")
-        print("📈 Scales to: 500,000+ records")
-        print("=" * 70 + "\n")
+        logger.info("\n" + "=" * 70)
+        logger.info("ðŸ¢ DEALER LOGISTICS INTELLIGENCE v{}".center(70).format(self._version))
+        logger.info("=" * 70)
+        logger.info("ðŸ—„ï¸  PostgreSQL: Single Source of Truth")
+        logger.info("ðŸ” Search Engine: 9 Strategies")
+        logger.info("ðŸ“Š Dashboard: 15+ KPI Sections")
+        logger.info("ðŸ“± WhatsApp Optimized")
+        logger.info("ðŸ’¾ Cache: 5 minutes")
+        logger.info("ðŸ“ˆ Scales to: 500,000+ records")
+        logger.info("=" * 70 + "\n")
     
     # ============================================================
     # MAIN ENTRY POINT
@@ -1697,7 +1697,7 @@ class DealerAnalyticsService:
         start_time = time.time()
         
         try:
-            logger.info(f"📨 Dealer query: '{message}' from {sender}")
+            logger.info(f"ðŸ“¨ Dealer query: '{message}' from {sender}")
             
             if not message or not message.strip():
                 return self._get_welcome_message()
@@ -1706,7 +1706,7 @@ class DealerAnalyticsService:
             
             # Command checks
             if message_clean in ["99", "exit", "quit", "back"]:
-                logger.info(f"🚪 Exit requested by {sender}")
+                logger.info(f"ðŸšª Exit requested by {sender}")
                 return EXIT_SIGNAL
             
             if message_clean in ["help", "?", "start", "hello", "hi"]:
@@ -1748,16 +1748,21 @@ class DealerAnalyticsService:
             
             elapsed = (time.time() - start_time) * 1000
             self._success_count += 1
-            logger.info(f"✅ Response in {elapsed:.0f}ms")
+            logger.info(f"âœ… Response in {elapsed:.0f}ms")
             
             return response
             
         except Exception as e:
             self._error_count += 1
-            logger.error(f"❌ Dealer service error: {e}")
+            logger.error(f"âŒ Dealer service error: {e}")
             logger.error(traceback.format_exc())
             return self._format_error(str(e)[:100])
     
+
+    async def handle_message(self, message: str, sender: str = "default") -> str:
+        """Unified async entry point."""
+        return self.process_whatsapp_query(message, sender)
+
     # ============================================================
     # SESSION MANAGEMENT
     # ============================================================
@@ -1786,14 +1791,14 @@ class DealerAnalyticsService:
         
         if not session.get('pending_matches'):
             return "\n".join([
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-                "⚠️ NO PENDING SELECTION",
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
+                "âš ï¸ NO PENDING SELECTION",
+                "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
                 "",
                 "Please enter a dealer name to search.",
                 "",
-                "99️⃣ Return to Main Menu",
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                "99ï¸âƒ£ Return to Main Menu",
+                "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”"
             ])
         
         matches = session['pending_matches']
@@ -1829,30 +1834,30 @@ class DealerAnalyticsService:
     def _get_welcome_message(self) -> str:
         """Show welcome message"""
         return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "🏢 DEALER LOGISTICS INTELLIGENCE",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
+            "ðŸ¢ DEALER LOGISTICS INTELLIGENCE",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
             "",
             "Enter a Dealer Name, Code, or Customer Code.",
             "",
-            "✅ Dealer Code",
-            "✅ Customer Code",
-            "✅ Dealer Name",
-            "✅ Partial Name",
-            "✅ Fuzzy Match",
+            "âœ… Dealer Code",
+            "âœ… Customer Code",
+            "âœ… Dealer Name",
+            "âœ… Partial Name",
+            "âœ… Fuzzy Match",
             "",
-            "💡 Try: Arshad Electronics-Khi",
+            "ðŸ’¡ Try: Arshad Electronics-Khi",
             "",
-            "99️⃣ Main Menu",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "99ï¸âƒ£ Main Menu",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”"
         ])
     
     def _get_examples(self) -> str:
         """Show examples"""
         return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "📝 DEALER EXAMPLES",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
+            "ðŸ“ DEALER EXAMPLES",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
             "",
             "Try searching for:",
             "",
@@ -1863,12 +1868,12 @@ class DealerAnalyticsService:
             "5. Friends Electronics",
             "6. Al Madina Electronics",
             "",
-            "💡 Or search by:",
-            "• Dealer Code (e.g., DEAL_001)",
-            "• Customer Code (e.g., CUST_001)",
+            "ðŸ’¡ Or search by:",
+            "â€¢ Dealer Code (e.g., DEAL_001)",
+            "â€¢ Customer Code (e.g., CUST_001)",
             "",
-            "99️⃣ Return to Main Menu",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "99ï¸âƒ£ Return to Main Menu",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”"
         ])
     
     # ============================================================
@@ -1878,71 +1883,71 @@ class DealerAnalyticsService:
     def _format_not_found(self, query: str, search_result: DealerSearchResult, sender: str) -> str:
         """Format not found response"""
         lines = []
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("🔍 DEALER NOT FOUND")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
+        lines.append("ðŸ” DEALER NOT FOUND")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         lines.append("")
         lines.append(f"We couldn't find '{query}' in our records.")
         lines.append("")
         
         if search_result.suggestions:
-            lines.append("💡 Did you mean:")
+            lines.append("ðŸ’¡ Did you mean:")
             lines.append("")
             for i, suggestion in enumerate(search_result.suggestions[:5], 1):
                 confidence = suggestion.get('confidence', 0)
                 name = suggestion.get('customer_name', 'Unknown')
                 lines.append(f"{i}. {name} ({confidence*100:.0f}% match)")
             lines.append("")
-            lines.append("💬 Type the number to select a dealer")
+            lines.append("ðŸ’¬ Type the number to select a dealer")
             lines.append("")
             
             # Store suggestions
             session = self._get_session(sender)
             session['pending_matches'] = search_result.suggestions[:5]
         else:
-            lines.append("💡 Suggestions:")
-            lines.append("• Check the spelling")
-            lines.append("• Try searching by Dealer Code")
-            lines.append("• Try searching by Customer Code")
-            lines.append("• Use partial name search")
+            lines.append("ðŸ’¡ Suggestions:")
+            lines.append("â€¢ Check the spelling")
+            lines.append("â€¢ Try searching by Dealer Code")
+            lines.append("â€¢ Try searching by Customer Code")
+            lines.append("â€¢ Use partial name search")
             lines.append("")
         
-        lines.append("99️⃣ Return to Main Menu")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("99ï¸âƒ£ Return to Main Menu")
+        lines.append("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”")
         
         return "\n".join(lines)
     
     def _format_no_data(self, dealer_name: str) -> str:
         """Format no data response"""
         return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "⚠️ NO DATA AVAILABLE",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
+            "âš ï¸ NO DATA AVAILABLE",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
             "",
             f"We found '{dealer_name}' but no delivery data is available.",
             "",
-            "💡 Possible reasons:",
-            "• No delivery reports imported",
-            "• No recent transactions",
-            "• Data import may be incomplete",
+            "ðŸ’¡ Possible reasons:",
+            "â€¢ No delivery reports imported",
+            "â€¢ No recent transactions",
+            "â€¢ Data import may be incomplete",
             "",
-            "99️⃣ Return to Main Menu",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "99ï¸âƒ£ Return to Main Menu",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”"
         ])
     
     def _format_error(self, error_message: str) -> str:
         """Format error response"""
         return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "⚠️ ERROR",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
+            "âš ï¸ ERROR",
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”",
             "",
             "An error occurred while processing your request.",
             "",
             f"Error: {error_message}",
             "",
             "Please try again or type '99' to exit.",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”"
         ])
     
     # ============================================================
@@ -1996,52 +2001,52 @@ __all__ = [
 # ============================================================
 
 if __name__ == "__main__":
-    print("\n" + "=" * 70)
-    print("DEALER LOGISTICS INTELLIGENCE - TEST MODE".center(70))
-    print("=" * 70)
-    print()
+    logger.info("\n" + "=" * 70)
+    logger.info("DEALER LOGISTICS INTELLIGENCE - TEST MODE".center(70))
+    logger.info("=" * 70)
+    logger.info()
     
     service = get_dealer_service()
     
     # Show health
     health = service.health_check()
-    print("📊 Health Check:")
+    logger.info("ðŸ“Š Health Check:")
     for key, value in health.items():
-        print(f"  {key}: {value}")
-    print()
+        logger.info(f"  {key}: {value}")
+    logger.info()
     
     # Show welcome
-    print(service._get_welcome_message())
-    print()
+    logger.info(service._get_welcome_message())
+    logger.info()
     
     # Interactive test
-    print("🔍 Enter dealer name to search (or 99 to exit)")
-    print()
+    logger.info("ðŸ” Enter dealer name to search (or 99 to exit)")
+    logger.info()
     
     while True:
         try:
-            query = input("🔍 Enter Dealer Name: ").strip()
+            query = input("ðŸ” Enter Dealer Name: ").strip()
             
             if query == "99":
-                print("\n👋 Goodbye!")
+                logger.info("\nðŸ‘‹ Goodbye!")
                 break
             
             if not query:
                 continue
             
-            print("\n⏳ Processing...\n")
+            logger.info("\nâ³ Processing...\n")
             result = service.process_whatsapp_query(query, "test_user")
             
             if result == EXIT_SIGNAL:
-                print("Exiting...")
+                logger.info("Exiting...")
                 break
             
-            print(result)
-            print()
+            logger.info(result)
+            logger.info()
             
         except KeyboardInterrupt:
-            print("\n\n👋 Goodbye!")
+            logger.info("\n\nðŸ‘‹ Goodbye!")
             break
         except Exception as e:
-            print(f"\n❌ Error: {e}\n")
+            logger.info(f"\nâŒ Error: {e}\n")
             traceback.print_exc()
