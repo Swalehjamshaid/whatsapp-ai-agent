@@ -139,13 +139,73 @@ class DistanceService:
 
     def __init__(self, cache: CacheManager):
         self._cache = cache
+        # optional providers
+        try:
+            import openrouteservice as _ors  # type: ignore
+
+            self._ors = _ors
+        except Exception:
+            self._ors = None
+        try:
+            from geopy.distance import geodesic  # type: ignore
+
+            self._geodesic = geodesic
+        except Exception:
+            self._geodesic = None
+
+    def _format_etd(self, duration_seconds: int) -> str:
+        # human friendly: prefer days if >24h, else hours
+        if duration_seconds >= 86400:
+            days = int(round(duration_seconds / 86400))
+            return f"{days} Day" if days == 1 else f"{days} Days"
+        hours = int(math.ceil(duration_seconds / 3600))
+        return f"{hours} hr" if hours == 1 else f"{hours} hrs"
 
     def get_distance(self, src: Tuple[float, float], dst: Tuple[float, float]) -> DistanceInfo:
         key = f"dist:{src[0]}:{src[1]}:{dst[0]}:{dst[1]}"
         cached = self._cache.get(key)
         if cached:
             return cached
+
+        # Normalize src/dst: expected as (lat, lon)
         try:
+            # Try OpenRouteService if available and API key provided
+            import os
+
+            ors_key = os.environ.get("ORS_API_KEY")
+            if self._ors and ors_key:
+                try:
+                    client = self._ors.Client(key=ors_key)
+                    # ORS expects (lon, lat)
+                    coords = [(src[1], src[0]), (dst[1], dst[0])]
+                    route = client.directions(coords)
+                    summary = route.get("routes", [])[0].get("summary", {})
+                    distance_km = summary.get("distance", 0) / 1000.0
+                    duration_s = int(summary.get("duration", 0))
+                    driving_min = int(max(1, duration_s // 60))
+                    etd = self._format_etd(duration_s)
+                    zone = "🟢 Local" if distance_km < 50 else ("🟡 Regional" if distance_km < 200 else "🔴 Long")
+                    info = DistanceInfo(distance_km=round(distance_km, 2), driving_time_min=driving_min, estimated_delivery=etd, transportation_zone=zone, source="openrouteservice")
+                    self._cache.set(key, info, ttl=24 * 3600)
+                    return info
+                except Exception:
+                    logger.exception("openrouteservice call failed, falling back")
+
+            # Geopy fallback (geodesic distance -> estimate driving time)
+            if self._geodesic:
+                try:
+                    km = float(self._geodesic((src[0], src[1]), (dst[0], dst[1])).km)
+                    # assume average speed 50 km/h for driving estimate
+                    driving_min = int(max(10, km / 50 * 60))
+                    etd = self._format_etd(int(driving_min * 60))
+                    zone = "🟢 Local" if km < 50 else ("🟡 Regional" if km < 200 else "🔴 Long")
+                    info = DistanceInfo(distance_km=round(km, 2), driving_time_min=driving_min, estimated_delivery=etd, transportation_zone=zone, source="geopy")
+                    self._cache.set(key, info, ttl=24 * 3600)
+                    return info
+                except Exception:
+                    logger.exception("geopy distance failed, falling back to haversine")
+
+            # Final fallback: haversine
             km = self.haversine_km(src, dst)
             driving_min = int(max(10, km / 50 * 60))
             etd = (datetime.utcnow() + timedelta(minutes=driving_min)).isoformat()
