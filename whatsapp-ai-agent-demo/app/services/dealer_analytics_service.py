@@ -1,24 +1,4 @@
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     📦  LOGISTICS INTELLIGENCE CENTER
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Please choose from:
-
-1. ❌ National KPI
-2. ❌ DN Analysis
-3. ❌ Dealer Analytics
-4. ✅ Warehouse Analytics
-5. ✅ Product Analytics
-6. ✅ City Analytics
-7. ❌ AI Assistant
-
-99 - Return to Main Menu
-
-📌 Services with ✅ are working
-📌 Services with ❌ are currently unavailable
-
-This file is not integating with postgreess do you need some extra file to make error free code 
-Check this code #!/usr/bin/env python3
 # ============================================================
 # FILE: whatsapp-ai-agent-demo/app/services/dealer_analytics_service.py
 # VERSION: 12.0 - ENTERPRISE DEALER INTELLIGENCE PLATFORM
