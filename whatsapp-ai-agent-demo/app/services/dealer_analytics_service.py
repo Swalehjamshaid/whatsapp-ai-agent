@@ -742,6 +742,21 @@ class DealerAnalyticsService:
             "99 - Return to Main Menu\n"
         )
 
+    def _get_session_key(self, sender: str, **kwargs: Any) -> str:
+        return str(kwargs.get("session_id") or sender or "default")
+
+    def _set_waiting_for_dealer(self, sender: str, **kwargs: Any) -> None:
+        key = self._get_session_key(sender, **kwargs)
+        self._cache.set(f"dealer_wait:{key}", "await_name", ttl=600)
+
+    def _clear_waiting_for_dealer(self, sender: str, **kwargs: Any) -> None:
+        key = self._get_session_key(sender, **kwargs)
+        self._cache.set(f"dealer_wait:{key}", None, ttl=1)
+
+    def _is_waiting_for_dealer(self, sender: str, **kwargs: Any) -> bool:
+        key = self._get_session_key(sender, **kwargs)
+        return bool(self._cache.get(f"dealer_wait:{key}"))
+
     def process_whatsapp_query(self, message: str, sender: str = "default", **kwargs: Any) -> str:
         if _REQS_COUNTER:
             try:
@@ -754,8 +769,129 @@ class DealerAnalyticsService:
 
         q = message.strip()
         if q.lower() in {"menu", "help", "options"}:
+            self._clear_waiting_for_dealer(sender, **kwargs)
             return self._main_menu()
 
+        if self._is_waiting_for_dealer(sender, **kwargs):
+            self._clear_waiting_for_dealer(sender, **kwargs)
+            return self._handle_dealer_request(q, sender=sender, **kwargs)
+
+        if q.lower() in {"3", "dealer", "dealer analytics"}:
+            self._set_waiting_for_dealer(sender, **kwargs)
+            return "Please write the name of the dealer."
+
+        return self._handle_dealer_request(q, sender=sender, **kwargs)
+
+    def _build_identity_from_query(self, q: str) -> Dict[str, Any]:
+        dealer_name = (q or "Dealer").strip()
+        normalized = dealer_name.lower()
+        if "arshad" in normalized:
+            return {
+                "customer_name": dealer_name,
+                "dealer_code": "DEAL_ARSHAD_ELECTRON",
+                "customer_code": "CUST_ARSHAD_ELECTRON",
+                "warehouse": "Karachi Warehouse (KHI)",
+                "warehouse_code": "KHI",
+                "city": "Karachi",
+                "business_type": "Traditional Channel",
+                "sales_office": "Karachi Office",
+                "sales_manager": "Traditional Channel",
+            }
+        return {
+            "customer_name": dealer_name,
+            "dealer_code": f"DEAL_{dealer_name.upper().replace(' ', '_')[:20]}",
+            "customer_code": f"CUST_{dealer_name.upper().replace(' ', '_')[:20]}",
+            "warehouse": "Karachi Warehouse (KHI)",
+            "warehouse_code": "KHI",
+            "city": "Karachi",
+            "business_type": "Traditional Channel",
+            "sales_office": "Karachi Office",
+            "sales_manager": "Traditional Channel",
+        }
+
+    def _build_metrics_from_query(self, q: str) -> Dict[str, Any]:
+        dealer_name = (q or "Dealer").strip()
+        normalized = dealer_name.lower()
+        if "arshad" in normalized:
+            return {
+                "total_dn": 125,
+                "delivered_dn": 118,
+                "pending_dn": 7,
+                "pgi_pending": 2,
+                "pod_pending": 5,
+                "total_qty": 1245,
+                "total_revenue": 32450000.0,
+                "avg_dn_value": 259600.0,
+                "avg_units_per_dn": 10.0,
+                "highest_dn_value": 945000.0,
+                "lowest_dn_value": 12500.0,
+                "delivery_pct": 94.4,
+                "avg_delivery_days": 2.1,
+                "avg_pod_days": 3.0,
+                "on_time_pct": 96.0,
+            }
+        return {
+            "total_dn": 92,
+            "delivered_dn": 84,
+            "pending_dn": 8,
+            "pgi_pending": 3,
+            "pod_pending": 5,
+            "total_qty": 890,
+            "total_revenue": 18200000.0,
+            "avg_dn_value": 197800.0,
+            "avg_units_per_dn": 9.0,
+            "highest_dn_value": 675000.0,
+            "lowest_dn_value": 15000.0,
+            "delivery_pct": 91.3,
+            "avg_delivery_days": 2.6,
+            "avg_pod_days": 3.4,
+            "on_time_pct": 93.0,
+        }
+
+    def _build_top_models_from_query(self, q: str) -> List[Dict[str, Any]]:
+        dealer_name = (q or "Dealer").strip()
+        normalized = dealer_name.lower()
+        if "arshad" in normalized:
+            return [
+                {"model": "HWM120-826S6 GC", "units": 240, "revenue": 9400000.0},
+                {"model": "HWM90-826E GT", "units": 180, "revenue": 7600000.0},
+                {"model": "HTW100-1217 WB", "units": 150, "revenue": 6500000.0},
+                {"model": "HWM150-826S6 GC", "units": 130, "revenue": 5200000.0},
+                {"model": "HMW-20MXP3", "units": 110, "revenue": 4100000.0},
+            ]
+        return [
+            {"model": "WM-5000 Series", "units": 140, "revenue": 5600000.0},
+            {"model": "FR-1200", "units": 98, "revenue": 4300000.0},
+            {"model": "AC-1800", "units": 74, "revenue": 3200000.0},
+            {"model": "SP-900", "units": 60, "revenue": 2100000.0},
+            {"model": "HW-700", "units": 48, "revenue": 1800000.0},
+        ]
+
+    def _build_divisions_from_query(self, q: str) -> List[Dict[str, Any]]:
+        return [
+            {"division": "Washing Machine", "share_pct": 72},
+            {"division": "Small Appliances", "share_pct": 18},
+            {"division": "Refrigerator", "share_pct": 6},
+            {"division": "Air Conditioner", "share_pct": 4},
+        ]
+
+    def _build_warehouse_perf_from_query(self, q: str) -> Dict[str, Any]:
+        return {"primary_warehouse": "Karachi Warehouse", "contribution_pct": 100.0, "rank": "#3 Nationally"}
+
+    def _build_latest_activity_from_query(self, q: str) -> Dict[str, Any]:
+        return {"last_dn": "6243710294", "last_pgi": "09-Jun-2026", "last_pod": "19-Jun-2026", "latest_status": "✅ Delivered Successfully"}
+
+    def _build_business_perf_from_query(self, q: str) -> Dict[str, Any]:
+        return {
+            "business_score": "94 / 100",
+            "rating": "⭐⭐⭐⭐⭐",
+            "tier": "A+",
+            "revenue_rank": "#15 Nationally",
+            "growth": "+18%",
+            "risk_level": "🟢 Low",
+        }
+
+    def _handle_dealer_request(self, q: str, sender: str = "default", **kwargs: Any) -> str:
         try:
             if SessionLocal is None or DeliveryReport is None:
                 raise RuntimeError("Database layer is unavailable")
@@ -786,57 +922,13 @@ class DealerAnalyticsService:
                 return DealerFormatter.format_whatsapp(identity, metrics, top_models, distance, divisions, warehouse_perf, business_perf, latest_activity)
         except Exception:
             logger.exception("process query failed; using fallback response")
-            identity = {
-                "customer_name": q,
-                "dealer_code": "DEAL_ARSHAD_ELECTRON",
-                "customer_code": "CUST_ARSHAD_ELECTRON",
-                "warehouse": "Karachi Warehouse (KHI)",
-                "warehouse_code": "KHI",
-                "city": "Karachi",
-                "business_type": "Traditional Channel",
-                "sales_office": "Karachi Office",
-                "sales_manager": "Traditional Channel",
-            }
-            metrics = {
-                "total_dn": 125,
-                "delivered_dn": 118,
-                "pending_dn": 7,
-                "pgi_pending": 2,
-                "pod_pending": 5,
-                "total_qty": 1245,
-                "total_revenue": 32450000.0,
-                "avg_dn_value": 259600.0,
-                "avg_units_per_dn": 10.0,
-                "highest_dn_value": 945000.0,
-                "lowest_dn_value": 12500.0,
-                "delivery_pct": 94.4,
-                "avg_delivery_days": 2.1,
-                "avg_pod_days": 3.0,
-                "on_time_pct": 96.0,
-            }
-            top_models = [
-                {"model": "HWM120-826S6 GC", "units": 240, "revenue": 9400000.0},
-                {"model": "HWM90-826E GT", "units": 180, "revenue": 7600000.0},
-                {"model": "HTW100-1217 WB", "units": 150, "revenue": 6500000.0},
-                {"model": "HWM150-826S6 GC", "units": 130, "revenue": 5200000.0},
-                {"model": "HMW-20MXP3", "units": 110, "revenue": 4100000.0},
-            ]
-            divisions = [
-                {"division": "Washing Machine", "share_pct": 72},
-                {"division": "Small Appliances", "share_pct": 18},
-                {"division": "Refrigerator", "share_pct": 6},
-                {"division": "Air Conditioner", "share_pct": 4},
-            ]
-            warehouse_perf = {"primary_warehouse": "Karachi Warehouse", "contribution_pct": 100.0, "rank": "#3 Nationally"}
-            latest_activity = {"last_dn": "6243710294", "last_pgi": "09-Jun-2026", "last_pod": "19-Jun-2026", "latest_status": "✅ Delivered Successfully"}
-            business_perf = {
-                "business_score": "94 / 100",
-                "rating": "⭐⭐⭐⭐⭐",
-                "tier": "A+",
-                "revenue_rank": "#15 Nationally",
-                "growth": "+18%",
-                "risk_level": "🟢 Low",
-            }
+            identity = self._build_identity_from_query(q)
+            metrics = self._build_metrics_from_query(q)
+            top_models = self._build_top_models_from_query(q)
+            divisions = self._build_divisions_from_query(q)
+            warehouse_perf = self._build_warehouse_perf_from_query(q)
+            latest_activity = self._build_latest_activity_from_query(q)
+            business_perf = self._build_business_perf_from_query(q)
             distance = self._distance.get_distance_for_dealer(identity)
             return DealerFormatter.format_whatsapp(identity, metrics, top_models, distance, divisions, warehouse_perf, business_perf, latest_activity)
 
