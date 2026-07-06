@@ -1,64 +1,63 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 2.1 - ENTERPRISE AI GATEWAY SERVICE (FULL)
+# VERSION: 3.0 - PURE GATEWAY & SESSION MANAGER
 # ============================================================
 
 """
 ================================================================================
-AI PROVIDER SERVICE - ENTERPRISE GATEWAY
+AI PROVIDER SERVICE - PURE GATEWAY & SESSION MANAGER
 ================================================================================
 
-Central gateway service for the HPK Logistics AI WhatsApp Agent.
-Routes queries to appropriate specialized services based on intent.
+This file is ONLY the Gateway, Router, Menu Controller, and Session Manager.
+
+It does NOT:
+- Execute SQL
+- Detect business intent
+- Calculate KPI
+- Search dealer/warehouse/city/DN
+- Answer AI questions
+- Create analytics
+- Build dashboards
+
+It ONLY:
+- Receives WhatsApp messages
+- Manages sessions
+- Shows Main Menu
+- Locks selected modules
+- Forwards messages to services
+- Unlocks on 99
 
 Architecture:
-    WhatsApp → webhook.py → ai_provider_service.py → 
-        ├── national_kpi_service.py
-        ├── dn_analysis.py
-        ├── dealer_analytics_service.py
-        ├── warehouse_service.py
-        ├── product_service.py
-        ├── city_service.py
-        └── groq_service.py
+    WhatsApp → webhook.py → process_whatsapp_query() → 
+        Session Manager → Menu Controller → Router → Service
 
-Features:
-    ✅ Intent detection and routing
-    ✅ Session management with context
-    ✅ Multi-service orchestration
-    ✅ Fallback to Groq AI
-    ✅ Comprehensive logging
-    ✅ Enterprise-grade performance
-    ✅ Graceful service degradation
-    ✅ All 7 services integrated
+Services:
+    1 → national_kpi_service.py
+    2 → dn_analysis.py
+    3 → dealer_analytics_service.py
+    4 → warehouse_service.py
+    5 → product_service.py
+    6 → city_service.py
+    7 → groq_service.py
 ================================================================================
 """
 
 from __future__ import annotations
 
 import logging
-import re
-from typing import Optional, Dict, Any, List, Tuple
+import asyncio
+from typing import Dict, Optional, Any
 from datetime import datetime
+import traceback
 
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# SERVICE IMPORTS - ALL 7 SERVICES
+# SERVICE IMPORTS - PUBLIC ENTRY FUNCTIONS ONLY
 # ============================================================
 
-# 1. Dealer Analytics Service (Primary)
-try:
-    from app.services.dealer_analytics_service import get_dealer_service, EXIT_SIGNAL
-    DEALER_AVAILABLE = True
-    logger.info("✅ Dealer Analytics Service loaded")
-except ImportError as e:
-    logger.warning(f"⚠️ Dealer Analytics Service not available: {e}")
-    get_dealer_service = None
-    EXIT_SIGNAL = "__EXIT__"
-    DEALER_AVAILABLE = False
-
-# 2. National KPI Service
+# 1. National KPI Service
 try:
     from app.services.national_kpi_service import get_kpi_service
     KPI_AVAILABLE = True
@@ -68,7 +67,7 @@ except ImportError as e:
     get_kpi_service = None
     KPI_AVAILABLE = False
 
-# 3. DN Analysis Service
+# 2. DN Analysis Service
 try:
     from app.services.dn_analysis import get_dn_analysis_service
     DN_AVAILABLE = True
@@ -77,6 +76,17 @@ except ImportError as e:
     logger.warning(f"⚠️ DN Analysis Service not available: {e}")
     get_dn_analysis_service = None
     DN_AVAILABLE = False
+
+# 3. Dealer Analytics Service
+try:
+    from app.services.dealer_analytics_service import get_dealer_service, EXIT_SIGNAL
+    DEALER_AVAILABLE = True
+    logger.info("✅ Dealer Analytics Service loaded")
+except ImportError as e:
+    logger.warning(f"⚠️ Dealer Analytics Service not available: {e}")
+    get_dealer_service = None
+    EXIT_SIGNAL = "__EXIT__"
+    DEALER_AVAILABLE = False
 
 # 4. Warehouse Service
 try:
@@ -108,7 +118,7 @@ except ImportError as e:
     get_city_service = None
     CITY_AVAILABLE = False
 
-# 7. Groq AI Service (Fallback)
+# 7. Groq AI Service
 try:
     from app.services.groq_service import get_groq_service
     GROQ_AVAILABLE = True
@@ -122,155 +132,58 @@ except ImportError as e:
 # CONSTANTS
 # ============================================================
 
-VERSION = "2.1"
-MAX_RESPONSE_LENGTH = 4096  # WhatsApp limit
-
-# Intent patterns with priority scoring
-INTENT_PATTERNS = {
-    "exit": [
-        (r'(?i)^\s*99\s*$', 10),
-        (r'(?i)^\s*exit\s*$', 9),
-        (r'(?i)^\s*quit\s*$', 9),
-        (r'(?i)^\s*back\s*$', 8),
-        (r'(?i)^\s*menu\s*$', 5),
-    ],
-    "help": [
-        (r'(?i)^\s*help\s*$', 10),
-        (r'(?i)^\s*\?\s*$', 9),
-        (r'(?i)^\s*start\s*$', 8),
-        (r'(?i)^\s*hello\s*$', 7),
-        (r'(?i)^\s*hi\s*$', 7),
-        (r'(?i)^\s*options\s*$', 8),
-    ],
-    "dealer": [
-        (r'(?i)dealer', 5),
-        (r'(?i)customer', 4),
-        (r'(?i)distributor', 4),
-        (r'(?i)arshad', 8),
-        (r'(?i)zoom', 8),
-        (r'(?i)ruba', 8),
-        (r'(?i)metro', 8),
-        (r'(?i)friends', 8),
-        (r'(?i)electronics', 7),
-        (r'(?i)appliances', 7),
-        (r'(?i)digital', 7),
-        (r'(?i)traders', 7),
-        (r'(?i)galaxy', 8),
-        (r'(?i)madina', 8),
-        (r'(?i)star', 7),
-        (r'(?i)enterprises', 7),
-        (r'(?i)corporation', 7),
-        (r'(?i)limited', 6),
-        (r'(?i)ltd', 6),
-        (r'(?i)pvt', 6),
-        (r'(?i)private', 6),
-    ],
-    "kpi": [
-        (r'(?i)^\s*kpi\s*$', 10),
-        (r'(?i)^\s*kpis\s*$', 10),
-        (r'(?i)performance', 7),
-        (r'(?i)metrics', 7),
-        (r'(?i)statistics', 6),
-        (r'(?i)overall', 6),
-        (r'(?i)national', 6),
-        (r'(?i)company.?wide', 6),
-        (r'(?i)total\s+(?:sales|delivery|performance)', 8),
-        (r'(?i)dashboard', 5),
-        (r'(?i)key\s+performance', 8),
-    ],
-    "dn": [
-        (r'(?i)dn[:\s]*[A-Za-z0-9\-]+', 10),
-        (r'(?i)delivery\s+note[:\s]*[A-Za-z0-9\-]+', 10),
-        (r'(?i)track\s+dn', 9),
-        (r'(?i)check\s+dn', 9),
-        (r'(?i)dn\s+status', 8),
-        (r'(?i)delivery\s+note\s+status', 8),
-        (r'(?i)[A-Za-z]{2,4}[-]?\d{4,}', 7),  # Pattern like DN-12345
-    ],
-    "warehouse": [
-        (r'(?i)warehouse', 5),
-        (r'(?i)stock', 5),
-        (r'(?i)inventory', 5),
-        (r'(?i)godown', 5),
-        (r'(?i)warehouse\s+performance', 8),
-        (r'(?i)warehouse\s+metrics', 8),
-        (r'(?i)stock\s+level', 7),
-        (r'(?i)inventory\s+status', 7),
-    ],
-    "product": [
-        (r'(?i)product', 5),
-        (r'(?i)material', 5),
-        (r'(?i)item', 5),
-        (r'(?i)article', 5),
-        (r'(?i)sales\s+by\s+product', 8),
-        (r'(?i)product\s+performance', 8),
-        (r'(?i)top\s+product', 7),
-        (r'(?i)best\s+selling', 7),
-        (r'(?i)product\s+analytics', 8),
-    ],
-    "city": [
-        (r'(?i)city', 5),
-        (r'(?i)region', 5),
-        (r'(?i)area', 5),
-        (r'(?i)location', 5),
-        (r'(?i)sales\s+by\s+city', 8),
-        (r'(?i)city\s+performance', 8),
-        (r'(?i)regional\s+sales', 7),
-        (r'(?i)city\s+analytics', 8),
-    ]
-}
+VERSION = "3.0"
+SESSION_TIMEOUT_SECONDS = 1800  # 30 minutes
 
 # ============================================================
-# SESSION MANAGEMENT
+# SESSION DATA CLASS
 # ============================================================
 
 class SessionData:
-    """User session data with context"""
-    def __init__(self):
-        self.last_intent: str = ""
-        self.last_query: str = ""
-        self.last_response: str = ""
-        self.context: Dict[str, Any] = {}
+    """User session data - pure session state only"""
+    def __init__(self, phone: str):
+        self.phone: str = phone
+        self.locked: bool = False
+        self.locked_service: Optional[str] = None
         self.created_at: datetime = datetime.now()
-        self.updated_at: datetime = datetime.now()
-        self.conversation_history: List[Dict[str, str]] = []
-        self.pending_action: Optional[str] = None
-        self.dealer_session: Any = None
-        self.selected_dealer: Optional[str] = None
-        self.search_results: List[Dict[str, Any]] = []
-        self.current_page: int = 0
-        
-    def add_history(self, query: str, intent: str, response: str = ""):
-        """Add to conversation history"""
-        self.conversation_history.append({
-            "query": query,
-            "intent": intent,
-            "timestamp": datetime.now().isoformat()
-        })
-        # Keep last 50 messages
-        if len(self.conversation_history) > 50:
-            self.conversation_history = self.conversation_history[-50:]
-        self.updated_at = datetime.now()
+        self.last_activity: datetime = datetime.now()
     
-    def get_context(self, key: str, default=None):
-        """Get context value"""
-        return self.context.get(key, default)
+    def update_activity(self):
+        """Update last activity timestamp"""
+        self.last_activity = datetime.now()
     
-    def set_context(self, key: str, value: Any):
-        """Set context value"""
-        self.context[key] = value
-        self.updated_at = datetime.now()
+    def is_expired(self) -> bool:
+        """Check if session has expired (30 minutes timeout)"""
+        elapsed = (datetime.now() - self.last_activity).total_seconds()
+        return elapsed > SESSION_TIMEOUT_SECONDS
+    
+    def lock(self, service_name: str):
+        """Lock session to a specific service"""
+        self.locked = True
+        self.locked_service = service_name
+        self.update_activity()
+    
+    def unlock(self):
+        """Unlock session"""
+        self.locked = False
+        self.locked_service = None
+        self.update_activity()
 
 # ============================================================
-# AI PROVIDER SERVICE
+# AI PROVIDER SERVICE - PURE ROUTER
 # ============================================================
 
 class AIProviderService:
     """
-    Central AI Provider Service - Routes queries to specialized services
+    Pure Gateway, Router, Menu Controller, and Session Manager.
+    
+    This class does NOT contain any business logic, SQL, AI, or analytics.
+    It ONLY routes messages to the appropriate services.
     """
     
     _instance: Optional["AIProviderService"] = None
+    _sessions: Dict[str, SessionData] = {}
+    _lock: asyncio.Lock = asyncio.Lock()
     
     def __new__(cls):
         if cls._instance is None:
@@ -283,68 +196,63 @@ class AIProviderService:
         
         self._initialized = True
         self._version = VERSION
-        self._sessions: Dict[str, SessionData] = {}
-        self._total_requests = 0
-        self._successful_requests = 0
-        self._errors = 0
         self._startup = datetime.now()
-        self._last_cleanup = datetime.now()
-        
-        # Service availability flags
-        self._services_available = {
-            "dealer": DEALER_AVAILABLE,
-            "kpi": KPI_AVAILABLE,
-            "dn": DN_AVAILABLE,
-            "warehouse": WAREHOUSE_AVAILABLE,
-            "product": PRODUCT_AVAILABLE,
-            "city": CITY_AVAILABLE,
-            "groq": GROQ_AVAILABLE
+        self._service_handlers = {
+            "1": self._handle_kpi,
+            "2": self._handle_dn,
+            "3": self._handle_dealer,
+            "4": self._handle_warehouse,
+            "5": self._handle_product,
+            "6": self._handle_city,
+            "7": self._handle_groq,
+        }
+        self._service_names = {
+            "1": "National KPI",
+            "2": "DN Analysis",
+            "3": "Dealer Analytics",
+            "4": "Warehouse Analytics",
+            "5": "Product Analytics",
+            "6": "City Analytics",
+            "7": "AI Assistant",
         }
         
-        # Service instances cache
-        self._service_instances = {}
-        
         self._show_startup()
-        
-        # Cleanup stale sessions every hour
-        self._cleanup_sessions()
     
     def _show_startup(self):
         """Display startup information"""
         print("\n" + "=" * 70)
-        print(f"🤖 AI PROVIDER GATEWAY v{self._version}".center(70))
+        print("🤖 AI PROVIDER GATEWAY v{} - PURE ROUTER".center(70).format(self._version))
         print("=" * 70)
         print("📋 SERVICES AVAILABLE:")
         print("-" * 70)
         
-        # Show all 7 services
-        service_names = {
-            "dealer": "Dealer Analytics",
-            "kpi": "National KPI",
-            "dn": "DN Analysis",
-            "warehouse": "Warehouse",
-            "product": "Product Analytics",
-            "city": "City Analytics",
-            "groq": "Groq AI (Fallback)"
+        services = {
+            "1": ("National KPI", KPI_AVAILABLE),
+            "2": ("DN Analysis", DN_AVAILABLE),
+            "3": ("Dealer Analytics", DEALER_AVAILABLE),
+            "4": ("Warehouse Analytics", WAREHOUSE_AVAILABLE),
+            "5": ("Product Analytics", PRODUCT_AVAILABLE),
+            "6": ("City Analytics", CITY_AVAILABLE),
+            "7": ("Groq AI", GROQ_AVAILABLE),
         }
         
-        for service_key, display_name in service_names.items():
-            available = self._services_available.get(service_key, False)
+        for key, (name, available) in services.items():
             status = "✅" if available else "❌"
-            name = display_name.ljust(20)
-            print(f"  {status}  {name} : {'Available' if available else 'Not Available'}")
+            print(f"  {key}. {status} {name}")
         
         print("-" * 70)
-        print(f"  📊 Started at: {self._startup.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"  🕐 Started at: {self._startup.strftime('%Y-%m-%d %H:%M:%S')}")
         print("=" * 70 + "\n")
     
     # ============================================================
-    # CORE PROCESSING
+    # MAIN ENTRY POINT - DO NOT CHANGE SIGNATURE
     # ============================================================
     
     async def process_whatsapp_query(self, message: str, sender: str) -> str:
         """
         Main entry point for WhatsApp queries.
+        
+        This is called by webhook.py. DO NOT CHANGE SIGNATURE.
         
         Args:
             message: User's message
@@ -353,613 +261,452 @@ class AIProviderService:
         Returns:
             Response string
         """
-        self._total_requests += 1
-        start_time = datetime.now()
-        
         try:
-            logger.info(f"📨 Processing: '{message}' from {sender}")
+            logger.info(f"📨 Incoming: '{message}' from {sender}")
             
             if not message or not message.strip():
-                return self._get_welcome_message()
+                return self._get_main_menu()
             
+            # Clean message
             msg = message.strip()
             
             # Get or create session
-            session = self._get_session(sender)
-            session.last_query = msg
-            session.updated_at = datetime.now()
+            session = await self._get_or_create_session(sender)
             
-            # Check for exit commands (highest priority)
-            if self._is_exit_command(msg):
-                session.pending_action = None
-                session.selected_dealer = None
-                session.last_intent = ""
-                logger.info(f"🚪 Exit command from {sender}")
-                return self._get_welcome_message()
+            # Check if session is expired
+            if session.is_expired():
+                logger.info(f"⏰ Session expired for {sender}")
+                # Remove expired session
+                async with self._lock:
+                    if sender in self._sessions:
+                        del self._sessions[sender]
+                return self._get_main_menu()
             
-            # Check for help commands
-            if self._is_help_command(msg):
-                logger.info(f"💡 Help requested by {sender}")
-                return self._get_help_message()
+            # Update activity timestamp
+            session.update_activity()
             
-            # Detect intent and route
-            intent, confidence = self._detect_intent(msg)
-            logger.info(f"🎯 Intent detected: {intent} (confidence: {confidence:.2f})")
+            # Check if session is locked
+            if session.locked:
+                # Session is locked - forward directly to locked service
+                logger.info(f"🔒 Session locked to {session.locked_service} for {sender}")
+                response = await self._forward_to_locked_service(msg, session)
+                return response
             
-            # Route to appropriate service
-            response = await self._route_to_service(msg, sender, session, intent)
-            
-            # Update session
-            session.last_intent = intent
-            session.last_response = response
-            session.add_history(msg, intent, response[:100])
-            
-            # Truncate response if needed
-            if len(response) > MAX_RESPONSE_LENGTH:
-                response = response[:MAX_RESPONSE_LENGTH - 50] + "\n\n...(truncated)"
-            
-            self._successful_requests += 1
-            elapsed = (datetime.now() - start_time).total_seconds() * 1000
-            logger.info(f"✅ Response in {elapsed:.0f}ms - Intent: {intent}")
-            
-            return response
+            # Session is NOT locked - show menu or handle selection
+            return await self._handle_unlocked_session(msg, sender, session)
             
         except Exception as e:
-            self._errors += 1
-            logger.error(f"❌ Error processing query: {e}")
-            import traceback
+            logger.error(f"❌ Error in process_whatsapp_query: {e}")
             logger.error(traceback.format_exc())
             return self._get_error_message()
-    
-    # ============================================================
-    # INTENT DETECTION (Enhanced)
-    # ============================================================
-    
-    def _detect_intent(self, message: str) -> Tuple[str, float]:
-        """
-        Detect user intent with confidence scoring.
-        
-        Returns:
-            Tuple of (intent, confidence_score)
-        """
-        msg = message.lower().strip()
-        
-        # If message is a dealer name (common case), boost dealer intent
-        if len(msg) > 3 and not any(c in msg for c in [' ', '\t']):
-            # Single word - could be dealer name
-            if msg not in ['help', 'menu', 'kpi', 'dn', 'warehouse', 'product', 'city']:
-                return "dealer", 0.7
-        
-        # Check each intent with priority scoring
-        scores = {}
-        
-        for intent, patterns in INTENT_PATTERNS.items():
-            max_score = 0
-            for pattern, priority in patterns:
-                if re.search(pattern, msg, re.IGNORECASE):
-                    max_score = max(max_score, priority)
-            if max_score > 0:
-                scores[intent] = max_score
-        
-        # If no intent matched, check for DN pattern
-        if not scores:
-            dn_match = re.search(r'[A-Za-z]{2,4}[-]?\d{4,}', msg)
-            if dn_match:
-                return "dn", 0.6
-        
-        # Return best match with confidence
-        if scores:
-            best_intent = max(scores, key=scores.get)
-            confidence = scores[best_intent] / 10.0
-            return best_intent, confidence
-        
-        # Default to dealer (most common use case)
-        return "dealer", 0.3
-    
-    def _is_exit_command(self, message: str) -> bool:
-        """Check if message is an exit command"""
-        msg = message.lower().strip()
-        exit_patterns = [
-            r'^\s*99\s*$',
-            r'^\s*exit\s*$',
-            r'^\s*quit\s*$',
-            r'^\s*back\s*$',
-            r'^\s*menu\s*$'
-        ]
-        for pattern in exit_patterns:
-            if re.search(pattern, msg):
-                return True
-        return False
-    
-    def _is_help_command(self, message: str) -> bool:
-        """Check if message is a help command"""
-        msg = message.lower().strip()
-        help_patterns = [
-            r'^\s*help\s*$',
-            r'^\s*\?\s*$',
-            r'^\s*start\s*$',
-            r'^\s*hello\s*$',
-            r'^\s*hi\s*$',
-            r'^\s*options\s*$'
-        ]
-        for pattern in help_patterns:
-            if re.search(pattern, msg):
-                return True
-        return False
-    
-    # ============================================================
-    # ROUTING ENGINE
-    # ============================================================
-    
-    async def _route_to_service(self, message: str, sender: str, session: SessionData, intent: str) -> str:
-        """
-        Route to appropriate service based on intent.
-        """
-        
-        # Route to specialized service
-        if intent == "dealer":
-            return self._handle_dealer_query(message, sender, session)
-        
-        elif intent == "kpi":
-            return self._handle_kpi_query(message, session)
-        
-        elif intent == "dn":
-            return self._handle_dn_query(message, session)
-        
-        elif intent == "warehouse":
-            return self._handle_warehouse_query(message, session)
-        
-        elif intent == "product":
-            return self._handle_product_query(message, session)
-        
-        elif intent == "city":
-            return self._handle_city_query(message, session)
-        
-        else:
-            # Try dealer as fallback
-            if self._services_available["dealer"]:
-                response = self._handle_dealer_query(message, sender, session)
-                if response and "not found" not in response.lower():
-                    return response
-                elif self._services_available["groq"]:
-                    return self._handle_ai_query(message, session)
-                else:
-                    return self._get_fallback_message()
-            elif self._services_available["groq"]:
-                return self._handle_ai_query(message, session)
-            else:
-                return self._get_fallback_message()
     
     # ============================================================
     # SESSION MANAGEMENT
     # ============================================================
     
-    def _get_session(self, user_id: str) -> SessionData:
-        """Get or create user session"""
-        if user_id not in self._sessions:
-            self._sessions[user_id] = SessionData()
-            logger.info(f"🆕 Session created for {user_id}")
-        return self._sessions[user_id]
+    async def _get_or_create_session(self, phone: str) -> SessionData:
+        """Get or create session for phone number"""
+        async with self._lock:
+            if phone in self._sessions:
+                session = self._sessions[phone]
+                # Check if session is expired
+                if session.is_expired():
+                    logger.info(f"⏰ Session expired for {phone}, creating new")
+                    del self._sessions[phone]
+                    session = SessionData(phone)
+                    self._sessions[phone] = session
+                return session
+            
+            # Create new session
+            session = SessionData(phone)
+            self._sessions[phone] = session
+            logger.info(f"🆕 New session created for {phone}")
+            return session
     
-    def _cleanup_sessions(self):
-        """Clean up stale sessions periodically"""
-        import asyncio
-        
-        async def cleanup_loop():
-            while True:
-                await asyncio.sleep(3600)  # Every hour
-                try:
-                    now = datetime.now()
-                    stale = []
-                    for user_id, session in self._sessions.items():
-                        # Remove sessions inactive for > 24 hours
-                        if (now - session.updated_at).seconds > 86400:
-                            stale.append(user_id)
-                    
-                    for user_id in stale:
-                        del self._sessions[user_id]
-                    
-                    if stale:
-                        logger.info(f"🧹 Cleaned up {len(stale)} stale sessions")
-                except Exception as e:
-                    logger.error(f"❌ Session cleanup error: {e}")
-        
-        # Start cleanup in background
-        try:
-            import asyncio
-            loop = asyncio.get_event_loop()
-            loop.create_task(cleanup_loop())
-        except RuntimeError:
-            # If no event loop, schedule later
-            import threading
-            threading.Timer(3600, self._cleanup_sessions).start()
+    async def _lock_session(self, phone: str, service_key: str) -> Optional[SessionData]:
+        """Lock session to a specific service"""
+        async with self._lock:
+            if phone not in self._sessions:
+                return None
+            
+            session = self._sessions[phone]
+            service_name = self._service_names.get(service_key, "Unknown")
+            session.lock(service_name)
+            logger.info(f"🔒 Session locked to {service_name} for {phone}")
+            return session
     
-    # ============================================================
-    # SERVICE HANDLERS - ALL 7 SERVICES
-    # ============================================================
+    async def _unlock_session(self, phone: str) -> Optional[SessionData]:
+        """Unlock session"""
+        async with self._lock:
+            if phone not in self._sessions:
+                return None
+            
+            session = self._sessions[phone]
+            if session.locked:
+                logger.info(f"🔓 Session unlocked for {phone} (was {session.locked_service})")
+            session.unlock()
+            return session
     
-    def _handle_dealer_query(self, message: str, sender: str, session: SessionData) -> str:
-        """Route to Dealer Analytics Service (Service 1)"""
-        try:
-            if not self._services_available["dealer"]:
-                return self._get_service_unavailable_message("Dealer Analytics")
-            
-            # Get or create service instance
-            if "dealer" not in self._service_instances:
-                self._service_instances["dealer"] = get_dealer_service()
-            
-            service = self._service_instances["dealer"]
-            if service:
-                # Check if it's a selection (numeric)
-                if message.isdigit() and session.search_results:
-                    response = service.process_whatsapp_query(message, sender)
-                else:
-                    response = service.process_whatsapp_query(message, sender)
-                
-                if response == EXIT_SIGNAL:
-                    session.last_intent = ""
-                    return self._get_welcome_message()
-                
-                # Store search results for pagination if present
-                if "suggestions" in response.lower():
-                    # Try to extract search results from response
-                    pass
-                
-                return response
-            else:
-                logger.warning("⚠️ Dealer service not available")
-                return self._get_service_unavailable_message("Dealer Analytics")
-        except Exception as e:
-            logger.error(f"❌ Dealer service error: {e}")
-            return self._get_error_message()
-    
-    def _handle_kpi_query(self, message: str, session: SessionData) -> str:
-        """Route to National KPI Service (Service 2)"""
-        try:
-            if not self._services_available["kpi"]:
-                return self._get_service_unavailable_message("National KPI")
-            
-            if "kpi" not in self._service_instances:
-                self._service_instances["kpi"] = get_kpi_service()
-            
-            service = self._service_instances["kpi"]
-            if service:
-                if hasattr(service, 'process_query'):
-                    return service.process_query(message)
-                elif hasattr(service, 'get_kpi_dashboard'):
-                    return service.get_kpi_dashboard()
-                elif hasattr(service, 'get_dashboard'):
-                    return service.get_dashboard()
-                else:
-                    return "📊 National KPI Dashboard\n\nPlease wait while we fetch the data..."
-            else:
-                return self._get_service_unavailable_message("National KPI")
-        except Exception as e:
-            logger.error(f"❌ KPI service error: {e}")
-            return self._get_error_message()
-    
-    def _handle_dn_query(self, message: str, session: SessionData) -> str:
-        """Route to DN Analysis Service (Service 3)"""
-        try:
-            if not self._services_available["dn"]:
-                return self._get_service_unavailable_message("DN Analysis")
-            
-            if "dn" not in self._service_instances:
-                self._service_instances["dn"] = get_dn_analysis_service()
-            
-            service = self._service_instances["dn"]
-            if service:
-                if hasattr(service, 'process_query'):
-                    return service.process_query(message)
-                elif hasattr(service, 'analyze_dn'):
-                    # Extract DN number
-                    dn_match = re.search(r'[A-Za-z0-9\-]{6,}', message)
-                    if dn_match:
-                        return service.analyze_dn(dn_match.group())
-                    else:
-                        return "📦 Please provide a valid Delivery Note number.\n\nExample: DN-12345"
-                elif hasattr(service, 'track_dn'):
-                    dn_match = re.search(r'[A-Za-z0-9\-]{6,}', message)
-                    if dn_match:
-                        return service.track_dn(dn_match.group())
-                    else:
-                        return "📦 Please provide a valid Delivery Note number.\n\nExample: DN-12345"
-                else:
-                    return "📦 DN Analysis\n\nPlease provide a Delivery Note number to track."
-            else:
-                return self._get_service_unavailable_message("DN Analysis")
-        except Exception as e:
-            logger.error(f"❌ DN service error: {e}")
-            return self._get_error_message()
-    
-    def _handle_warehouse_query(self, message: str, session: SessionData) -> str:
-        """Route to Warehouse Service (Service 4)"""
-        try:
-            if not self._services_available["warehouse"]:
-                return self._get_service_unavailable_message("Warehouse")
-            
-            if "warehouse" not in self._service_instances:
-                self._service_instances["warehouse"] = get_warehouse_service()
-            
-            service = self._service_instances["warehouse"]
-            if service:
-                if hasattr(service, 'process_query'):
-                    return service.process_query(message)
-                elif hasattr(service, 'get_warehouse_dashboard'):
-                    return service.get_warehouse_dashboard()
-                elif hasattr(service, 'get_dashboard'):
-                    return service.get_dashboard()
-                else:
-                    return "🏭 Warehouse Intelligence\n\nPlease wait while we fetch the data..."
-            else:
-                return self._get_service_unavailable_message("Warehouse")
-        except Exception as e:
-            logger.error(f"❌ Warehouse service error: {e}")
-            return self._get_error_message()
-    
-    def _handle_product_query(self, message: str, session: SessionData) -> str:
-        """Route to Product Service (Service 5)"""
-        try:
-            if not self._services_available["product"]:
-                return self._get_service_unavailable_message("Product Analytics")
-            
-            if "product" not in self._service_instances:
-                self._service_instances["product"] = get_product_service()
-            
-            service = self._service_instances["product"]
-            if service:
-                if hasattr(service, 'process_query'):
-                    return service.process_query(message)
-                elif hasattr(service, 'get_product_analytics'):
-                    return service.get_product_analytics()
-                elif hasattr(service, 'get_analytics'):
-                    return service.get_analytics()
-                else:
-                    return "📦 Product Analytics\n\nPlease wait while we fetch the data..."
-            else:
-                return self._get_service_unavailable_message("Product Analytics")
-        except Exception as e:
-            logger.error(f"❌ Product service error: {e}")
-            return self._get_error_message()
-    
-    def _handle_city_query(self, message: str, session: SessionData) -> str:
-        """Route to City Service (Service 6)"""
-        try:
-            if not self._services_available["city"]:
-                return self._get_service_unavailable_message("City Analytics")
-            
-            if "city" not in self._service_instances:
-                self._service_instances["city"] = get_city_service()
-            
-            service = self._service_instances["city"]
-            if service:
-                if hasattr(service, 'process_query'):
-                    return service.process_query(message)
-                elif hasattr(service, 'get_city_analytics'):
-                    return service.get_city_analytics()
-                elif hasattr(service, 'get_analytics'):
-                    return service.get_analytics()
-                else:
-                    return "📍 City Analytics\n\nPlease wait while we fetch the data..."
-            else:
-                return self._get_service_unavailable_message("City Analytics")
-        except Exception as e:
-            logger.error(f"❌ City service error: {e}")
-            return self._get_error_message()
-    
-    def _handle_ai_query(self, message: str, session: SessionData) -> str:
-        """Route to Groq AI Service (Service 7 - Fallback)"""
-        try:
-            if not self._services_available["groq"]:
-                return self._get_service_unavailable_message("AI Assistant")
-            
-            if "groq" not in self._service_instances:
-                self._service_instances["groq"] = get_groq_service()
-            
-            service = self._service_instances["groq"]
-            if service:
-                if hasattr(service, 'process_query'):
-                    return service.process_query(message)
-                elif hasattr(service, 'generate_response'):
-                    return service.generate_response(message)
-                elif hasattr(service, 'chat'):
-                    return service.chat(message)
-                else:
-                    return "🤖 AI Assistant\n\nHow can I help you today?"
-            else:
-                return self._get_service_unavailable_message("AI Assistant")
-        except Exception as e:
-            logger.error(f"❌ AI service error: {e}")
-            return self._get_error_message()
+    async def _get_session(self, phone: str) -> Optional[SessionData]:
+        """Get session without creating"""
+        async with self._lock:
+            return self._sessions.get(phone)
     
     # ============================================================
-    # MESSAGE GENERATORS
+    # MENU CONTROLLER
     # ============================================================
     
-    def _get_welcome_message(self) -> str:
-        """Get welcome message"""
+    def _get_main_menu(self) -> str:
+        """Return the exact main menu"""
         return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "🚚 HPK LOGISTICS AI ASSISTANT",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "📦 DN INTELLIGENCE CENTER",
             "",
-            "Welcome! What would you like to check?",
+            "1. National KPI Dashboard",
             "",
-            "📊 Available Services:",
+            "2. DN Analysis",
             "",
-            "👤 Dealer Intelligence",
-            "   → Search dealer performance",
-            "   → Check delivery metrics",
+            "3. Dealer Analytics",
             "",
-            "📊 National KPI Dashboard",
-            "   → Company-wide performance",
-            "   → Key metrics overview",
+            "4. Warehouse Analytics",
             "",
-            "📦 Delivery Note Analysis",
-            "   → Track specific DNs",
-            "   → Check delivery status",
+            "5. Product Analytics",
             "",
-            "🏭 Warehouse Intelligence",
-            "   → Warehouse performance",
-            "   → Stock and inventory",
+            "6. City Analytics",
             "",
-            "📦 Product Analytics",
-            "   → Product performance",
-            "   → Sales by product",
+            "7. AI Assistant",
             "",
-            "📍 City Analytics",
-            "   → Sales by city",
-            "   → Regional performance",
+            "━━━━━━━━━━━━━━━━━━",
             "",
-            "💡 Try: Dealer Name, DN Number, KPI, etc.",
-            "📝 Type 'help' for detailed commands",
-            "🔙 Type '99' to exit",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "Reply with:",
+            "",
+            "1 - National KPI",
+            "2 - DN Analysis",
+            "3 - Dealer Analytics",
+            "4 - Warehouse Analytics",
+            "5 - Product Analytics",
+            "6 - City Analytics",
+            "7 - AI Assistant",
+            "99 - Return to Main Menu"
         ])
     
-    def _get_help_message(self) -> str:
-        """Get detailed help message"""
+    def _get_invalid_menu_message(self) -> str:
+        """Return invalid menu selection message"""
         return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "💡 HELP & AVAILABLE COMMANDS",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "Invalid option.",
             "",
-            "🔍 DEALER SEARCH:",
-            "   • Dealer name (e.g., Arshad Electronics)",
-            "   • Dealer code (e.g., DLR-045)",
-            "   • Customer code (e.g., CUST-789)",
+            "Please choose:",
             "",
-            "📊 KPI DASHBOARD:",
-            "   • Type 'KPI', 'performance', 'metrics'",
-            "",
-            "📦 DN ANALYSIS:",
-            "   • Type 'DN-12345' or 'track DN'",
-            "",
-            "🏭 WAREHOUSE:",
-            "   • Type 'warehouse', 'stock', 'inventory'",
-            "",
-            "📦 PRODUCT:",
-            "   • Type 'product', 'material', 'sales by product'",
-            "",
-            "📍 CITY:",
-            "   • Type 'city', 'region', 'sales by city'",
-            "",
-            "💬 GENERAL:",
-            "   • 'help' - Show this menu",
-            "   • '99' or 'exit' - Return to main menu",
-            "",
-            "📝 Examples:",
-            "   • Arshad Electronics-Khi",
-            "   • Zoom Appliances",
-            "   • DN-2025-001",
-            "   • KPI",
-            "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        ])
-    
-    def _get_fallback_message(self) -> str:
-        """Get fallback message"""
-        return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "ℹ️ I couldn't find what you're looking for.",
-            "",
-            "Try these examples:",
-            "• Arshad Electronics-Khi (Dealer)",
-            "• KPI (Dashboard)",
-            "• DN-12345 (Track DN)",
-            "• warehouse (Warehouse)",
-            "• product (Products)",
-            "• city (Cities)",
-            "",
-            "Type 'help' for more options.",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "1 - National KPI",
+            "2 - DN Analysis",
+            "3 - Dealer Analytics",
+            "4 - Warehouse Analytics",
+            "5 - Product Analytics",
+            "6 - City Analytics",
+            "7 - AI Assistant",
+            "99 - Return to Main Menu"
         ])
     
     def _get_error_message(self) -> str:
-        """Get error message"""
+        """Return error message"""
         return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "⚠️ SERVICE ERROR",
+            "⚠️ The selected module encountered an error.",
             "",
-            "I encountered an error processing your request.",
+            "Please try again.",
             "",
-            "Please try again or type 'help' for assistance.",
-            "Type '99' to return to the main menu.",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "Reply 99 to return to the main menu."
         ])
     
     def _get_service_unavailable_message(self, service_name: str) -> str:
-        """Get service unavailable message"""
+        """Return service unavailable message"""
         return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            f"⚠️ {service_name} SERVICE UNAVAILABLE",
+            f"⚠️ {service_name} is currently unavailable.",
             "",
-            "This service is currently not available.",
+            "Please select another option or try again later.",
             "",
-            "Please try another service or try again later.",
-            "",
-            "Type 'help' for available options.",
-            "Type '99' to return to main menu.",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "Reply 99 to return to the main menu."
         ])
+    
+    def _is_menu_selection(self, message: str) -> bool:
+        """Check if message is a valid menu selection"""
+        return message in ["1", "2", "3", "4", "5", "6", "7", "99"]
+    
+    # ============================================================
+    # UNLOCKED SESSION HANDLER
+    # ============================================================
+    
+    async def _handle_unlocked_session(self, message: str, phone: str, session: SessionData) -> str:
+        """
+        Handle messages when session is NOT locked.
+        Shows menu or routes selection.
+        """
+        # Check if it's a valid menu selection
+        if self._is_menu_selection(message):
+            # Check for 99 - unlock/return to menu
+            if message == "99":
+                await self._unlock_session(phone)
+                return self._get_main_menu()
+            
+            # Valid selection 1-7 - lock and route
+            service_name = self._service_names.get(message, "Unknown")
+            logger.info(f"🎯 Menu selection: {message} -> {service_name}")
+            
+            # Check if service is available
+            if not self._is_service_available(message):
+                return self._get_service_unavailable_message(service_name)
+            
+            # Lock session
+            await self._lock_session(phone, message)
+            
+            # Forward to service
+            return await self._forward_to_service(message, message, phone)
+        
+        # Invalid input - show menu
+        logger.info(f"❌ Invalid menu input: '{message}' from {phone}")
+        return self._get_invalid_menu_message()
+    
+    # ============================================================
+    # LOCKED SESSION HANDLER - FORWARD EVERYTHING
+    # ============================================================
+    
+    async def _forward_to_locked_service(self, message: str, session: SessionData) -> str:
+        """
+        Forward message to locked service.
+        NO ROUTING, NO MENU, NO AI, NO INTENT DETECTION.
+        """
+        # Check for unlock command (99)
+        if message == "99":
+            # Unlock and show menu
+            await self._unlock_session(session.phone)
+            logger.info(f"🔓 Unlocked via 99 for {session.phone}")
+            return self._get_main_menu()
+        
+        # Forward to locked service
+        service_key = self._get_service_key(session.locked_service)
+        if not service_key:
+            # Should not happen, but just in case
+            await self._unlock_session(session.phone)
+            return self._get_main_menu()
+        
+        logger.info(f"🔄 Forwarding to {session.locked_service} for {session.phone}")
+        return await self._forward_to_service(service_key, message, session.phone)
+    
+    # ============================================================
+    # ROUTER - FORWARD TO SERVICES
+    # ============================================================
+    
+    async def _forward_to_service(self, service_key: str, message: str, phone: str) -> str:
+        """
+        Forward message to the appropriate service.
+        PURE ROUTING - NO BUSINESS LOGIC.
+        """
+        try:
+            handler = self._service_handlers.get(service_key)
+            if not handler:
+                logger.error(f"❌ No handler for service key: {service_key}")
+                return self._get_error_message()
+            
+            # Call the service handler
+            response = await handler(message, phone)
+            
+            # Check for service exit signal
+            if response == EXIT_SIGNAL:
+                await self._unlock_session(phone)
+                return self._get_main_menu()
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"❌ Service error for {service_key}: {e}")
+            logger.error(traceback.format_exc())
+            return self._get_error_message()
+    
+    def _get_service_key(self, service_name: str) -> Optional[str]:
+        """Get service key from service name"""
+        for key, name in self._service_names.items():
+            if name == service_name:
+                return key
+        return None
+    
+    def _is_service_available(self, service_key: str) -> bool:
+        """Check if a service is available"""
+        availability = {
+            "1": KPI_AVAILABLE,
+            "2": DN_AVAILABLE,
+            "3": DEALER_AVAILABLE,
+            "4": WAREHOUSE_AVAILABLE,
+            "5": PRODUCT_AVAILABLE,
+            "6": CITY_AVAILABLE,
+            "7": GROQ_AVAILABLE,
+        }
+        return availability.get(service_key, False)
+    
+    # ============================================================
+    # SERVICE HANDLERS - PURE FORWARDING
+    # ============================================================
+    
+    async def _handle_kpi(self, message: str, phone: str) -> str:
+        """Forward to National KPI Service"""
+        if not KPI_AVAILABLE or get_kpi_service is None:
+            return self._get_service_unavailable_message("National KPI")
+        
+        service = get_kpi_service()
+        if hasattr(service, 'process_query'):
+            return service.process_query(message)
+        elif hasattr(service, 'get_kpi_dashboard'):
+            return service.get_kpi_dashboard()
+        else:
+            return "📊 National KPI Dashboard\n\nPlease wait while we fetch the data..."
+    
+    async def _handle_dn(self, message: str, phone: str) -> str:
+        """Forward to DN Analysis Service"""
+        if not DN_AVAILABLE or get_dn_analysis_service is None:
+            return self._get_service_unavailable_message("DN Analysis")
+        
+        service = get_dn_analysis_service()
+        if hasattr(service, 'process_query'):
+            return service.process_query(message)
+        elif hasattr(service, 'analyze_dn'):
+            # Extract DN number if needed
+            import re
+            dn_match = re.search(r'[A-Za-z0-9\-]{6,}', message)
+            if dn_match:
+                return service.analyze_dn(dn_match.group())
+            else:
+                return "📦 Please provide a valid Delivery Note number.\n\nExample: DN-12345"
+        else:
+            return "📦 DN Analysis\n\nPlease provide a Delivery Note number to track."
+    
+    async def _handle_dealer(self, message: str, phone: str) -> str:
+        """Forward to Dealer Analytics Service"""
+        if not DEALER_AVAILABLE or get_dealer_service is None:
+            return self._get_service_unavailable_message("Dealer Analytics")
+        
+        service = get_dealer_service()
+        if hasattr(service, 'process_whatsapp_query'):
+            return service.process_whatsapp_query(message, phone)
+        else:
+            return "👤 Dealer Analytics\n\nPlease enter a dealer name to search."
+    
+    async def _handle_warehouse(self, message: str, phone: str) -> str:
+        """Forward to Warehouse Service"""
+        if not WAREHOUSE_AVAILABLE or get_warehouse_service is None:
+            return self._get_service_unavailable_message("Warehouse Analytics")
+        
+        service = get_warehouse_service()
+        if hasattr(service, 'process_query'):
+            return service.process_query(message)
+        elif hasattr(service, 'get_warehouse_dashboard'):
+            return service.get_warehouse_dashboard()
+        else:
+            return "🏭 Warehouse Analytics\n\nPlease wait while we fetch the data..."
+    
+    async def _handle_product(self, message: str, phone: str) -> str:
+        """Forward to Product Service"""
+        if not PRODUCT_AVAILABLE or get_product_service is None:
+            return self._get_service_unavailable_message("Product Analytics")
+        
+        service = get_product_service()
+        if hasattr(service, 'process_query'):
+            return service.process_query(message)
+        elif hasattr(service, 'get_product_analytics'):
+            return service.get_product_analytics()
+        else:
+            return "📦 Product Analytics\n\nPlease wait while we fetch the data..."
+    
+    async def _handle_city(self, message: str, phone: str) -> str:
+        """Forward to City Service"""
+        if not CITY_AVAILABLE or get_city_service is None:
+            return self._get_service_unavailable_message("City Analytics")
+        
+        service = get_city_service()
+        if hasattr(service, 'process_query'):
+            return service.process_query(message)
+        elif hasattr(service, 'get_city_analytics'):
+            return service.get_city_analytics()
+        else:
+            return "📍 City Analytics\n\nPlease wait while we fetch the data..."
+    
+    async def _handle_groq(self, message: str, phone: str) -> str:
+        """Forward to Groq AI Service"""
+        if not GROQ_AVAILABLE or get_groq_service is None:
+            return self._get_service_unavailable_message("AI Assistant")
+        
+        service = get_groq_service()
+        if hasattr(service, 'process_query'):
+            return service.process_query(message)
+        elif hasattr(service, 'generate_response'):
+            return service.generate_response(message)
+        else:
+            return "🤖 AI Assistant\n\nHow can I help you today?"
     
     # ============================================================
     # HEALTH CHECK
     # ============================================================
     
     def health_check(self) -> Dict[str, Any]:
-        """Health check for the gateway"""
+        """Health check - no business logic, only status"""
         uptime = (datetime.now() - self._startup).seconds
         
-        # Get service health if available
-        service_health = {}
-        for service_name, available in self._services_available.items():
-            if available and service_name in self._service_instances:
-                try:
-                    service = self._service_instances[service_name]
-                    if hasattr(service, 'health_check'):
-                        service_health[service_name] = service.health_check()
-                    else:
-                        service_health[service_name] = {"status": "available"}
-                except Exception as e:
-                    service_health[service_name] = {"status": "error", "error": str(e)}
+        # Count active sessions
+        active_sessions = 0
+        locked_sessions = 0
+        expired_sessions = 0
+        
+        for phone, session in self._sessions.items():
+            if session.is_expired():
+                expired_sessions += 1
             else:
-                service_health[service_name] = {"status": "not_available"}
+                active_sessions += 1
+                if session.locked:
+                    locked_sessions += 1
         
         return {
             "status": "healthy",
             "version": self._version,
             "uptime_seconds": uptime,
             "uptime_display": f"{uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s",
-            "total_requests": self._total_requests,
-            "successful_requests": self._successful_requests,
-            "errors": self._errors,
-            "success_rate": round((self._successful_requests / max(self._total_requests, 1)) * 100, 1),
-            "active_sessions": len(self._sessions),
-            "services_available": self._services_available,
-            "service_health": service_health,
+            "active_sessions": active_sessions,
+            "locked_sessions": locked_sessions,
+            "expired_sessions": expired_sessions,
+            "services_available": {
+                "kpi": KPI_AVAILABLE,
+                "dn": DN_AVAILABLE,
+                "dealer": DEALER_AVAILABLE,
+                "warehouse": WAREHOUSE_AVAILABLE,
+                "product": PRODUCT_AVAILABLE,
+                "city": CITY_AVAILABLE,
+                "groq": GROQ_AVAILABLE,
+            },
             "started_at": self._startup.isoformat()
         }
 
 # ============================================================
-# SINGLETON AND EXPORTS
+# SINGLETON AND EXPORTS - DO NOT CHANGE
 # ============================================================
 
 _service_instance: Optional[AIProviderService] = None
 
 def get_ai_provider_service() -> AIProviderService:
-    """Get singleton instance of AIProviderService"""
+    """Get singleton instance"""
     global _service_instance
     if _service_instance is None:
         _service_instance = AIProviderService()
     return _service_instance
 
-# Async wrapper for compatibility with webhook
+# ============================================================
+# WEBHOOK ENTRY POINT - DO NOT CHANGE SIGNATURE
+# ============================================================
+
 async def process_whatsapp_query(message: str, sender: str) -> str:
     """
-    Async wrapper for WhatsApp query processing.
+    Main entry point for WhatsApp queries.
     
-    This function is used by the webhook handler.
+    DO NOT CHANGE:
+    - Function name
+    - Parameters
+    - Return type
+    
+    This is called by webhook.py.
     
     Args:
         message: User's message
@@ -983,15 +730,18 @@ __all__ = [
 ]
 
 # ============================================================
-# TEST MODE
+# TEST MODE - PURE ROUTER TEST
 # ============================================================
 
 if __name__ == "__main__":
     import asyncio
     
     print("\n" + "=" * 70)
-    print(f"🤖 AI PROVIDER GATEWAY v{VERSION} - TEST MODE".center(70))
+    print("AI PROVIDER GATEWAY v{} - TEST MODE".center(70).format(VERSION))
     print("=" * 70)
+    print()
+    print("🚀 This is a PURE ROUTER - NO BUSINESS LOGIC")
+    print("   It ONLY routes messages to services")
     print()
     
     service = get_ai_provider_service()
@@ -1001,14 +751,14 @@ if __name__ == "__main__":
     print("📊 HEALTH CHECK:")
     print("-" * 40)
     for key, value in health.items():
-        if key not in ['service_health', 'services_available']:
+        if key != 'services_available':
             print(f"  {key}: {value}")
     print("-" * 40)
     print()
     
     # Interactive test
     async def test_loop():
-        print("🔍 Enter a query (or '99' to exit)")
+        print("🔍 Enter '99' anytime to return to main menu")
         print("=" * 70)
         print()
         
@@ -1016,14 +766,14 @@ if __name__ == "__main__":
             try:
                 query = input("👤 You: ").strip()
                 
-                if query.lower() in ['99', 'exit', 'quit']:
+                if query.lower() in ['exit', 'quit']:
                     print("\n👋 Goodbye!")
                     break
                 
                 if not query:
                     continue
                 
-                print("\n⏳ Processing...\n")
+                print("\n⏳ Routing...\n")
                 response = await service.process_whatsapp_query(query, "test_user")
                 print(response)
                 print()
