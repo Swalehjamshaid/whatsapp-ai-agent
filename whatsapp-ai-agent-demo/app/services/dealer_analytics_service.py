@@ -63,6 +63,9 @@ except ImportError:
 # ============================================================
 # BLOCK 2: CONFIGURATION & CONSTANTS
 # ============================================================
+# ============================================================
+# BLOCK 2: CONFIGURATION & CONSTANTS
+# ============================================================
 
 CACHE_TTL = max(60, int(os.getenv("DEALER_ANALYTICS_CACHE_TTL", "300")))
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
@@ -80,11 +83,15 @@ CITY_ABBREVIATIONS = {
     'hyd': 'hyderabad', 'guj': 'gujranwala', 'skt': 'sialkot', 'mzd': 'muzaffarabad',
     'md': 'muzaffarabad',
     'ak': 'azad kashmir', 'a.k': 'azad kashmir',
+    'bagh': 'bagh',
 }
 
 # Special case patterns for common dealer searches
+# This maps what users type → actual database customer_name
 SPECIAL_PATTERNS = {
+    # ==========================================================
     # Arshad Electronics variations
+    # ==========================================================
     "arshad electronics - karachi": "Arshad Electronics-Khi",
     "arshad electronics- karachi": "Arshad Electronics-Khi",
     "arshad electronics karachi": "Arshad Electronics-Khi",
@@ -93,7 +100,9 @@ SPECIAL_PATTERNS = {
     "arshad electronics": "Arshad Electronics-Khi",
     "arshad": "Arshad Electronics-Khi",
     
+    # ==========================================================
     # Japan Electronics variations
+    # ==========================================================
     "japan electronics a.k": "Japan Electronics A.K",
     "japan electronics a.k.": "Japan Electronics A.K",
     "japan electronics ak": "Japan Electronics A.K",
@@ -102,14 +111,18 @@ SPECIAL_PATTERNS = {
     "japan electronics": "Japan Electronics A.K",
     "japan": "Japan Electronics A.K",
     
+    # ==========================================================
     # Rehmat Electronics variations
+    # ==========================================================
     "rehmat electronics mzd": "Rehmat Electronics MZD",
     "rehmat electronics md": "Rehmat Electronics MZD",
     "rehmat electronics": "Rehmat Electronics MZD",
     "rehmat mzd": "Rehmat Electronics MZD",
     "rehmat": "Rehmat Electronics MZD",
     
+    # ==========================================================
     # Shaheen Electronics variations
+    # ==========================================================
     "shaheen electronics muzafrabad": "Shaheen Electronics MZD",
     "shaheen electronics muzaffarabad": "Shaheen Electronics MZD",
     "shaheen electronics mzd": "Shaheen Electronics MZD",
@@ -117,13 +130,24 @@ SPECIAL_PATTERNS = {
     "shaheen mzd": "Shaheen Electronics MZD",
     "shaheen": "Shaheen Electronics MZD",
     
+    # ==========================================================
     # Zoon Electronics variations
+    # ==========================================================
     "zoon electronics.md": "Zoon Electronics MZD",
     "zoon electronics.mzd": "Zoon Electronics MZD",
     "zoon electronics mzd": "Zoon Electronics MZD",
     "zoon electronics md": "Zoon Electronics MZD",
     "zoon mzd": "Zoon Electronics MZD",
     "zoon": "Zoon Electronics MZD",
+    
+    # ==========================================================
+    # Best Electronics variations (Based on PostgreSQL data)
+    # ==========================================================
+    "best electronics bagh": "Best Electronics Bagh",
+    "best electronics": "Best Electronics Bagh",
+    "best bagh": "Best Electronics Bagh",
+    "best": "Best Electronics Bagh",
+    "bagh": "Best Electronics Bagh",
 }
 
 FALLBACK_COORDINATES = (30.3753, 69.3451)
@@ -138,10 +162,10 @@ CITY_COORDINATES: Dict[str, Tuple[float, float]] = {
     "sukkur": (27.7060, 68.8530), "dg khan": (30.0430, 70.6402),
     "abbottabad": (34.1490, 73.2210), "gwadar": (25.1260, 62.3250),
     "gilgit": (35.9208, 74.3144), "narowal": (32.1167, 74.8833),
-    "muzaffarabad": (34.3700, 73.4711), "azad kashmir": (34.3700, 73.4711)
+    "muzaffarabad": (34.3700, 73.4711), "azad kashmir": (34.3700, 73.4711),
+    "bagh": (33.9833, 73.7667),
 }
-
-# ============================================================
+ ============================================================
 # BLOCK 3: ENUMS & DATACLASSES
 # ============================================================
 
@@ -328,6 +352,9 @@ def _generate_ai_insights(data: Dict[str, Any]) -> List[str]:
 # ============================================================
 # BLOCK 5: DEALER REPOSITORY - FIXED
 # ============================================================
+# ============================================================
+# BLOCK 5: DEALER REPOSITORY
+# ============================================================
 
 class DealerRepository:
     def __init__(self, session: Session):
@@ -419,7 +446,6 @@ class DealerRepository:
             logger.error(f"Failed to get top products: {e}")
             return []
     
-    # FIX v12.4: Completely rewritten to properly search customer_name
     def get_dealer_by_name(self, dealer_identifier: str) -> Optional[Dict[str, Any]]:
         """
         Get dealer data by searching customer_name column in PostgreSQL.
@@ -467,7 +493,6 @@ class DealerRepository:
                 func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label('avg_delivery_days'),
                 func.avg(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.isnot(None)), DeliveryReport.pod_date - DeliveryReport.good_issue_date))).label('avg_pod_days'),
             ).filter(
-                # FIX v12.4: Use ILIKE for case-insensitive search
                 func.lower(DeliveryReport.customer_name) == dealer_lower
             ).group_by(
                 DeliveryReport.customer_name, DeliveryReport.dealer_code,
@@ -923,6 +948,9 @@ class DealerMenuRenderer:
 # ============================================================
 # BLOCK 7: MAIN DEALER ANALYTICS SERVICE
 # ============================================================
+# ============================================================
+# BLOCK 7: MAIN DEALER ANALYTICS SERVICE
+# ============================================================
 
 class DealerAnalyticsService:
     def __init__(self) -> None:
@@ -1082,7 +1110,7 @@ class DealerAnalyticsService:
                     logger.info(f"✅ EXPANDED MATCH: '{d}'")
                     return d
         
-        # STEP 4: TRY DATABASE SEARCH DIRECTLY (FIX v12.4)
+        # STEP 4: TRY DATABASE SEARCH DIRECTLY
         try:
             with self._session() as session:
                 # Try exact match first
@@ -1099,6 +1127,14 @@ class DealerAnalyticsService:
                 ).first()
                 if result and result[0]:
                     logger.info(f"✅ DIRECT DB ILIKE MATCH: '{result[0]}'")
+                    return result[0]
+                
+                # Try dealer_code
+                result = session.query(DeliveryReport.customer_name).filter(
+                    func.lower(DeliveryReport.dealer_code).ilike(f"%{name_lower}%")
+                ).first()
+                if result and result[0]:
+                    logger.info(f"✅ DIRECT DB DEALER_CODE MATCH: '{result[0]}'")
                     return result[0]
         except Exception as e:
             logger.debug(f"Direct DB search failed: {e}")
@@ -1279,7 +1315,6 @@ class DealerAnalyticsService:
     @staticmethod
     def _session() -> Session:
         return SessionLocal()
-
 # ============================================================
 # BLOCK 8: SINGLETON & EXPORTS
 # ============================================================
