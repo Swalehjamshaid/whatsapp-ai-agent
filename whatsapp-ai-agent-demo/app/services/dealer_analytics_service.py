@@ -1041,6 +1041,9 @@ class DealerMenuRenderer:
 # ============================================================
 # BLOCK 7: MAIN DEALER ANALYTICS SERVICE
 # ============================================================
+# ============================================================
+# BLOCK 7: MAIN DEALER ANALYTICS SERVICE - DEBUG VERSION
+# ============================================================
 
 class DealerAnalyticsService:
     def __init__(self) -> None:
@@ -1106,70 +1109,152 @@ class DealerAnalyticsService:
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
         """
-        SIMPLIFIED - Direct database search ONLY.
-        No cache, no special patterns, just PostgreSQL.
+        DEBUG VERSION - Logs everything to file and console.
         """
+        import traceback
+        from app.database import engine
+        
+        # Log the raw input
+        print("=" * 80)
+        print(f"🔍 _resolve_dealer_name RAW INPUT: '{name}'")
+        print(f"🔍 Type: {type(name)}")
+        print(f"🔍 Length: {len(name) if name else 0}")
+        print("=" * 80)
+        
         if not name or not name.strip():
+            print("❌ Name is empty or None")
             return None
+        
         if name.isdigit():
+            print(f"❌ Name is a number: '{name}'")
             return None
         
         name_original = name.strip()
         name_lower = name_original.lower()
         
-        logger.info("=" * 80)
-        logger.info(f"🔍 _resolve_dealer_name: '{name_original}'")
-        logger.info("=" * 80)
+        print(f"🔍 Cleaned: '{name_original}'")
+        print(f"🔍 Lowercase: '{name_lower}'")
+        print("=" * 80)
         
+        # ==========================================================
+        # STEP 1: RAW SQL - Exact Match
+        # ==========================================================
         try:
-            with self._session() as session:
-                # ==========================================================
-                # DIRECT POSTGRESQL SEARCH - Exact match
-                # ==========================================================
-                logger.info(f"🔍 Searching PostgreSQL for: '{name_original}'")
+            with engine.connect() as conn:
+                print("🔍 STEP 1: RAW SQL EXACT MATCH")
                 
-                result = session.query(DeliveryReport.customer_name).filter(
-                    func.lower(DeliveryReport.customer_name) == name_lower
+                result = conn.execute(
+                    text("""
+                        SELECT customer_name 
+                        FROM delivery_reports 
+                        WHERE LOWER(customer_name) = :name
+                        LIMIT 1
+                    """),
+                    {"name": name_lower}
                 ).first()
                 
-                if result and result[0]:
-                    logger.info(f"✅ FOUND: '{result[0]}'")
+                if result:
+                    print(f"✅ RAW SQL FOUND: '{result[0]}'")
                     return result[0]
+                else:
+                    print("❌ RAW SQL EXACT returned nothing")
+                    
+        except Exception as e:
+            print(f"❌ RAW SQL failed: {e}")
+            print(traceback.format_exc())
+        
+        # ==========================================================
+        # STEP 2: RAW SQL - ILIKE
+        # ==========================================================
+        try:
+            with engine.connect() as conn:
+                print("🔍 STEP 2: RAW SQL ILIKE")
                 
-                # ==========================================================
-                # DIRECT POSTGRESQL SEARCH - ILIKE
-                # ==========================================================
-                logger.info(f"🔍 Searching PostgreSQL with ILIKE: '%{name_original}%'")
-                
-                result = session.query(DeliveryReport.customer_name).filter(
-                    DeliveryReport.customer_name.ilike(f"%{name_original}%")
+                result = conn.execute(
+                    text("""
+                        SELECT customer_name 
+                        FROM delivery_reports 
+                        WHERE customer_name ILIKE :name
+                        LIMIT 1
+                    """),
+                    {"name": f"%{name_original}%"}
                 ).first()
                 
-                if result and result[0]:
-                    logger.info(f"✅ FOUND (ILIKE): '{result[0]}'")
+                if result:
+                    print(f"✅ RAW SQL ILIKE FOUND: '{result[0]}'")
                     return result[0]
+                else:
+                    print("❌ RAW SQL ILIKE returned nothing")
+                    
+        except Exception as e:
+            print(f"❌ RAW SQL ILIKE failed: {e}")
+            print(traceback.format_exc())
+        
+        # ==========================================================
+        # STEP 3: RAW SQL - dealer_code
+        # ==========================================================
+        try:
+            with engine.connect() as conn:
+                print("🔍 STEP 3: RAW SQL dealer_code")
                 
-                # ==========================================================
-                # DIRECT POSTGRESQL SEARCH - dealer_code
-                # ==========================================================
-                logger.info(f"🔍 Searching PostgreSQL dealer_code: '%{name_original}%'")
-                
-                result = session.query(DeliveryReport.customer_name).filter(
-                    DeliveryReport.dealer_code.ilike(f"%{name_original}%")
+                result = conn.execute(
+                    text("""
+                        SELECT customer_name 
+                        FROM delivery_reports 
+                        WHERE dealer_code ILIKE :name
+                        LIMIT 1
+                    """),
+                    {"name": f"%{name_original}%"}
                 ).first()
                 
-                if result and result[0]:
-                    logger.info(f"✅ FOUND (dealer_code): '{result[0]}'")
+                if result:
+                    print(f"✅ RAW SQL dealer_code FOUND: '{result[0]}'")
                     return result[0]
+                else:
+                    print("❌ RAW SQL dealer_code returned nothing")
+                    
+        except Exception as e:
+            print(f"❌ RAW SQL dealer_code failed: {e}")
+            print(traceback.format_exc())
+        
+        # ==========================================================
+        # STEP 4: Get ALL dealers to verify data exists
+        # ==========================================================
+        try:
+            with engine.connect() as conn:
+                print("🔍 STEP 4: GET ALL DEALERS")
                 
-                logger.info(f"❌ NOT FOUND: '{name_original}'")
-                return None
+                results = conn.execute(
+                    text("""
+                        SELECT DISTINCT customer_name 
+                        FROM delivery_reports 
+                        WHERE customer_name IS NOT NULL 
+                        ORDER BY customer_name
+                        LIMIT 20
+                    """)
+                ).fetchall()
+                
+                dealer_list = [r[0] for r in results if r[0]]
+                
+                print(f"📋 First 20 dealers in DB:")
+                for i, d in enumerate(dealer_list, 1):
+                    print(f"   {i}. '{d}'")
+                    # Check if our dealer is in the list
+                    if d.lower() == name_lower:
+                        print(f"✅ FOUND IN DEALER LIST: '{d}'")
+                        return d
+                
+                print(f"❌ '{name_original}' NOT in dealer list")
                 
         except Exception as e:
-            logger.error(f"❌ Database search failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return None
+            print(f"❌ Get all dealers failed: {e}")
+            print(traceback.format_exc())
+        
+        print("=" * 80)
+        print(f"❌ ALL SEARCH METHODS FAILED for: '{name_original}'")
+        print("=" * 80)
+        
+        return None
     
     def _get_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         logger.info(f"📊 Getting dashboard for: '{dealer_name}'")
@@ -1308,7 +1393,6 @@ class DealerAnalyticsService:
     @staticmethod
     def _session() -> Session:
         return SessionLocal()
-
 # ============================================================
 # BLOCK 8: SINGLETON & EXPORTS
 # ============================================================
