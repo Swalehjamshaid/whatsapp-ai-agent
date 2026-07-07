@@ -23,7 +23,7 @@ FEATURES:
 - ✅ PostgreSQL Integration
 - ✅ Full Analytics Suite
 - ✅ Distance Calculation (OpenRouteService)
-- ✅ 90% Confidence Dealer Resolution
+- ✅ 80% Confidence Dealer Resolution
 
 ================================================================================
 """
@@ -72,12 +72,12 @@ CACHE_TTL = max(60, int(os.getenv("DEALER_ANALYTICS_CACHE_TTL", "300")))
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
 VERSION = "12.1"
-MATCH_THRESHOLD = 80  # Lowered to 80% for better matching
+MATCH_THRESHOLD = 70  # Lowered to 70% for better matching
 
 CITY_ABBREVIATIONS = {
     'khi': 'karachi', 'lhr': 'lahore', 'isb': 'islamabad', 'rwp': 'rawalpindi',
     'fsd': 'faisalabad', 'mul': 'multan', 'pes': 'peshawar', 'que': 'quetta',
-    'hyd': 'hyderabad', 'guj': 'gujranwala', 'skt': 'sialkot'
+    'hyd': 'hyderabad', 'guj': 'gujranwala', 'skt': 'sialkot', 'mzd': 'muzaffarabad'
 }
 
 FALLBACK_COORDINATES = (30.3753, 69.3451)
@@ -91,7 +91,8 @@ CITY_COORDINATES: Dict[str, Tuple[float, float]] = {
     "gujranwala": (32.1617, 74.1883), "bahawalpur": (29.3956, 71.6836),
     "sukkur": (27.7060, 68.8530), "dg khan": (30.0430, 70.6402),
     "abbottabad": (34.1490, 73.2210), "gwadar": (25.1260, 62.3250),
-    "gilgit": (35.9208, 74.3144), "narowal": (32.1167, 74.8833)
+    "gilgit": (35.9208, 74.3144), "narowal": (32.1167, 74.8833),
+    "muzaffarabad": (34.3700, 73.4711)
 }
 
 # ============================================================
@@ -160,6 +161,19 @@ def _format_currency(amount: float) -> str:
     elif amount >= 1_000:
         return f"PKR {amount:,.0f}"
     return f"PKR {amount:,.0f}"
+
+def _clean_dealer_name(name: str) -> str:
+    if not name:
+        return ""
+    # Remove phone numbers
+    cleaned = re.sub(r'0[0-9]{2,4}[-.\s]?[0-9]{7,8}', '', name)
+    cleaned = re.sub(r'[0-9]{4}[-.\s]?[0-9]{7}', '', cleaned)
+    cleaned = re.sub(r'\b[0-9]{10,12}\b', '', cleaned)
+    # Remove C/O
+    cleaned = re.sub(r'C/O\s*', '', cleaned, flags=re.IGNORECASE)
+    # Clean up
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
 
 def _get_coordinates(city: str) -> Tuple[float, float]:
     city_lower = city.lower()
@@ -387,7 +401,8 @@ class DealerMenuRenderer:
     @staticmethod
     def render_suggestions(query: str, suggestions: List[str]) -> str:
         if not suggestions:
-            return ""
+            return f"🔍 No dealers found matching '{query}'\n\n0. Main Menu\n99. Back"
+        
         lines = [
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             f"🔍 No exact match for '{query}'",
@@ -395,7 +410,11 @@ class DealerMenuRenderer:
             "💡 *Did you mean:*", ""
         ]
         for i, s in enumerate(suggestions[:5], 1):
-            lines.append(f"{i}. {s}")
+            # Clean the suggestion for display
+            clean_s = _clean_dealer_name(s)
+            if len(clean_s) > 40:
+                clean_s = clean_s[:37] + "..."
+            lines.append(f"{i}. {clean_s}")
         lines.extend([
             "", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "Type the exact name or:", "0. Main Menu", "99. Back"
@@ -408,9 +427,7 @@ class DealerMenuRenderer:
         
         # Clean dealer name
         display_name = data.get('customer_name', dealer_name)
-        display_name = re.sub(r'0[0-9]{2,4}[-.\s]?[0-9]{7,8}', '', display_name)
-        display_name = re.sub(r'C/O\s*', '', display_name, flags=re.IGNORECASE)
-        display_name = re.sub(r'\s+', ' ', display_name).strip()
+        display_name = _clean_dealer_name(display_name)
         if len(display_name) > 35:
             display_name = display_name[:32] + "..."
         
@@ -543,15 +560,18 @@ class DealerMenuRenderer:
         for i, item in enumerate(ranking[:limit], 1):
             dealer = item.get('dealer', 'Unknown')
             value = item.get('value', 'N/A')
+            clean_dealer = _clean_dealer_name(dealer)
+            if len(clean_dealer) > 30:
+                clean_dealer = clean_dealer[:27] + "..."
             medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-            lines.append(f"{medal} {dealer}: {value}")
+            lines.append(f"{medal} {clean_dealer}: {value}")
         lines.extend(["", "━━━━━━━━━━━━━━━━━━━━", "", "0. Main Menu", "99. Back"])
         return "\n".join(lines)
     
     @staticmethod
     def render_comparison_result(d1: str, d2: str, metrics: Dict[str, Any]) -> str:
-        clean_d1 = re.sub(r'0[0-9]{2,4}[-.\s]?[0-9]{7,8}', '', d1)[:30]
-        clean_d2 = re.sub(r'0[0-9]{2,4}[-.\s]?[0-9]{7,8}', '', d2)[:30]
+        clean_d1 = _clean_dealer_name(d1)[:30]
+        clean_d2 = _clean_dealer_name(d2)[:30]
         lines = [f"🔄 *Comparison: {clean_d1} vs {clean_d2}*", "", "───────────────────", ""]
         
         m1 = metrics.get(f"{d1}_metrics", {})
@@ -575,6 +595,8 @@ class DealerAnalyticsService:
         self._renderer = DealerMenuRenderer()
         self._contexts: Dict[str, DealerContext] = {}
         self._context_lock = threading.RLock()
+        self._dealer_cache: List[str] = []  # Cache for dealer names
+        self._cache_lock = threading.RLock()
         logger.info(f"✅ DealerAnalyticsService v{self._version} initialized")
         logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
     
@@ -598,17 +620,23 @@ class DealerAnalyticsService:
                 self._contexts[session_id] = DealerContext()
             return self._contexts[session_id]
     
-    def _get_all_dealers(self) -> List[str]:
-        """Get all dealer names from database"""
-        try:
-            with self._session() as session:
-                results = session.query(DeliveryReport.customer_name).filter(
-                    DeliveryReport.customer_name.isnot(None)
-                ).distinct().all()
-                return [r.customer_name for r in results if r.customer_name]
-        except Exception as e:
-            logger.error(f"Error getting dealers: {e}")
-            return []
+    def _get_all_dealers(self, refresh: bool = False) -> List[str]:
+        """Get all dealer names from database with caching"""
+        with self._cache_lock:
+            if self._dealer_cache and not refresh:
+                return self._dealer_cache
+            
+            try:
+                with self._session() as session:
+                    results = session.query(DeliveryReport.customer_name).filter(
+                        DeliveryReport.customer_name.isnot(None)
+                    ).distinct().all()
+                    self._dealer_cache = [r.customer_name for r in results if r.customer_name]
+                    logger.info(f"📋 Loaded {len(self._dealer_cache)} dealers from database")
+                    return self._dealer_cache
+            except Exception as e:
+                logger.error(f"Error getting dealers: {e}")
+                return []
     
     def _calculate_match_score(self, search: str, target: str) -> float:
         if not search or not target:
@@ -629,7 +657,10 @@ class DealerAnalyticsService:
         s_first = search.split()[0] if search.split() else ""
         t_first = target.split()[0] if target.split() else ""
         bonus = 20 if s_first and t_first and s_first == t_first else 0
-        bonus += 10 if search in target or target in search else 0
+        
+        # Check if search in target or target in search
+        if search in target or target in search:
+            bonus += 15
         
         # Check for partial word matches
         for sw in search_words:
@@ -638,7 +669,13 @@ class DealerAnalyticsService:
                     if len(tw) >= 3 and (sw in tw or tw in sw):
                         bonus += 5
         
-        return round(min(100, word_score + bonus), 1)
+        # Check for city abbreviations
+        for abbr, city in CITY_ABBREVIATIONS.items():
+            if abbr in search and city in target:
+                bonus += 10
+        
+        final_score = min(100, word_score + bonus)
+        return round(final_score, 1)
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
         if not name or not name.strip():
@@ -649,82 +686,94 @@ class DealerAnalyticsService:
         name_lower = name.strip().lower()
         logger.info(f"🔍 Searching: '{name_lower}'")
         
-        try:
-            dealer_names = self._get_all_dealers()
-            if not dealer_names:
-                return None
-            
-            # Exact match
+        dealer_names = self._get_all_dealers()
+        if not dealer_names:
+            logger.warning("⚠️ No dealers found in database")
+            return None
+        
+        logger.info(f"📋 Checking against {len(dealer_names)} dealers")
+        
+        # 1. EXACT MATCH
+        for d in dealer_names:
+            if d.lower() == name_lower:
+                logger.info(f"✅ EXACT MATCH: '{d}'")
+                return d
+        
+        # 2. FIRST WORD MATCH (high priority)
+        search_first = name_lower.split()[0] if name_lower.split() else ""
+        if len(search_first) >= 3:
             for d in dealer_names:
-                if d.lower() == name_lower:
+                d_first = d.lower().split()[0] if d.lower().split() else ""
+                if d_first == search_first:
+                    score = self._calculate_match_score(name_lower, d.lower())
+                    if score >= MATCH_THRESHOLD:
+                        logger.info(f"✅ FIRST WORD ({score:.0f}%): '{d}'")
+                        return d
+        
+        # 3. CONTAINS MATCH
+        for d in dealer_names:
+            d_lower = d.lower()
+            if name_lower in d_lower:
+                score = self._calculate_match_score(name_lower, d_lower)
+                if score >= MATCH_THRESHOLD:
+                    logger.info(f"✅ CONTAINS ({score:.0f}%): '{d}'")
                     return d
             
-            # First word match (high priority)
-            search_first = name_lower.split()[0] if name_lower.split() else ""
-            if len(search_first) >= 3:
-                for d in dealer_names:
-                    d_first = d.lower().split()[0] if d.lower().split() else ""
-                    if d_first == search_first:
-                        score = self._calculate_match_score(name_lower, d.lower())
-                        if score >= MATCH_THRESHOLD:
-                            return d
-            
-            # Contains match
-            for d in dealer_names:
-                d_lower = d.lower()
-                if name_lower in d_lower or d_lower in name_lower:
-                    score = self._calculate_match_score(name_lower, d_lower)
+            if d_lower in name_lower:
+                score = self._calculate_match_score(name_lower, d_lower)
+                if score >= MATCH_THRESHOLD:
+                    logger.info(f"✅ REVERSE CONTAINS ({score:.0f}%): '{d}'")
+                    return d
+        
+        # 4. WORD OVERLAP MATCH
+        search_words = set(name_lower.split())
+        for d in dealer_names:
+            d_lower = d.lower()
+            d_words = set(d_lower.split())
+            common = search_words & d_words
+            if common and (len(common) / max(len(search_words), 1)) >= 0.6:
+                score = self._calculate_match_score(name_lower, d_lower)
+                if score >= MATCH_THRESHOLD:
+                    logger.info(f"✅ WORD OVERLAP ({score:.0f}%): '{d}'")
+                    return d
+        
+        # 5. FUZZY MATCH
+        if RAPIDFUZZ_AVAILABLE:
+            try:
+                results = process.extract(name_lower, dealer_names, scorer=fuzz.token_set_ratio, limit=5)
+                for match, score, _ in results:
                     if score >= MATCH_THRESHOLD:
-                        return d
-            
-            # Word overlap match
-            search_words = set(name_lower.split())
-            for d in dealer_names:
-                d_lower = d.lower()
-                d_words = set(d_lower.split())
-                common = search_words & d_words
-                if common and (len(common) / max(len(search_words), 1)) >= 0.6:
-                    score = self._calculate_match_score(name_lower, d_lower)
-                    if score >= MATCH_THRESHOLD:
-                        return d
-            
-            # Fuzzy match
-            if RAPIDFUZZ_AVAILABLE:
-                try:
-                    results = process.extract(name_lower, dealer_names, scorer=fuzz.token_set_ratio, limit=5)
-                    for match, score, _ in results:
-                        if score >= MATCH_THRESHOLD:
-                            return match
-                except Exception:
-                    pass
-            
-            return None
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            return None
+                        logger.info(f"✅ FUZZY ({score:.0f}%): '{match}'")
+                        return match
+            except Exception as e:
+                logger.debug(f"Fuzzy failed: {e}")
+        
+        logger.info(f"❌ No match found for '{name}'")
+        return None
     
     def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
         if not query:
             return []
         query_lower = query.strip().lower()
         
-        try:
-            dealer_names = self._get_all_dealers()
-            if not dealer_names:
-                return []
-            
-            scored = []
-            for d in dealer_names:
-                d_lower = d.lower()
-                score = self._calculate_match_score(query_lower, d_lower)
-                if score >= 60:  # Lower threshold for suggestions
-                    scored.append((d, score))
-            
-            scored.sort(key=lambda x: x[1], reverse=True)
-            return [d[0] for d in scored[:limit]]
-        except Exception as e:
-            logger.error(f"Error: {e}")
+        dealer_names = self._get_all_dealers()
+        if not dealer_names:
             return []
+        
+        logger.info(f"🔍 Finding suggestions for '{query_lower}'")
+        
+        scored = []
+        for d in dealer_names:
+            d_lower = d.lower()
+            score = self._calculate_match_score(query_lower, d_lower)
+            if score >= 40:  # Lower threshold for suggestions
+                scored.append((d, score))
+        
+        scored.sort(key=lambda x: x[1], reverse=True)
+        suggestions = [d[0] for d in scored[:limit]]
+        
+        logger.info(f"💡 Found {len(suggestions)} suggestions")
+        return suggestions
     
     def _get_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         try:
