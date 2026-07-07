@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/dealer_analytics_service.py
-# VERSION: 12.6 - ENTERPRISE DEALER INTELLIGENCE PLATFORM
+# VERSION: 12.7 - ENTERPRISE DEALER INTELLIGENCE PLATFORM
 # ============================================================
 
 """
 ================================================================================
-DEALER LOGISTICS INTELLIGENCE PLATFORM - ENTERPRISE EDITION v12.6
+DEALER LOGISTICS INTELLIGENCE PLATFORM - ENTERPRISE EDITION v12.7
 ================================================================================
 
 SOURCE OF TRUTH: PostgreSQL ONLY - NO CACHE
 TABLE: delivery_reports
 COLUMN: customer_name (Sold-To Party)
 
-FIXES v12.6:
-- ✅ FIXED: Removed huge GROUP BY - now only groups by customer_name, dealer_code, customer_code
-- ✅ FIXED: Added TRIM() to all searches
-- ✅ FIXED: Single query with OR condition instead of sequential queries
-- ✅ FIXED: Added diagnostic logging
-- ✅ FIXED: Added dealer existence verification
-- ✅ FIXED: Message passed to repository is now clean
-- ✅ FIXED: NO CACHE for any data extraction
+FIXES v12.7:
+- ✅ FIXED: Uses engine.connect() instead of session for all database queries
+- ✅ FIXED: RAW SQL with text() for all searches
+- ✅ FIXED: Proper database connection handling
+- ✅ FIXED: Added comprehensive logging
 - ✅ FIXED: Direct PostgreSQL connection only
 
 ================================================================================
@@ -40,7 +37,7 @@ from typing import Any, Optional, Dict, List, Tuple
 from sqlalchemy import case, distinct, func, or_, and_, text
 from sqlalchemy.orm import Session
 
-from app.database import SessionLocal
+from app.database import SessionLocal, engine
 from app.models import DeliveryReport
 
 logger = logging.getLogger(__name__)
@@ -67,7 +64,7 @@ except ImportError:
 
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
-VERSION = "12.6"
+VERSION = "12.7"
 
 # Lowered threshold for better matching
 MATCH_THRESHOLD = 60
@@ -327,7 +324,7 @@ def _generate_ai_insights(data: Dict[str, Any]) -> List[str]:
     return insights
 
 # ============================================================
-# BLOCK 5: DEALER REPOSITORY - ENTERPRISE DESIGN
+# BLOCK 5: DEALER REPOSITORY - DIRECT DATABASE CONNECTION
 # ============================================================
 
 class DealerRepository:
@@ -420,180 +417,89 @@ class DealerRepository:
     
     def get_dealer_by_name(self, dealer_identifier: str) -> Optional[Dict[str, Any]]:
         """
-        ENTERPRISE DESIGN - SINGLE QUERY WITH TRIM() AND OR CONDITIONS
-        
-        FIXES:
-        1. ✅ Uses TRIM() to handle trailing/leading spaces
-        2. ✅ Searches customer_name, dealer_code, customer_code
-        3. ✅ Returns data if found
-        4. ✅ Added fallback exact match query
+        Get dealer data using direct PostgreSQL connection.
         """
+        from app.database import engine
+        
         dealer_clean = dealer_identifier.strip()
         dealer_lower = dealer_clean.lower().strip()
         
-        # ==========================================================
-        # DIAGNOSTIC LOGGING
-        # ==========================================================
         logger.info("=" * 80)
-        logger.info(f"🔍 get_dealer_by_name called with: '{dealer_identifier}'")
-        logger.info(f"🔍 Cleaned: '{dealer_clean}'")
-        logger.info(f"🔍 Lowercase: '{dealer_lower}'")
+        logger.info(f"🔍 get_dealer_by_name: '{dealer_identifier}'")
         logger.info("=" * 80)
         
         try:
-            # ==========================================================
-            # DIRECT POSTGRESQL QUERY
-            # ==========================================================
-            logger.info("🔍 Executing PostgreSQL query...")
-            
-            query = self.session.query(
-                DeliveryReport.customer_name,
-                DeliveryReport.dealer_code,
-                DeliveryReport.customer_code,
-                func.max(DeliveryReport.ship_to_city).label("ship_to_city"),
-                func.max(DeliveryReport.warehouse).label("warehouse"),
-                func.max(DeliveryReport.sales_office).label("sales_office"),
-                func.max(DeliveryReport.sales_manager).label("sales_manager"),
-                func.max(DeliveryReport.division).label("division"),
-                func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
-                func.sum(DeliveryReport.dn_qty).label('total_units'),
-                func.sum(DeliveryReport.dn_amount).label('total_revenue'),
-                func.count(distinct(DeliveryReport.customer_name)).label('dealer_count'),
-                func.min(DeliveryReport.dn_create_date).label('first_sale'),
-                func.max(DeliveryReport.dn_create_date).label('last_sale'),
-                func.avg(DeliveryReport.dn_amount).label('avg_dn_value'),
-                func.count(distinct(case((DeliveryReport.pod_date.is_(None), DeliveryReport.dn_no)))).label('pending_dn'),
-                func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no)))).label('pgi_pending_dn'),
-                func.count(distinct(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label('pod_pending_dn'),
-                func.count(distinct(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)))).label('pod_completed'),
-                func.count(distinct(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.dn_no)))).label('pgi_completed'),
-                func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label('avg_delivery_days'),
-                func.avg(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.isnot(None)), DeliveryReport.pod_date - DeliveryReport.good_issue_date))).label('avg_pod_days'),
-            ).filter(
-                or_(
-                    # Search in customer_name with TRIM and ILIKE
-                    func.lower(func.trim(DeliveryReport.customer_name)).ilike(f"%{dealer_lower}%"),
-                    # Search in dealer_code with TRIM and ILIKE
-                    func.lower(func.trim(DeliveryReport.dealer_code)).ilike(f"%{dealer_lower}%"),
-                    # Search in customer_code with TRIM and ILIKE
-                    func.lower(func.trim(DeliveryReport.customer_code)).ilike(f"%{dealer_lower}%")
-                )
-            ).group_by(
-                DeliveryReport.customer_name,
-                DeliveryReport.dealer_code,
-                DeliveryReport.customer_code
-            ).first()
-            
-            # Log the result
-            if query:
-                logger.info(f"✅ PostgreSQL query returned: {query.customer_name}")
-                logger.info("=" * 80)
-                return self._build_dealer_data(query)
-            else:
-                logger.warning(f"❌ PostgreSQL query returned NO results for: '{dealer_identifier}'")
-                
-                # ==========================================================
-                # FALLBACK 1: Try direct exact match on customer_name
-                # ==========================================================
-                logger.info("🔍 Trying FALLBACK 1: Direct exact match on customer_name...")
-                
-                fallback_query = self.session.query(
-                    DeliveryReport.customer_name,
-                    DeliveryReport.dealer_code,
-                    DeliveryReport.customer_code,
-                    DeliveryReport.ship_to_city,
-                    DeliveryReport.warehouse,
-                    DeliveryReport.sales_office,
-                    DeliveryReport.sales_manager,
-                    DeliveryReport.division
-                ).filter(
-                    func.lower(DeliveryReport.customer_name) == dealer_lower
+            with engine.connect() as conn:
+                # Query to get dealer data
+                result = conn.execute(
+                    text("""
+                        SELECT 
+                            customer_name,
+                            dealer_code,
+                            customer_code,
+                            MAX(ship_to_city) as ship_to_city,
+                            MAX(warehouse) as warehouse,
+                            MAX(sales_office) as sales_office,
+                            MAX(sales_manager) as sales_manager,
+                            MAX(division) as division,
+                            COUNT(DISTINCT dn_no) as dn_count,
+                            SUM(dn_qty) as total_units,
+                            SUM(dn_amount) as total_revenue,
+                            MIN(dn_create_date) as first_sale,
+                            MAX(dn_create_date) as last_sale,
+                            AVG(dn_amount) as avg_dn_value,
+                            COUNT(DISTINCT CASE WHEN pod_date IS NULL THEN dn_no END) as pending_dn,
+                            COUNT(DISTINCT CASE WHEN good_issue_date IS NULL THEN dn_no END) as pgi_pending_dn,
+                            COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN dn_no END) as pod_pending_dn,
+                            COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) as pod_completed,
+                            COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) as pgi_completed,
+                            AVG(CASE WHEN good_issue_date IS NOT NULL THEN good_issue_date - dn_create_date END) as avg_delivery_days,
+                            AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN pod_date - good_issue_date END) as avg_pod_days
+                        FROM delivery_reports 
+                        WHERE LOWER(customer_name) = :name
+                        GROUP BY customer_name, dealer_code, customer_code
+                    """),
+                    {"name": dealer_lower}
                 ).first()
                 
-                if fallback_query:
-                    logger.info(f"✅ FALLBACK 1 found: {fallback_query.customer_name}")
-                    return self._build_fallback_data(fallback_query)
+                if result:
+                    logger.info(f"✅ Found dealer: {result[0]}")
+                    return self._build_dealer_data(result)
                 
-                # ==========================================================
-                # FALLBACK 2: Try exact match on customer_name without lower()
-                # ==========================================================
-                logger.info("🔍 Trying FALLBACK 2: Exact match without lower()...")
-                
-                fallback_query2 = self.session.query(
-                    DeliveryReport.customer_name,
-                    DeliveryReport.dealer_code,
-                    DeliveryReport.customer_code,
-                    DeliveryReport.ship_to_city,
-                    DeliveryReport.warehouse,
-                    DeliveryReport.sales_office,
-                    DeliveryReport.sales_manager,
-                    DeliveryReport.division
-                ).filter(
-                    DeliveryReport.customer_name == dealer_clean
-                ).first()
-                
-                if fallback_query2:
-                    logger.info(f"✅ FALLBACK 2 found: {fallback_query2.customer_name}")
-                    return self._build_fallback_data(fallback_query2)
-                
-                # ==========================================================
-                # FALLBACK 3: Try ILIKE on customer_name
-                # ==========================================================
-                logger.info("🔍 Trying FALLBACK 3: ILIKE on customer_name...")
-                
-                fallback_query3 = self.session.query(
-                    DeliveryReport.customer_name,
-                    DeliveryReport.dealer_code,
-                    DeliveryReport.customer_code,
-                    DeliveryReport.ship_to_city,
-                    DeliveryReport.warehouse,
-                    DeliveryReport.sales_office,
-                    DeliveryReport.sales_manager,
-                    DeliveryReport.division
-                ).filter(
-                    DeliveryReport.customer_name.ilike(f"%{dealer_lower}%")
-                ).first()
-                
-                if fallback_query3:
-                    logger.info(f"✅ FALLBACK 3 found: {fallback_query3.customer_name}")
-                    return self._build_fallback_data(fallback_query3)
-                
-                logger.warning(f"❌ All fallback queries returned NO results for: '{dealer_identifier}'")
-                logger.info("=" * 80)
+                logger.warning(f"❌ No data found for: '{dealer_identifier}'")
                 return None
                 
         except Exception as e:
-            logger.error(f"❌ Failed to get dealer from PostgreSQL: {e}")
+            logger.error(f"❌ Failed to get dealer: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return None
     
-    def _build_dealer_data(self, query) -> Dict[str, Any]:
+    def _build_dealer_data(self, row) -> Dict[str, Any]:
         """Build dealer data dictionary from query result"""
         data = {
-            'customer_name': _text(query.customer_name),
-            'dealer_code': _text(query.dealer_code),
-            'customer_code': _text(query.customer_code),
-            'city': _text(query.ship_to_city),
-            'warehouse': _text(query.warehouse),
-            'sales_office': _text(query.sales_office),
-            'sales_manager': _text(query.sales_manager),
-            'division': _text(query.division),
-            'dn_count': int(query.dn_count or 0),
-            'total_units': int(query.total_units or 0),
-            'total_revenue': float(query.total_revenue or 0.0),
-            'avg_dn_value': float(query.avg_dn_value or 0.0),
-            'pending_dn': int(query.pending_dn or 0),
-            'pgi_pending_dn': int(query.pgi_pending_dn or 0),
-            'pod_pending_dn': int(query.pod_pending_dn or 0),
-            'pod_completed': int(query.pod_completed or 0),
-            'pgi_completed': int(query.pgi_completed or 0),
-            'avg_delivery_days': float(query.avg_delivery_days or 0.0),
-            'avg_pod_days': float(query.avg_pod_days or 0.0),
-            'first_sale': _date_text(query.first_sale),
-            'last_sale': _date_text(query.last_sale),
-            'dealer_count': int(query.dealer_count or 0),
-            'sold_to_party': _text(query.customer_name),
+            'customer_name': _text(row[0]),
+            'dealer_code': _text(row[1]),
+            'customer_code': _text(row[2]),
+            'city': _text(row[3]),
+            'warehouse': _text(row[4]),
+            'sales_office': _text(row[5]),
+            'sales_manager': _text(row[6]),
+            'division': _text(row[7]),
+            'dn_count': int(row[8] or 0),
+            'total_units': int(row[9] or 0),
+            'total_revenue': float(row[10] or 0.0),
+            'first_sale': _date_text(row[11]),
+            'last_sale': _date_text(row[12]),
+            'avg_dn_value': float(row[13] or 0.0),
+            'pending_dn': int(row[14] or 0),
+            'pgi_pending_dn': int(row[15] or 0),
+            'pod_pending_dn': int(row[16] or 0),
+            'pod_completed': int(row[17] or 0),
+            'pgi_completed': int(row[18] or 0),
+            'avg_delivery_days': float(row[19] or 0.0),
+            'avg_pod_days': float(row[20] or 0.0),
+            'sold_to_party': _text(row[0]),
         }
         
         data['delivery_rate'] = _percent(data.get('pod_completed', 0), data.get('dn_count', 0))
@@ -620,29 +526,59 @@ class DealerRepository:
         data['distance'] = _get_distance_ors(data.get('warehouse', ''), data.get('city', ''))
         
         # Get top product
-        top_product = self.session.query(
-            DeliveryReport.material_no,
-            DeliveryReport.division,
-            func.count(DeliveryReport.dn_no).label('count')
-        ).filter(DeliveryReport.customer_name == data['customer_name']).group_by(
-            DeliveryReport.material_no, DeliveryReport.division
-        ).order_by(func.count(DeliveryReport.dn_no).desc()).first()
+        from app.database import engine
+        try:
+            with engine.connect() as conn:
+                top_product = conn.execute(
+                    text("""
+                        SELECT material_no, division, COUNT(dn_no) as count
+                        FROM delivery_reports 
+                        WHERE customer_name = :name
+                        GROUP BY material_no, division
+                        ORDER BY count DESC
+                        LIMIT 1
+                    """),
+                    {"name": data['customer_name']}
+                ).first()
+                
+                data['top_product'] = _text(top_product[0] if top_product else 'N/A')
+                data['top_division'] = _text(top_product[1] if top_product else 'N/A')
+        except Exception as e:
+            logger.error(f"Failed to get top product: {e}")
+            data['top_product'] = 'N/A'
+            data['top_division'] = 'N/A'
         
-        data['top_product'] = _text(top_product.material_no if top_product else 'N/A')
-        data['top_division'] = _text(top_product.division if top_product else 'N/A')
-        data['total_models'] = self.session.query(func.count(distinct(DeliveryReport.material_no))).filter(
-            DeliveryReport.customer_name == data['customer_name']
-        ).scalar() or 0
+        # Get total models
+        try:
+            with engine.connect() as conn:
+                total_models = conn.execute(
+                    text("""
+                        SELECT COUNT(DISTINCT material_no)
+                        FROM delivery_reports 
+                        WHERE customer_name = :name
+                    """),
+                    {"name": data['customer_name']}
+                ).first()
+                data['total_models'] = int(total_models[0] or 0)
+        except Exception:
+            data['total_models'] = 0
         
-        # Revenue rank
-        rank_query = self.session.query(
-            DeliveryReport.customer_name,
-            func.sum(DeliveryReport.dn_amount).label('revenue')
-        ).filter(DeliveryReport.customer_name.isnot(None)).group_by(
-            DeliveryReport.customer_name
-        ).order_by(func.sum(DeliveryReport.dn_amount).desc()).all()
-        
-        data['revenue_rank'] = next((i+1 for i, r in enumerate(rank_query) if r[0] == data['customer_name']), 0)
+        # Get revenue rank
+        try:
+            with engine.connect() as conn:
+                rank_query = conn.execute(
+                    text("""
+                        SELECT customer_name, SUM(dn_amount) as revenue
+                        FROM delivery_reports 
+                        WHERE customer_name IS NOT NULL
+                        GROUP BY customer_name
+                        ORDER BY revenue DESC
+                    """)
+                ).fetchall()
+                
+                data['revenue_rank'] = next((i+1 for i, r in enumerate(rank_query) if r[0] == data['customer_name']), 0)
+        except Exception:
+            data['revenue_rank'] = 0
         
         # Latest activity
         data['latest_dn'] = self.get_latest_dn(data['customer_name']) or 'N/A'
@@ -653,129 +589,6 @@ class DealerRepository:
         data['highest_dn_value'] = self.get_highest_value_dn(data['customer_name'])
         data['top_products'] = self.get_top_products(data['customer_name'], 5)
         data['ai_insights'] = _generate_ai_insights(data)
-        
-        return data
-    
-    def _build_fallback_data(self, query) -> Dict[str, Any]:
-        """Build dealer data dictionary from fallback query result"""
-        data = {
-            'customer_name': _text(query.customer_name),
-            'dealer_code': _text(query.dealer_code),
-            'customer_code': _text(query.customer_code),
-            'city': _text(query.ship_to_city),
-            'warehouse': _text(query.warehouse),
-            'sales_office': _text(query.sales_office),
-            'sales_manager': _text(query.sales_manager),
-            'division': _text(query.division),
-            'dn_count': 0,
-            'total_units': 0,
-            'total_revenue': 0,
-            'avg_dn_value': 0,
-            'pending_dn': 0,
-            'pgi_pending_dn': 0,
-            'pod_pending_dn': 0,
-            'pod_completed': 0,
-            'pgi_completed': 0,
-            'avg_delivery_days': 0,
-            'avg_pod_days': 0,
-            'first_sale': 'N/A',
-            'last_sale': 'N/A',
-            'dealer_count': 0,
-            'sold_to_party': _text(query.customer_name),
-            'delivery_rate': 0,
-            'pod_rate': 0,
-            'pending_pct': 0,
-            'business_score': 0,
-            'tier': 'Standard',
-            'health': '🟡 Unknown',
-            'distance': {},
-            'top_product': 'N/A',
-            'top_division': 'N/A',
-            'total_models': 0,
-            'revenue_rank': 0,
-            'latest_dn': 'N/A',
-            'latest_pgi': 'N/A',
-            'latest_pod': 'N/A',
-            'highest_dn_value': 0,
-            'top_products': [],
-            'ai_insights': []
-        }
-        
-        # Try to get full data for this dealer
-        try:
-            # Get DN count
-            dn_count = self.session.query(func.count(distinct(DeliveryReport.dn_no))).filter(
-                DeliveryReport.customer_name == data['customer_name']
-            ).scalar() or 0
-            data['dn_count'] = int(dn_count)
-            
-            if data['dn_count'] > 0:
-                # Get other metrics
-                total_units = self.session.query(func.sum(DeliveryReport.dn_qty)).filter(
-                    DeliveryReport.customer_name == data['customer_name']
-                ).scalar() or 0
-                data['total_units'] = int(total_units)
-                
-                total_revenue = self.session.query(func.sum(DeliveryReport.dn_amount)).filter(
-                    DeliveryReport.customer_name == data['customer_name']
-                ).scalar() or 0
-                data['total_revenue'] = float(total_revenue)
-                
-                # Get latest DN
-                latest_dn = self.get_latest_dn(data['customer_name'])
-                data['latest_dn'] = latest_dn or 'N/A'
-                
-                # Get latest PGI
-                latest_pgi = self.get_latest_pgi_date(data['customer_name'])
-                data['latest_pgi'] = _date_text(latest_pgi) if latest_pgi else 'N/A'
-                
-                # Get latest POD
-                latest_pod = self.get_latest_pod_date(data['customer_name'])
-                data['latest_pod'] = _date_text(latest_pod) if latest_pod else 'N/A'
-                
-                # Get top products
-                data['top_products'] = self.get_top_products(data['customer_name'], 5)
-                
-                # Delivery rate
-                completed = self.session.query(func.count(distinct(DeliveryReport.dn_no))).filter(
-                    DeliveryReport.customer_name == data['customer_name'],
-                    DeliveryReport.pod_date.isnot(None)
-                ).scalar() or 0
-                data['pod_completed'] = int(completed)
-                data['delivery_rate'] = _percent(completed, dn_count)
-                data['pod_rate'] = _percent(completed, dn_count)
-                
-                # Pending
-                pending = self.session.query(func.count(distinct(DeliveryReport.dn_no))).filter(
-                    DeliveryReport.customer_name == data['customer_name'],
-                    DeliveryReport.pod_date.is_(None)
-                ).scalar() or 0
-                data['pending_dn'] = int(pending)
-                
-                # Business Score
-                score = (data.get('delivery_rate', 0) * 0.35 +
-                        (100 - data.get('pending_pct', 0)) * 0.25 +
-                        min(100, data.get('total_units', 0) / 50) * 0.20 +
-                        min(100, data.get('avg_dn_value', 0) / 1000) * 0.20)
-                data['business_score'] = round(min(100, max(0, score)), 1)
-                
-                # Performance Tier
-                if data['business_score'] >= 85:
-                    data['tier'], data['health'] = "Platinum", "🟢 Excellent"
-                elif data['business_score'] >= 70:
-                    data['tier'], data['health'] = "Gold", "🟢 Good"
-                elif data['business_score'] >= 50:
-                    data['tier'], data['health'] = "Silver", "🟡 Watch"
-                else:
-                    data['tier'], data['health'] = "Bronze", "🔴 Critical"
-                
-                # Distance
-                data['distance'] = _get_distance_ors(data.get('warehouse', ''), data.get('city', ''))
-                
-                # AI Insights
-                data['ai_insights'] = _generate_ai_insights(data)
-        except Exception as e:
-            logger.error(f"Error building fallback data: {e}")
         
         return data
 
@@ -1039,9 +852,6 @@ class DealerMenuRenderer:
         return "\n".join(lines)
 
 # ============================================================
-# BLOCK 7: MAIN DEALER ANALYTICS SERVICE
-# ============================================================
-# ============================================================
 # BLOCK 7: MAIN DEALER ANALYTICS SERVICE - FIXED
 # ============================================================
 
@@ -1054,7 +864,7 @@ class DealerAnalyticsService:
         logger.info(f"✅ DealerAnalyticsService v{self._version} initialized")
         logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
         logger.info(f"   Match Threshold: {MATCH_THRESHOLD}%")
-        logger.info(f"   🔍 DIRECT POSTGRESQL CONNECTION")
+        logger.info(f"   🔍 DIRECT POSTGRESQL CONNECTION - NO CACHE")
     
     def handle_message(self, message: str, sender: str) -> str:
         try:
@@ -1082,34 +892,28 @@ class DealerAnalyticsService:
     
     def _get_all_dealers(self) -> List[str]:
         try:
-            with self._session() as session:
-                logger.info("🔍 Fetching all dealer names")
-                customer_names = session.query(DeliveryReport.customer_name).filter(
-                    DeliveryReport.customer_name.isnot(None),
-                    DeliveryReport.customer_name != ''
-                ).distinct().all()
+            with engine.connect() as conn:
+                logger.info("🔍 DIRECT POSTGRESQL: Fetching all dealer names")
+                results = conn.execute(
+                    text("""
+                        SELECT DISTINCT customer_name 
+                        FROM delivery_reports 
+                        WHERE customer_name IS NOT NULL 
+                        AND customer_name != ''
+                        ORDER BY customer_name
+                    """)
+                ).fetchall()
                 
-                all_dealers = []
-                for r in customer_names:
-                    if r.customer_name:
-                        all_dealers.append(r.customer_name)
-                
-                seen = set()
-                unique_dealers = []
-                for d in all_dealers:
-                    if d not in seen:
-                        seen.add(d)
-                        unique_dealers.append(d)
-                
-                logger.info(f"📋 Loaded {len(unique_dealers)} dealers")
-                return unique_dealers
+                all_dealers = [r[0] for r in results if r[0]]
+                logger.info(f"📋 DIRECT POSTGRESQL: Loaded {len(all_dealers)} dealers")
+                return all_dealers
         except Exception as e:
-            logger.error(f"❌ Error getting dealers: {e}")
+            logger.error(f"❌ Error getting dealers from PostgreSQL: {e}")
             return []
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
         """
-        FIXED: Uses direct database connection.
+        FINAL FIXED VERSION - Uses direct engine connection for ALL queries.
         """
         import traceback
         from app.database import engine
@@ -1122,16 +926,17 @@ class DealerAnalyticsService:
         name_original = name.strip()
         name_lower = name_original.lower()
         
-        print("=" * 80)
-        print(f"🔍 Searching for: '{name_original}'")
-        print("=" * 80)
+        logger.info("=" * 80)
+        logger.info(f"🔍 Searching for: '{name_original}'")
+        logger.info("=" * 80)
         
         try:
-            # Use direct engine connection
+            # USE DIRECT ENGINE CONNECTION (NOT session)
             with engine.connect() as conn:
-                print("🔍 Database connection established")
+                logger.info("✅ Database connection established")
                 
                 # STEP 1: Exact match
+                logger.info("🔍 STEP 1: Exact match...")
                 result = conn.execute(
                     text("""
                         SELECT customer_name 
@@ -1143,10 +948,11 @@ class DealerAnalyticsService:
                 ).first()
                 
                 if result:
-                    print(f"✅ FOUND: '{result[0]}'")
+                    logger.info(f"✅ FOUND (exact): '{result[0]}'")
                     return result[0]
                 
                 # STEP 2: ILIKE
+                logger.info("🔍 STEP 2: ILIKE match...")
                 result = conn.execute(
                     text("""
                         SELECT customer_name 
@@ -1158,17 +964,32 @@ class DealerAnalyticsService:
                 ).first()
                 
                 if result:
-                    print(f"✅ FOUND (ILIKE): '{result[0]}'")
+                    logger.info(f"✅ FOUND (ILIKE): '{result[0]}'")
                     return result[0]
                 
-                # STEP 3: Check if ANY data exists
+                # STEP 3: dealer_code
+                logger.info("🔍 STEP 3: dealer_code match...")
+                result = conn.execute(
+                    text("""
+                        SELECT customer_name 
+                        FROM delivery_reports 
+                        WHERE dealer_code ILIKE :name
+                        LIMIT 1
+                    """),
+                    {"name": f"%{name_original}%"}
+                ).first()
+                
+                if result:
+                    logger.info(f"✅ FOUND (dealer_code): '{result[0]}'")
+                    return result[0]
+                
+                # STEP 4: Get total count
                 count = conn.execute(
                     text("SELECT COUNT(*) FROM delivery_reports")
                 ).first()
+                logger.info(f"📊 Total records: {count[0] if count else 0}")
                 
-                print(f"📊 Total records: {count[0] if count else 0}")
-                
-                # STEP 4: Get ALL dealers
+                # STEP 5: Get all dealers
                 all_dealers = conn.execute(
                     text("""
                         SELECT DISTINCT customer_name 
@@ -1179,38 +1000,131 @@ class DealerAnalyticsService:
                     """)
                 ).fetchall()
                 
-                print("📋 First 20 dealers in DB:")
+                logger.info("📋 First 20 dealers in DB:")
                 for i, d in enumerate(all_dealers, 1):
                     if d[0]:
-                        print(f"   {i}. '{d[0]}'")
+                        logger.info(f"   {i}. '{d[0]}'")
                         if d[0].lower() == name_lower:
-                            print(f"✅ FOUND IN LIST: '{d[0]}'")
+                            logger.info(f"✅ FOUND IN LIST: '{d[0]}'")
                             return d[0]
                 
-                print(f"❌ '{name_original}' NOT found")
+                logger.warning(f"❌ '{name_original}' NOT found in any search")
                 
         except Exception as e:
-            print(f"❌ Database error: {e}")
-            print(traceback.format_exc())
+            logger.error(f"❌ Database error: {e}")
+            logger.error(traceback.format_exc())
         
         return None
+    
+    def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
+        if not query:
+            return []
+        query_lower = query.strip().lower()
+        
+        dealer_names = self._get_all_dealers()
+        if not dealer_names:
+            return []
+        
+        scored = []
+        for d in dealer_names:
+            d_lower = d.lower()
+            score = self._calculate_match_score(query_lower, d_lower)
+            if score >= SUGGESTION_THRESHOLD:
+                scored.append((d, score))
+        
+        scored.sort(key=lambda x: x[1], reverse=True)
+        suggestions = [d[0] for d in scored[:limit]]
+        
+        return suggestions
+    
+    def _calculate_match_score(self, search: str, target: str) -> float:
+        if not search or not target:
+            return 0.0
+        search = search.lower().strip()
+        target = target.lower().strip()
+        if search == target:
+            return 100.0
+        
+        search_words = set(search.split())
+        target_words = set(target.split())
+        if not search_words or not target_words:
+            return 0.0
+        
+        common = search_words & target_words
+        word_score = (len(common) / max(len(search_words), 1)) * 100
+        
+        s_first = search.split()[0] if search.split() else ""
+        t_first = target.split()[0] if target.split() else ""
+        bonus = 20 if s_first and t_first and s_first == t_first else 0
+        
+        if search in target or target in search:
+            bonus += 15
+        
+        for sw in search_words:
+            if len(sw) >= 3:
+                for tw in target_words:
+                    if len(tw) >= 3 and (sw in tw or tw in sw):
+                        bonus += 5
+        
+        for abbr, city in CITY_ABBREVIATIONS.items():
+            if abbr in search and city in target:
+                bonus += 10
+        
+        final_score = min(100, word_score + bonus)
+        return round(final_score, 1)
     
     def _get_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         logger.info(f"📊 Getting dashboard for: '{dealer_name}'")
         try:
-            with self._session() as session:
-                repo = DealerRepository(session)
-                data = repo.get_dealer_by_name(dealer_name)
-                if data:
-                    return {
-                        "response": self._renderer.render_executive_dashboard(dealer_name, data),
-                        "data": data
-                    }
-                logger.warning(f"⚠️ No data for: '{dealer_name}'")
-                return {"response": None, "data": None}
+            repo = DealerRepository(self._session())
+            data = repo.get_dealer_by_name(dealer_name)
+            if data:
+                return {
+                    "response": self._renderer.render_executive_dashboard(dealer_name, data),
+                    "data": data
+                }
+            logger.warning(f"⚠️ No data for: '{dealer_name}'")
+            return {"response": None, "data": None}
         except Exception as e:
             logger.error(f"❌ Dashboard error: {e}")
             return {"response": None, "data": None}
+    
+    def _handle_ranking(self) -> Dict[str, Any]:
+        try:
+            repo = DealerRepository(self._session())
+            ranking = repo.get_top_dealers_by_revenue(10)
+            if not ranking:
+                return {"response": "📋 No data available.\n\n0. Main Menu\n99. Back"}
+            return {"response": self._renderer.render_ranking(ranking, "revenue", 10)}
+        except Exception as e:
+            return {"response": f"⚠️ Error: {str(e)}\n\n0. Main Menu\n99. Back"}
+    
+    def _compare_dealers(self, d1: str, d2: str) -> Dict[str, Any]:
+        try:
+            repo = DealerRepository(self._session())
+            data1 = repo.get_dealer_by_name(d1)
+            data2 = repo.get_dealer_by_name(d2)
+            if not data1 or not data2:
+                return {"response": "⚠️ Could not find data for one or both dealers.\n\n0. Main Menu\n99. Back"}
+            
+            metrics = {}
+            for dealer, data in [(d1, data1), (d2, data2)]:
+                metrics[f"{dealer}_metrics"] = {
+                    "Revenue": _format_currency(data.get('total_revenue', 0)),
+                    "Total DN": str(data.get('dn_count', 0)),
+                    "Pending DN": str(data.get('pending_dn', 0)),
+                    "Delivery Rate": f"{data.get('delivery_rate', 0):.1f}%",
+                    "Business Score": f"{data.get('business_score', 0):.1f}",
+                    "Tier": data.get('tier', 'Standard')
+                }
+            
+            s1 = data1.get('business_score', 0)
+            s2 = data2.get('business_score', 0)
+            metrics['explanation'] = f"{d1} ({s1:.1f}) vs {d2} ({s2:.1f})" + (" - Higher" if s1 > s2 else " - Lower" if s2 > s1 else " - Equal")
+            
+            return {"response": self._renderer.render_comparison_result(d1, d2, metrics)}
+        except Exception as e:
+            return {"response": f"⚠️ Error: {str(e)}\n\n0. Main Menu\n99. Back"}
     
     def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
         context = self._get_context(session_id)
@@ -1285,53 +1199,18 @@ class DealerAnalyticsService:
             result = self._handle_ranking()
             return {"response": result["response"], "exit_menu": False}
         
+        suggestions = self._get_suggestions(user_input)
+        if suggestions:
+            response = self._renderer.render_suggestions(user_input, suggestions)
+            return {"response": response, "exit_menu": False}
+        
         return {"response": self._renderer.render_main_menu(), "exit_menu": False}
-    
-    def _handle_ranking(self) -> Dict[str, Any]:
-        try:
-            with self._session() as session:
-                repo = DealerRepository(session)
-                ranking = repo.get_top_dealers_by_revenue(10)
-                if not ranking:
-                    return {"response": "📋 No data available.\n\n0. Main Menu\n99. Back"}
-                return {"response": self._renderer.render_ranking(ranking, "revenue", 10)}
-        except Exception as e:
-            return {"response": f"⚠️ Error: {str(e)}\n\n0. Main Menu\n99. Back"}
-    
-    def _compare_dealers(self, d1: str, d2: str) -> Dict[str, Any]:
-        try:
-            with self._session() as session:
-                repo = DealerRepository(session)
-                data1 = repo.get_dealer_by_name(d1)
-                data2 = repo.get_dealer_by_name(d2)
-                if not data1 or not data2:
-                    return {"response": "⚠️ Could not find data for one or both dealers.\n\n0. Main Menu\n99. Back"}
-                
-                metrics = {}
-                for dealer, data in [(d1, data1), (d2, data2)]:
-                    metrics[f"{dealer}_metrics"] = {
-                        "Revenue": _format_currency(data.get('total_revenue', 0)),
-                        "Total DN": str(data.get('dn_count', 0)),
-                        "Pending DN": str(data.get('pending_dn', 0)),
-                        "Delivery Rate": f"{data.get('delivery_rate', 0):.1f}%",
-                        "Business Score": f"{data.get('business_score', 0):.1f}",
-                        "Tier": data.get('tier', 'Standard')
-                    }
-                
-                s1 = data1.get('business_score', 0)
-                s2 = data2.get('business_score', 0)
-                metrics['explanation'] = f"{d1} ({s1:.1f}) vs {d2} ({s2:.1f})" + (" - Higher" if s1 > s2 else " - Lower" if s2 > s1 else " - Equal")
-                
-                return {"response": self._renderer.render_comparison_result(d1, d2, metrics)}
-        except Exception as e:
-            return {"response": f"⚠️ Error: {str(e)}\n\n0. Main Menu\n99. Back"}
     
     @staticmethod
     def _session() -> Session:
         return SessionLocal()
 
-
-============================================================
+# ============================================================
 # BLOCK 8: SINGLETON & EXPORTS
 # ============================================================
 
