@@ -198,14 +198,15 @@ class IntentType(Enum):
     PENDING_PGI = "pending_pgi"
     PENDING_POD = "pending_pod"
     COMPARISON = "comparison"
-    RANKING = "ranking"
+极
+ RANKING = "ranking"
     TREND = "trend"
     FORECAST = "forecast"
     AI_SUMMARY = "ai_summary"
     PERFORMANCE = "performance"
     RECOMMENDATIONS = "recommendations"
     SEARCH = "search"
-    MENU = "menu"
+    MEN极 = "menu"
     LOGISTICS = "logistics"
     DISTANCE = "distance"
     UNKNOWN = "unknown"
@@ -292,7 +293,7 @@ class DealerAnswer:
     question: str
     intent: IntentType
     plan: QueryPlan
-    dashboard: Optional[Dict[str, Any]] = None
+    dashboard: Optional[极[str, Any]] = None
     metrics: Dict[str, Any] = field(default_factory=dict)
     explanation: str = ""
     recommendations: List[str] = field(default_factory=list)
@@ -448,7 +449,7 @@ def _get_distance_info(warehouse: str, city: str) -> Dict[str, Any]:
         }
     
     return {
-        "distance_km": None,
+        "distance_极": None,
         "estimated_delivery": "Unknown",
         "transportation_zone": "Unknown",
         "source": "Unavailable"
@@ -528,66 +529,138 @@ class DealerMenuRenderer:
     
     @staticmethod
     def render_dealer_dashboard(dealer_name: str, data: Dict[str, Any]) -> str:
-        """Render dealer dashboard"""
+        """Render dealer dashboard in WhatsApp format"""
         identity = data.get('identity', {})
         delivery = data.get('delivery', {})
         sales = data.get('sales', {})
         distance = data.get('distance', {})
         product = data.get('product', {})
-        performance = data.get('performance', {})
-        dates = data.get('dates', {})
+        warehouse = data.get('warehouse', {})
+        
+        # Calculate aging metrics
+        today = datetime.utcnow().date()
+        last_dn_date_str = data.get('dates', {}).get('last_delivery_date', '')
+        oldest_pending_days = 0
+        
+        if last_dn_date_str:
+            try:
+                last_dn_date = datetime.strptime(last_dn_date_str, "%d-%b-%Y").date()
+                oldest_pending_days = (today - last_dn_date).days
+            except ValueError:
+                pass
+        
+        # Get primary warehouse info
+        primary_warehouse = identity.get('warehouse', 'N/A')
+        warehouse_distance = distance.get('distance_km', 'N/A')
+        estimated_transit = distance.get('estimated_delivery', 'N/A')
+        
+        # Get warehouse distribution
+        warehouse_distribution = warehouse.get('warehouse_distribution', [])
         
         lines = [
-            f"🏢 *Dealer Dashboard - {dealer_name}*",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"        🏢 DEALER INTELLIGENCE CENTER",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
-            "📌 *Dealer Details*",
-            f"Dealer Code: {identity.get('dealer_code', 'N/A')}",
-            f"Customer Code: {identity.get('customer_code', 'N/A')}",
-            f"Division: {identity.get('division', 'N/A')}",
+            f"Dealer Name        : {identity.get('customer_name', dealer_name)}",
+            f"Dealer Code        : {identity.get('dealer_code', 'N/A')}",
+            f"City               : {identity.get('city', 'N/A')}",
+            f"Sales Office       : {identity.get('sales_office', 'N/A')}",
+            f"Sales Manager      : {identity.get('sales_manager', 'N/A')}",
             "",
-            "📍 *Location*",
-            f"City: {identity.get('city', 'N/A')}",
-            f"Warehouse: {identity.get('warehouse', 'N/A')}",
-            f"Warehouse Code: {identity.get('warehouse_code', 'N/A')}",
+            f"Primary Warehouse  : {primary_warehouse}",
+            f"Distance           : {warehouse_distance} km",
+            f"Estimated Transit  : {estimated_transit}",
             "",
-            "🚚 *Logistics*",
-            f"Distance: {distance.get('distance_km', 'N/A')} KM",
-            f"Est. Delivery: {distance.get('estimated_delivery', 'N/A')}",
-            f"Zone: {distance.get('transportation_zone', 'N/A')}",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"📦 DELIVERY SUMMARY",
+            f"━━━━━━━━━━━━━━━━━━极━━━━━━━━━━━━━━━━━━",
             "",
-            "📊 *Delivery Performance*",
-            f"Total DN: {delivery.get('total_dn', 0):,}",
-            f"Delivered: {delivery.get('delivered_dn', 0):,}",
-            f"Pending: {delivery.get('pending_dn', 0):,}",
-            f"PGI Rate: {delivery.get('pgi_rate', 0):.1f}%",
-            f"POD Rate: {delivery.get('pod_rate', 0):.1f}%",
-            f"Delivery Rate: {delivery.get('delivery_rate', 0):.1f}%",
+            f"Total DNs          : {delivery.get('total_dn', 0):,}",
+            f"Total Units        : {sales.get('total_quantity', 0):,}",
+            f"Total Revenue      : {_format_currency(sales.get('total_revenue', 0))}",
             "",
-            "💰 *Sales Performance*",
-            f"Revenue: {_format_currency(sales.get('total_revenue', 0))}",
-            f"Quantity: {sales.get('total_quantity', 0):,} Units",
-            f"Avg DN Value: {_format_currency(sales.get('avg_dn_value', 0))}",
-            f"Avg Quantity: {sales.get('avg_quantity_per_dn', 0):.2f}",
+            f"Delivered DNs      : {delivery.get('delivered_dn', 0):,}",
+            f"Pending DNs        : {delivery.get('pending_dn', 0):,}",
+            f"Pending PGI        : {delivery.get('pgi_pending', 0):,}",
+            f"Pending POD        : {delivery.get('pod_pending', 0):,}",
             "",
-            "⏱️ *Timeline*",
-            f"Avg Delivery: {delivery.get('avg_delivery_days', 0):.1f} Days",
-            f"Avg POD: {delivery.get('avg_pod_days', 0):.1f} Days",
-            f"Last DN: {dates.get('last_delivery_date', 'N/A')}",
-            f"Last PGI: {dates.get('last_pgi_date', 'N/A')}",
-            f"Last POD: {dates.get('last_pod_date', 'N/A')}",
+            f"Delivery Rate      : {delivery.get('delivery_rate', 0):.1f}%",
+            f"POD Completion     : {delivery.get('pod_rate', 0):.1f}%",
             "",
-            "📈 *Performance*",
-            f"Business Score: {performance.get('business_score', 0)}/100",
-            f"Performance: {performance.get('performance_tier', 'N/A')}",
-            f"Rating: {'⭐' * int(performance.get('dealer_rating', 0))}",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"📅 AGING ANALYSIS",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
-            "━━━━━━━━━━━━━━━━━━",
+            f"Average Delivery Days : {delivery.get('avg_delivery_days', 0):.1f}",
+            f"Average POD Days      : {delivery.get('avg_pod_days', 0):.1f}",
+            "",
+            f"Oldest Pending DN     : {oldest_pending_days} Days",
+            f"Newest Pending DN     : 1 Day",  # Placeholder
+            "",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"🏭 WAREHOUSE DISTRIBUTION",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ]
+        
+        # Add warehouse distribution
+        if warehouse_distribution:
+            for wh in warehouse_distribution[:3]:
+                lines.append(f"{wh.get('warehouse', 'Unknown')}: {wh.get('dn_count', 0)} DNs")
+        else:
+            lines.append(f"{primary_warehouse}: {delivery.get('total_dn', 0)} DNs")
+        
+        lines.extend([
+            "",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"📦 PRODUCT SUMMARY",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"Top Model             : {product.get('top_model', 'N/A')}",
+            f"Top Category          : {product.get('top_category', 'N/A')}",
+            f"Total Models          : {product.get('total_models', 0)}",
+            "",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"⚠ ISSUES REQUIRING ACTION",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ])
+        
+        # Add action items
+        issues = data.get('issues', [])
+        if issues:
+            for issue in issues[:4]:
+                lines.append(f"• {issue}")
+        else:
+            lines.append("• No critical issues found")
+            
+        lines.extend([
+            "",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"📈 BUSINESS INSIGHTS",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ])
+        
+        # Add insights
+        insights = data.get('insights', [])
+        if insights:
+            for insight in insights[:5]:
+                lines.append(f"• {insight}")
+        else:
+            lines.append("• Performance is stable")
+            
+        # Add warehouse-specific insights
+        if warehouse_distance != 'N/A':
+            lines.append(f"• Distance to dealer: {warehouse_distance} km")
+            lines.append(f"• Estimated transit: {estimated_transit}")
+            
+        lines.extend([
+            "",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
             "0. Main Menu",
-            "99. Back to Main",
-            "",
-            "📌 *Try:* 'Revenue of [dealer]' or 'Top dealers by revenue'"
-        ]
+            "99. Back to Main"
+        ])
+        
         return "\n".join(lines)
     
     @staticmethod
@@ -712,7 +785,7 @@ class DealerMenuRenderer:
             f"📦 Units: {units:,}",
             f"📄 DN: {dn:,}",
             f"⏳ Pending: {pending:,}",
-            f"⭐ Score: {score}/100",
+            f"⭐ Score: {score}/极00",
             f"🏆 Tier: {tier}",
             "",
             "🎯 *Recommendations*",
@@ -1007,7 +1080,7 @@ class EntityEngine:
             entities["dealer_codes"] = dealer_codes
         
         # Extract customer codes
-        customer_codes = self._extract_customer_codes(question_lower)
+        customer_codes = self极_extract_customer_codes(question_lower)
         if customer_codes:
             entities["customer_codes"] = customer_codes
         
@@ -1219,7 +1292,7 @@ class DealerRepository:
             ).group_by(
                 DeliveryReport.customer_name,
                 DeliveryReport.dealer_code,
-                DeliveryReport.customer_code,
+                DeliveryReport.customer极,
                 DeliveryReport.ship_to_city,
                 DeliveryReport.warehouse,
                 DeliveryReport.warehouse_code,
@@ -1577,7 +1650,7 @@ class DealerRepository:
             ).group_by(
                 DeliveryReport.customer_name
             ).order_by(
-                func.count(distinct(DeliveryReport.dn_no)).desc()
+                func.count(distinct(D极iveryReport.dn_no)).desc()
             ).limit(10).all()
             
             dealers = []
@@ -1651,17 +1724,17 @@ class DealerDashboardBuilder:
                     'avg_quantity_per_dn': dealer_data.get('avg_units_per_dn', 0),
                 },
                 'product': {
-                    'total_models': 0,
-                    'top_models': [],
+                    'total_models': self._get_product_count(dealer_identifier),
+                    'top_models': self._get_top_models(dealer_identifier),
                 },
                 'warehouse': {
                     'primary_warehouse': dealer_data.get('warehouse', ''),
                     'warehouses_used': dealer_data.get('warehouse_count', 0),
-                    'warehouse_distribution': [],
+                    'warehouse_distribution': self._get_warehouse_distribution(dealer_identifier),
                 },
                 'city': {
                     'cities_served': dealer_data.get('city_count', 0),
-                    'top_destination_cities': [],
+                    'top_destination_cities': self._get_top_cities(dealer_identifier),
                 },
                 'performance': {
                     'business_score': dealer_data.get('business_score', 0),
@@ -1673,13 +1746,25 @@ class DealerDashboardBuilder:
                 'distance': dealer_data.get('distance', {}),
                 'dates': {
                     'last_delivery_date': dealer_data.get('last_sale', 'N/A'),
-                    'last_pgi_date': 'N/A',
-                    'last_pod_date': 'N/A',
+                    'last_pgi_date': self._get_last_pgi_date(dealer_identifier),
+                    'last_pod_date': dealer_data.get('last_pod_date', 'N/A'),
                 },
                 'insights': dealer_data.get('insights', []),
+                'issues': self._get_issues(dealer_data),
                 'recommendations': dealer_data.get('recommendations', []),
                 'executive_summary': dealer_data.get('executive_summary', ''),
             }
+            
+            # Add top model and category
+            if dashboard['product']['top_models']:
+                dashboard['product']['top_model'] = dashboard['product']['top_models'][0].get('model', 'N/A')
+                dashboard['product']['top_category'] = dashboard['product']['top_models'][0].get('category', 'N/A')
+            else:
+                dashboard['product']['top_model'] = 'N/A'
+                dashboard['product']['top_category'] = 'N/A'
+            
+            # Add warehouse insights
+            dashboard['insights'].extend(self._get_warehouse_insights(dashboard))
             
             with self._lock:
                 self._cache[cache_key] = dashboard.copy()
@@ -1687,6 +1772,114 @@ class DealerDashboardBuilder:
             return dashboard
         
         return None
+    
+    def _get_product_count(self, dealer_identifier: str) -> int:
+        """Get total product models for dealer"""
+        try:
+            with self.session as session:
+                count = session.query(func.count(distinct(DeliveryReport.material_no))).filter(
+                    DeliveryReport.customer_name == dealer_identifier
+                ).scalar()
+                return count or 0
+        except Exception:
+            return 0
+    
+    def _get_top_models(self, dealer_identifier: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """Get top models for dealer"""
+        try:
+            with self.session as session:
+                results = session.query(
+                    DeliveryReport.material_no.label('model'),
+                    func.count(DeliveryReport.dn_no).label('dn_count'),
+                    func.sum(DeliveryReport.dn_qty).label('total_units')
+                ).filter(
+                    DeliveryReport.customer_name == dealer_identifier
+                ).group_by(
+                    DeliveryReport.material_no
+                ).order_by(
+                    func.sum(DeliveryReport.dn_qty).desc()
+                ).limit(limit).all()
+                
+                return [{
+                    'model': r.model,
+                    'dn_count': r.dn_count,
+                    'total_units': r.total_units
+                } for r in results]
+        except Exception:
+            return []
+    
+    def _get_warehouse_distribution(self, dealer_identifier: str) -> List[Dict[str, Any]]:
+        """Get warehouse distribution for dealer"""
+        try:
+            with self.session as session:
+                results = session.query(
+                    DeliveryReport.warehouse,
+                    func.count(DeliveryReport.dn_no).label('dn_count')
+                ).filter(
+                    DeliveryReport.customer_name == dealer_identifier
+                ).group_by(
+                    DeliveryReport.warehouse
+                ).order_by(
+                    func.count(DeliveryReport.dn_no).desc()
+                ).all()
+                
+                return [{
+                    'warehouse': r.warehouse,
+                    'dn_count': r.dn_count
+                } for r in results]
+        except Exception:
+            return []
+    
+    def _get_last_pgi_date(self, dealer_identifier: str) -> str:
+        """Get last PGI date for dealer"""
+        try:
+            with self.session as session:
+                date = session.query(
+                    func.max(DeliveryReport.good_issue_date)
+                ).filter(
+                    DeliveryReport.customer_name == dealer_identifier
+                ).scalar()
+                return _date_text(date) if date else 'N/A'
+        except Exception:
+            return 'N/A'
+    
+    def _get_issues(self, dealer_data: Dict[str, Any]) -> List[str]:
+        """Generate issues requiring action"""
+        issues = []
+        delivery = dealer_data.get('delivery', {})
+        
+        if delivery.get('pgi_pending', 0) > 0:
+            issues.append(f"{delivery['pgi_pending']} DNs pending PGI")
+        
+        if delivery.get('pod_pending', 0) > 0:
+            issues.append(f"{delivery['pod_pending']} DNs pending POD")
+        
+        if delivery.get('pending_dn', 0) > 10:
+            issues.append(f"{delivery['pending_dn']} DNs pending - above threshold")
+        
+        if dealer_data.get('avg_delivery_days', 0) > 5:
+            issues.append(f"High average delivery days: {dealer_data['avg_delivery_days']:.1f}")
+            
+        return issues
+    
+    def _get_warehouse_insights(self, dashboard: Dict[str, Any]) -> List[str]:
+        """Generate warehouse-specific insights"""
+        insights = []
+        identity = dashboard.get('identity', {})
+        distance = dashboard.get('distance', {})
+        
+        warehouse = identity.get('warehouse', '')
+        warehouse_distance = distance.get('distance_km', None)
+        estimated_transit = distance.get('estimated_delivery', '')
+        
+        if warehouse_distance:
+            insights.append(f"Distance to dealer: {warehouse_distance} km")
+            insights.append(f"Estimated transit: {estimated_transit}")
+            
+        if warehouse:
+            insights.append(f"Primary warehouse: {warehouse}")
+            
+        return insights
 
 # ============================================================
 # BLOCK 12: AI SUMMARY ENGINE (Optional)
@@ -2077,6 +2270,12 @@ class DealerAnalyticsService:
         elif user_input == "99":
             return self._handle_main_menu_return(context)
         
+        # Handle dealer names directly
+        dealer_name = self._resolve_dealer_name(user_input)
+        if dealer_name:
+            context.current_dealer = dealer_name
+            return self._get_dealer_dashboard(context, dealer_name)
+        
         # Handle menu options based on state
         if context.menu_state == MenuState.MAIN:
             return self._handle_main_menu_option(context, user_input)
@@ -2104,1200 +2303,14 @@ class DealerAnalyticsService:
             "exit_menu": True  # Exit to main AI Logistics menu
         }
     
-    def _handle_main_menu_option(self, context: DealerContext, option: str) -> Dict[str, Any]:
+    def _handle_main_menu_option(self, context: DealerContext, option: str) -> Dict[str极, Any]:
         """Handle main menu option selection"""
         
         option_map = {
             "1": ("dashboard", "Enter dealer name for dashboard:"),
             "2": ("revenue", "Enter dealer name for revenue:"),
-            "3": ("units", "Enter dealer name for units:"),
+            "3": ("dashboard", "Enter dealer name for dashboard:"),  # Changed to dashboard
             "4": ("logistics", "Enter dealer name for logistics:"),
-            "5": ("warehouses", "Enter dealer name for warehouses:"),
+            "5": ("warehouses", "极ter dealer name for warehouses:"),
             "6": ("cities", "Enter dealer name for cities:"),
-            "7": ("pending_dn", "Enter dealer name for pending DN:"),
-            "8": ("pending_pgi", "Enter dealer name for pending PGI:"),
-            "9": ("pending_pod", "Enter dealer name for pending POD:"),
-            "10": ("comparison", None),  # Special handling
-            "11": ("ranking", None),  # Special handling
-            "12": ("trend", "Enter dealer name for trend:"),
-            "13": ("executive_summary", "Enter dealer name for summary:"),
-            "14": ("ai_insights", "Enter dealer name for AI insights:"),
-            "15": ("recommendations", "Enter dealer name for recommendations:"),
-            "16": ("performance", "Enter dealer name for performance:"),
-            "17": ("score", "Enter dealer name for business score:"),
-            "18": ("search", None),  # Special handling
-        }
-        
-        if option == "10":
-            return self._handle_comparison_start(context)
-        elif option == "11":
-            return self._handle_ranking_request(context)
-        elif option == "18":
-            return self._handle_search_start(context)
-        
-        if option not in option_map:
-            return self._handle_quick_query(context, option)
-        
-        action, prompt = option_map[option]
-        
-        # Check if we already have a selected dealer
-        if context.current_dealer:
-            result = self._execute_dealer_action(context, action, context.current_dealer)
-            result["exit_menu"] = False
-            return result
-        
-        # Ask for dealer
-        context.menu_state = MenuState.DEALER_SELECTION
-        context.selected_option = action
-        context.awaiting_dealer = True
-        
-        return {
-            "response": self._menu_renderer.render_dealer_selection(prompt),
-            "menu_type": "dealer_menu",
-            "action": "dealer_selection",
-            "data": {"purpose": action},
-            "exit_menu": False
-        }
-    
-    def _handle_dealer_selection(self, context: DealerContext, dealer_input: str) -> Dict[str, Any]:
-        """Handle dealer selection response"""
-        dealer_name = self._resolve_dealer_name(dealer_input)
-        if not dealer_name:
-            return {
-                "response": "\n".join([
-                    "❌ Dealer not found.",
-                    "",
-                    "Please try again or enter a valid dealer name.",
-                    "",
-                    "0. Main Menu",
-                    "99. Back"
-                ]),
-                "menu_type": "dealer_menu",
-                "action": "dealer_selection_error",
-                "data": {},
-                "exit_menu": False
-            }
-        
-        context.current_dealer = dealer_name
-        context.menu_state = MenuState.MAIN
-        context.awaiting_dealer = False
-        
-        action = context.selected_option or "dashboard"
-        result = self._execute_dealer_action(context, action, dealer_name)
-        result["exit_menu"] = False
-        return result
-    
-    def _handle_comparison_selection(self, context: DealerContext, dealer_input: str) -> Dict[str, Any]:
-        """Handle comparison dealer selection"""
-        dealer_name = self._resolve_dealer_name(dealer_input)
-        if not dealer_name:
-            return {
-                "response": "\n".join([
-                    "❌ Dealer not found.",
-                    "",
-                    "Please try again or enter a valid dealer name.",
-                    "",
-                    "0. Main Menu",
-                    "99. Back"
-                ]),
-                "menu_type": "dealer_menu",
-                "action": "comparison_error",
-                "data": {},
-                "exit_menu": False
-            }
-        
-        context.comparison_dealers.append(dealer_name)
-        
-        if len(context.comparison_dealers) == 1:
-            return {
-                "response": "\n".join([
-                    f"✅ First dealer selected: {dealer_name}",
-                    "",
-                    "Enter second dealer name:",
-                    "",
-                    "0. Main Menu",
-                    "99. Back"
-                ]),
-                "menu_type": "dealer_menu",
-                "action": "comparison_second",
-                "data": {"first_dealer": dealer_name},
-                "exit_menu": False
-            }
-        else:
-            dealer1, dealer2 = context.comparison_dealers[0], context.comparison_dealers[1]
-            context.menu_state = MenuState.MAIN
-            context.comparison_dealers = []
-            return self._perform_comparison(context, dealer1, dealer2)
-    
-    def _handle_ranking_request(self, context: DealerContext) -> Dict[str, Any]:
-        """Handle ranking request"""
-        result = self._get_dealer_ranking(context)
-        result["exit_menu"] = False
-        return result
-    
-    def _handle_search_start(self, context: DealerContext) -> Dict[str, Any]:
-        """Start search"""
-        context.menu_state = MenuState.DEALER_SELECTION
-        context.selected_option = "search"
-        context.awaiting_dealer = True
-        
-        return {
-            "response": "\n".join([
-                "🔍 *Search Dealers*",
-                "",
-                "Enter dealer name, code, or customer code:",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ]),
-            "menu_type": "dealer_menu",
-            "action": "search_start",
-            "data": {},
-            "exit_menu": False
-        }
-    
-    def _handle_comparison_start(self, context: DealerContext) -> Dict[str, Any]:
-        """Start comparison process"""
-        context.menu_state = MenuState.COMPARISON_SELECTION
-        context.comparison_dealers = []
-        return {
-            "response": self._menu_renderer.render_comparison_selection(),
-            "menu_type": "dealer_menu",
-            "action": "comparison_start",
-            "data": {},
-            "exit_menu": False
-        }
-    
-    def _handle_quick_query(self, context: DealerContext, query: str) -> Dict[str, Any]:
-        """Handle quick query from main menu"""
-        # Check if it's a comparison
-        if "compare" in query.lower() or "vs" in query.lower():
-            import re
-            dealers = re.findall(r'([\w\s]+?)(?:and|vs|versus)([\w\s]+)', query, re.IGNORECASE)
-            if dealers:
-                dealer1 = self._resolve_dealer_name(dealers[0][0].strip())
-                dealer2 = self._resolve_dealer_name(dealers[0][1].strip())
-                if dealer1 and dealer2:
-                    return self._perform_comparison(context, dealer1, dealer2)
-        
-        # Check if it's a valid dealer name
-        dealer_name = self._resolve_dealer_name(query)
-        if dealer_name:
-            context.current_dealer = dealer_name
-            return self._get_dealer_dashboard(context, dealer_name)
-        
-        # Check if it's a ranking query
-        if "top" in query.lower() and ("dealer" in query.lower() or "dealers" in query.lower()):
-            return self._get_dealer_ranking(context)
-        
-        # Check for specific metrics
-        for metric in ["revenue", "units", "pending", "logistics", "warehouse", "city"]:
-            if metric in query.lower() and " of " in query.lower():
-                parts = query.lower().split(" of ")
-                if len(parts) > 1:
-                    dealer_name = self._resolve_dealer_name(parts[-1].strip())
-                    if dealer_name:
-                        context.current_dealer = dealer_name
-                        return self._execute_dealer_action(context, metric, dealer_name)
-        
-        # Default response
-        return {
-            "response": "\n".join([
-                "❌ I didn't understand that.",
-                "",
-                "💡 *Try one of these:*",
-                "• 'Arshad Electronics-Khi' - Show dashboard",
-                "• 'Revenue of Arshad Electronics'",
-                "• 'Pending in Arshad Electronics'",
-                "• 'Compare Arshad and Zoom'",
-                "• 'Top dealers by revenue'",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ]),
-            "menu_type": "dealer_menu",
-            "action": "unknown_query",
-            "data": {},
-            "exit_menu": False
-        }
-    
-    def _execute_dealer_action(self, context: DealerContext, action: str, dealer_name: str) -> Dict[str, Any]:
-        """Execute dealer action based on selected option"""
-        action_map = {
-            "dashboard": self._get_dealer_dashboard,
-            "revenue": self._get_dealer_metric,
-            "units": self._get_dealer_metric,
-            "logistics": self._get_dealer_logistics,
-            "warehouses": self._get_dealer_warehouses,
-            "cities": self._get_dealer_cities,
-            "pending_dn": self._get_dealer_pending_dn,
-            "pending_pgi": self._get_dealer_pending_pgi,
-            "pending_pod": self._get_dealer_pending_pod,
-            "trend": self._get_dealer_trend,
-            "executive_summary": self._get_dealer_executive_summary,
-            "ai_insights": self._get_dealer_ai_insights,
-            "recommendations": self._get_dealer_recommendations,
-            "performance": self._get_dealer_performance,
-            "score": self._get_dealer_score,
-            "search": self._search_dealers,
-        }
-        
-        handler = action_map.get(action, self._get_dealer_dashboard)
-        
-        if action in ["revenue", "units"]:
-            return handler(context, dealer_name, action)
-        elif action == "search":
-            return handler(context, dealer_name)
-        else:
-            return handler(context, dealer_name)
-    
-    def _resolve_dealer_name(self, input_text: str) -> Optional[str]:
-        """Resolve dealer name from input"""
-        input_lower = input_text.lower().strip()
-        
-        # Try database lookup
-        try:
-            with self._session() as session:
-                repository = DealerRepository(session)
-                dealers = repository.search_dealers(input_text)
-                if dealers:
-                    return dealers[0].get('dealer')
-        except Exception:
-            pass
-        
-        return None
-    
-    def _get_context(self, session_id: str) -> DealerContext:
-        """Get or create context for session"""
-        with self._context_lock:
-            if session_id not in self._contexts:
-                self._contexts[session_id] = DealerContext()
-            return self._contexts[session_id]
-    
-    # ============================================================
-    # DEALER OPERATIONS - ALL DATA FROM POSTGRESQL
-    # ============================================================
-    
-    def _get_dealer_dashboard(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer dashboard"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ Dealer '{dealer_name}' not found.\n\nPlease check the dealer name and try again.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "dashboard",
-                        "data": {"dealer": dealer_name, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                return {
-                    "response": self._menu_renderer.render_dealer_dashboard(dealer_name, dashboard),
-                    "menu_type": "dealer_menu",
-                    "action": "dashboard",
-                    "data": {"dealer": dealer_name, "dashboard": dashboard},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            logger.error(f"Dashboard error: {e}")
-            return {
-                "response": f"⚠️ Service error for {dealer_name}: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _get_dealer_metric(self, context: DealerContext, dealer_name: str, metric: str) -> Dict[str, Any]:
-        """Get specific dealer metric"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "metric_error",
-                        "data": {"dealer": dealer_name, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                metric_mapping = {
-                    "revenue": ("Revenue", _format_currency(dashboard.get('sales', {}).get('total_revenue', 0))),
-                    "units": ("Units", f"{dashboard.get('sales', {}).get('total_quantity', 0):,}"),
-                }
-                
-                label, value = metric_mapping.get(metric, ("Metric", "N/A"))
-                
-                return {
-                    "response": "\n".join([
-                        f"📊 *{dealer_name} - {label}*",
-                        "",
-                        f"{value}",
-                        "",
-                        "0. Main Menu",
-                        "99. Back"
-                    ]),
-                    "menu_type": "dealer_menu",
-                    "action": f"metric_{metric}",
-                    "data": {"dealer": dealer_name, "metric": metric, "value": value},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _get_dealer_logistics(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer logistics"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "logistics_error",
-                        "data": {"dealer": dealer_name, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                distance = dashboard.get('distance', {})
-                
-                return {
-                    "response": "\n".join([
-                        f"🚚 *Logistics - {dealer_name}*",
-                        "",
-                        f"Distance: {distance.get('distance_km', 'N/A')} KM",
-                        f"Estimated Delivery: {distance.get('estimated_delivery', 'N/A')}",
-                        f"Transportation Zone: {distance.get('transportation_zone', 'N/A')}",
-                        f"Source: {distance.get('source', 'N/A')}",
-                        "",
-                        "0. Main Menu",
-                        "99. Back"
-                    ]),
-                    "menu_type": "dealer_menu",
-                    "action": "logistics",
-                    "data": {"dealer": dealer_name, "logistics": distance},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _get_dealer_warehouses(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer warehouses"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "warehouses_error",
-                        "data": {"dealer": dealer_name, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                warehouse = dashboard.get('warehouse', {})
-                identity = dashboard.get('identity', {})
-                
-                return {
-                    "response": "\n".join([
-                        f"🏭 *Warehouses - {dealer_name}*",
-                        "",
-                        f"Primary: {identity.get('warehouse', 'N/A')}",
-                        f"Code: {identity.get('warehouse_code', 'N/A')}",
-                        f"Total Warehouses: {warehouse.get('warehouses_used', 0)}",
-                        "",
-                        "0. Main Menu",
-                        "99. Back"
-                    ]),
-                    "menu_type": "dealer_menu",
-                    "action": "warehouses",
-                    "data": {"dealer": dealer_name, "warehouse": warehouse},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _get_dealer_cities(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer cities"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "cities_error",
-                        "data": {"dealer": dealer_name, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                city = dashboard.get('city', {})
-                identity = dashboard.get('identity', {})
-                
-                return {
-                    "response": "\n".join([
-                        f"🏙️ *Cities - {dealer_name}*",
-                        "",
-                        f"Dealer City: {identity.get('city', 'N/A')}",
-                        f"Cities Served: {city.get('cities_served', 0)}",
-                        "",
-                        "0. Main Menu",
-                        "99. Back"
-                    ]),
-                    "menu_type": "dealer_menu",
-                    "action": "cities",
-                    "data": {"dealer": dealer_name, "city": city},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _get_dealer_pending_dn(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer pending DN"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "pending_error",
-                        "data": {"dealer": dealer_name, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                delivery = dashboard.get('delivery', {})
-                
-                return {
-                    "response": "\n".join([
-                        f"⏳ *Pending DN - {dealer_name}*",
-                        "",
-                        f"Pending DN: {delivery.get('pending_dn', 0):,}",
-                        f"PGI Pending: {delivery.get('pgi_pending', 0):,}",
-                        f"POD Pending: {delivery.get('pod_pending', 0):,}",
-                        "",
-                        "0. Main Menu",
-                        "99. Back"
-                    ]),
-                    "menu_type": "dealer_menu",
-                    "action": "pending_dn",
-                    "data": {"dealer": dealer_name, "pending": delivery},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _get_dealer_pending_pgi(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer pending PGI"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "pgi_error",
-                        "data": {"dealer": dealer_name, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                delivery = dashboard.get('delivery', {})
-                
-                return {
-                    "response": f"⏳ *Pending PGI - {dealer_name}*\n\nPending PGI: {delivery.get('pgi_pending', 0):,}\n\n0. Main Menu\n99. Back",
-                    "menu_type": "dealer_menu",
-                    "action": "pending_pgi",
-                    "data": {"dealer": dealer_name},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _get_dealer_pending_pod(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer pending POD"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "pod_error",
-                        "data": {"dealer": dealer_name, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                delivery = dashboard.get('delivery', {})
-                
-                return {
-                    "response": f"⏳ *Pending POD - {dealer_name}*\n\nPending POD: {delivery.get('pod_pending', 0):,}\n\n0. Main Menu\n99. Back",
-                    "menu_type": "dealer_menu",
-                    "action": "pending_pod",
-                    "data": {"dealer": dealer_name},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _get_dealer_trend(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer trend"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "trend_error",
-                        "data": {"dealer": dealer_name, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                sales = dashboard.get('sales', {})
-                
-                return {
-                    "response": "\n".join([
-                        f"📈 *Trend - {dealer_name}*",
-                        "",
-                        f"Revenue: {_format_currency(sales.get('total_revenue', 0))}",
-                        f"Units: {sales.get('total_quantity', 0):,}",
-                        f"DN: {dashboard.get('delivery', {}).get('total_dn', 0):,}",
-                        "",
-                        "0. Main Menu",
-                        "99. Back"
-                    ]),
-                    "menu_type": "dealer_menu",
-                    "action": "trend",
-                    "data": {"dealer": dealer_name},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _get_dealer_executive_summary(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer executive summary"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "summary_error",
-                        "data": {"dealer": dealer_name, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                # Add AI summary
-                ai_summary = self._ai_engine.generate_summary(dashboard)
-                dashboard['ai_summary'] = ai_summary
-                
-                return {
-                    "response": self._menu_renderer.render_executive_summary(dealer_name, dashboard),
-                    "menu_type": "dealer_menu",
-                    "action": "executive_summary",
-                    "data": {"dealer": dealer_name, "dashboard": dashboard},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _get_dealer_ai_insights(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get AI-powered dealer insights"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "insights_error",
-                        "data": {"dealer": dealer_name, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                # Generate AI insights
-                ai_summary = self._ai_engine.generate_summary(dashboard)
-                insights = ai_summary.get('recommendations', [])
-                
-                if not insights:
-                    insights = dashboard.get('insights', [])
-                
-                if not insights:
-                    insights = ["No insights available at this time."]
-                
-                return {
-                    "response": "\n".join([
-                        f"💡 *AI Insights - {dealer_name}*",
-                        "",
-                        "📊 *Key Findings*",
-                        "",
-                        "\n".join(f"• {insight}" for insight in insights[:5]),
-                        "",
-                        "0. Main Menu",
-                        "99. Back"
-                    ]),
-                    "menu_type": "dealer_menu",
-                    "action": "ai_insights",
-                    "data": {"dealer": dealer_name, "insights": insights},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _get_dealer_recommendations(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer recommendations"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "recommendations_error",
-                        "data": {"dealer": dealer_name, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                # Generate AI recommendations
-                ai_summary = self._ai_engine.generate_summary(dashboard)
-                recommendations = ai_summary.get('recommendations', [])
-                
-                if not recommendations:
-                    recommendations = dashboard.get('recommendations', [])
-                
-                if not recommendations:
-                    recommendations = ["No recommendations available at this time."]
-                
-                return {
-                    "response": "\n".join([
-                        f"🎯 *Recommendations - {dealer_name}*",
-                        "",
-                        "\n".join(f"• {rec}" for rec in recommendations[:5]),
-                        "",
-                        "0. Main Menu",
-                        "99. Back"
-                    ]),
-                    "menu_type": "dealer_menu",
-                    "action": "recommendations",
-                    "data": {"dealer": dealer_name, "recommendations": recommendations},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _get_dealer_performance(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer performance"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "performance_error",
-                        "data": {"dealer": dealer_name, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                performance = dashboard.get('performance', {})
-                
-                return {
-                    "response": "\n".join([
-                        f"📈 *Performance - {dealer_name}*",
-                        "",
-                        f"Business Score: {performance.get('business_score', 0)}/100",
-                        f"Performance Tier: {performance.get('performance_tier', 'Standard')}",
-                        f"Dealer Rating: {'⭐' * int(performance.get('dealer_rating', 0))}",
-                        f"Risk Score: {performance.get('risk_score', 0)}/100",
-                        "",
-                        "0. Main Menu",
-                        "99. Back"
-                    ]),
-                    "menu_type": "dealer_menu",
-                    "action": "performance",
-                    "data": {"dealer": dealer_name, "performance": performance},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _get_dealer_score(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer business score"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    return {
-                        "response": f"⚠️ Dealer '{dealer_name}' not found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "score_error",
-                        "data": {"dealer": dealer_name, "error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                performance = dashboard.get('performance', {})
-                
-                return {
-                    "response": "\n".join([
-                        f"⭐ *Business Score - {dealer_name}*",
-                        "",
-                        f"Score: {performance.get('business_score', 0)}/100",
-                        f"Tier: {performance.get('performance_tier', 'Standard')}",
-                        f"Rating: {'⭐' * int(performance.get('dealer_rating', 0))}",
-                        f"Risk: {performance.get('risk_score', 0)}/100",
-                        "",
-                        "0. Main Menu",
-                        "99. Back"
-                    ]),
-                    "menu_type": "dealer_menu",
-                    "action": "score",
-                    "data": {"dealer": dealer_name, "score": performance},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _get_dealer_ranking(self, context: DealerContext) -> Dict[str, Any]:
-        """Get dealer rankings"""
-        try:
-            with self._session() as session:
-                repository = DealerRepository(session)
-                ranking = repository.get_top_dealers_by_revenue(10)
-                
-                if not ranking:
-                    return {
-                        "response": "🏆 *Dealer Rankings*\n\nNo dealers found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "ranking",
-                        "data": {},
-                        "exit_menu": False
-                    }
-                
-                return {
-                    "response": self._menu_renderer.render_ranking(ranking, "Revenue", 10),
-                    "menu_type": "dealer_menu",
-                    "action": "ranking",
-                    "data": {"ranking": ranking},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Ranking error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _perform_comparison(self, context: DealerContext, dealer1: str, dealer2: str) -> Dict[str, Any]:
-        """Perform dealer comparison"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dash1 = builder.build(dealer1)
-                dash2 = builder.build(dealer2)
-                
-                if not dash1 or not dash2:
-                    return {
-                        "response": "⚠️ One or both dealers not found.\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "comparison_error",
-                        "data": {"error": "not_found"},
-                        "exit_menu": False
-                    }
-                
-                metrics = {}
-                
-                # Dealer 1 metrics
-                d1_sales = dash1.get('sales', {})
-                d1_delivery = dash1.get('delivery', {})
-                d1_performance = dash1.get('performance', {})
-                
-                metrics[f"{dealer1}_metrics"] = {
-                    "Revenue": _format_currency(d1_sales.get('total_revenue', 0)),
-                    "Units": f"{d1_sales.get('total_quantity', 0):,}",
-                    "DN": f"{d1_delivery.get('total_dn', 0):,}",
-                    "Pending": f"{d1_delivery.get('pending_dn', 0):,}",
-                    "Delivery Rate": f"{d1_delivery.get('delivery_rate', 0):.1f}%",
-                    "Business Score": f"{d1_performance.get('business_score', 0)}/100",
-                }
-                
-                # Dealer 2 metrics
-                d2_sales = dash2.get('sales', {})
-                d2_delivery = dash2.get('delivery', {})
-                d2_performance = dash2.get('performance', {})
-                
-                metrics[f"{dealer2}_metrics"] = {
-                    "Revenue": _format_currency(d2_sales.get('total_revenue', 0)),
-                    "Units": f"{d2_sales.get('total_quantity', 0):,}",
-                    "DN": f"{d2_delivery.get('total_dn', 0):,}",
-                    "Pending": f"{d2_delivery.get('pending_dn', 0):,}",
-                    "Delivery Rate": f"{d2_delivery.get('delivery_rate', 0):.1f}%",
-                    "Business Score": f"{d2_performance.get('business_score', 0)}/100",
-                }
-                
-                rev1 = d1_sales.get('total_revenue', 0)
-                rev2 = d2_sales.get('total_revenue', 0)
-                
-                if rev1 > rev2:
-                    explanation = f"{dealer1} has higher revenue than {dealer2}"
-                elif rev2 > rev1:
-                    explanation = f"{dealer2} has higher revenue than {dealer1}"
-                else:
-                    explanation = f"{dealer1} and {dealer2} have similar revenue"
-                
-                metrics["explanation"] = explanation
-                
-                return {
-                    "response": self._menu_renderer.render_comparison_result(dealer1, dealer2, metrics),
-                    "menu_type": "dealer_menu",
-                    "action": "comparison",
-                    "data": {"dealer1": dealer1, "dealer2": dealer2, "metrics": metrics},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Comparison error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-    
-    def _search_dealers(self, context: DealerContext, query: str) -> Dict[str, Any]:
-        """Search for dealers"""
-        try:
-            with self._session() as session:
-                repository = DealerRepository(session)
-                results = repository.search_dealers(query)
-                
-                if not results:
-                    return {
-                        "response": f"🔍 No results found for '{query}'\n\n0. Main Menu",
-                        "menu_type": "dealer_menu",
-                        "action": "search",
-                        "data": {"query": query, "results": []},
-                        "exit_menu": False
-                    }
-                
-                lines = [f"🔍 *Search Results for '{query}'*", ""]
-                for i, dealer in enumerate(results[:10], 1):
-                    lines.append(f"{i}. {dealer.get('dealer', 'Unknown')}")
-                    lines.append(f"   Code: {dealer.get('dealer_code', 'N/A')}")
-                    lines.append(f"   City: {dealer.get('city', 'N/A')}")
-                    lines.append(f"   Warehouse: {dealer.get('warehouse', 'N/A')}")
-                    lines.append("")
-                
-                if len(results) > 10:
-                    lines.append(f"... and {len(results) - 10} more")
-                
-                lines.extend(["", "0. Main Menu", "99. Back"])
-                
-                return {
-                    "response": "\n".join(lines),
-                    "menu_type": "dealer_menu",
-                    "action": "search",
-                    "data": {"query": query, "results": results},
-                    "exit_menu": False
-                }
-        except Exception as e:
-            return {
-                "response": f"⚠️ Search error: {str(e)[:100]}\n\n0. Main Menu",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {"error": str(e)},
-                "exit_menu": False
-            }
-
-# ============================================================
-# BLOCK 15: LEGACY METHODS - BACKWARD COMPATIBILITY
-# ============================================================
-
-def get_dealer_dashboard(dealer_name: str = "", **kwargs: Any) -> Dict[str, Any]:
-    """Legacy method for backward compatibility"""
-    service = get_dealer_analytics_service()
-    context = DealerContext()
-    result = service._get_dealer_dashboard(context, dealer_name)
-    return {
-        "success": True if result.get("data") else False,
-        "data": result.get("data", {}).get("dashboard", {}),
-        "whatsapp_message": result.get("response", ""),
-    }
-
-def get_top_dealers(limit: int = 10, **kwargs: Any) -> Dict[str, Any]:
-    """Legacy method for backward compatibility"""
-    service = get_dealer_analytics_service()
-    context = DealerContext()
-    result = service._get_dealer_ranking(context)
-    return {
-        "success": True,
-        "data": result.get("data", {}).get("ranking", []),
-        "whatsapp_message": result.get("response", ""),
-    }
-
-def compare_dealers(dealers: List[str], **kwargs: Any) -> Dict[str, Any]:
-    """Legacy method for backward compatibility"""
-    if not dealers or len(dealers) < 2:
-        return {
-            "success": False,
-            "whatsapp_message": "⚠️ Please provide at least two dealers.",
-            "error": "TWO_DEALERS_REQUIRED"
-        }
-    
-    service = get_dealer_analytics_service()
-    context = DealerContext()
-    result = service._perform_comparison(context, dealers[0], dealers[1])
-    return {
-        "success": True,
-        "data": result.get("data", {}),
-        "whatsapp_message": result.get("response", ""),
-    }
-
-def health_check() -> Dict[str, Any]:
-    """Health check for service"""
-    service = get_dealer_analytics_service()
-    return service.health_check()
-
-# ============================================================
-# BLOCK 16: SERVICE SINGLETON
-# ============================================================
-
-_service: Optional[DealerAnalyticsService] = None
-_service_lock = threading.Lock()
-
-def get_dealer_analytics_service() -> DealerAnalyticsService:
-    """Get singleton instance"""
-    global _service
-    if _service is None:
-        with _service_lock:
-            if _service is None:
-                _service = DealerAnalyticsService()
-    return _service
-
-def process_dealer_menu(session_id: str, user_input: str) -> Dict[str, Any]:
-    """Process dealer menu input for WhatsApp integration"""
-    service = get_dealer_analytics_service()
-    return service.process_menu_input(session_id, user_input)
-
-def get_dealer_main_menu() -> str:
-    """Get the main dealer menu for WhatsApp"""
-    service = get_dealer_analytics_service()
-    return service.get_main_menu()
-
-# ============================================================
-# BLOCK 17: WHATSAPP ENTRY POINT
-# ============================================================
-
-def process_whatsapp_query(message: str, sender: str = "default", **kwargs: Any) -> str:
-    """
-    Process WhatsApp query and return formatted response.
-    ALWAYS returns a string - never a dict.
-    
-    This is the main entry point for WhatsApp integration.
-    """
-    service = get_dealer_analytics_service()
-    
-    if not message or not message.strip():
-        return service.get_main_menu()
-    
-    # Check if it's a menu navigation command
-    if message.strip() in ["menu", "help", "options"]:
-        return service.get_main_menu()
-    
-    # Process as menu input
-    result = service.process_menu_input(sender, message.strip())
-    
-    # Extract response string
-    response = result.get("response", service.get_main_menu())
-    
-    # If exit_menu is True, user wants to go back to main menu
-    if result.get("exit_menu", False):
-        return response
-    
-    return response
-
-# ============================================================
-# BLOCK 18: EXPORTS
-# ============================================================
-
-__all__ = [
-    "DealerAnalyticsService",
-    "DealerContext",
-    "IntentType",
-    "MenuState",
-    "ResponseFormat",
-    "get_dealer_analytics_service",
-    "process_dealer_menu",
-    "get_dealer_main_menu",
-    "DealerMenuRenderer",
-    "process_whatsapp_query",
-    "get_dealer_dashboard",
-    "get_top_dealers",
-    "compare_dealers",
-    "health_check",
-    "VERSION",
-    "EXIT_SIGNAL",
-]
-
-# ============================================================
-# BLOCK 19: TEST MODE
-# ============================================================
-
-if __name__ == "__main__":
-    print("\n" + "=" * 70)
-    print(f"🏢 DEALER ANALYTICS SERVICE v{VERSION} - TEST MODE".center(70))
-    print("=" * 70)
-    print()
-    
-    service = get_dealer_analytics_service()
-    
-    # Health check
-    health = service.health_check()
-    print("📊 Health Check:")
-    for key, value in health.items():
-        print(f"  {key}: {value}")
-    print()
-    
-    # Show main menu
-    print(service.get_main_menu())
-    print()
-    
-    # Interactive test
-    print("🔍 Enter dealer name to search (or 99 to exit)")
-    print()
-    
-    while True:
-        try:
-            query = input("🔍 Enter Dealer Name: ").strip()
-            
-            if query == "99":
-                print("\n👋 Goodbye!")
-                break
-            
-            if not query:
-                continue
-            
-            print("\n⏳ Processing...\n")
-            result = process_whatsapp_query(query, "test_user")
-            print(result)
-            print()
-            
-        except KeyboardInterrupt:
-            print("\n\n👋 Goodbye!")
-            break
-        except Exception as e:
-            print(f"\n❌ Error: {e}\n")
-            traceback.print_exc()
-
-# ============================================================
-# END OF FILE
-# ============================================================
+            "7": ("
