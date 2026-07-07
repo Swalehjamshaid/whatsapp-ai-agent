@@ -63,6 +63,10 @@ except ImportError:
 # BLOCK 2: CONFIGURATION & CONSTANTS
 # ============================================================
 
+# ============================================================
+# BLOCK 2: CONFIGURATION & CONSTANTS
+# ============================================================
+
 CACHE_TTL = max(60, int(os.getenv("DEALER_ANALYTICS_CACHE_TTL", "300")))
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
@@ -80,7 +84,7 @@ CITY_ABBREVIATIONS = {
 }
 
 # FIX v12.3: Special case patterns for common dealer searches
-# This maps what users type → actual database name
+# This maps what users type → actual database name (customer_name)
 SPECIAL_PATTERNS = {
     # Arshad Electronics variations
     "arshad electronics - karachi": "Arshad Electronics-Khi",
@@ -102,6 +106,14 @@ SPECIAL_PATTERNS = {
     "rehmat electronics": "Rehmat Electronics MZD",
     "rehmat mzd": "Rehmat Electronics MZD",
     "rehmat": "Rehmat Electronics MZD",
+    
+    # Shaheen Electronics variations (NEW)
+    "shaheen electronics muzafrabad": "Shaheen Electronics MZD",
+    "shaheen electronics muzaffarabad": "Shaheen Electronics MZD",
+    "shaheen electronics mzd": "Shaheen Electronics MZD",
+    "shaheen mzd": "Shaheen Electronics MZD",
+    "shaheen electronics": "Shaheen Electronics MZD",
+    "shaheen": "Shaheen Electronics MZD",
 }
 
 FALLBACK_COORDINATES = (30.3753, 69.3451)
@@ -118,7 +130,6 @@ CITY_COORDINATES: Dict[str, Tuple[float, float]] = {
     "gilgit": (35.9208, 74.3144), "narowal": (32.1167, 74.8833),
     "muzaffarabad": (34.3700, 73.4711), "azad kashmir": (34.3700, 73.4711)
 }
-
 # ============================================================
 # BLOCK 3: ENUMS & DATACLASSES
 # ============================================================
