@@ -972,6 +972,9 @@ class DealerMenuRenderer:
 # ============================================================
 # BLOCK 7: MAIN DEALER ANALYTICS SERVICE - NO CACHE
 # ============================================================
+# ============================================================
+# BLOCK 7: MAIN DEALER ANALYTICS SERVICE - NO CACHE, DIRECT POSTGRESQL
+# ============================================================
 
 class DealerAnalyticsService:
     def __init__(self) -> None:
@@ -1007,10 +1010,7 @@ class DealerAnalyticsService:
             return self._contexts[session_id]
     
     def _get_all_dealers(self) -> List[str]:
-        """
-        Get all dealer names from PostgreSQL - NO CACHE.
-        DIRECT POSTGRESQL QUERY every time.
-        """
+        """Get all dealer names from PostgreSQL - NO CACHE."""
         try:
             with self._session() as session:
                 logger.info("🔍 DIRECT POSTGRESQL: Fetching all dealer names")
@@ -1024,7 +1024,6 @@ class DealerAnalyticsService:
                     if r.customer_name:
                         all_dealers.append(r.customer_name)
                 
-                # Remove duplicates
                 seen = set()
                 unique_dealers = []
                 for d in all_dealers:
@@ -1075,10 +1074,7 @@ class DealerAnalyticsService:
         return round(final_score, 1)
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
-        """
-        Dealer resolution with DIRECT DATABASE SEARCH.
-        NO CACHE - Always queries PostgreSQL directly.
-        """
+        """Dealer resolution with DIRECT DATABASE SEARCH. NO CACHE."""
         if not name or not name.strip():
             return None
         if name.isdigit():
@@ -1087,9 +1083,7 @@ class DealerAnalyticsService:
         name_lower = name.strip().lower()
         logger.info(f"🔍 DIRECT POSTGRESQL SEARCH for: '{name_lower}'")
         
-        # ==========================================================
-        # STEP 1: CHECK SPECIAL PATTERNS FIRST (Fast lookup)
-        # ==========================================================
+        # STEP 1: CHECK SPECIAL PATTERNS
         if name_lower in SPECIAL_PATTERNS:
             result = SPECIAL_PATTERNS[name_lower]
             logger.info(f"✅ SPECIAL PATTERN: '{name}' -> '{result}'")
@@ -1100,12 +1094,10 @@ class DealerAnalyticsService:
                 logger.info(f"✅ PARTIAL SPECIAL PATTERN: '{name}' -> '{result}'")
                 return result
         
-        # ==========================================================
         # STEP 2: DIRECT POSTGRESQL SEARCH
-        # ==========================================================
         try:
             with self._session() as session:
-                # 2a: Exact match (case-insensitive)
+                # Exact match
                 logger.info(f"🔍 PostgreSQL EXACT match: '{name_lower}'")
                 result = session.query(DeliveryReport.customer_name).filter(
                     func.lower(DeliveryReport.customer_name) == name_lower
@@ -1114,7 +1106,7 @@ class DealerAnalyticsService:
                     logger.info(f"✅ POSTGRESQL EXACT MATCH: '{result[0]}'")
                     return result[0]
                 
-                # 2b: ILIKE partial match (case-insensitive)
+                # ILIKE partial match
                 logger.info(f"🔍 PostgreSQL ILIKE match: '%{name_lower}%'")
                 result = session.query(DeliveryReport.customer_name).filter(
                     func.lower(DeliveryReport.customer_name).ilike(f"%{name_lower}%")
@@ -1123,7 +1115,7 @@ class DealerAnalyticsService:
                     logger.info(f"✅ POSTGRESQL ILIKE MATCH: '{result[0]}'")
                     return result[0]
                 
-                # 2c: Search in dealer_code
+                # dealer_code
                 logger.info(f"🔍 PostgreSQL dealer_code match: '%{name_lower}%'")
                 result = session.query(DeliveryReport.customer_name).filter(
                     func.lower(DeliveryReport.dealer_code).ilike(f"%{name_lower}%")
@@ -1132,7 +1124,7 @@ class DealerAnalyticsService:
                     logger.info(f"✅ POSTGRESQL DEALER_CODE MATCH: '{result[0]}'")
                     return result[0]
                 
-                # 2d: Search in ship_to_city
+                # ship_to_city
                 logger.info(f"🔍 PostgreSQL ship_to_city match: '%{name_lower}%'")
                 result = session.query(DeliveryReport.customer_name).filter(
                     func.lower(DeliveryReport.ship_to_city).ilike(f"%{name_lower}%")
@@ -1146,9 +1138,7 @@ class DealerAnalyticsService:
             import traceback
             logger.error(traceback.format_exc())
         
-        # ==========================================================
-        # STEP 3: Fuzzy Match (Only if RapidFuzz is available)
-        # ==========================================================
+        # STEP 3: Fuzzy Match
         if RAPIDFUZZ_AVAILABLE:
             try:
                 dealer_names = self._get_all_dealers()
@@ -1166,7 +1156,6 @@ class DealerAnalyticsService:
         return None
     
     def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
-        """Get suggestions from PostgreSQL - NO CACHE"""
         if not query:
             return []
         query_lower = query.strip().lower()
@@ -1188,7 +1177,6 @@ class DealerAnalyticsService:
         return suggestions
     
     def _get_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer dashboard - DIRECT POSTGRESQL"""
         try:
             with self._session() as session:
                 repo = DealerRepository(session)
@@ -1204,7 +1192,6 @@ class DealerAnalyticsService:
             return {"response": None, "data": None}
     
     def _handle_ranking(self) -> Dict[str, Any]:
-        """Get ranking - DIRECT POSTGRESQL"""
         try:
             with self._session() as session:
                 repo = DealerRepository(session)
@@ -1216,7 +1203,6 @@ class DealerAnalyticsService:
             return {"response": f"⚠️ Error: {str(e)}\n\n0. Main Menu\n99. Back"}
     
     def _compare_dealers(self, d1: str, d2: str) -> Dict[str, Any]:
-        """Compare dealers - DIRECT POSTGRESQL"""
         try:
             with self._session() as session:
                 repo = DealerRepository(session)
@@ -1332,7 +1318,6 @@ class DealerAnalyticsService:
     @staticmethod
     def _session() -> Session:
         return SessionLocal()
-
 # ============================================================
 # BLOCK 8: SINGLETON & EXPORTS
 # ============================================================
