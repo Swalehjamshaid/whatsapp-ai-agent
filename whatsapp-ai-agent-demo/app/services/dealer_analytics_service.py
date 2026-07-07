@@ -10,13 +10,17 @@ DEALER LOGISTICS INTELLIGENCE PLATFORM - ENTERPRISE EDITION v12.3
 ================================================================================
 
 SOURCE OF TRUTH: PostgreSQL ONLY
+TABLE: delivery_reports
+COLUMN: customer_name (Sold-To Party)
 
 FIXES v12.3:
-- ✅ FIXED: Search BOTH customer_name AND dealer_code
+- ✅ FIXED: Search ONLY customer_name column in PostgreSQL
 - ✅ FIXED: Handle hyphen vs space in dealer names (Arshad Electronics-Khi vs Arshad Electronics - Karachi)
-- ✅ FIXED: Special patterns for common dealer searches
-- ✅ FIXED: City abbreviation matching (Khi → Karachi)
+- ✅ FIXED: Special patterns for common dealer searches (Arshad, Japan, Rehmat, Shaheen, Zoon)
+- ✅ FIXED: City abbreviation matching (Khi → Karachi, MZD → Muzaffarabad, MD → Muzaffarabad)
 - ✅ FIXED: Display "Sold-To Party" instead of "Dealer Name"
+- ✅ FIXED: Typo tolerance (rshad → Arshad, Muzafrabad → Muzaffarabad)
+- ✅ FIXED: Partial pattern matching for incomplete dealer names
 - ✅ Added dealer_code display for reference
 - ✅ Enhanced match threshold for better fuzzy matching
 
@@ -63,10 +67,6 @@ except ImportError:
 # BLOCK 2: CONFIGURATION & CONSTANTS
 # ============================================================
 
-# ============================================================
-# BLOCK 2: CONFIGURATION & CONSTANTS
-# ============================================================
-
 CACHE_TTL = max(60, int(os.getenv("DEALER_ANALYTICS_CACHE_TTL", "300")))
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
@@ -76,17 +76,21 @@ VERSION = "12.3"
 MATCH_THRESHOLD = 60  # Even lower for better fuzzy matching
 SUGGESTION_THRESHOLD = 30
 
+# City abbreviations mapping
 CITY_ABBREVIATIONS = {
     'khi': 'karachi', 'lhr': 'lahore', 'isb': 'islamabad', 'rwp': 'rawalpindi',
     'fsd': 'faisalabad', 'mul': 'multan', 'pes': 'peshawar', 'que': 'quetta',
     'hyd': 'hyderabad', 'guj': 'gujranwala', 'skt': 'sialkot', 'mzd': 'muzaffarabad',
+    'md': 'muzaffarabad',  # Handle "MD" abbreviation
     'ak': 'azad kashmir', 'a.k': 'azad kashmir',
 }
 
-# FIX v12.3: Special case patterns for common dealer searches
-# This maps what users type → actual database name (customer_name)
+# Special case patterns for common dealer searches
+# This maps what users type → actual database customer_name
 SPECIAL_PATTERNS = {
+    # ==========================================================
     # Arshad Electronics variations
+    # ==========================================================
     "arshad electronics - karachi": "Arshad Electronics-Khi",
     "arshad electronics- karachi": "Arshad Electronics-Khi",
     "arshad electronics karachi": "Arshad Electronics-Khi",
@@ -95,25 +99,51 @@ SPECIAL_PATTERNS = {
     "arshad electronics": "Arshad Electronics-Khi",
     "arshad": "Arshad Electronics-Khi",
     
+    # ==========================================================
     # Japan Electronics variations
+    # ==========================================================
     "japan electronics a.k": "Japan Electronics A.K",
+    "japan electronics a.k.": "Japan Electronics A.K",
     "japan electronics ak": "Japan Electronics A.K",
+    "japan electronics a k": "Japan Electronics A.K",
+    "japan a.k": "Japan Electronics A.K",
+    "japan ak": "Japan Electronics A.K",
     "japan electronics": "Japan Electronics A.K",
     "japan": "Japan Electronics A.K",
     
+    # ==========================================================
     # Rehmat Electronics variations
+    # ==========================================================
     "rehmat electronics mzd": "Rehmat Electronics MZD",
+    "rehmat electronics md": "Rehmat Electronics MZD",
     "rehmat electronics": "Rehmat Electronics MZD",
     "rehmat mzd": "Rehmat Electronics MZD",
+    "rehmat md": "Rehmat Electronics MZD",
     "rehmat": "Rehmat Electronics MZD",
     
-    # Shaheen Electronics variations (NEW)
+    # ==========================================================
+    # Shaheen Electronics variations
+    # ==========================================================
     "shaheen electronics muzafrabad": "Shaheen Electronics MZD",
     "shaheen electronics muzaffarabad": "Shaheen Electronics MZD",
     "shaheen electronics mzd": "Shaheen Electronics MZD",
+    "shaheen electronics md": "Shaheen Electronics MZD",
     "shaheen mzd": "Shaheen Electronics MZD",
+    "shaheen md": "Shaheen Electronics MZD",
     "shaheen electronics": "Shaheen Electronics MZD",
     "shaheen": "Shaheen Electronics MZD",
+    
+    # ==========================================================
+    # Zoon Electronics variations
+    # ==========================================================
+    "zoon electronics.md": "Zoon Electronics MZD",
+    "zoon electronics.mzd": "Zoon Electronics MZD",
+    "zoon electronics mzd": "Zoon Electronics MZD",
+    "zoon electronics md": "Zoon Electronics MZD",
+    "zoon mzd": "Zoon Electronics MZD",
+    "zoon md": "Zoon Electronics MZD",
+    "zoon electronics": "Zoon Electronics MZD",
+    "zoon": "Zoon Electronics MZD",
 }
 
 FALLBACK_COORDINATES = (30.3753, 69.3451)
@@ -130,6 +160,7 @@ CITY_COORDINATES: Dict[str, Tuple[float, float]] = {
     "gilgit": (35.9208, 74.3144), "narowal": (32.1167, 74.8833),
     "muzaffarabad": (34.3700, 73.4711), "azad kashmir": (34.3700, 73.4711)
 }
+
 # ============================================================
 # BLOCK 3: ENUMS & DATACLASSES
 # ============================================================
@@ -338,7 +369,7 @@ class DealerRepository:
         self._lock = threading.RLock()
     
     def get_top_dealers_by_revenue(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Get top dealers by revenue"""
+        """Get top dealers by revenue from customer_name"""
         try:
             results = self.session.query(
                 DeliveryReport.customer_name,
@@ -429,9 +460,9 @@ class DealerRepository:
     
     def get_dealer_by_name(self, dealer_identifier: str) -> Optional[Dict[str, Any]]:
         """
-        Get dealer data by searching BOTH customer_name AND dealer_code.
+        Get dealer data by searching customer_name column in PostgreSQL.
         
-        FIX v12.3: Searches both fields because customer_name is the Sold-To Party.
+        This is the PRIMARY search method - searches ONLY customer_name.
         """
         dealer_lower = dealer_identifier.lower()
         cache_key = f"dealer_{dealer_lower}"
@@ -441,7 +472,7 @@ class DealerRepository:
                 return self._cache[cache_key].copy()
         
         try:
-            # FIX v12.3: Search BOTH customer_name AND dealer_code
+            # Search ONLY customer_name column (Sold-To Party)
             query = self.session.query(
                 DeliveryReport.customer_name,
                 DeliveryReport.dealer_code,
@@ -466,12 +497,10 @@ class DealerRepository:
                 func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label('avg_delivery_days'),
                 func.avg(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.isnot(None)), DeliveryReport.pod_date - DeliveryReport.good_issue_date))).label('avg_pod_days'),
             ).filter(
-                # FIX v12.3: Search BOTH customer_name AND dealer_code
+                # Search ONLY customer_name column
                 or_(
                     func.lower(DeliveryReport.customer_name) == dealer_lower,
-                    func.lower(DeliveryReport.customer_name).ilike(f"%{dealer_lower}%"),
-                    func.lower(DeliveryReport.dealer_code) == dealer_lower,
-                    func.lower(DeliveryReport.dealer_code).ilike(f"%{dealer_lower}%")
+                    func.lower(DeliveryReport.customer_name).ilike(f"%{dealer_lower}%")
                 )
             ).group_by(
                 DeliveryReport.customer_name, DeliveryReport.dealer_code,
@@ -864,9 +893,6 @@ class DealerMenuRenderer:
 # ============================================================
 # BLOCK 7: MAIN DEALER ANALYTICS SERVICE
 # ============================================================
-# ============================================================
-# BLOCK 7: MAIN DEALER ANALYTICS SERVICE
-# ============================================================
 
 class DealerAnalyticsService:
     def __init__(self) -> None:
@@ -902,14 +928,14 @@ class DealerAnalyticsService:
             return self._contexts[session_id]
     
     def _get_all_dealers(self, refresh: bool = False) -> List[str]:
-        """Get all dealer names from customer_name column in database"""
+        """Get all dealer names from customer_name column in PostgreSQL"""
         with self._cache_lock:
             if self._dealer_cache and not refresh:
                 return self._dealer_cache
             
             try:
                 with self._session() as session:
-                    # Get customer_name from DeliveryReport
+                    # Get ONLY customer_name from DeliveryReport
                     customer_names = session.query(DeliveryReport.customer_name).filter(
                         DeliveryReport.customer_name.isnot(None),
                         DeliveryReport.customer_name != ''
@@ -993,37 +1019,62 @@ class DealerAnalyticsService:
         
         logger.info(f"📋 Checking against {len(dealer_names)} customer_name records")
         
-        # STEP 0: SPECIAL PATTERN MATCHING
+        # ==========================================================
+        # STEP 0: SPECIAL PATTERN MATCHING (EXACT + PARTIAL)
+        # ==========================================================
+        
+        # 0a: EXACT pattern match
         if name_lower in SPECIAL_PATTERNS:
             result = SPECIAL_PATTERNS[name_lower]
-            # Verify the matched name exists in customer_name
             if result in dealer_names:
-                logger.info(f"✅ SPECIAL PATTERN: '{name}' -> '{result}'")
+                logger.info(f"✅ EXACT SPECIAL PATTERN: '{name}' -> '{result}'")
                 return result
             else:
                 logger.warning(f"⚠️ Special pattern result '{result}' not found in customer_name")
         
+        # 0b: PARTIAL pattern match - check if ANY pattern is in the search
         for pattern, result in SPECIAL_PATTERNS.items():
             if pattern in name_lower or name_lower in pattern:
                 if result in dealer_names:
                     logger.info(f"✅ PARTIAL SPECIAL PATTERN: '{name}' -> '{result}'")
                     return result
         
+        # 0c: Check if ANY dealer matches the pattern result
+        for pattern, result in SPECIAL_PATTERNS.items():
+            pattern_first = pattern.split()[0] if pattern.split() else ""
+            if pattern_first and pattern_first in name_lower:
+                if result in dealer_names:
+                    logger.info(f"✅ PATTERN FIRST WORD MATCH: '{name}' -> '{result}'")
+                    return result
+            
+            if name_lower in pattern:
+                if result in dealer_names:
+                    logger.info(f"✅ PATTERN CONTAINS SEARCH: '{name}' -> '{result}'")
+                    return result
+        
+        # ==========================================================
         # STEP 1: EXACT MATCH against customer_name
+        # ==========================================================
         for d in dealer_names:
             if d.lower() == name_lower:
                 logger.info(f"✅ EXACT MATCH in customer_name: '{d}'")
                 return d
         
-        # STEP 2: NORMALIZED MATCH (Handle hyphen vs space)
+        # ==========================================================
+        # STEP 2: NORMALIZED MATCH (Handle hyphen vs space, dots)
+        # ==========================================================
         normalized_name = name_lower.replace(' - ', '-').replace(' -', '-').replace('- ', '-')
+        normalized_name = normalized_name.replace('.', '').replace(',', '')
         for d in dealer_names:
             d_normalized = d.lower().replace(' - ', '-').replace(' -', '-').replace('- ', '-')
+            d_normalized = d_normalized.replace('.', '').replace(',', '')
             if d_normalized == normalized_name:
                 logger.info(f"✅ NORMALIZED MATCH in customer_name: '{d}'")
                 return d
         
+        # ==========================================================
         # STEP 3: EXPAND CITY ABBREVIATIONS
+        # ==========================================================
         expanded_name = name_lower
         for abbr, city in CITY_ABBREVIATIONS.items():
             if abbr in name_lower:
@@ -1037,7 +1088,9 @@ class DealerAnalyticsService:
                     logger.info(f"✅ EXPANDED EXACT MATCH in customer_name: '{d}'")
                     return d
         
+        # ==========================================================
         # STEP 4: TYPO-TOLERANT MATCHING against customer_name
+        # ==========================================================
         
         # 4a: Missing first letter (e.g., "rshad" → "arshad")
         if len(name_lower) >= 3:
@@ -1100,7 +1153,9 @@ class DealerAnalyticsService:
                                 logger.info(f"✅ PARTIAL WORD MATCH in customer_name: '{name}' -> '{d}'")
                                 return d
         
+        # ==========================================================
         # STEP 5: FIRST WORD MATCH (with expanded name)
+        # ==========================================================
         search_first = expanded_name.split()[0] if expanded_name.split() else ""
         if len(search_first) >= 3:
             for d in dealer_names:
@@ -1111,7 +1166,9 @@ class DealerAnalyticsService:
                         logger.info(f"✅ FIRST WORD ({score:.0f}%) in customer_name: '{d}'")
                         return d
         
+        # ==========================================================
         # STEP 6: CONTAINS MATCH in customer_name
+        # ==========================================================
         for d in dealer_names:
             d_lower = d.lower()
             if name_lower in d_lower:
@@ -1125,32 +1182,57 @@ class DealerAnalyticsService:
                     logger.info(f"✅ REVERSE CONTAINS MATCH in customer_name: '{d}'")
                     return d
         
-        # STEP 7: FUZZY MATCH against customer_name
-        if RAPIDFUZZ_AVAILABLE:
-            try:
-                results = process.extract(name_lower, dealer_names, scorer=fuzz.partial_ratio, limit=10)
-                for match, score, _ in results:
-                    if score >= MATCH_THRESHOLD - 5:
-                        verify_score = fuzz.token_set_ratio(name_lower, match.lower())
-                        if verify_score >= MATCH_THRESHOLD - 10:
-                            logger.info(f"✅ FUZZY TYPO ({score:.0f}%) in customer_name: '{match}'")
-                            return match
-            except Exception as e:
-                logger.debug(f"Fuzzy failed: {e}")
-        
-        # STEP 8: WORD OVERLAP MATCH in customer_name
-        search_words = set(name_lower.split())
+        # ==========================================================
+        # STEP 7: WORD OVERLAP MATCH in customer_name
+        # ==========================================================
+        search_words_set = set(name_lower.split())
         for d in dealer_names:
             d_lower = d.lower()
             d_words = set(d_lower.split())
-            common = search_words & d_words
-            if common and (len(common) / max(len(search_words), 1)) >= 0.5:
+            common = search_words_set & d_words
+            if common and (len(common) / max(len(search_words_set), 1)) >= 0.5:
                 score = self._calculate_match_score(name_lower, d_lower)
                 if score >= MATCH_THRESHOLD - 5:
                     logger.info(f"✅ WORD OVERLAP ({score:.0f}%) in customer_name: '{d}'")
                     return d
         
-        # STEP 9: Search in dealer_code as fallback (if customer_name fails)
+        # ==========================================================
+        # STEP 8: FUZZY MATCH against customer_name
+        # ==========================================================
+        if RAPIDFUZZ_AVAILABLE:
+            try:
+                # Try multiple scorers for better matching
+                scorers = [fuzz.partial_ratio, fuzz.token_set_ratio, fuzz.ratio]
+                for scorer in scorers:
+                    results = process.extract(name_lower, dealer_names, scorer=scorer, limit=10)
+                    for match, score, _ in results:
+                        if score >= MATCH_THRESHOLD - 5:
+                            logger.info(f"✅ FUZZY TYPO ({score:.0f}%) in customer_name: '{match}'")
+                            return match
+            except Exception as e:
+                logger.debug(f"Fuzzy failed: {e}")
+        
+        # ==========================================================
+        # STEP 9: Check if dealer exists with different city abbreviation
+        # ==========================================================
+        for d in dealer_names:
+            d_lower = d.lower()
+            # Check if base name matches without city abbreviation
+            base_search = name_lower
+            for abbr in ['a.k', 'ak', 'mzd', 'md', 'khi', 'lhr', 'isb', 'rwp']:
+                if abbr in base_search:
+                    base_search = base_search.replace(abbr, '').strip()
+                    break
+            
+            if base_search and len(base_search) >= 3:
+                # Check if dealer contains the base name
+                if base_search in d_lower:
+                    logger.info(f"✅ BASE NAME MATCH (ignoring city): '{name}' -> '{d}'")
+                    return d
+        
+        # ==========================================================
+        # STEP 10: Search in dealer_code as fallback (if customer_name fails)
+        # ==========================================================
         try:
             with self._session() as session:
                 # Search dealer_code column
@@ -1337,6 +1419,7 @@ class DealerAnalyticsService:
     @staticmethod
     def _session() -> Session:
         return SessionLocal()
+
 # ============================================================
 # BLOCK 8: SINGLETON & EXPORTS
 # ============================================================
