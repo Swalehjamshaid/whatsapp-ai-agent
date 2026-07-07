@@ -2263,39 +2263,36 @@ class DealerAnalyticsService:
         logger.info(f"   AI Engine: {'✅' if self._ai_engine._available else '❌'}")
     
     # ============================================================
-    # CRITICAL FIX: SYNC VERSION FOR WEBHOOK
+    # MAIN ENTRY POINT - SYNC VERSION
     # ============================================================
     
-    def process_whatsapp_query(self, message: str, sender: str) -> str:
+    def handle_message(self, message: str, sender: str) -> str:
         """
-        SYNC version for WhatsApp webhook.
-        This is what webhook.py calls.
+        MAIN ENTRY POINT for WhatsApp webhook.
+        This is SYNC - called directly by ai_provider_service.
         """
         try:
-            logger.info(f"📨 Dealer service processing: '{message}' from {sender}")
+            logger.info(f"📨 Dealer service received: '{message}' from {sender}")
             
             # Use sender phone as session ID
             session_id = sender
             
-            # Process input using the sync method
+            # Process input
             result = self.process_menu_input(session_id, message)
             
             return result.get("response", self._menu_renderer.render_main_menu())
             
         except Exception as e:
-            logger.error(f"❌ Error in process_whatsapp_query: {e}", exc_info=True)
+            logger.error(f"❌ Error in handle_message: {e}", exc_info=True)
             return self._menu_renderer.render_main_menu()
     
     # ============================================================
-    # ASYNC VERSION FOR COMPATIBILITY
+    # ALIAS for compatibility (points to handle_message)
     # ============================================================
     
-    async def handle_message(self, message: str, sender: str) -> str:
-        """
-        ASYNC version - calls the sync version.
-        This is for backward compatibility.
-        """
-        return self.process_whatsapp_query(message, sender)
+    def process_whatsapp_query(self, message: str, sender: str) -> str:
+        """Alias for handle_message - for compatibility"""
+        return self.handle_message(message, sender)
     
     # ============================================================
     # MENU AND PROCESSING METHODS
