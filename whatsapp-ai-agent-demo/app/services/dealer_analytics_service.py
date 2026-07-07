@@ -2548,7 +2548,8 @@ class ResponseFormatter:
 # ============================================================
 # BLOCK 14: MAIN DEALER ANALYTICS SERVICE WITH MENU
 # ============================================================
-# BLOCK 14: MAIN DEALER ANALYTICS SERVICE WITH MENU (UPDATED)
+# ============================================================
+# BLOCK 14: MAIN DEALER ANALYTICS SERVICE WITH MENU (COMPLETE FIX)
 # ============================================================
 
 class DealerAnalyticsService:
@@ -2632,73 +2633,95 @@ class DealerAnalyticsService:
         return self._menu_renderer.render_dealer_selection()
     
     def _get_dealer_suggestions(self, query: str, limit: int = 5) -> List[str]:
-        """Get dealer name suggestions based on query"""
+        """Get dealer name suggestions based on query - SCORED FOR RELEVANCE"""
         if not query or not query.strip():
             return []
         
         try:
             with self._session() as session:
-                # Get dealers that might match
+                # Get all distinct dealer names
                 results = session.query(
                     DeliveryReport.customer_name
                 ).filter(
                     DeliveryReport.customer_name.isnot(None)
-                ).distinct().limit(50).all()
+                ).distinct().limit(100).all()
                 
                 dealer_names = [d.customer_name for d in results if d.customer_name]
                 
                 if not dealer_names:
                     return []
                 
-                # Simple matching
                 suggestions = []
                 query_lower = query.lower().strip()
-                query_words = set(query_lower.split())
+                query_parts = query_lower.split()
                 
-                # Remove common words from query
-                stop_words = {'electronics', 'digital', 'technologies', 'traders', 'enterprises', 
-                             'systems', 'solutions', 'incorporated', 'international', 'corporation', 
-                             'limited', 'ltd', 'pvt', 'private', 'co', 'company', 'and', 'the', 'of',
-                             'khi', 'lhr', 'isb', 'rwp', 'fsd', 'mul', 'pes', 'que', 'hyd', 'guj', 'skt'}
-                query_words = query_words - stop_words
+                # Score each dealer for relevance
+                scored_dealers = []
                 
                 for dealer in dealer_names:
                     dealer_lower = dealer.lower()
+                    score = 0
                     
-                    # Check if query is in dealer name
+                    # 1. Exact match (highest score)
+                    if dealer_lower == query_lower:
+                        score += 100
+                    
+                    # 2. Dealer starts with query
+                    if dealer_lower.startswith(query_lower):
+                        score += 50
+                    
+                    # 3. Query is in dealer name
                     if query_lower in dealer_lower:
-                        if dealer not in suggestions:
-                            suggestions.append(dealer)
-                        continue
+                        score += 30
                     
-                    # Check if dealer name is in query
+                    # 4. Dealer name is in query
                     if dealer_lower in query_lower:
-                        if dealer not in suggestions:
-                            suggestions.append(dealer)
-                        continue
+                        score += 25
                     
-                    # Check word matches
-                    for word in query_words:
-                        if len(word) >= 3 and word in dealer_lower:
-                            if dealer not in suggestions:
-                                suggestions.append(dealer)
-                            break
+                    # 5. Individual word matches
+                    for part in query_parts:
+                        if len(part) >= 3:
+                            if part in dealer_lower:
+                                score += 10
+                            if dealer_lower.startswith(part):
+                                score += 15
+                    
+                    # 6. Shorter dealer names get bonus (cleaner names)
+                    if len(dealer_lower) < 30:
+                        score += 5
+                    
+                    # 7. No phone numbers or codes in dealer name (cleaner)
+                    if not re.search(r'[0-9]{10,}', dealer_lower):
+                        score += 5
+                    
+                    if score > 0:
+                        scored_dealers.append((dealer, score))
                 
-                # If using rapidfuzz, get fuzzy matches
-                if RAPIDFUZZ_AVAILABLE and len(suggestions) < limit:
+                # Sort by score descending
+                scored_dealers.sort(key=lambda x: x[1], reverse=True)
+                
+                # Get top suggestions
+                suggestions = [d[0] for d in scored_dealers[:limit]]
+                
+                # If no suggestions, try fuzzy matching
+                if not suggestions and RAPIDFUZZ_AVAILABLE:
                     try:
                         from rapidfuzz import fuzz, process
                         results = process.extract(
                             query_lower,
                             dealer_names,
-                            scorer=fuzz.ratio,
+                            scorer=fuzz.partial_ratio,
                             limit=limit
                         )
                         for match, score, _ in results:
-                            if score >= 60 and match not in suggestions:
+                            if score >= 50 and match not in suggestions:
                                 suggestions.append(match)
                     except Exception:
                         pass
+                
+                # If still no suggestions, return first few dealers
+                if not suggestions and dealer_names:
+                    suggestions = dealer_names[:limit]
                 
                 return suggestions[:limit]
                 
@@ -2706,18 +2729,239 @@ class DealerAnalyticsService:
             logger.error(f"Error getting dealer suggestions: {e}")
             return []
     
+    def _resolve_dealer_name(self, name: str) -> Optional[str]:
+        """Resolve dealer name from database - MORE AGGRESSIVE matching"""
+        if not name or not name.strip():
+            return None
+        
+        # Skip single digits (menu options)
+        if name.isdigit() and 1 <= int(name) <= 9:
+            logger.info(f"⏭️ Skipping '{name}' as dealer name (menu option)")
+            return None
+        
+        name_clean = name.strip().lower()
+        logger.info(f"🔍 Searching for dealer: '{name_clean}'")
+        
+        try:
+            with self._session() as session:
+                # Get all distinct dealer names
+                all_dealers = session.query(
+                    DeliveryReport.customer_name
+                ).filter(
+                    DeliveryReport.customer_name.isnot(None)
+                ).distinct().all()
+                
+                dealer_names = [d.customer_name for d in all_dealers if d.customer_name]
+                
+                if not dealer_names:
+                    logger.warning("⚠️ No dealers found in database")
+                    return None
+                
+                logger.info(f"📋 Found {len(dealer_names)} dealers in database")
+                
+                # Split search into parts
+                search_parts = name_clean.split()
+                
+                # 1. EXACT MATCH
+                for dealer in dealer_names:
+                    if dealer.lower() == name_clean:
+                        logger.info(f"✅ Exact match: '{dealer}'")
+                        return dealer
+                
+                # 2. DEALER STARTS WITH SEARCH
+                for dealer in dealer_names:
+                    if dealer.lower().startswith(name_clean):
+                        logger.info(f"✅ Starts with match: '{dealer}'")
+                        return dealer
+                
+                # 3. WORD MATCH - ANY search word in dealer name
+                for dealer in dealer_names:
+                    dealer_lower = dealer.lower()
+                    for part in search_parts:
+                        if len(part) >= 3 and part in dealer_lower:
+                            logger.info(f"✅ Word match: '{dealer}' (word: '{part}')")
+                            return dealer
+                
+                # 4. SEARCH IN DEALER
+                for dealer in dealer_names:
+                    if name_clean in dealer.lower():
+                        logger.info(f"✅ Search in dealer: '{dealer}'")
+                        return dealer
+                
+                # 5. DEALER IN SEARCH
+                for dealer in dealer_names:
+                    dealer_lower = dealer.lower()
+                    if dealer_lower in name_clean:
+                        logger.info(f"✅ Dealer in search: '{dealer}'")
+                        return dealer
+                
+                # 6. FUZZY MATCH (lower threshold)
+                if RAPIDFUZZ_AVAILABLE:
+                    try:
+                        from rapidfuzz import fuzz, process
+                        results = process.extract(
+                            name_clean,
+                            dealer_names,
+                            scorer=fuzz.partial_ratio,
+                            limit=5
+                        )
+                        for match, score, _ in results:
+                            if score >= 60:
+                                logger.info(f"✅ Fuzzy match: '{match}' (score: {score}%)")
+                                return match
+                    except Exception:
+                        pass
+                
+                # 7. CLEANED MATCH (remove common suffixes)
+                cleaned_search = _clean_dealer_name(name_clean)
+                if cleaned_search and cleaned_search != name_clean:
+                    for dealer in dealer_names:
+                        cleaned_dealer = _clean_dealer_name(dealer.lower())
+                        if cleaned_search in cleaned_dealer or cleaned_dealer in cleaned_search:
+                            logger.info(f"✅ Cleaned match: '{dealer}'")
+                            return dealer
+                
+                # 8. CITY ABBREVIATION MATCH (Khi, Lhr, etc.)
+                for city_abbr, city_name in CITY_ABBREVIATIONS.items():
+                    if city_abbr in name_clean:
+                        for dealer in dealer_names:
+                            if city_name in dealer.lower():
+                                for part in search_parts:
+                                    if len(part) >= 3 and part in dealer.lower():
+                                        logger.info(f"✅ City match: '{dealer}'")
+                                        return dealer
+                
+                # 9. Try to find by dealer_code or customer_code
+                # Search for dealer_code patterns
+                code_match = re.search(r'DEAL_[A-Z0-9_]+', name_clean.upper())
+                if code_match:
+                    dealer_code = code_match.group()
+                    for dealer in dealer_names:
+                        # Check if dealer_code is in the dealer name
+                        if dealer_code.lower() in dealer.lower():
+                            logger.info(f"✅ Dealer code match: '{dealer}'")
+                            return dealer
+                
+                logger.warning(f"⚠️ No match found for '{name}'")
+                return None
+                    
+        except Exception as e:
+            logger.error(f"❌ Error resolving dealer name '{name}': {e}")
+            return None
+    
+    def _get_dealer_dashboard(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
+        """Get dealer dashboard with auto-selection for matches"""
+        try:
+            # First, try to get the dashboard directly
+            with self._session() as session:
+                builder = DealerDashboardBuilder(session)
+                dashboard = builder.build(dealer_name)
+                
+                if dashboard:
+                    response = self._menu_renderer.render_dealer_dashboard(dealer_name, dashboard)
+                    return {
+                        "response": response,
+                        "menu_type": "dealer_menu",
+                        "action": "dashboard",
+                        "data": {"dealer": dealer_name, "dashboard": dashboard},
+                        "exit_menu": False
+                    }
+                
+                # ============================================================
+                # FIX: Dashboard not found - try to find a matching dealer
+                # ============================================================
+                
+                logger.info(f"🔍 No dashboard for '{dealer_name}', trying to find match...")
+                
+                # Get all distinct dealer names
+                all_dealers = session.query(
+                    DeliveryReport.customer_name
+                ).filter(
+                    DeliveryReport.customer_name.isnot(None)
+                ).distinct().all()
+                
+                dealer_names = [d.customer_name for d in all_dealers if d.customer_name]
+                
+                # Try to find dealer where search term is part of dealer name
+                dealer_lower = dealer_name.lower()
+                matched_dealer = None
+                
+                for d in dealer_names:
+                    d_lower = d.lower()
+                    # Check if search term is in dealer name
+                    if dealer_lower in d_lower:
+                        matched_dealer = d
+                        logger.info(f"✅ Found dealer containing search: '{d}'")
+                        break
+                    # Check if dealer name is in search term
+                    if d_lower in dealer_lower:
+                        matched_dealer = d
+                        logger.info(f"✅ Found dealer in search: '{d}'")
+                        break
+                
+                # If we found a match, try to build dashboard for it
+                if matched_dealer:
+                    logger.info(f"🔄 Auto-selecting: '{matched_dealer}'")
+                    dashboard = builder.build(matched_dealer)
+                    if dashboard:
+                        context.current_dealer = matched_dealer
+                        response = self._menu_renderer.render_dealer_dashboard(matched_dealer, dashboard)
+                        return {
+                            "response": response,
+                            "menu_type": "dealer_menu",
+                            "action": "dashboard",
+                            "data": {"dealer": matched_dealer, "dashboard": dashboard},
+                            "exit_menu": False
+                        }
+                
+                # ============================================================
+                # If no match found, get suggestions
+                # ============================================================
+                
+                suggestions = self._get_dealer_suggestions(dealer_name)
+                
+                # If there's only ONE suggestion, auto-select it
+                if len(suggestions) == 1:
+                    auto_dealer = suggestions[0]
+                    logger.info(f"🔄 Auto-selecting single suggestion: '{auto_dealer}'")
+                    context.current_dealer = auto_dealer
+                    # Recursive call with the matched dealer
+                    return self._get_dealer_dashboard(context, auto_dealer)
+                
+                # If multiple suggestions, show them
+                if suggestions:
+                    suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
+                    response = (
+                        f"⚠️ *Multiple dealers found for: {dealer_name}*\n\n"
+                        f"💡 *Did you mean:*\n{suggestion_text}\n\n"
+                        f"Type the exact name or:\n"
+                        f"0. Main Menu\n"
+                        f"99. Back"
+                    )
+                else:
+                    response = f"⚠️ No data found for dealer: {dealer_name}\n\n0. Main Menu\n99. Back"
+                
+                return {
+                    "response": response,
+                    "menu_type": "dealer_menu",
+                    "action": "dealer_not_found",
+                    "data": {"dealer": dealer_name},
+                    "exit_menu": False
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Error getting dealer dashboard: {e}", exc_info=True)
+            return {
+                "response": f"⚠️ Error loading dashboard: {str(e)}\n\n0. Main Menu\n99. Back",
+                "menu_type": "dealer_menu",
+                "action": "error",
+                "data": {},
+                "exit_menu": False
+            }
+    
     def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
         """
         Process menu input and return response
-        
-        Returns:
-            {
-                "response": str,           # WhatsApp message
-                "menu_type": str,          # "dealer_menu"
-                "action": str,             # Action performed
-                "data": dict,              # Additional data
-                "exit_menu": bool          # True if should return to main menu
-            }
         """
         context = self._get_context(session_id)
         user_input = user_input.strip()
@@ -2725,7 +2969,7 @@ class DealerAnalyticsService:
         logger.info(f"📥 Processing input: '{user_input}' for session {session_id}, state: {context.menu_state}")
         
         # ============================================================
-        # STEP 1: Handle navigation commands (ALWAYS check these first)
+        # STEP 1: Handle navigation commands
         # ============================================================
         
         if user_input == "0" or user_input == "99":
@@ -2748,6 +2992,15 @@ class DealerAnalyticsService:
             else:
                 # Get suggestions
                 suggestions = self._get_dealer_suggestions(user_input)
+                
+                # If only one suggestion, auto-select it
+                if len(suggestions) == 1:
+                    auto_dealer = suggestions[0]
+                    logger.info(f"🔄 Auto-selecting single suggestion: '{auto_dealer}'")
+                    context.current_dealer = auto_dealer
+                    context.awaiting_dealer = False
+                    context.selected_option = None
+                    return self._get_dealer_dashboard(context, auto_dealer)
                 
                 if suggestions:
                     suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
@@ -2779,7 +3032,6 @@ class DealerAnalyticsService:
         # STEP 3: Check if this is a menu option (1-18)
         # ============================================================
         
-        # Menu options are ONLY 1-18 (and 0, 99 handled above)
         is_menu_option = user_input.isdigit() and 1 <= int(user_input) <= 18
         
         if is_menu_option:
@@ -2812,7 +3064,6 @@ class DealerAnalyticsService:
             return self._handle_ranking(context)
         
         if "compare" in user_lower or "vs" in user_lower:
-            # Try to extract dealer names
             import re
             match = re.search(r'compare\s+([\w\s]+)\s+and\s+([\w\s]+)', user_lower, re.IGNORECASE)
             if match:
@@ -2848,7 +3099,7 @@ class DealerAnalyticsService:
             "menu_type": "dealer_menu",
             "action": "main_menu",
             "data": {},
-            "exit_menu": True  # Exit to main AI Logistics menu
+            "exit_menu": True
         }
     
     def _handle_main_menu_option(self, context: DealerContext, option: str) -> Dict[str, Any]:
@@ -2879,11 +3130,9 @@ class DealerAnalyticsService:
         if option in option_map:
             action, prompt = option_map[option]
             
-            # Handle ranking directly (doesn't need dealer name)
             if action == "ranking":
                 return self._handle_ranking(context)
             
-            # Handle comparison (needs two dealers)
             if action == "comparison":
                 context.awaiting_comparison = True
                 context.comparison_dealers = []
@@ -2895,7 +3144,6 @@ class DealerAnalyticsService:
                     "exit_menu": False
                 }
             
-            # Set awaiting dealer state
             context.awaiting_dealer = True
             context.selected_option = action
             
@@ -2907,7 +3155,6 @@ class DealerAnalyticsService:
                 "exit_menu": False
             }
         
-        # Default: show menu
         return {
             "response": self._menu_renderer.render_main_menu(),
             "menu_type": "dealer_menu",
@@ -2921,28 +3168,34 @@ class DealerAnalyticsService:
         resolved = self._resolve_dealer_name(dealer_name)
         
         if not resolved:
-            # Get suggestions
             suggestions = self._get_dealer_suggestions(dealer_name)
             
-            if suggestions:
-                suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
-                response = (
-                    f"🔍 *Dealer '{dealer_name}' not found.*\n\n"
-                    f"💡 *Did you mean:*\n{suggestion_text}\n\n"
-                    f"Please type the exact dealer name or:\n"
-                    f"0. Main Menu\n"
-                    f"99. Back"
-                )
-            else:
-                response = self._menu_renderer.render_comparison_selection() + f"\n\nDealer '{dealer_name}' not found. Try again:"
+            # If only one suggestion, auto-select it
+            if len(suggestions) == 1:
+                auto_dealer = suggestions[0]
+                logger.info(f"🔄 Auto-selecting single suggestion for comparison: '{auto_dealer}'")
+                resolved = auto_dealer
             
-            return {
-                "response": response,
-                "menu_type": "dealer_menu",
-                "action": "comparison_selection",
-                "data": {"awaiting": True},
-                "exit_menu": False
-            }
+            if not resolved:
+                if suggestions:
+                    suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
+                    response = (
+                        f"🔍 *Dealer '{dealer_name}' not found.*\n\n"
+                        f"💡 *Did you mean:*\n{suggestion_text}\n\n"
+                        f"Please type the exact dealer name or:\n"
+                        f"0. Main Menu\n"
+                        f"99. Back"
+                    )
+                else:
+                    response = self._menu_renderer.render_comparison_selection() + f"\n\nDealer '{dealer_name}' not found. Try again:"
+                
+                return {
+                    "response": response,
+                    "menu_type": "dealer_menu",
+                    "action": "comparison_selection",
+                    "data": {"awaiting": True},
+                    "exit_menu": False
+                }
         
         context.comparison_dealers.append(resolved)
         
@@ -2955,168 +3208,10 @@ class DealerAnalyticsService:
                 "exit_menu": False
             }
         else:
-            # Both dealers selected, perform comparison
             dealer1, dealer2 = context.comparison_dealers
             context.awaiting_comparison = False
             context.comparison_dealers = []
             return self._compare_dealers(context, dealer1, dealer2)
-    
-    def _resolve_dealer_name(self, name: str) -> Optional[str]:
-        """Resolve dealer name from database with improved matching"""
-        if not name or not name.strip():
-            return None
-        
-        # Skip single digits (menu options)
-        if name.isdigit() and 1 <= int(name) <= 9:
-            logger.info(f"⏭️ Skipping '{name}' as dealer name (menu option)")
-            return None
-        
-        name_clean = name.strip().lower()
-        logger.info(f"🔍 Searching for dealer: '{name_clean}'")
-        
-        try:
-            with self._session() as session:
-                # Get all distinct dealer names for matching
-                all_dealers = session.query(
-                    DeliveryReport.customer_name
-                ).filter(
-                    DeliveryReport.customer_name.isnot(None)
-                ).distinct().all()
-                
-                dealer_names = [d.customer_name for d in all_dealers if d.customer_name]
-                
-                if not dealer_names:
-                    logger.warning("⚠️ No dealers found in database")
-                    return None
-                
-                logger.info(f"📋 Found {len(dealer_names)} dealers in database")
-                
-                # 1. EXACT MATCH (case insensitive)
-                for dealer in dealer_names:
-                    if dealer.lower() == name_clean:
-                        logger.info(f"✅ Exact match found: '{dealer}'")
-                        return dealer
-                
-                # 2. PARTIAL MATCH (dealer name contains search term)
-                for dealer in dealer_names:
-                    if name_clean in dealer.lower():
-                        logger.info(f"✅ Partial match found: '{dealer}'")
-                        return dealer
-                
-                # 3. SEARCH TERM CONTAINS DEALER NAME
-                for dealer in dealer_names:
-                    if dealer.lower() in name_clean:
-                        logger.info(f"✅ Reverse partial match found: '{dealer}'")
-                        return dealer
-                
-                # 4. FUZZY MATCH (using rapidfuzz if available)
-                if RAPIDFUZZ_AVAILABLE:
-                    try:
-                        from rapidfuzz import fuzz, process
-                        
-                        # Get best match with threshold
-                        results = process.extract(
-                            name_clean,
-                            dealer_names,
-                            scorer=fuzz.ratio,
-                            limit=5
-                        )
-                        
-                        for match, score, _ in results:
-                            if score >= 80:  # 80% similarity threshold
-                                logger.info(f"✅ Fuzzy match found: '{match}' (score: {score}%)")
-                                return match
-                    except Exception as e:
-                        logger.debug(f"Fuzzy matching failed: {e}")
-                
-                # 5. CLEANED NAME MATCH (remove suffixes)
-                cleaned_search = _clean_dealer_name(name_clean)
-                if cleaned_search and cleaned_search != name_clean:
-                    for dealer in dealer_names:
-                        cleaned_dealer = _clean_dealer_name(dealer.lower())
-                        if cleaned_dealer == cleaned_search:
-                            logger.info(f"✅ Cleaned match found: '{dealer}'")
-                            return dealer
-                        
-                        if cleaned_search in cleaned_dealer or cleaned_dealer in cleaned_search:
-                            logger.info(f"✅ Cleaned partial match found: '{dealer}'")
-                            return dealer
-                
-                # 6. WORD MATCH (search for significant words)
-                search_words = set(name_clean.split())
-                # Remove common words
-                stop_words = {'electronics', 'digital', 'technologies', 'traders', 'enterprises', 
-                             'systems', 'solutions', 'incorporated', 'international', 'corporation', 
-                             'limited', 'ltd', 'pvt', 'private', 'co', 'company', 'and', 'the', 'of',
-                             'khi', 'lhr', 'isb', 'rwp', 'fsd', 'mul', 'pes', 'que', 'hyd', 'guj', 'skt'}
-                search_words = search_words - stop_words
-                
-                if search_words:
-                    for dealer in dealer_names:
-                        dealer_lower = dealer.lower()
-                        # Check if any search word is in dealer name
-                        for word in search_words:
-                            if len(word) >= 3 and word in dealer_lower:
-                                logger.info(f"✅ Word match found: '{dealer}' (matched: '{word}')")
-                                return dealer
-                
-                # 7. Show similar dealers if no match
-                logger.warning(f"⚠️ No match found for '{name}'")
-                return None
-                    
-        except Exception as e:
-            logger.error(f"❌ Error resolving dealer name '{name}': {e}")
-            return None
-    
-    def _get_dealer_dashboard(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer dashboard"""
-        try:
-            with self._session() as session:
-                builder = DealerDashboardBuilder(session)
-                dashboard = builder.build(dealer_name)
-                
-                if not dashboard:
-                    # Try to find similar dealers
-                    suggestions = self._get_dealer_suggestions(dealer_name)
-                    
-                    if suggestions:
-                        suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
-                        response = (
-                            f"⚠️ *No data found for dealer: {dealer_name}*\n\n"
-                            f"💡 *Did you mean:*\n{suggestion_text}\n\n"
-                            f"0. Main Menu\n"
-                            f"99. Back"
-                        )
-                    else:
-                        response = f"⚠️ No data found for dealer: {dealer_name}\n\n0. Main Menu\n99. Back"
-                    
-                    return {
-                        "response": response,
-                        "menu_type": "dealer_menu",
-                        "action": "dealer_not_found",
-                        "data": {"dealer": dealer_name},
-                        "exit_menu": False
-                    }
-                
-                response = self._menu_renderer.render_dealer_dashboard(dealer_name, dashboard)
-                
-                return {
-                    "response": response,
-                    "menu_type": "dealer_menu",
-                    "action": "dashboard",
-                    "data": {"dealer": dealer_name, "dashboard": dashboard},
-                    "exit_menu": False
-                }
-                
-        except Exception as e:
-            logger.error(f"Error getting dealer dashboard: {e}")
-            return {
-                "response": f"⚠️ Error loading dashboard: {str(e)}\n\n0. Main Menu\n99. Back",
-                "menu_type": "dealer_menu",
-                "action": "error",
-                "data": {},
-                "exit_menu": False
-            }
     
     def _handle_ranking(self, context: DealerContext) -> Dict[str, Any]:
         """Handle ranking request"""
@@ -3171,10 +3266,8 @@ class DealerAnalyticsService:
                         "exit_menu": False
                     }
                 
-                # Extract metrics for comparison
                 metrics = {}
                 
-                # Dealer 1 metrics
                 delivery1 = dashboard1.get('delivery', {})
                 sales1 = dashboard1.get('sales', {})
                 perf1 = dashboard1.get('performance', {})
@@ -3189,7 +3282,6 @@ class DealerAnalyticsService:
                     "Performance Tier": perf1.get('performance_tier', 'Standard')
                 }
                 
-                # Dealer 2 metrics
                 delivery2 = dashboard2.get('delivery', {})
                 sales2 = dashboard2.get('sales', {})
                 perf2 = dashboard2.get('performance', {})
@@ -3204,7 +3296,6 @@ class DealerAnalyticsService:
                     "Performance Tier": perf2.get('performance_tier', 'Standard')
                 }
                 
-                # Generate explanation
                 score1 = perf1.get('business_score', 0)
                 score2 = perf2.get('business_score', 0)
                 if score1 > score2:
@@ -3244,9 +3335,15 @@ class DealerAnalyticsService:
                 results = repo.search_dealers(query)
                 
                 if not results:
-                    # Try suggestions
                     suggestions = self._get_dealer_suggestions(query)
                     if suggestions:
+                        # If only one suggestion, auto-select it
+                        if len(suggestions) == 1:
+                            auto_dealer = suggestions[0]
+                            logger.info(f"🔄 Auto-selecting single search result: '{auto_dealer}'")
+                            context.current_dealer = auto_dealer
+                            return self._get_dealer_dashboard(context, auto_dealer)
+                        
                         suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
                         response = (
                             f"🔍 No dealers found matching '{query}'\n\n"
@@ -3299,17 +3396,14 @@ class DealerAnalyticsService:
         """Handle quick query (natural language)"""
         user_lower = user_input.lower()
         
-        # Try quick commands
         if "top dealers" in user_lower or "ranking" in user_lower:
             return self._handle_ranking(context)
         
-        # Try to extract dealer name
         dealer_name = self._resolve_dealer_name(user_input)
         if dealer_name:
             context.current_dealer = dealer_name
             return self._get_dealer_dashboard(context, dealer_name)
         
-        # Show menu
         return {
             "response": self._menu_renderer.render_main_menu(),
             "menu_type": "dealer_menu",
