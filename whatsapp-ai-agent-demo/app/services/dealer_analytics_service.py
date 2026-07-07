@@ -1043,6 +1043,9 @@ class DealerMenuRenderer:
 # ============================================================
 # BLOCK 7: MAIN DEALER ANALYTICS SERVICE
 # ============================================================
+# ============================================================
+# BLOCK 7: MAIN DEALER ANALYTICS SERVICE
+# ============================================================
 
 class DealerAnalyticsService:
     def __init__(self) -> None:
@@ -1143,53 +1146,178 @@ class DealerAnalyticsService:
         return round(final_score, 1)
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
-        """Dealer resolution with DIRECT DATABASE SEARCH. NO CACHE."""
+        """
+        Dealer resolution with DIRECT DATABASE SEARCH. NO CACHE.
+        
+        FIX v12.6: This method ALWAYS queries PostgreSQL directly.
+        """
         if not name or not name.strip():
             return None
         if name.isdigit():
             return None
         
-        name_lower = name.strip().lower()
-        logger.info(f"🔍 DIRECT POSTGRESQL SEARCH for: '{name_lower}'")
+        name_original = name.strip()
+        name_lower = name_original.lower()
         
+        logger.info("=" * 80)
+        logger.info(f"🔍 _resolve_dealer_name called with: '{name_original}'")
+        logger.info(f"🔍 Lowercase: '{name_lower}'")
+        logger.info("=" * 80)
+        
+        # ==========================================================
         # STEP 1: CHECK SPECIAL PATTERNS
+        # ==========================================================
         if name_lower in SPECIAL_PATTERNS:
             result = SPECIAL_PATTERNS[name_lower]
-            logger.info(f"✅ SPECIAL PATTERN: '{name}' -> '{result}'")
-            return result
+            logger.info(f"✅ SPECIAL PATTERN: '{name_original}' -> '{result}'")
+            # Verify the result exists in database
+            try:
+                with self._session() as session:
+                    exists = session.query(DeliveryReport.customer_name).filter(
+                        func.lower(func.trim(DeliveryReport.customer_name)) == result.lower()
+                    ).first()
+                    if exists:
+                        logger.info(f"✅ Special pattern result verified in database: '{result}'")
+                        return result
+                    else:
+                        logger.warning(f"⚠️ Special pattern result '{result}' not found in database")
+            except Exception as e:
+                logger.error(f"❌ Special pattern verification failed: {e}")
         
-        for pattern, result in SPECIAL_PATTERNS.items():
-            if pattern in name_lower or name_lower in pattern:
-                logger.info(f"✅ PARTIAL SPECIAL PATTERN: '{name}' -> '{result}'")
-                return result
-        
-        # STEP 2: DIRECT POSTGRESQL SEARCH
+        # ==========================================================
+        # STEP 2: DIRECT POSTGRESQL SEARCH - EXACT MATCH
+        # ==========================================================
         try:
             with self._session() as session:
-                # Exact match with TRIM()
-                logger.info(f"🔍 PostgreSQL EXACT match: '{name_lower}'")
+                # Try exact match with TRIM
+                logger.info(f"🔍 PostgreSQL EXACT match (with TRIM): '{name_lower}'")
                 result = session.query(DeliveryReport.customer_name).filter(
-                    func.lower(func.trim(DeliveryReport.customer_name)) == name_lower.strip()
+                    func.lower(func.trim(DeliveryReport.customer_name)) == name_lower
                 ).first()
+                
                 if result and result[0]:
-                    logger.info(f"✅ POSTGRESQL EXACT MATCH: '{result[0]}'")
+                    logger.info(f"✅ POSTGRESQL EXACT MATCH (TRIM): '{result[0]}'")
                     return result[0]
                 
-                # ILIKE with TRIM()
-                logger.info(f"🔍 PostgreSQL ILIKE match: '%{name_lower.strip()}%'")
+                # Try exact match without TRIM (fallback)
+                logger.info(f"🔍 PostgreSQL EXACT match (no TRIM): '{name_lower}'")
                 result = session.query(DeliveryReport.customer_name).filter(
-                    func.lower(func.trim(DeliveryReport.customer_name)).ilike(f"%{name_lower.strip()}%")
+                    func.lower(DeliveryReport.customer_name) == name_lower
                 ).first()
+                
                 if result and result[0]:
-                    logger.info(f"✅ POSTGRESQL ILIKE MATCH: '{result[0]}'")
+                    logger.info(f"✅ POSTGRESQL EXACT MATCH (no TRIM): '{result[0]}'")
                     return result[0]
                 
         except Exception as e:
-            logger.error(f"❌ PostgreSQL search failed: {e}")
+            logger.error(f"❌ PostgreSQL exact match failed: {e}")
             import traceback
             logger.error(traceback.format_exc())
         
-        # STEP 3: Fuzzy Match
+        # ==========================================================
+        # STEP 3: DIRECT POSTGRESQL SEARCH - ILIKE PARTIAL MATCH
+        # ==========================================================
+        try:
+            with self._session() as session:
+                # Try ILIKE with TRIM
+                logger.info(f"🔍 PostgreSQL ILIKE match (with TRIM): '%{name_lower}%'")
+                result = session.query(DeliveryReport.customer_name).filter(
+                    func.lower(func.trim(DeliveryReport.customer_name)).ilike(f"%{name_lower}%")
+                ).first()
+                
+                if result and result[0]:
+                    logger.info(f"✅ POSTGRESQL ILIKE MATCH (TRIM): '{result[0]}'")
+                    return result[0]
+                
+                # Try ILIKE without TRIM
+                logger.info(f"🔍 PostgreSQL ILIKE match (no TRIM): '%{name_lower}%'")
+                result = session.query(DeliveryReport.customer_name).filter(
+                    func.lower(DeliveryReport.customer_name).ilike(f"%{name_lower}%")
+                ).first()
+                
+                if result and result[0]:
+                    logger.info(f"✅ POSTGRESQL ILIKE MATCH (no TRIM): '{result[0]}'")
+                    return result[0]
+                
+        except Exception as e:
+            logger.error(f"❌ PostgreSQL ILIKE match failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+        
+        # ==========================================================
+        # STEP 4: SEARCH IN dealer_code
+        # ==========================================================
+        try:
+            with self._session() as session:
+                logger.info(f"🔍 PostgreSQL dealer_code match: '%{name_lower}%'")
+                result = session.query(DeliveryReport.customer_name).filter(
+                    func.lower(func.trim(DeliveryReport.dealer_code)).ilike(f"%{name_lower}%")
+                ).first()
+                
+                if result and result[0]:
+                    logger.info(f"✅ POSTGRESQL DEALER_CODE MATCH: '{result[0]}'")
+                    return result[0]
+                
+        except Exception as e:
+            logger.error(f"❌ PostgreSQL dealer_code match failed: {e}")
+        
+        # ==========================================================
+        # STEP 5: SEARCH IN customer_code
+        # ==========================================================
+        try:
+            with self._session() as session:
+                logger.info(f"🔍 PostgreSQL customer_code match: '%{name_lower}%'")
+                result = session.query(DeliveryReport.customer_name).filter(
+                    func.lower(func.trim(DeliveryReport.customer_code)).ilike(f"%{name_lower}%")
+                ).first()
+                
+                if result and result[0]:
+                    logger.info(f"✅ POSTGRESQL CUSTOMER_CODE MATCH: '{result[0]}'")
+                    return result[0]
+                
+        except Exception as e:
+            logger.error(f"❌ PostgreSQL customer_code match failed: {e}")
+        
+        # ==========================================================
+        # STEP 6: GET ALL DEALERS AND CHECK (Fallback)
+        # ==========================================================
+        try:
+            dealer_names = self._get_all_dealers()
+            if dealer_names:
+                logger.info(f"🔍 Checking against {len(dealer_names)} cached dealers")
+                
+                # Exact match
+                for d in dealer_names:
+                    if d.lower() == name_lower:
+                        logger.info(f"✅ CACHE EXACT MATCH: '{d}'")
+                        return d
+                
+                # Normalized match (handle hyphen vs space)
+                normalized_name = name_lower.replace(' - ', '-').replace(' -', '-').replace('- ', '-')
+                normalized_name = normalized_name.replace('.', '').replace(',', '')
+                
+                for d in dealer_names:
+                    d_normalized = d.lower().replace(' - ', '-').replace(' -', '-').replace('- ', '-')
+                    d_normalized = d_normalized.replace('.', '').replace(',', '')
+                    if d_normalized == normalized_name:
+                        logger.info(f"✅ CACHE NORMALIZED MATCH: '{d}'")
+                        return d
+                
+                # Contains match
+                for d in dealer_names:
+                    d_lower = d.lower()
+                    if name_lower in d_lower:
+                        logger.info(f"✅ CACHE CONTAINS MATCH: '{d}'")
+                        return d
+                    if d_lower in name_lower:
+                        logger.info(f"✅ CACHE REVERSE CONTAINS MATCH: '{d}'")
+                        return d
+        except Exception as e:
+            logger.error(f"❌ Cache check failed: {e}")
+        
+        # ==========================================================
+        # STEP 7: FUZZY MATCH (Only if RapidFuzz is available)
+        # ==========================================================
         if RAPIDFUZZ_AVAILABLE:
             try:
                 dealer_names = self._get_all_dealers()
@@ -1203,7 +1331,8 @@ class DealerAnalyticsService:
             except Exception as e:
                 logger.debug(f"Fuzzy match failed: {e}")
         
-        logger.info(f"❌ No match found in PostgreSQL for '{name}'")
+        logger.info(f"❌ No match found in PostgreSQL for '{name_original}'")
+        logger.info("=" * 80)
         return None
     
     def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
@@ -1238,9 +1367,12 @@ class DealerAnalyticsService:
                         "response": self._renderer.render_executive_dashboard(dealer_name, data),
                         "data": data
                     }
+                logger.warning(f"⚠️ No data returned for dealer: '{dealer_name}'")
                 return {"response": None, "data": None}
         except Exception as e:
-            logger.error(f"Dashboard error: {e}")
+            logger.error(f"❌ Dashboard error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {"response": None, "data": None}
     
     def _handle_ranking(self) -> Dict[str, Any]:
@@ -1379,7 +1511,6 @@ class DealerAnalyticsService:
     @staticmethod
     def _session() -> Session:
         return SessionLocal()
-
 # ============================================================
 # BLOCK 8: SINGLETON & EXPORTS
 # ============================================================
