@@ -451,9 +451,59 @@ def _get_distance_info(warehouse: str, city: str) -> Dict[str, Any]:
 # ============================================================
 # BLOCK 7: MENU SYSTEM
 # ============================================================
+# ============================================================
+# BLOCK 7: MENU SYSTEM (UPDATED WITH CLEAN DEALER NAMES)
+# ============================================================
 
 class DealerMenuRenderer:
     """Render dealer analytics menus in WhatsApp format"""
+    
+    @staticmethod
+    def _clean_dealer_name_for_display(name: str) -> str:
+        """Clean dealer name for display - removes phone numbers, codes, etc."""
+        if not name:
+            return "Unknown Dealer"
+        
+        # Start with the raw name
+        cleaned = name
+        
+        # Remove phone numbers (various formats)
+        # 0300-1234567, 0300 1234567, 03001234567
+        cleaned = re.sub(r'0[0-9]{2,4}[-.\s]?[0-9]{7,8}', '', cleaned)
+        # 0314-2437325 format
+        cleaned = re.sub(r'[0-9]{4}[-.\s]?[0-9]{7}', '', cleaned)
+        # Any 10-12 digit number
+        cleaned = re.sub(r'\b[0-9]{10,12}\b', '', cleaned)
+        
+        # Remove patterns like "7450-"
+        cleaned = re.sub(r'^[0-9]{4,5}[-.\s]', '', cleaned)
+        
+        # Remove "C/O", "c/o", "C/O" patterns
+        cleaned = re.sub(r'C/O\s*', '', cleaned, flags=re.IGNORECASE)
+        
+        # Remove extra commas and clean up
+        cleaned = re.sub(r'\s*,', ',', cleaned)
+        cleaned = re.sub(r',\s*', ', ', cleaned)
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        
+        # Remove trailing commas
+        cleaned = cleaned.rstrip(',')
+        
+        # If name is too long or has multiple parts, try to extract a cleaner version
+        if len(cleaned) > 40 or ',' in cleaned or '/' in cleaned:
+            # Try to get first meaningful part before comma or slash
+            for separator in [',', '/', ' - ']:
+                if separator in cleaned:
+                    cleaned = cleaned.split(separator)[0].strip()
+                    break
+            
+            # If still too long, truncate
+            if len(cleaned) > 35:
+                cleaned = cleaned[:32] + "..."
+        
+        # Final cleanup
+        cleaned = cleaned.strip()
+        return cleaned if cleaned else "Unknown Dealer"
     
     @staticmethod
     def render_main_menu() -> str:
@@ -522,13 +572,19 @@ class DealerMenuRenderer:
     
     @staticmethod
     def render_dealer_dashboard(dealer_name: str, data: Dict[str, Any]) -> str:
-        """Render dealer dashboard in WhatsApp format"""
+        """Render dealer dashboard in WhatsApp format with cleaned dealer name"""
         identity = data.get('identity', {})
         delivery = data.get('delivery', {})
         sales = data.get('sales', {})
         distance = data.get('distance', {})
         product = data.get('product', {})
         warehouse = data.get('warehouse', {})
+        
+        # ============================================================
+        # CLEAN DEALER NAME FOR DISPLAY
+        # ============================================================
+        raw_name = identity.get('customer_name', dealer_name)
+        display_name = DealerMenuRenderer._clean_dealer_name_for_display(raw_name)
         
         # Calculate aging metrics
         today = datetime.utcnow().date()
@@ -555,7 +611,7 @@ class DealerMenuRenderer:
             f"        🏢 DEALER INTELLIGENCE CENTER",
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
-            f"Dealer Name        : {identity.get('customer_name', dealer_name)}",
+            f"Dealer Name        : {display_name}",
             f"Dealer Code        : {identity.get('dealer_code', 'N/A')}",
             f"City               : {identity.get('city', 'N/A')}",
             f"Sales Office       : {identity.get('sales_office', 'N/A')}",
@@ -589,7 +645,7 @@ class DealerMenuRenderer:
             f"Average POD Days      : {delivery.get('avg_pod_days', 0):.1f}",
             "",
             f"Oldest Pending DN     : {oldest_pending_days} Days",
-            f"Newest Pending DN     : 1 Day",  # Placeholder
+            f"Newest Pending DN     : 1 Day",
             "",
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             f"🏭 WAREHOUSE DISTRIBUTION",
@@ -668,6 +724,9 @@ class DealerMenuRenderer:
             dealer = item.get('dealer', 'Unknown')
             value = item.get('value', 'N/A')
             
+            # Clean dealer name in rankings too
+            clean_dealer = DealerMenuRenderer._clean_dealer_name_for_display(dealer)
+            
             if i == 1:
                 medal = "🥇"
             elif i == 2:
@@ -677,11 +736,11 @@ class DealerMenuRenderer:
             else:
                 medal = f"{i}."
             
-            lines.append(f"{medal} {dealer}: {value}")
+            lines.append(f"{medal} {clean_dealer}: {value}")
         
         lines.extend([
             "",
-            "━━━━━━━━━━━━━━━━━━",
+            "━━━━━━━━━━━━━━━━━━━━",
             "",
             "0. Main Menu",
             "99. Back"
@@ -690,9 +749,13 @@ class DealerMenuRenderer:
     
     @staticmethod
     def render_comparison_result(dealer1: str, dealer2: str, metrics: Dict[str, Any]) -> str:
-        """Render comparison result"""
+        """Render comparison result with cleaned dealer names"""
+        # Clean dealer names
+        clean_dealer1 = DealerMenuRenderer._clean_dealer_name_for_display(dealer1)
+        clean_dealer2 = DealerMenuRenderer._clean_dealer_name_for_display(dealer2)
+        
         lines = [
-            f"🔄 *Comparison: {dealer1} vs {dealer2}*",
+            f"🔄 *Comparison: {clean_dealer1} vs {clean_dealer2}*",
             "",
             "───────────────────",
             "",
@@ -743,7 +806,9 @@ class DealerMenuRenderer:
         for i, item in enumerate(dealers[:10], 1):
             dealer = item.get('dealer_name', 'N/A')
             pending = item.get('pending_count', 0)
-            lines.append(f"{i}. {dealer}: {pending} pending")
+            # Clean dealer name
+            clean_dealer = DealerMenuRenderer._clean_dealer_name_for_display(dealer)
+            lines.append(f"{i}. {clean_dealer}: {pending} pending")
         
         if len(dealers) > 10:
             lines.append(f"... and {len(dealers) - 10} more")
@@ -757,11 +822,15 @@ class DealerMenuRenderer:
     
     @staticmethod
     def render_executive_summary(dealer_name: str, data: Dict[str, Any]) -> str:
-        """Render executive summary"""
+        """Render executive summary with cleaned dealer name"""
         identity = data.get('identity', {})
         delivery = data.get('delivery', {})
         sales = data.get('sales', {})
         performance = data.get('performance', {})
+        
+        # Clean dealer name
+        raw_name = identity.get('customer_name', dealer_name)
+        clean_dealer = DealerMenuRenderer._clean_dealer_name_for_display(raw_name)
         
         revenue = sales.get('total_revenue', 0)
         units = sales.get('total_quantity', 0)
@@ -772,7 +841,7 @@ class DealerMenuRenderer:
         recommendations = data.get('recommendations', [])[:3]
         
         lines = [
-            f"📋 *Executive Summary - {dealer_name}*",
+            f"📋 *Executive Summary - {clean_dealer}*",
             "",
             f"💰 Revenue: {_format_currency(revenue)}",
             f"📦 Units: {units:,}",
@@ -796,7 +865,6 @@ class DealerMenuRenderer:
             "99. Back"
         ])
         return "\n".join(lines)
-
 # ============================================================
 # BLOCK 8: INTENT ENGINE
 # ============================================================
