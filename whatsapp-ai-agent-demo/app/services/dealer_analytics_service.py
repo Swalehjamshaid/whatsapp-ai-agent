@@ -14,7 +14,7 @@ SOURCE OF TRUTH: PostgreSQL ONLY
 FEATURES:
 - ✅ Executive Dashboard Format
 - ✅ Complete Menu System (20+ options)
-- ✅ Dealer Selection with Suggestions
+- ✅ Dealer Selection with Smart Suggestions
 - ✅ Comparison Flow (2 dealers)
 - ✅ Ranking Display with Medals
 - ✅ Quick Commands Support
@@ -23,7 +23,6 @@ FEATURES:
 - ✅ PostgreSQL Integration
 - ✅ Full Analytics Suite
 - ✅ Distance Calculation (OpenRouteService)
-- ✅ AI Summary (Groq - Optional)
 - ✅ 90% Confidence Dealer Resolution
 
 ================================================================================
@@ -73,7 +72,7 @@ CACHE_TTL = max(60, int(os.getenv("DEALER_ANALYTICS_CACHE_TTL", "300")))
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
 VERSION = "12.1"
-MATCH_THRESHOLD = 90
+MATCH_THRESHOLD = 80  # Lowered to 80% for better matching
 
 CITY_ABBREVIATIONS = {
     'khi': 'karachi', 'lhr': 'lahore', 'isb': 'islamabad', 'rwp': 'rawalpindi',
@@ -386,6 +385,24 @@ class DealerMenuRenderer:
         ])
     
     @staticmethod
+    def render_suggestions(query: str, suggestions: List[str]) -> str:
+        if not suggestions:
+            return ""
+        lines = [
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"🔍 No exact match for '{query}'",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "",
+            "💡 *Did you mean:*", ""
+        ]
+        for i, s in enumerate(suggestions[:5], 1):
+            lines.append(f"{i}. {s}")
+        lines.extend([
+            "", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "Type the exact name or:", "0. Main Menu", "99. Back"
+        ])
+        return "\n".join(lines)
+    
+    @staticmethod
     def render_executive_dashboard(dealer_name: str, data: Dict[str, Any]) -> str:
         """Render Executive Dashboard in WhatsApp format"""
         
@@ -547,20 +564,6 @@ class DealerMenuRenderer:
         
         lines.extend(["", "───────────────────", "", metrics.get('explanation', ''), "", "0. Main Menu", "99. Back"])
         return "\n".join(lines)
-    
-    @staticmethod
-    def render_pending_list(title: str, dealers: List[Dict[str, Any]]) -> str:
-        if not dealers:
-            return f"📋 *{title}*\n\nNo pending items found."
-        lines = [f"📋 *{title}*", ""]
-        for i, item in enumerate(dealers[:10], 1):
-            dealer = item.get('dealer_name', 'N/A')
-            pending = item.get('pending_count', 0)
-            lines.append(f"{i}. {dealer[:30]}: {pending} pending")
-        if len(dealers) > 10:
-            lines.append(f"... and {len(dealers) - 10} more")
-        lines.extend(["", "0. Main Menu", "99. Back"])
-        return "\n".join(lines)
 
 # ============================================================
 # BLOCK 7: MAIN DEALER ANALYTICS SERVICE
@@ -595,6 +598,18 @@ class DealerAnalyticsService:
                 self._contexts[session_id] = DealerContext()
             return self._contexts[session_id]
     
+    def _get_all_dealers(self) -> List[str]:
+        """Get all dealer names from database"""
+        try:
+            with self._session() as session:
+                results = session.query(DeliveryReport.customer_name).filter(
+                    DeliveryReport.customer_name.isnot(None)
+                ).distinct().all()
+                return [r.customer_name for r in results if r.customer_name]
+        except Exception as e:
+            logger.error(f"Error getting dealers: {e}")
+            return []
+    
     def _calculate_match_score(self, search: str, target: str) -> float:
         if not search or not target:
             return 0.0
@@ -616,6 +631,13 @@ class DealerAnalyticsService:
         bonus = 20 if s_first and t_first and s_first == t_first else 0
         bonus += 10 if search in target or target in search else 0
         
+        # Check for partial word matches
+        for sw in search_words:
+            if len(sw) >= 3:
+                for tw in target_words:
+                    if len(tw) >= 3 and (sw in tw or tw in sw):
+                        bonus += 5
+        
         return round(min(100, word_score + bonus), 1)
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
@@ -628,47 +650,55 @@ class DealerAnalyticsService:
         logger.info(f"🔍 Searching: '{name_lower}'")
         
         try:
-            with self._session() as session:
-                dealers = session.query(DeliveryReport.customer_name).filter(
-                    DeliveryReport.customer_name.isnot(None)
-                ).distinct().all()
-                dealer_names = [d.customer_name for d in dealers if d.customer_name]
-                if not dealer_names:
-                    return None
-                
-                # Exact match
+            dealer_names = self._get_all_dealers()
+            if not dealer_names:
+                return None
+            
+            # Exact match
+            for d in dealer_names:
+                if d.lower() == name_lower:
+                    return d
+            
+            # First word match (high priority)
+            search_first = name_lower.split()[0] if name_lower.split() else ""
+            if len(search_first) >= 3:
                 for d in dealer_names:
-                    if d.lower() == name_lower:
-                        return d
-                
-                # First word match
-                search_first = name_lower.split()[0] if name_lower.split() else ""
-                if len(search_first) >= 3:
-                    for d in dealer_names:
-                        d_first = d.lower().split()[0] if d.lower().split() else ""
-                        if d_first == search_first:
-                            score = self._calculate_match_score(name_lower, d.lower())
-                            if score >= MATCH_THRESHOLD:
-                                return d
-                
-                # Contains match
-                for d in dealer_names:
-                    if name_lower in d.lower() or d.lower() in name_lower:
+                    d_first = d.lower().split()[0] if d.lower().split() else ""
+                    if d_first == search_first:
                         score = self._calculate_match_score(name_lower, d.lower())
                         if score >= MATCH_THRESHOLD:
                             return d
-                
-                # Fuzzy match
-                if RAPIDFUZZ_AVAILABLE:
-                    try:
-                        results = process.extract(name_lower, dealer_names, scorer=fuzz.token_set_ratio, limit=5)
-                        for match, score, _ in results:
-                            if score >= MATCH_THRESHOLD:
-                                return match
-                    except Exception:
-                        pass
-                
-                return None
+            
+            # Contains match
+            for d in dealer_names:
+                d_lower = d.lower()
+                if name_lower in d_lower or d_lower in name_lower:
+                    score = self._calculate_match_score(name_lower, d_lower)
+                    if score >= MATCH_THRESHOLD:
+                        return d
+            
+            # Word overlap match
+            search_words = set(name_lower.split())
+            for d in dealer_names:
+                d_lower = d.lower()
+                d_words = set(d_lower.split())
+                common = search_words & d_words
+                if common and (len(common) / max(len(search_words), 1)) >= 0.6:
+                    score = self._calculate_match_score(name_lower, d_lower)
+                    if score >= MATCH_THRESHOLD:
+                        return d
+            
+            # Fuzzy match
+            if RAPIDFUZZ_AVAILABLE:
+                try:
+                    results = process.extract(name_lower, dealer_names, scorer=fuzz.token_set_ratio, limit=5)
+                    for match, score, _ in results:
+                        if score >= MATCH_THRESHOLD:
+                            return match
+                except Exception:
+                    pass
+            
+            return None
         except Exception as e:
             logger.error(f"Error: {e}")
             return None
@@ -679,23 +709,19 @@ class DealerAnalyticsService:
         query_lower = query.strip().lower()
         
         try:
-            with self._session() as session:
-                results = session.query(DeliveryReport.customer_name).filter(
-                    DeliveryReport.customer_name.isnot(None)
-                ).distinct().limit(200).all()
-                dealer_names = [d.customer_name for d in results if d.customer_name]
-                if not dealer_names:
-                    return []
-                
-                scored = []
-                for d in dealer_names:
-                    d_lower = d.lower()
-                    score = self._calculate_match_score(query_lower, d_lower)
-                    if score >= 70:
-                        scored.append((d, score))
-                
-                scored.sort(key=lambda x: x[1], reverse=True)
-                return [d[0] for d in scored[:limit]]
+            dealer_names = self._get_all_dealers()
+            if not dealer_names:
+                return []
+            
+            scored = []
+            for d in dealer_names:
+                d_lower = d.lower()
+                score = self._calculate_match_score(query_lower, d_lower)
+                if score >= 60:  # Lower threshold for suggestions
+                    scored.append((d, score))
+            
+            scored.sort(key=lambda x: x[1], reverse=True)
+            return [d[0] for d in scored[:limit]]
         except Exception as e:
             logger.error(f"Error: {e}")
             return []
@@ -772,10 +798,11 @@ class DealerAnalyticsService:
                     return {"response": result["response"], "exit_menu": False}
                 return {"response": f"⚠️ No data found for: {dealer}\n\n0. Main Menu\n99. Back", "exit_menu": False}
             
+            # Show suggestions
             suggestions = self._get_suggestions(user_input)
             if suggestions:
-                text = "🔍 *Dealer not found.*\n\n💡 *Did you mean:*\n" + "\n".join(f"• {s}" for s in suggestions[:5])
-                return {"response": text + "\n\n0. Main Menu\n99. Back", "exit_menu": False}
+                response = self._renderer.render_suggestions(user_input, suggestions)
+                return {"response": response, "exit_menu": False}
             
             return {"response": self._renderer.render_dealer_selection(f"Dealer '{user_input}' not found. Try again:"), "exit_menu": False}
         
@@ -784,8 +811,8 @@ class DealerAnalyticsService:
             if not resolved:
                 suggestions = self._get_suggestions(user_input)
                 if suggestions:
-                    text = "🔍 *Dealer not found.*\n\n💡 *Did you mean:*\n" + "\n".join(f"• {s}" for s in suggestions[:5])
-                    return {"response": text + "\n\n0. Main Menu\n99. Back", "exit_menu": False}
+                    response = self._renderer.render_suggestions(user_input, suggestions)
+                    return {"response": response, "exit_menu": False}
                 return {"response": self._renderer.render_comparison_selection() + f"\n\nDealer '{user_input}' not found. Try again:", "exit_menu": False}
             
             context.comparison_dealers.append(resolved)
@@ -816,9 +843,10 @@ class DealerAnalyticsService:
             if action:
                 context.awaiting_dealer = True
                 context.selected_option = action
-                return {"response": self._renderer.render_dealer_selection(f"Enter dealer name for {action}:"), "exit_menu": False}
+                prompt = f"Enter dealer name for {action}:"
+                return {"response": self._renderer.render_dealer_selection(prompt), "exit_menu": False}
         
-        # Quick query
+        # Quick query - try to resolve as dealer name
         dealer = self._resolve_dealer_name(user_input)
         if dealer:
             context.current_dealer = dealer
@@ -827,9 +855,16 @@ class DealerAnalyticsService:
                 return {"response": result["response"], "exit_menu": False}
             return {"response": f"⚠️ No data found for: {dealer}\n\n0. Main Menu\n99. Back", "exit_menu": False}
         
+        # Check for commands
         if "top dealers" in user_input.lower() or "ranking" in user_input.lower():
             result = self._handle_ranking()
             return {"response": result["response"], "exit_menu": False}
+        
+        # Show suggestions for quick query
+        suggestions = self._get_suggestions(user_input)
+        if suggestions:
+            response = self._renderer.render_suggestions(user_input, suggestions)
+            return {"response": response, "exit_menu": False}
         
         return {"response": self._renderer.render_main_menu(), "exit_menu": False}
     
