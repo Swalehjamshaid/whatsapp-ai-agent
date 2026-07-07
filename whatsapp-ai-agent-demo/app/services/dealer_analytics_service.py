@@ -941,6 +941,9 @@ class DealerMenuRenderer:
 # ============================================================
 # BLOCK 7: MAIN DEALER ANALYTICS SERVICE
 # ============================================================
+# ============================================================
+# BLOCK 7: MAIN DEALER ANALYTICS SERVICE
+# ============================================================
 
 class DealerAnalyticsService:
     def __init__(self) -> None:
@@ -978,6 +981,7 @@ class DealerAnalyticsService:
             return self._contexts[session_id]
     
     def _get_all_dealers(self, refresh: bool = False) -> List[str]:
+        """Get all dealer names from customer_name column with caching"""
         with self._cache_lock:
             if self._dealer_cache and not refresh:
                 return self._dealer_cache
@@ -1045,6 +1049,12 @@ class DealerAnalyticsService:
         return round(final_score, 1)
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
+        """
+        FIXED v12.5: Dealer resolution with DIRECT DATABASE SEARCH.
+        
+        This method ALWAYS checks the database directly.
+        It does NOT rely on cache for the final answer.
+        """
         if not name or not name.strip():
             return None
         if name.isdigit():
@@ -1053,57 +1063,26 @@ class DealerAnalyticsService:
         name_lower = name.strip().lower()
         logger.info(f"🔍 Searching customer_name: '{name_lower}'")
         
-        dealer_names = self._get_all_dealers()
-        if not dealer_names:
-            logger.warning("⚠️ No dealers found in customer_name column")
-            return None
-        
-        # STEP 0: SPECIAL PATTERN MATCHING
+        # ==========================================================
+        # STEP 1: CHECK SPECIAL PATTERNS FIRST (Fast)
+        # ==========================================================
         if name_lower in SPECIAL_PATTERNS:
             result = SPECIAL_PATTERNS[name_lower]
-            if result in dealer_names:
-                logger.info(f"✅ SPECIAL PATTERN: '{name}' -> '{result}'")
-                return result
+            logger.info(f"✅ SPECIAL PATTERN: '{name}' -> '{result}'")
+            return result
         
         for pattern, result in SPECIAL_PATTERNS.items():
             if pattern in name_lower or name_lower in pattern:
-                if result in dealer_names:
-                    logger.info(f"✅ PARTIAL SPECIAL PATTERN: '{name}' -> '{result}'")
-                    return result
+                logger.info(f"✅ PARTIAL SPECIAL PATTERN: '{name}' -> '{result}'")
+                return result
         
-        # STEP 1: EXACT MATCH
-        for d in dealer_names:
-            if d.lower() == name_lower:
-                logger.info(f"✅ EXACT MATCH: '{d}'")
-                return d
-        
-        # STEP 2: NORMALIZED MATCH
-        normalized_name = name_lower.replace(' - ', '-').replace(' -', '-').replace('- ', '-')
-        normalized_name = normalized_name.replace('.', '').replace(',', '')
-        for d in dealer_names:
-            d_normalized = d.lower().replace(' - ', '-').replace(' -', '-').replace('- ', '-')
-            d_normalized = d_normalized.replace('.', '').replace(',', '')
-            if d_normalized == normalized_name:
-                logger.info(f"✅ NORMALIZED MATCH: '{d}'")
-                return d
-        
-        # STEP 3: EXPAND CITY ABBREVIATIONS
-        expanded_name = name_lower
-        for abbr, city in CITY_ABBREVIATIONS.items():
-            if abbr in name_lower:
-                expanded_name = name_lower.replace(abbr, city)
-                break
-        
-        if expanded_name != name_lower:
-            for d in dealer_names:
-                if d.lower() == expanded_name:
-                    logger.info(f"✅ EXPANDED MATCH: '{d}'")
-                    return d
-        
-        # STEP 4: TRY DATABASE SEARCH DIRECTLY (BYPASSES CACHE)
+        # ==========================================================
+        # STEP 2: DIRECT DATABASE SEARCH (BYPASSES CACHE)
+        # ==========================================================
         try:
             with self._session() as session:
-                # Try exact match first
+                # 2a: Exact match (case-insensitive)
+                logger.info(f"🔍 Trying exact match in database: '{name_lower}'")
                 result = session.query(DeliveryReport.customer_name).filter(
                     func.lower(DeliveryReport.customer_name) == name_lower
                 ).first()
@@ -1111,7 +1090,8 @@ class DealerAnalyticsService:
                     logger.info(f"✅ DIRECT DB EXACT MATCH: '{result[0]}'")
                     return result[0]
                 
-                # Try ILIKE match
+                # 2b: ILIKE partial match (case-insensitive)
+                logger.info(f"🔍 Trying ILIKE match: '%{name_lower}%'")
                 result = session.query(DeliveryReport.customer_name).filter(
                     func.lower(DeliveryReport.customer_name).ilike(f"%{name_lower}%")
                 ).first()
@@ -1119,26 +1099,73 @@ class DealerAnalyticsService:
                     logger.info(f"✅ DIRECT DB ILIKE MATCH: '{result[0]}'")
                     return result[0]
                 
-                # Try dealer_code
+                # 2c: Search in dealer_code
+                logger.info(f"🔍 Trying dealer_code match: '%{name_lower}%'")
                 result = session.query(DeliveryReport.customer_name).filter(
                     func.lower(DeliveryReport.dealer_code).ilike(f"%{name_lower}%")
                 ).first()
                 if result and result[0]:
                     logger.info(f"✅ DIRECT DB DEALER_CODE MATCH: '{result[0]}'")
                     return result[0]
+                
+                # 2d: Search in ship_to_city
+                logger.info(f"🔍 Trying ship_to_city match: '%{name_lower}%'")
+                result = session.query(DeliveryReport.customer_name).filter(
+                    func.lower(DeliveryReport.ship_to_city).ilike(f"%{name_lower}%")
+                ).first()
+                if result and result[0]:
+                    logger.info(f"✅ DIRECT DB CITY MATCH: '{result[0]}'")
+                    return result[0]
+                
         except Exception as e:
-            logger.debug(f"Direct DB search failed: {e}")
+            logger.error(f"❌ Database search failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         
-        # STEP 5: FUZZY MATCH
-        if RAPIDFUZZ_AVAILABLE:
+        # ==========================================================
+        # STEP 3: CHECK CACHED DEALER LIST (Fallback)
+        # ==========================================================
+        dealer_names = self._get_all_dealers()
+        if dealer_names:
+            # 3a: Exact match in cache
+            for d in dealer_names:
+                if d.lower() == name_lower:
+                    logger.info(f"✅ CACHE EXACT MATCH: '{d}'")
+                    return d
+            
+            # 3b: Normalized match in cache
+            normalized_name = name_lower.replace(' - ', '-').replace(' -', '-').replace('- ', '-')
+            normalized_name = normalized_name.replace('.', '').replace(',', '')
+            for d in dealer_names:
+                d_normalized = d.lower().replace(' - ', '-').replace(' -', '-').replace('- ', '-')
+                d_normalized = d_normalized.replace('.', '').replace(',', '')
+                if d_normalized == normalized_name:
+                    logger.info(f"✅ CACHE NORMALIZED MATCH: '{d}'")
+                    return d
+            
+            # 3c: Contains match in cache
+            for d in dealer_names:
+                d_lower = d.lower()
+                if name_lower in d_lower:
+                    logger.info(f"✅ CACHE CONTAINS MATCH: '{d}'")
+                    return d
+                if d_lower in name_lower:
+                    logger.info(f"✅ CACHE REVERSE CONTAINS MATCH: '{d}'")
+                    return d
+        
+        # ==========================================================
+        # STEP 4: FUZZY MATCH (Only if RapidFuzz is available)
+        # ==========================================================
+        if RAPIDFUZZ_AVAILABLE and dealer_names:
             try:
+                logger.info(f"🔍 Trying fuzzy match for: '{name_lower}'")
                 results = process.extract(name_lower, dealer_names, scorer=fuzz.token_set_ratio, limit=5)
                 for match, score, _ in results:
                     if score >= MATCH_THRESHOLD:
                         logger.info(f"✅ FUZZY MATCH ({score:.0f}%): '{match}'")
                         return match
             except Exception as e:
-                logger.debug(f"Fuzzy failed: {e}")
+                logger.debug(f"Fuzzy match failed: {e}")
         
         logger.info(f"❌ No match found for '{name}'")
         return None
@@ -1283,6 +1310,7 @@ class DealerAnalyticsService:
                 prompt = f"Enter dealer name for {action}:"
                 return {"response": self._renderer.render_dealer_selection(prompt), "exit_menu": False}
         
+        # Quick query - try to resolve as dealer name
         dealer = self._resolve_dealer_name(user_input)
         if dealer:
             context.current_dealer = dealer
@@ -1305,7 +1333,6 @@ class DealerAnalyticsService:
     @staticmethod
     def _session() -> Session:
         return SessionLocal()
-
 # ============================================================
 # BLOCK 8: SINGLETON & EXPORTS
 # ============================================================
