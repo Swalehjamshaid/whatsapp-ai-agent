@@ -24,6 +24,7 @@ FEATURES:
 - ✅ Full Analytics Suite
 - ✅ Distance Calculation (OpenRouteService)
 - ✅ Enhanced Dealer Resolution with City Abbreviation Support
+- ✅ AI Business Insights
 
 FIXES v12.2:
 - ✅ Fixed dealer resolution for abbreviated city names (e.g., "Rehmat Electronics MZD")
@@ -32,6 +33,8 @@ FIXES v12.2:
 - ✅ Enhanced _get_suggestions for abbreviation handling
 - ✅ Added special case handling for common patterns
 - ✅ Improved _clean_dealer_name to preserve city abbreviations
+- ✅ Added AI Business Insights generation
+- ✅ Enhanced dashboard with comprehensive metrics
 
 ================================================================================
 """
@@ -43,7 +46,7 @@ import os
 import re
 import threading
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Any, Optional, Dict, List, Tuple
 
@@ -99,6 +102,9 @@ SPECIAL_PATTERNS = {
     "rehmat electronics mzd": "Rehmat Electronics MZD",
     "rehmat electronics": "Rehmat Electronics MZD",
     "rehmat mzd": "Rehmat Electronics MZD",
+    "arshad electronics khi": "Arshad Electronics - Karachi",
+    "arshad khi": "Arshad Electronics - Karachi",
+    "arsahd electronics": "Arshad Electronics - Karachi",
 }
 
 FALLBACK_COORDINATES = (30.3753, 69.3451)
@@ -238,6 +244,82 @@ def _get_distance_ors(warehouse: str, city: str) -> Dict[str, Any]:
     
     return {"distance_km": None, "estimated_delivery": "Unknown", "zone": "Unknown"}
 
+def _generate_ai_insights(data: Dict[str, Any]) -> List[str]:
+    """Generate AI business insights from dealer data"""
+    insights = []
+    
+    # Delivery performance insights
+    delivery_rate = data.get('delivery_rate', 0)
+    if delivery_rate >= 95:
+        insights.append("✅ Dealer achieved **{:.1f}%** delivery performance. Outstanding!".format(delivery_rate))
+    elif delivery_rate >= 85:
+        insights.append("✅ Dealer achieved **{:.1f}%** delivery performance. Good performance.".format(delivery_rate))
+    elif delivery_rate >= 70:
+        insights.append("📊 Dealer achieved **{:.1f}%** delivery performance. Room for improvement.".format(delivery_rate))
+    else:
+        insights.append("⚠️ Dealer delivery performance is **{:.1f}%**. Immediate attention needed.".format(delivery_rate))
+    
+    # Revenue insights
+    revenue = data.get('total_revenue', 0)
+    if revenue >= 100_000_000:
+        insights.append("💰 Total revenue reached **{}**. Exceptional performance!".format(_format_currency(revenue)))
+    elif revenue >= 50_000_000:
+        insights.append("📈 Total revenue reached **{}**. Strong performance.".format(_format_currency(revenue)))
+    elif revenue >= 10_000_000:
+        insights.append("📊 Total revenue reached **{}**. Steady performance.".format(_format_currency(revenue)))
+    else:
+        insights.append("📉 Total revenue is **{}**. Growth opportunities available.".format(_format_currency(revenue)))
+    
+    # Top product insights
+    top_product = data.get('top_product', 'N/A')
+    if top_product != 'N/A':
+        insights.append(f"🏆 **{top_product}** is the highest-selling product.")
+    
+    # Pending insights
+    pending_dn = data.get('pending_dn', 0)
+    pgi_pending = data.get('pgi_pending_dn', 0)
+    pod_pending = data.get('pod_pending_dn', 0)
+    
+    if pending_dn > 0:
+        insights.append(f"⚠️ **{pending_dn} DNs** require immediate follow-up.")
+    if pgi_pending > 0:
+        insights.append(f"🚚 **{pgi_pending} PGIs** are pending confirmation.")
+    if pod_pending > 0:
+        insights.append(f"📄 **{pod_pending} PODs** require documentation.")
+    
+    # Distance insights
+    distance = data.get('distance', {})
+    dist_km = distance.get('distance_km', 'N/A')
+    warehouse = data.get('warehouse', 'N/A')
+    city = data.get('city', 'N/A')
+    
+    if dist_km != 'N/A' and warehouse != 'N/A':
+        if dist_km <= 50:
+            insights.append(f"🚚 Dealer is served by **{warehouse}**, located approximately **{dist_km} KM** away, enabling fast distribution.")
+        elif dist_km <= 200:
+            insights.append(f"🚚 Dealer is served by **{warehouse}**, located **{dist_km} KM** away. Standard delivery timelines apply.")
+        else:
+            insights.append(f"🚚 Dealer is served by **{warehouse}**, located **{dist_km} KM** away. Long-haul delivery planning required.")
+    
+    # Score insights
+    score = data.get('business_score', 0)
+    if score >= 85:
+        insights.append("⭐ Dealer has achieved **Platinum** status with exceptional business performance.")
+    elif score >= 70:
+        insights.append("⭐ Dealer has achieved **Gold** status with strong business performance.")
+    elif score >= 50:
+        insights.append("📊 Dealer is at **Silver** status. Focus on improvement areas to advance.")
+    else:
+        insights.append("📊 Dealer is at **Bronze** status. Strategic support recommended.")
+    
+    # Improvement recommendations
+    if delivery_rate < 85 and pending_dn > 0:
+        insights.append("💡 Clearing pending documentation can improve delivery performance significantly.")
+    elif delivery_rate >= 85 and pending_dn == 0:
+        insights.append("🌟 All deliveries are completed. Excellent operational efficiency!")
+    
+    return insights
+
 # ============================================================
 # BLOCK 5: DEALER REPOSITORY
 # ============================================================
@@ -266,6 +348,76 @@ class DealerRepository:
             return [{"dealer": r[0], "value": _format_currency(r[1] or 0)} for r in results]
         except Exception as e:
             logger.error(f"Failed to get top dealers: {e}")
+            return []
+    
+    def get_latest_dn(self, customer_name: str) -> Optional[str]:
+        """Get latest DN number for a dealer"""
+        try:
+            result = self.session.query(DeliveryReport.dn_no).filter(
+                DeliveryReport.customer_name == customer_name
+            ).order_by(DeliveryReport.dn_create_date.desc()).first()
+            return result[0] if result else None
+        except Exception:
+            return None
+    
+    def get_latest_pgi_date(self, customer_name: str) -> Optional[date]:
+        """Get latest PGI date for a dealer"""
+        try:
+            result = self.session.query(DeliveryReport.good_issue_date).filter(
+                DeliveryReport.customer_name == customer_name,
+                DeliveryReport.good_issue_date.isnot(None)
+            ).order_by(DeliveryReport.good_issue_date.desc()).first()
+            return result[0] if result else None
+        except Exception:
+            return None
+    
+    def get_latest_pod_date(self, customer_name: str) -> Optional[date]:
+        """Get latest POD date for a dealer"""
+        try:
+            result = self.session.query(DeliveryReport.pod_date).filter(
+                DeliveryReport.customer_name == customer_name,
+                DeliveryReport.pod_date.isnot(None)
+            ).order_by(DeliveryReport.pod_date.desc()).first()
+            return result[0] if result else None
+        except Exception:
+            return None
+    
+    def get_highest_value_dn(self, customer_name: str) -> float:
+        """Get highest value DN for a dealer"""
+        try:
+            result = self.session.query(func.max(DeliveryReport.dn_amount)).filter(
+                DeliveryReport.customer_name == customer_name
+            ).first()
+            return result[0] or 0
+        except Exception:
+            return 0
+    
+    def get_top_products(self, customer_name: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Get top selling products for a dealer"""
+        try:
+            results = self.session.query(
+                DeliveryReport.material_no,
+                DeliveryReport.division,
+                func.sum(DeliveryReport.dn_qty).label('total_qty'),
+                func.count(DeliveryReport.dn_no).label('dn_count')
+            ).filter(
+                DeliveryReport.customer_name == customer_name,
+                DeliveryReport.material_no.isnot(None)
+            ).group_by(
+                DeliveryReport.material_no,
+                DeliveryReport.division
+            ).order_by(
+                func.sum(DeliveryReport.dn_qty).desc()
+            ).limit(limit).all()
+            
+            return [{
+                "material_no": r[0] or 'N/A',
+                "division": r[1] or 'N/A',
+                "total_qty": r[2] or 0,
+                "dn_count": r[3] or 0
+            } for r in results]
+        except Exception as e:
+            logger.error(f"Failed to get top products: {e}")
             return []
     
     def get_dealer_by_name(self, dealer_identifier: str) -> Optional[Dict[str, Any]]:
@@ -388,6 +540,26 @@ class DealerRepository:
             
             data['revenue_rank'] = next((i+1 for i, r in enumerate(rank_query) if r[0] == data['customer_name']), 0)
             
+            # Get latest DN
+            data['latest_dn'] = self.get_latest_dn(data['customer_name']) or 'N/A'
+            
+            # Get latest PGI date
+            latest_pgi = self.get_latest_pgi_date(data['customer_name'])
+            data['latest_pgi'] = _date_text(latest_pgi) if latest_pgi else 'N/A'
+            
+            # Get latest POD date
+            latest_pod = self.get_latest_pod_date(data['customer_name'])
+            data['latest_pod'] = _date_text(latest_pod) if latest_pod else 'N/A'
+            
+            # Get highest value DN
+            data['highest_dn_value'] = self.get_highest_value_dn(data['customer_name'])
+            
+            # Get top products
+            data['top_products'] = self.get_top_products(data['customer_name'], 5)
+            
+            # Generate AI insights
+            data['ai_insights'] = _generate_ai_insights(data)
+            
             with self._lock:
                 self._cache[cache_key] = data.copy()
             return data
@@ -397,7 +569,7 @@ class DealerRepository:
             return None
 
 # ============================================================
-# BLOCK 6: MENU RENDERER - EXECUTIVE DASHBOARD
+# BLOCK 6: MENU RENDERER - ENHANCED EXECUTIVE DASHBOARD
 # ============================================================
 
 class DealerMenuRenderer:
@@ -466,7 +638,7 @@ class DealerMenuRenderer:
     
     @staticmethod
     def render_executive_dashboard(dealer_name: str, data: Dict[str, Any]) -> str:
-        """Render Executive Dashboard in WhatsApp format"""
+        """Render Enhanced Executive Dashboard with AI Insights"""
         
         # Clean dealer name
         display_name = data.get('customer_name', dealer_name)
@@ -474,127 +646,167 @@ class DealerMenuRenderer:
         if len(display_name) > 35:
             display_name = display_name[:32] + "..."
         
+        # Basic Info
         city = data.get('city', 'N/A')
         sales_office = data.get('sales_office', 'N/A')
         sales_manager = data.get('sales_manager', 'N/A')
-        tier = data.get('tier', 'Standard')
-        score = data.get('business_score', 0)
-        health = data.get('health', '🟡 Unknown')
+        warehouse = data.get('warehouse', 'N/A')
+        distance = data.get('distance', {})
+        dist_km = distance.get('distance_km', 'N/A')
+        
+        # Sales Overview
         revenue = data.get('total_revenue', 0)
         units = data.get('total_units', 0)
         dn_count = data.get('dn_count', 0)
         avg_order = data.get('avg_dn_value', 0)
         units_per_dn = round(units / max(dn_count, 1), 1)
-        rank = data.get('revenue_rank', 0)
-        top_product = data.get('top_product', 'N/A')
-        division = data.get('top_division', 'N/A')
-        total_models = data.get('total_models', 0)
+        highest_dn = data.get('highest_dn_value', 0)
+        
+        # Delivery Performance
         delivered = data.get('pod_completed', 0)
         pending = data.get('pending_dn', 0)
         pgi_pending = data.get('pgi_pending_dn', 0)
         pod_pending = data.get('pod_pending_dn', 0)
         delivery_rate = data.get('delivery_rate', 0)
+        pgi_completed = data.get('pgi_completed', 0)
         pod_rate = data.get('pod_rate', 0)
-        warehouse = data.get('warehouse', 'N/A')
-        distance = data.get('distance', {})
-        dist_km = distance.get('distance_km', 'N/A')
-        transit = distance.get('estimated_delivery', 'Unknown')
-        zone = distance.get('zone', 'Unknown')
         avg_delivery = data.get('avg_delivery_days', 0)
-        avg_pod = data.get('avg_pod_days', 0)
+        pgi_rate = _percent(pgi_completed, dn_count)
         
-        # Calculate oldest pending
-        today = datetime.utcnow().date()
-        oldest = 0
-        if data.get('last_sale'):
-            try:
-                last = datetime.strptime(data['last_sale'], "%d-%b-%Y").date()
-                oldest = (today - last).days
-            except:
-                pass
+        # Top Products
+        top_products = data.get('top_products', [])
         
-        # Determine growth trend
-        trend = "📈 Growing" if revenue > 50000 else "📊 Stable" if revenue > 10000 else "📉 Declining"
+        # Latest Activity
+        latest_dn = data.get('latest_dn', 'N/A')
+        latest_pgi = data.get('latest_pgi', 'N/A')
+        latest_pod = data.get('latest_pod', 'N/A')
+        
+        # AI Insights
+        ai_insights = data.get('ai_insights', [])
+        
+        # Report Period
+        today = datetime.utcnow()
+        start_of_month = today.replace(day=1).strftime("%d %b %Y")
+        end_of_month = today.strftime("%d %b %Y")
         
         lines = [
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "        🏢 DEALER EXECUTIVE DASHBOARD",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "",
-            f"👤 Dealer Name      : {display_name}",
-            f"🏙️ Dealer City      : {city}", "",
-            f"🏢 Sales Office     : {sales_office}",
-            f"👨‍💼 Sales Manager   : {sales_manager}", "",
-            f"🏆 Dealer Tier      : {tier}",
-            f"📊 Business Score   : {score} / 100",
-            f"🚦 Health Status    : {health}", "",
+            "🏢 **DEALER INTELLIGENCE CENTER**",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "💰 BUSINESS PERFORMANCE",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "",
-            f"💵 Total Revenue    : {_format_currency(revenue)}",
-            f"📦 Total Units      : {units:,}",
-            f"📄 Total DNs        : {dn_count:,}", "",
-            f"💳 Average Order    : {_format_currency(avg_order)}",
-            f"📦 Units / DN       : {units_per_dn}", "",
-            f"📈 Revenue Rank     : #{rank}",
-            f"📊 Growth Trend     : {trend}", "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "📦 PRODUCT INSIGHTS",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "",
-            f"🏆 Top Product      : {top_product}",
-            f"🏷️ Division         : {division}",
-            f"📦 Models Purchased : {total_models}", "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "🚚 DELIVERY STATUS",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "",
-            f"✅ Delivered DNs    : {delivered}",
-            f"⏳ Pending DNs      : {pending}", "",
-            f"🚚 Pending PGI      : {pgi_pending}",
-            f"📄 Pending POD      : {pod_pending}", "",
-            f"📊 Delivery Rate    : {delivery_rate}%",
-            f"📑 POD Completion   : {pod_rate}%", "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "🗺️ LOGISTICS OVERVIEW",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "",
-            f"🏭 Warehouse        : {warehouse}",
-            f"📍 Distance         : {dist_km} km",
-            f"🚛 Transit Time     : {transit}",
-            f"🌍 Delivery Zone    : {zone}", "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "📅 DELIVERY AGING",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "",
-            f"🔴 Oldest Pending   : {oldest} Days",
-            f"🟢 Latest Activity  : 1 Day Ago", "",
-            f"Average Delivery    : {avg_delivery:.1f} Days",
-            f"Average POD         : {avg_pod:.1f} Days", "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "📈 PERFORMANCE SCORECARD",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "",
-            "💡 *Key Insights*:",
+            "",
+            f"🏪 **Dealer Name**",
+            f"{display_name}",
+            "",
+            f"📍 **Dealer City**",
+            f"{city}",
+            "",
+            f"🏭 **Warehouse**",
+            f"{warehouse}",
+            "",
+            f"📏 **Distance from Warehouse**",
+            f"{dist_km} KM" if dist_km != 'N/A' else "Not Available",
+            "",
+            f"📅 **Report Period**",
+            f"{start_of_month} – {end_of_month}",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "📊 **SALES OVERVIEW**",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"📦 Total DN: **{dn_count:,}**",
+            "",
+            f"📺 Total Units: **{units:,}**",
+            "",
+            f"💰 Total Revenue: **{_format_currency(revenue)}**",
+            "",
+            f"💵 Avg Revenue / DN: **{_format_currency(avg_order)}**",
+            "",
+            f"📦 Avg Units / DN: **{units_per_dn:.1f}**",
+            "",
+            f"🏆 Highest Value DN: **{_format_currency(highest_dn)}**",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "🚚 **DELIVERY PERFORMANCE**",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"✅ Delivered: **{delivered}**",
+            "",
+            f"⏳ Pending: **{pending}**",
+            "",
+            f"🚛 PGI Pending: **{pgi_pending}**",
+            "",
+            f"📄 POD Pending: **{pod_pending}**",
+            "",
+            f"📈 Delivery Rate: **{delivery_rate:.1f}%**",
+            "",
+            f"📑 PGI Completion: **{pgi_rate:.1f}%**",
+            "",
+            f"📋 POD Completion: **{pod_rate:.1f}%**",
+            "",
+            f"⏱ Avg Delivery Time: **{avg_delivery:.1f} Days**",
+            "",
         ]
         
-        # Add insights
-        if delivery_rate >= 95:
-            lines.append("• ✅ Excellent delivery performance")
-        elif delivery_rate < 80:
-            lines.append("• ⚠️ Delivery rate needs improvement")
+        # Top Products Section
+        if top_products:
+            lines.extend([
+                "━━━━━━━━━━━━━━━━━━━━",
+                "📦 **TOP SELLING MODELS**",
+                "━━━━━━━━━━━━━━━━━━━━",
+                "",
+            ])
+            emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+            for i, product in enumerate(top_products[:5]):
+                emoji = emojis[i] if i < len(emojis) else f"{i+1}."
+                material = product.get('material_no', 'N/A')
+                qty = product.get('total_qty', 0)
+                lines.append(f"{emoji} {material} — **{qty:,} Units**")
+            lines.append("")
         
-        if pending == 0:
-            lines.append("• ✅ No pending orders")
-        elif pending > 5:
-            lines.append(f"• ⚠️ {pending} DNs pending")
-        
-        if score >= 70:
-            lines.append("• 📈 Strong business performance")
-        elif score < 50:
-            lines.append("• ⚠️ Business performance needs attention")
-        
-        if dist_km != 'N/A' and dist_km > 200:
-            lines.append(f"• 🚚 Long distance delivery: {dist_km} km")
-        
+        # Sales Information
         lines.extend([
-            "", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "",
-            "0. Main Menu", "99. Back to Main"
+            "━━━━━━━━━━━━━━━━━━━━",
+            "🏢 **SALES INFORMATION**",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"Sales Office: **{sales_office}**",
+            "",
+            f"Sales Manager: **{sales_manager}**",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "📅 **LATEST ACTIVITY**",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"📦 Latest DN: **{latest_dn}**",
+            "",
+            f"🚛 Latest PGI: **{latest_pgi}**",
+            "",
+            f"📄 Latest POD: **{latest_pod}**",
+            "",
         ])
+        
+        # AI Insights Section
+        if ai_insights:
+            lines.extend([
+                "━━━━━━━━━━━━━━━━━━━━",
+                "🤖 **AI BUSINESS INSIGHTS**",
+                "━━━━━━━━━━━━━━━━━━━━",
+                "",
+            ])
+            for insight in ai_insights[:5]:
+                lines.append(f"{insight}")
+            lines.append("")
+        
+        # Footer
+        lines.extend([
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🚀 **Powered by Haier Dealer Intelligence AI**",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "0. Main Menu",
+            "99. Back to Main"
+        ])
+        
         return "\n".join(lines)
     
     @staticmethod
@@ -695,7 +907,8 @@ class DealerAnalyticsService:
         if not search_words or not target_words:
             return 0.0
         
-        common = search_words & target_words        word_score = (len(common) / max(len(search_words), 1)) * 100
+        common = search_words & target_words
+        word_score = (len(common) / max(len(search_words), 1)) * 100
         
         s_first = search.split()[0] if search.split() else ""
         t_first = target.split()[0] if target.split() else ""
