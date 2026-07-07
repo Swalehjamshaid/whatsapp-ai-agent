@@ -1042,7 +1042,7 @@ class DealerMenuRenderer:
 # BLOCK 7: MAIN DEALER ANALYTICS SERVICE
 # ============================================================
 # ============================================================
-# BLOCK 7: MAIN DEALER ANALYTICS SERVICE - DEBUG VERSION
+# BLOCK 7: MAIN DEALER ANALYTICS SERVICE - FIXED
 # ============================================================
 
 class DealerAnalyticsService:
@@ -1109,40 +1109,29 @@ class DealerAnalyticsService:
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
         """
-        DEBUG VERSION - Logs everything to file and console.
+        FIXED: Uses direct database connection.
         """
         import traceback
         from app.database import engine
         
-        # Log the raw input
-        print("=" * 80)
-        print(f"🔍 _resolve_dealer_name RAW INPUT: '{name}'")
-        print(f"🔍 Type: {type(name)}")
-        print(f"🔍 Length: {len(name) if name else 0}")
-        print("=" * 80)
-        
         if not name or not name.strip():
-            print("❌ Name is empty or None")
             return None
-        
         if name.isdigit():
-            print(f"❌ Name is a number: '{name}'")
             return None
         
         name_original = name.strip()
         name_lower = name_original.lower()
         
-        print(f"🔍 Cleaned: '{name_original}'")
-        print(f"🔍 Lowercase: '{name_lower}'")
+        print("=" * 80)
+        print(f"🔍 Searching for: '{name_original}'")
         print("=" * 80)
         
-        # ==========================================================
-        # STEP 1: RAW SQL - Exact Match
-        # ==========================================================
         try:
+            # Use direct engine connection
             with engine.connect() as conn:
-                print("🔍 STEP 1: RAW SQL EXACT MATCH")
+                print("🔍 Database connection established")
                 
+                # STEP 1: Exact match
                 result = conn.execute(
                     text("""
                         SELECT customer_name 
@@ -1154,22 +1143,10 @@ class DealerAnalyticsService:
                 ).first()
                 
                 if result:
-                    print(f"✅ RAW SQL FOUND: '{result[0]}'")
+                    print(f"✅ FOUND: '{result[0]}'")
                     return result[0]
-                else:
-                    print("❌ RAW SQL EXACT returned nothing")
-                    
-        except Exception as e:
-            print(f"❌ RAW SQL failed: {e}")
-            print(traceback.format_exc())
-        
-        # ==========================================================
-        # STEP 2: RAW SQL - ILIKE
-        # ==========================================================
-        try:
-            with engine.connect() as conn:
-                print("🔍 STEP 2: RAW SQL ILIKE")
                 
+                # STEP 2: ILIKE
                 result = conn.execute(
                     text("""
                         SELECT customer_name 
@@ -1181,78 +1158,40 @@ class DealerAnalyticsService:
                 ).first()
                 
                 if result:
-                    print(f"✅ RAW SQL ILIKE FOUND: '{result[0]}'")
+                    print(f"✅ FOUND (ILIKE): '{result[0]}'")
                     return result[0]
-                else:
-                    print("❌ RAW SQL ILIKE returned nothing")
-                    
-        except Exception as e:
-            print(f"❌ RAW SQL ILIKE failed: {e}")
-            print(traceback.format_exc())
-        
-        # ==========================================================
-        # STEP 3: RAW SQL - dealer_code
-        # ==========================================================
-        try:
-            with engine.connect() as conn:
-                print("🔍 STEP 3: RAW SQL dealer_code")
                 
-                result = conn.execute(
-                    text("""
-                        SELECT customer_name 
-                        FROM delivery_reports 
-                        WHERE dealer_code ILIKE :name
-                        LIMIT 1
-                    """),
-                    {"name": f"%{name_original}%"}
+                # STEP 3: Check if ANY data exists
+                count = conn.execute(
+                    text("SELECT COUNT(*) FROM delivery_reports")
                 ).first()
                 
-                if result:
-                    print(f"✅ RAW SQL dealer_code FOUND: '{result[0]}'")
-                    return result[0]
-                else:
-                    print("❌ RAW SQL dealer_code returned nothing")
-                    
-        except Exception as e:
-            print(f"❌ RAW SQL dealer_code failed: {e}")
-            print(traceback.format_exc())
-        
-        # ==========================================================
-        # STEP 4: Get ALL dealers to verify data exists
-        # ==========================================================
-        try:
-            with engine.connect() as conn:
-                print("🔍 STEP 4: GET ALL DEALERS")
+                print(f"📊 Total records: {count[0] if count else 0}")
                 
-                results = conn.execute(
+                # STEP 4: Get ALL dealers
+                all_dealers = conn.execute(
                     text("""
                         SELECT DISTINCT customer_name 
                         FROM delivery_reports 
-                        WHERE customer_name IS NOT NULL 
+                        WHERE customer_name IS NOT NULL
                         ORDER BY customer_name
                         LIMIT 20
                     """)
                 ).fetchall()
                 
-                dealer_list = [r[0] for r in results if r[0]]
+                print("📋 First 20 dealers in DB:")
+                for i, d in enumerate(all_dealers, 1):
+                    if d[0]:
+                        print(f"   {i}. '{d[0]}'")
+                        if d[0].lower() == name_lower:
+                            print(f"✅ FOUND IN LIST: '{d[0]}'")
+                            return d[0]
                 
-                print(f"📋 First 20 dealers in DB:")
-                for i, d in enumerate(dealer_list, 1):
-                    print(f"   {i}. '{d}'")
-                    # Check if our dealer is in the list
-                    if d.lower() == name_lower:
-                        print(f"✅ FOUND IN DEALER LIST: '{d}'")
-                        return d
-                
-                print(f"❌ '{name_original}' NOT in dealer list")
+                print(f"❌ '{name_original}' NOT found")
                 
         except Exception as e:
-            print(f"❌ Get all dealers failed: {e}")
+            print(f"❌ Database error: {e}")
             print(traceback.format_exc())
-        
-        print("=" * 80)
-        print(f"❌ ALL SEARCH METHODS FAILED for: '{name_original}'")
-        print("=" * 80)
         
         return None
     
@@ -1277,10 +1216,8 @@ class DealerAnalyticsService:
         context = self._get_context(session_id)
         user_input = user_input.strip()
         
-        # CRITICAL: Log exactly what was received
         logger.info("=" * 80)
         logger.info(f"📥 process_menu_input received: '{user_input}'")
-        logger.info(f"📥 Awaiting dealer: {context.awaiting_dealer}")
         logger.info("=" * 80)
         
         if user_input in ["0", "99"]:
@@ -1336,7 +1273,6 @@ class DealerAnalyticsService:
                 prompt = f"Enter dealer name for {action}:"
                 return {"response": self._renderer.render_dealer_selection(prompt), "exit_menu": False}
         
-        # Quick query
         dealer = self._resolve_dealer_name(user_input)
         if dealer:
             context.current_dealer = dealer
@@ -1393,7 +1329,9 @@ class DealerAnalyticsService:
     @staticmethod
     def _session() -> Session:
         return SessionLocal()
-# ============================================================
+
+
+============================================================
 # BLOCK 8: SINGLETON & EXPORTS
 # ============================================================
 
