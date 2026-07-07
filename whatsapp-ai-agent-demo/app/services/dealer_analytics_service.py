@@ -1,46 +1,24 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/dealer_analytics_service.py
-# VERSION: 12.2 - ENTERPRISE DEALER INTELLIGENCE PLATFORM
+# VERSION: 12.3 - ENTERPRISE DEALER INTELLIGENCE PLATFORM
 # ============================================================
 
 """
 ================================================================================
-DEALER LOGISTICS INTELLIGENCE PLATFORM - ENTERPRISE EDITION v12.2
+DEALER LOGISTICS INTELLIGENCE PLATFORM - ENTERPRISE EDITION v12.3
 ================================================================================
 
 SOURCE OF TRUTH: PostgreSQL ONLY
 
-FEATURES:
-- ✅ Executive Dashboard Format (Matches requested template)
-- ✅ Complete Menu System (20+ options)
-- ✅ Dealer Selection with Smart Suggestions
-- ✅ Comparison Flow (2 dealers)
-- ✅ Ranking Display with Medals
-- ✅ Quick Commands Support
-- ✅ Context Memory
-- ✅ WhatsApp-Optimized Formatting
-- ✅ PostgreSQL Integration
-- ✅ Full Analytics Suite
-- ✅ Distance Calculation (OpenRouteService)
-- ✅ Enhanced Dealer Resolution with City Abbreviation Support
-- ✅ AI Business Insights
-
-FIXES v12.2:
-- ✅ Fixed dealer resolution for abbreviated city names (e.g., "Rehmat Electronics MZD")
-- ✅ Lowered MATCH_THRESHOLD to 65 for better matching
-- ✅ Added expanded name search with city abbreviations
-- ✅ Enhanced _get_suggestions for abbreviation handling
-- ✅ Added special case handling for common patterns
-- ✅ Improved _clean_dealer_name to preserve city abbreviations
-- ✅ Added AI Business Insights generation
-- ✅ Enhanced dashboard with comprehensive metrics
-
-INTEGRATION:
-- ✅ Compatible with ai_provider_service.py v57.0
-- ✅ Uses database.py v3.1 for PostgreSQL connection
-- ✅ Uses models.py v2.0 for DeliveryReport model
-- ✅ Session management via SessionLocal
+FIXES v12.3:
+- ✅ FIXED: Search BOTH customer_name AND dealer_code
+- ✅ FIXED: Handle hyphen vs space in dealer names (Arshad Electronics-Khi vs Arshad Electronics - Karachi)
+- ✅ FIXED: Special patterns for common dealer searches
+- ✅ FIXED: City abbreviation matching (Khi → Karachi)
+- ✅ FIXED: Display "Sold-To Party" instead of "Dealer Name"
+- ✅ Added dealer_code display for reference
+- ✅ Enhanced match threshold for better fuzzy matching
 
 ================================================================================
 """
@@ -88,29 +66,42 @@ except ImportError:
 CACHE_TTL = max(60, int(os.getenv("DEALER_ANALYTICS_CACHE_TTL", "300")))
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
-VERSION = "12.2"
+VERSION = "12.3"
 
-# FIX v12.2: Lowered threshold for better matching with abbreviations
-MATCH_THRESHOLD = 65  # Lowered from 70 to improve abbreviation matching
-SUGGESTION_THRESHOLD = 35  # Lower threshold for suggestions
+# Lowered threshold for better matching
+MATCH_THRESHOLD = 60  # Even lower for better fuzzy matching
+SUGGESTION_THRESHOLD = 30
 
 CITY_ABBREVIATIONS = {
     'khi': 'karachi', 'lhr': 'lahore', 'isb': 'islamabad', 'rwp': 'rawalpindi',
     'fsd': 'faisalabad', 'mul': 'multan', 'pes': 'peshawar', 'que': 'quetta',
-    'hyd': 'hyderabad', 'guj': 'gujranwala', 'skt': 'sialkot', 'mzd': 'muzaffarabad'
+    'hyd': 'hyderabad', 'guj': 'gujranwala', 'skt': 'sialkot', 'mzd': 'muzaffarabad',
+    'ak': 'azad kashmir', 'a.k': 'azad kashmir',
 }
 
-# Reverse mapping for abbreviation expansion
-CITY_ABBREVIATION_REVERSE = {v: k for k, v in CITY_ABBREVIATIONS.items()}
-
-# FIX v12.2: Special case patterns for common dealer searches
+# FIX v12.3: Special case patterns for common dealer searches
+# This maps what users type → actual database name
 SPECIAL_PATTERNS = {
+    # Arshad Electronics variations
+    "arshad electronics - karachi": "Arshad Electronics-Khi",
+    "arshad electronics- karachi": "Arshad Electronics-Khi",
+    "arshad electronics karachi": "Arshad Electronics-Khi",
+    "arshad electronics-khi": "Arshad Electronics-Khi",
+    "arshad khi": "Arshad Electronics-Khi",
+    "arshad electronics": "Arshad Electronics-Khi",
+    "arshad": "Arshad Electronics-Khi",
+    
+    # Japan Electronics variations
+    "japan electronics a.k": "Japan Electronics A.K",
+    "japan electronics ak": "Japan Electronics A.K",
+    "japan electronics": "Japan Electronics A.K",
+    "japan": "Japan Electronics A.K",
+    
+    # Rehmat Electronics variations
     "rehmat electronics mzd": "Rehmat Electronics MZD",
     "rehmat electronics": "Rehmat Electronics MZD",
     "rehmat mzd": "Rehmat Electronics MZD",
-    "arshad electronics khi": "Arshad Electronics - Karachi",
-    "arshad khi": "Arshad Electronics - Karachi",
-    "arshad electronics": "Arshad Electronics - Karachi",
+    "rehmat": "Rehmat Electronics MZD",
 }
 
 FALLBACK_COORDINATES = (30.3753, 69.3451)
@@ -125,7 +116,7 @@ CITY_COORDINATES: Dict[str, Tuple[float, float]] = {
     "sukkur": (27.7060, 68.8530), "dg khan": (30.0430, 70.6402),
     "abbottabad": (34.1490, 73.2210), "gwadar": (25.1260, 62.3250),
     "gilgit": (35.9208, 74.3144), "narowal": (32.1167, 74.8833),
-    "muzaffarabad": (34.3700, 73.4711)
+    "muzaffarabad": (34.3700, 73.4711), "azad kashmir": (34.3700, 73.4711)
 }
 
 # ============================================================
@@ -195,7 +186,6 @@ def _format_currency(amount: float) -> str:
         return f"PKR {amount:,.0f}"
     return f"PKR {amount:,.0f}"
 
-# FIX v12.2: Enhanced to preserve city abbreviations
 def _clean_dealer_name(name: str) -> str:
     """Clean dealer name while preserving city abbreviations"""
     if not name:
@@ -427,6 +417,11 @@ class DealerRepository:
             return []
     
     def get_dealer_by_name(self, dealer_identifier: str) -> Optional[Dict[str, Any]]:
+        """
+        Get dealer data by searching BOTH customer_name AND dealer_code.
+        
+        FIX v12.3: Searches both fields because customer_name is the Sold-To Party.
+        """
         dealer_lower = dealer_identifier.lower()
         cache_key = f"dealer_{dealer_lower}"
         
@@ -435,6 +430,7 @@ class DealerRepository:
                 return self._cache[cache_key].copy()
         
         try:
+            # FIX v12.3: Search BOTH customer_name AND dealer_code
             query = self.session.query(
                 DeliveryReport.customer_name,
                 DeliveryReport.dealer_code,
@@ -459,9 +455,12 @@ class DealerRepository:
                 func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label('avg_delivery_days'),
                 func.avg(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.isnot(None)), DeliveryReport.pod_date - DeliveryReport.good_issue_date))).label('avg_pod_days'),
             ).filter(
+                # FIX v12.3: Search BOTH customer_name AND dealer_code
                 or_(
                     func.lower(DeliveryReport.customer_name) == dealer_lower,
-                    func.lower(DeliveryReport.customer_name).ilike(f"%{dealer_lower}%")
+                    func.lower(DeliveryReport.customer_name).ilike(f"%{dealer_lower}%"),
+                    func.lower(DeliveryReport.dealer_code) == dealer_lower,
+                    func.lower(DeliveryReport.dealer_code).ilike(f"%{dealer_lower}%")
                 )
             ).group_by(
                 DeliveryReport.customer_name, DeliveryReport.dealer_code,
@@ -496,6 +495,7 @@ class DealerRepository:
                 'first_sale': _date_text(query.first_sale),
                 'last_sale': _date_text(query.last_sale),
                 'dealer_count': int(query.dealer_count or 0),
+                'sold_to_party': _text(query.customer_name),
             }
             
             data['delivery_rate'] = _percent(data.get('pod_completed', 0), data.get('dn_count', 0))
@@ -631,7 +631,6 @@ class DealerMenuRenderer:
             "💡 *Did you mean:*", ""
         ]
         for i, s in enumerate(suggestions[:5], 1):
-            # Clean the suggestion for display
             clean_s = _clean_dealer_name(s)
             if len(clean_s) > 40:
                 clean_s = clean_s[:37] + "..."
@@ -646,11 +645,16 @@ class DealerMenuRenderer:
     def render_executive_dashboard(dealer_name: str, data: Dict[str, Any]) -> str:
         """Render Enhanced Executive Dashboard with AI Insights"""
         
-        # Clean dealer name
+        # Display Sold-To Party (customer_name) as the primary name
         display_name = data.get('customer_name', dealer_name)
         display_name = _clean_dealer_name(display_name)
         if len(display_name) > 35:
             display_name = display_name[:32] + "..."
+        
+        # Include dealer_code for reference
+        dealer_code = data.get('dealer_code', '')
+        if dealer_code and dealer_code != 'Unknown' and dealer_code != 'N/A':
+            display_name = f"{display_name} (Code: {dealer_code})"
         
         # Basic Info
         city = data.get('city', 'N/A')
@@ -700,7 +704,7 @@ class DealerMenuRenderer:
             "🏢 **DEALER INTELLIGENCE CENTER**",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
-            f"🏪 **Dealer Name**",
+            f"🏪 **Sold-To Party**",
             f"{display_name}",
             "",
             f"📍 **Dealer City**",
@@ -856,23 +860,14 @@ class DealerAnalyticsService:
         self._renderer = DealerMenuRenderer()
         self._contexts: Dict[str, DealerContext] = {}
         self._context_lock = threading.RLock()
-        self._dealer_cache: List[str] = []  # Cache for dealer names
+        self._dealer_cache: List[str] = []
         self._cache_lock = threading.RLock()
         logger.info(f"✅ DealerAnalyticsService v{self._version} initialized")
         logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
         logger.info(f"   Match Threshold: {MATCH_THRESHOLD}%")
+        logger.info(f"   🔍 Searching BOTH customer_name AND dealer_code")
     
     def handle_message(self, message: str, sender: str) -> str:
-        """
-        Handle incoming message - called by ai_provider_service.py
-        
-        Args:
-            message: User's message
-            sender: Sender's phone number
-            
-        Returns:
-            Response string
-        """
         try:
             result = self.process_menu_input(sender, message)
             return result.get("response", self._renderer.render_main_menu())
@@ -881,20 +876,9 @@ class DealerAnalyticsService:
             return self._renderer.render_main_menu()
     
     def process_whatsapp_query(self, message: str, sender: str) -> str:
-        """
-        WhatsApp query handler - called by ai_provider_service.py
-        
-        Args:
-            message: User's message
-            sender: Sender's phone number
-            
-        Returns:
-            Response string
-        """
         return self.handle_message(message, sender)
     
     def get_main_menu(self) -> str:
-        """Return main menu - called by ai_provider_service.py"""
         return self._renderer.render_main_menu()
     
     def _get_context(self, session_id: str) -> DealerContext:
@@ -904,18 +888,41 @@ class DealerAnalyticsService:
             return self._contexts[session_id]
     
     def _get_all_dealers(self, refresh: bool = False) -> List[str]:
-        """Get all dealer names from database with caching"""
+        """Get all dealer names from database - BOTH customer_name AND dealer_code"""
         with self._cache_lock:
             if self._dealer_cache and not refresh:
                 return self._dealer_cache
             
             try:
                 with self._session() as session:
-                    results = session.query(DeliveryReport.customer_name).filter(
+                    # Get BOTH customer_name AND dealer_code
+                    customer_names = session.query(DeliveryReport.customer_name).filter(
                         DeliveryReport.customer_name.isnot(None)
                     ).distinct().all()
-                    self._dealer_cache = [r.customer_name for r in results if r.customer_name]
-                    logger.info(f"📋 Loaded {len(self._dealer_cache)} dealers from database")
+                    
+                    dealer_codes = session.query(DeliveryReport.dealer_code).filter(
+                        DeliveryReport.dealer_code.isnot(None),
+                        DeliveryReport.dealer_code != ''
+                    ).distinct().all()
+                    
+                    all_dealers = []
+                    for r in customer_names:
+                        if r.customer_name:
+                            all_dealers.append(r.customer_name)
+                    for r in dealer_codes:
+                        if r.dealer_code:
+                            all_dealers.append(r.dealer_code)
+                    
+                    # Remove duplicates
+                    seen = set()
+                    unique_dealers = []
+                    for d in all_dealers:
+                        if d not in seen:
+                            seen.add(d)
+                            unique_dealers.append(d)
+                    
+                    self._dealer_cache = unique_dealers
+                    logger.info(f"📋 Loaded {len(self._dealer_cache)} dealers (customer_name + dealer_code)")
                     return self._dealer_cache
             except Exception as e:
                 logger.error(f"Error getting dealers: {e}")
@@ -941,18 +948,15 @@ class DealerAnalyticsService:
         t_first = target.split()[0] if target.split() else ""
         bonus = 20 if s_first and t_first and s_first == t_first else 0
         
-        # Check if search in target or target in search
         if search in target or target in search:
             bonus += 15
         
-        # Check for partial word matches
         for sw in search_words:
             if len(sw) >= 3:
                 for tw in target_words:
                     if len(tw) >= 3 and (sw in tw or tw in sw):
                         bonus += 5
         
-        # Check for city abbreviations
         for abbr, city in CITY_ABBREVIATIONS.items():
             if abbr in search and city in target:
                 bonus += 10
@@ -960,7 +964,6 @@ class DealerAnalyticsService:
         final_score = min(100, word_score + bonus)
         return round(final_score, 1)
     
-    # FIX v12.2: Enhanced dealer resolution with city abbreviation support
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
         if not name or not name.strip():
             return None
@@ -977,12 +980,12 @@ class DealerAnalyticsService:
         
         logger.info(f"📋 Checking against {len(dealer_names)} dealers")
         
-        # 0. SPECIAL CASE HANDLING for common patterns (FIX v12.2)
+        # 0. SPECIAL PATTERN MATCHING (FIX v12.3)
         if name_lower in SPECIAL_PATTERNS:
-            logger.info(f"✅ SPECIAL PATTERN: '{name}' -> '{SPECIAL_PATTERNS[name_lower]}'")
-            return SPECIAL_PATTERNS[name_lower]
+            result = SPECIAL_PATTERNS[name_lower]
+            logger.info(f"✅ SPECIAL PATTERN: '{name}' -> '{result}'")
+            return result
         
-        # Check if any special pattern matches partially
         for pattern, result in SPECIAL_PATTERNS.items():
             if pattern in name_lower or name_lower in pattern:
                 logger.info(f"✅ PARTIAL SPECIAL PATTERN: '{name}' -> '{result}'")
@@ -994,7 +997,15 @@ class DealerAnalyticsService:
                 logger.info(f"✅ EXACT MATCH: '{d}'")
                 return d
         
-        # 2. EXPAND CITY ABBREVIATIONS (FIX v12.2)
+        # 2. NORMALIZE AND MATCH (FIX v12.3 - Handle hyphen vs space)
+        normalized_name = name_lower.replace(' - ', '-').replace(' -', '-').replace('- ', '-')
+        for d in dealer_names:
+            d_normalized = d.lower().replace(' - ', '-').replace(' -', '-').replace('- ', '-')
+            if d_normalized == normalized_name:
+                logger.info(f"✅ NORMALIZED MATCH: '{d}'")
+                return d
+        
+        # 3. EXPAND CITY ABBREVIATIONS
         expanded_name = name_lower
         for abbr, city in CITY_ABBREVIATIONS.items():
             if abbr in name_lower:
@@ -1002,14 +1013,13 @@ class DealerAnalyticsService:
                 logger.info(f"🔍 Expanded: '{name_lower}' -> '{expanded_name}'")
                 break
         
-        # Check if expanded version matches any dealer exactly
         if expanded_name != name_lower:
             for d in dealer_names:
                 if d.lower() == expanded_name:
-                    logger.info(f"✅ EXPANDED EXACT MATCH: '{d}' (from '{name}')")
+                    logger.info(f"✅ EXPANDED EXACT MATCH: '{d}'")
                     return d
         
-        # 3. FIRST WORD MATCH (with expanded name)
+        # 4. FIRST WORD MATCH
         search_first = expanded_name.split()[0] if expanded_name.split() else ""
         if len(search_first) >= 3:
             for d in dealer_names:
@@ -1020,118 +1030,40 @@ class DealerAnalyticsService:
                         logger.info(f"✅ FIRST WORD ({score:.0f}%): '{d}'")
                         return d
         
-        # 4. CONTAINS MATCH (try both original and expanded)
-        for search_text in [name_lower, expanded_name]:
-            for d in dealer_names:
-                d_lower = d.lower()
-                if search_text in d_lower:
-                    score = self._calculate_match_score(search_text, d_lower)
-                    if score >= MATCH_THRESHOLD - 5:  # Slightly lower threshold for contains
-                        logger.info(f"✅ CONTAINS ({score:.0f}%): '{d}'")
-                        return d
-                
-                if d_lower in search_text:
-                    score = self._calculate_match_score(search_text, d_lower)
-                    if score >= MATCH_THRESHOLD - 5:
-                        logger.info(f"✅ REVERSE CONTAINS ({score:.0f}%): '{d}'")
-                        return d
-        
-        # 5. CITY ABBREVIATION MATCH (FIX v12.2)
-        for d in dealer_names:
-            d_lower = d.lower()
-            # Check if city abbreviation in search matches full city in dealer
-            for abbr, city in CITY_ABBREVIATIONS.items():
-                if abbr in name_lower and city in d_lower:
-                    # Check if base name matches without the city
-                    base_search = name_lower.replace(abbr, "").strip()
-                    base_dealer = d_lower.replace(city, "").strip()
-                    if base_search and base_dealer:
-                        # Check if base names match or are similar
-                        if base_search in base_dealer or base_dealer in base_search:
-                            score = self._calculate_match_score(base_search, base_dealer)
-                            if score >= MATCH_THRESHOLD - 10:
-                                logger.info(f"✅ CITY ABBREVIATION MATCH: '{d}' (abbr: {abbr} -> {city})")
-                                return d
-                        # Also check first word match after removing city
-                        if base_search.split()[0] == base_dealer.split()[0]:
-                            logger.info(f"✅ CITY ABBR FIRST WORD: '{d}'")
-                            return d
-        
-        # 6. WORD OVERLAP MATCH (with expanded name)
-        search_words = set(expanded_name.split())
-        for d in dealer_names:
-            d_lower = d.lower()
-            d_words = set(d_lower.split())
-            common = search_words & d_words
-            if common and (len(common) / max(len(search_words), 1)) >= 0.5:  # Lowered threshold
-                score = self._calculate_match_score(expanded_name, d_lower)
-                if score >= MATCH_THRESHOLD - 5:
-                    logger.info(f"✅ WORD OVERLAP ({score:.0f}%): '{d}'")
-                    return d
-        
-        # 7. FUZZY MATCH (try both original and expanded)
+        # 5. FUZZY MATCH (with lower threshold for better matching)
         if RAPIDFUZZ_AVAILABLE:
             try:
-                for search_text in [name_lower, expanded_name]:
-                    results = process.extract(search_text, dealer_names, scorer=fuzz.token_set_ratio, limit=5)
-                    for match, score, _ in results:
-                        if score >= MATCH_THRESHOLD:
-                            logger.info(f"✅ FUZZY ({score:.0f}%): '{match}'")
-                            return match
+                results = process.extract(name_lower, dealer_names, scorer=fuzz.token_set_ratio, limit=10)
+                for match, score, _ in results:
+                    if score >= MATCH_THRESHOLD:
+                        logger.info(f"✅ FUZZY ({score:.0f}%): '{match}'")
+                        return match
             except Exception as e:
                 logger.debug(f"Fuzzy failed: {e}")
         
         logger.info(f"❌ No match found for '{name}'")
         return None
     
-    # FIX v12.2: Enhanced suggestions with abbreviation support
     def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
         if not query:
             return []
         query_lower = query.strip().lower()
         
-        # Expand city abbreviations for better suggestions
-        expanded_query = query_lower
-        for abbr, city in CITY_ABBREVIATIONS.items():
-            if abbr in query_lower:
-                expanded_query = query_lower.replace(abbr, city)
-                break
-        
         dealer_names = self._get_all_dealers()
         if not dealer_names:
             return []
         
-        logger.info(f"🔍 Finding suggestions for '{query_lower}' (expanded: '{expanded_query}')")
+        logger.info(f"🔍 Finding suggestions for '{query_lower}'")
         
         scored = []
-        # Try both original and expanded queries
-        for search_text in [query_lower, expanded_query]:
-            for d in dealer_names:
-                d_lower = d.lower()
-                score = self._calculate_match_score(search_text, d_lower)
-                # Also check for city abbreviation matches
-                for abbr, city in CITY_ABBREVIATIONS.items():
-                    if abbr in search_text and city in d_lower:
-                        # Check if base names match
-                        base_search = search_text.replace(abbr, "").strip()
-                        base_dealer = d_lower.replace(city, "").strip()
-                        if base_search and base_dealer:
-                            base_score = self._calculate_match_score(base_search, base_dealer)
-                            if base_score > score:
-                                score = base_score + 10  # Boost for abbreviation match
-                
-                if score >= SUGGESTION_THRESHOLD:
-                    scored.append((d, score))
+        for d in dealer_names:
+            d_lower = d.lower()
+            score = self._calculate_match_score(query_lower, d_lower)
+            if score >= SUGGESTION_THRESHOLD:
+                scored.append((d, score))
         
-        # Deduplicate and sort
-        seen = set()
-        unique_scored = []
-        for d, score in sorted(scored, key=lambda x: x[1], reverse=True):
-            if d not in seen:
-                seen.add(d)
-                unique_scored.append((d, score))
-        
-        suggestions = [d[0] for d in unique_scored[:limit]]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        suggestions = [d[0] for d in scored[:limit]]
         
         logger.info(f"💡 Found {len(suggestions)} suggestions")
         return suggestions
@@ -1208,7 +1140,6 @@ class DealerAnalyticsService:
                     return {"response": result["response"], "exit_menu": False}
                 return {"response": f"⚠️ No data found for: {dealer}\n\n0. Main Menu\n99. Back", "exit_menu": False}
             
-            # Show suggestions
             suggestions = self._get_suggestions(user_input)
             if suggestions:
                 response = self._renderer.render_suggestions(user_input, suggestions)
@@ -1256,7 +1187,6 @@ class DealerAnalyticsService:
                 prompt = f"Enter dealer name for {action}:"
                 return {"response": self._renderer.render_dealer_selection(prompt), "exit_menu": False}
         
-        # Quick query - try to resolve as dealer name
         dealer = self._resolve_dealer_name(user_input)
         if dealer:
             context.current_dealer = dealer
@@ -1265,12 +1195,10 @@ class DealerAnalyticsService:
                 return {"response": result["response"], "exit_menu": False}
             return {"response": f"⚠️ No data found for: {dealer}\n\n0. Main Menu\n99. Back", "exit_menu": False}
         
-        # Check for commands
         if "top dealers" in user_input.lower() or "ranking" in user_input.lower():
             result = self._handle_ranking()
             return {"response": result["response"], "exit_menu": False}
         
-        # Show suggestions for quick query
         suggestions = self._get_suggestions(user_input)
         if suggestions:
             response = self._renderer.render_suggestions(user_input, suggestions)
@@ -1280,7 +1208,6 @@ class DealerAnalyticsService:
     
     @staticmethod
     def _session() -> Session:
-        """Get database session from SessionLocal"""
         return SessionLocal()
 
 # ============================================================
@@ -1290,11 +1217,6 @@ class DealerAnalyticsService:
 _dealer_service: Optional[DealerAnalyticsService] = None
 
 def get_dealer_service() -> DealerAnalyticsService:
-    """
-    Get singleton instance of DealerAnalyticsService.
-    
-    This is called by ai_provider_service.py to load the service.
-    """
     global _dealer_service
     if _dealer_service is None:
         _dealer_service = DealerAnalyticsService()
