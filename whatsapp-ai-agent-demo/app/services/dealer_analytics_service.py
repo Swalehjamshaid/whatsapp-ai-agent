@@ -2222,6 +2222,9 @@ class ResponseFormatter:
 # ============================================================
 # BLOCK 14: MAIN DEALER ANALYTICS SERVICE WITH MENU
 # ============================================================
+# ============================================================
+# BLOCK 14: MAIN DEALER ANALYTICS SERVICE WITH MENU
+# ============================================================
 
 class DealerAnalyticsService:
     """
@@ -2259,9 +2262,44 @@ class DealerAnalyticsService:
         logger.info(f"   Dealer Repository: ✅")
         logger.info(f"   AI Engine: {'✅' if self._ai_engine._available else '❌'}")
     
-    @staticmethod
-    def _session() -> Session:
-        return SessionLocal()
+    # ============================================================
+    # CRITICAL FIX: SYNC VERSION FOR WEBHOOK
+    # ============================================================
+    
+    def process_whatsapp_query(self, message: str, sender: str) -> str:
+        """
+        SYNC version for WhatsApp webhook.
+        This is what webhook.py calls.
+        """
+        try:
+            logger.info(f"📨 Dealer service processing: '{message}' from {sender}")
+            
+            # Use sender phone as session ID
+            session_id = sender
+            
+            # Process input using the sync method
+            result = self.process_menu_input(session_id, message)
+            
+            return result.get("response", self._menu_renderer.render_main_menu())
+            
+        except Exception as e:
+            logger.error(f"❌ Error in process_whatsapp_query: {e}", exc_info=True)
+            return self._menu_renderer.render_main_menu()
+    
+    # ============================================================
+    # ASYNC VERSION FOR COMPATIBILITY
+    # ============================================================
+    
+    async def handle_message(self, message: str, sender: str) -> str:
+        """
+        ASYNC version - calls the sync version.
+        This is for backward compatibility.
+        """
+        return self.process_whatsapp_query(message, sender)
+    
+    # ============================================================
+    # MENU AND PROCESSING METHODS
+    # ============================================================
     
     def get_main_menu(self) -> str:
         """Get the main dealer menu"""
@@ -2290,9 +2328,7 @@ class DealerAnalyticsService:
         logger.info(f"📥 Processing input: '{user_input}' for session {session_id}, state: {context.menu_state}")
         
         # Handle main menu navigation
-        if user_input == "0":
-            return self._handle_main_menu_return(context)
-        elif user_input == "99":
+        if user_input == "0" or user_input == "99":
             return self._handle_main_menu_return(context)
         
         # If awaiting dealer name, treat input as dealer name
@@ -2470,7 +2506,6 @@ class DealerAnalyticsService:
                 ).distinct().limit(5).all()
                 
                 if results:
-                    # Return first match
                     return results[0].customer_name
                 
                 # Try cleaning dealer name
@@ -2690,16 +2725,17 @@ class DealerAnalyticsService:
     
     def _handle_quick_query(self, context: DealerContext, user_input: str) -> Dict[str, Any]:
         """Handle quick query (natural language)"""
+        user_lower = user_input.lower()
+        
+        # Try quick commands
+        if "top dealers" in user_lower or "ranking" in user_lower:
+            return self._handle_ranking(context)
+        
         # Try to extract dealer name
         dealer_name = self._resolve_dealer_name(user_input)
         if dealer_name:
             context.current_dealer = dealer_name
             return self._get_dealer_dashboard(context, dealer_name)
-        
-        # Try quick commands
-        user_lower = user_input.lower()
-        if "top dealers" in user_lower or "ranking" in user_lower:
-            return self._handle_ranking(context)
         
         # Show menu
         return {
@@ -2729,42 +2765,9 @@ class DealerAnalyticsService:
             if session_id in self._contexts:
                 self._contexts[session_id].clear()
     
-    # ============================================================
-    # WhatsApp Interface Methods
-    # ============================================================
-    
-    async def handle_message(self, message: str, sender: str) -> str:
-        """
-        Handle WhatsApp message - Main entry point for webhook.
-        """
-        try:
-            logger.info(f"📨 Dealer service received: '{message}' from {sender}")
-            
-            # Use sender phone as session ID
-            session_id = sender
-            
-            # Process input
-            result = self.process_menu_input(session_id, message)
-            
-            return result.get("response", self._menu_renderer.render_main_menu())
-            
-        except Exception as e:
-            logger.error(f"❌ Error in handle_message: {e}")
-            return self._menu_renderer.render_main_menu()
-    
-    def process_whatsapp_query(self, message: str, sender: str) -> str:
-        """Synchronous version for compatibility"""
-        import asyncio
-        try:
-            # Try to run async
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(self.handle_message(message, sender))
-            loop.close()
-            return result
-        except Exception as e:
-            logger.error(f"❌ Error in process_whatsapp_query: {e}")
-            return self._menu_renderer.render_main_menu()
+    @staticmethod
+    def _session() -> Session:
+        return SessionLocal()
 
 # ============================================================
 # BLOCK 15: SINGLETON FACTORY
