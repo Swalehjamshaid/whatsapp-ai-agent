@@ -853,6 +853,9 @@ class DealerMenuRenderer:
 # ============================================================
 # BLOCK 7: MAIN DEALER ANALYTICS SERVICE
 # ============================================================
+# ============================================================
+# BLOCK 7: MAIN DEALER ANALYTICS SERVICE
+# ============================================================
 
 class DealerAnalyticsService:
     def __init__(self) -> None:
@@ -865,7 +868,7 @@ class DealerAnalyticsService:
         logger.info(f"✅ DealerAnalyticsService v{self._version} initialized")
         logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
         logger.info(f"   Match Threshold: {MATCH_THRESHOLD}%")
-        logger.info(f"   🔍 Searching BOTH customer_name AND dealer_code")
+        logger.info(f"   🔍 Searching customer_name column in PostgreSQL")
     
     def handle_message(self, message: str, sender: str) -> str:
         try:
@@ -888,30 +891,23 @@ class DealerAnalyticsService:
             return self._contexts[session_id]
     
     def _get_all_dealers(self, refresh: bool = False) -> List[str]:
-        """Get all dealer names from database - BOTH customer_name AND dealer_code"""
+        """Get all dealer names from customer_name column in database"""
         with self._cache_lock:
             if self._dealer_cache and not refresh:
                 return self._dealer_cache
             
             try:
                 with self._session() as session:
-                    # Get BOTH customer_name AND dealer_code
+                    # Get customer_name from DeliveryReport
                     customer_names = session.query(DeliveryReport.customer_name).filter(
-                        DeliveryReport.customer_name.isnot(None)
-                    ).distinct().all()
-                    
-                    dealer_codes = session.query(DeliveryReport.dealer_code).filter(
-                        DeliveryReport.dealer_code.isnot(None),
-                        DeliveryReport.dealer_code != ''
+                        DeliveryReport.customer_name.isnot(None),
+                        DeliveryReport.customer_name != ''
                     ).distinct().all()
                     
                     all_dealers = []
                     for r in customer_names:
                         if r.customer_name:
                             all_dealers.append(r.customer_name)
-                    for r in dealer_codes:
-                        if r.dealer_code:
-                            all_dealers.append(r.dealer_code)
                     
                     # Remove duplicates
                     seen = set()
@@ -922,10 +918,10 @@ class DealerAnalyticsService:
                             unique_dealers.append(d)
                     
                     self._dealer_cache = unique_dealers
-                    logger.info(f"📋 Loaded {len(self._dealer_cache)} dealers (customer_name + dealer_code)")
+                    logger.info(f"📋 Loaded {len(self._dealer_cache)} dealers from customer_name column")
                     return self._dealer_cache
             except Exception as e:
-                logger.error(f"Error getting dealers: {e}")
+                logger.error(f"Error getting dealers from customer_name: {e}")
                 return []
     
     def _calculate_match_score(self, search: str, target: str) -> float:
@@ -965,47 +961,58 @@ class DealerAnalyticsService:
         return round(final_score, 1)
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
+        """
+        Enhanced dealer resolution with typo tolerance.
+        
+        Searches ONLY the customer_name column in PostgreSQL.
+        Handles typos like "rshad" → "Arshad"
+        """
         if not name or not name.strip():
             return None
         if name.isdigit():
             return None
         
         name_lower = name.strip().lower()
-        logger.info(f"🔍 Searching: '{name_lower}'")
+        logger.info(f"🔍 Searching customer_name: '{name_lower}'")
         
         dealer_names = self._get_all_dealers()
         if not dealer_names:
-            logger.warning("⚠️ No dealers found in database")
+            logger.warning("⚠️ No dealers found in customer_name column")
             return None
         
-        logger.info(f"📋 Checking against {len(dealer_names)} dealers")
+        logger.info(f"📋 Checking against {len(dealer_names)} customer_name records")
         
-        # 0. SPECIAL PATTERN MATCHING (FIX v12.3)
+        # STEP 0: SPECIAL PATTERN MATCHING
         if name_lower in SPECIAL_PATTERNS:
             result = SPECIAL_PATTERNS[name_lower]
-            logger.info(f"✅ SPECIAL PATTERN: '{name}' -> '{result}'")
-            return result
+            # Verify the matched name exists in customer_name
+            if result in dealer_names:
+                logger.info(f"✅ SPECIAL PATTERN: '{name}' -> '{result}'")
+                return result
+            else:
+                logger.warning(f"⚠️ Special pattern result '{result}' not found in customer_name")
         
         for pattern, result in SPECIAL_PATTERNS.items():
             if pattern in name_lower or name_lower in pattern:
-                logger.info(f"✅ PARTIAL SPECIAL PATTERN: '{name}' -> '{result}'")
-                return result
+                if result in dealer_names:
+                    logger.info(f"✅ PARTIAL SPECIAL PATTERN: '{name}' -> '{result}'")
+                    return result
         
-        # 1. EXACT MATCH
+        # STEP 1: EXACT MATCH against customer_name
         for d in dealer_names:
             if d.lower() == name_lower:
-                logger.info(f"✅ EXACT MATCH: '{d}'")
+                logger.info(f"✅ EXACT MATCH in customer_name: '{d}'")
                 return d
         
-        # 2. NORMALIZE AND MATCH (FIX v12.3 - Handle hyphen vs space)
+        # STEP 2: NORMALIZED MATCH (Handle hyphen vs space)
         normalized_name = name_lower.replace(' - ', '-').replace(' -', '-').replace('- ', '-')
         for d in dealer_names:
             d_normalized = d.lower().replace(' - ', '-').replace(' -', '-').replace('- ', '-')
             if d_normalized == normalized_name:
-                logger.info(f"✅ NORMALIZED MATCH: '{d}'")
+                logger.info(f"✅ NORMALIZED MATCH in customer_name: '{d}'")
                 return d
         
-        # 3. EXPAND CITY ABBREVIATIONS
+        # STEP 3: EXPAND CITY ABBREVIATIONS
         expanded_name = name_lower
         for abbr, city in CITY_ABBREVIATIONS.items():
             if abbr in name_lower:
@@ -1016,10 +1023,73 @@ class DealerAnalyticsService:
         if expanded_name != name_lower:
             for d in dealer_names:
                 if d.lower() == expanded_name:
-                    logger.info(f"✅ EXPANDED EXACT MATCH: '{d}'")
+                    logger.info(f"✅ EXPANDED EXACT MATCH in customer_name: '{d}'")
                     return d
         
-        # 4. FIRST WORD MATCH
+        # STEP 4: TYPO-TOLERANT MATCHING against customer_name
+        
+        # 4a: Missing first letter (e.g., "rshad" → "arshad")
+        if len(name_lower) >= 3:
+            # Try adding each letter at the beginning
+            for letter in 'abcdefghijklmnopqrstuvwxyz':
+                test_name = letter + name_lower
+                for d in dealer_names:
+                    d_lower = d.lower()
+                    if test_name in d_lower or d_lower in test_name:
+                        score = self._calculate_match_score(test_name, d_lower)
+                        if score >= MATCH_THRESHOLD:
+                            logger.info(f"✅ TYPO FIX (missing letter) in customer_name: '{name}' -> '{d}'")
+                            return d
+            
+            # Try removing one letter (typo with extra letter)
+            for i in range(len(name_lower)):
+                test_name = name_lower[:i] + name_lower[i+1:]
+                if len(test_name) >= 3:
+                    for d in dealer_names:
+                        d_lower = d.lower()
+                        if test_name in d_lower or d_lower in test_name:
+                            score = self._calculate_match_score(test_name, d_lower)
+                            if score >= MATCH_THRESHOLD:
+                                logger.info(f"✅ TYPO FIX (extra letter) in customer_name: '{name}' -> '{d}'")
+                                return d
+            
+            # Try replacing one letter (common typos)
+            for i in range(len(name_lower)):
+                for letter in 'abcdefghijklmnopqrstuvwxyz':
+                    if name_lower[i] != letter:
+                        test_name = name_lower[:i] + letter + name_lower[i+1:]
+                        for d in dealer_names:
+                            d_lower = d.lower()
+                            if test_name in d_lower or d_lower in test_name:
+                                score = self._calculate_match_score(test_name, d_lower)
+                                if score >= MATCH_THRESHOLD:
+                                    logger.info(f"✅ TYPO FIX (replaced letter) in customer_name: '{name}' -> '{d}'")
+                                    return d
+        
+        # 4b: Partial word match against customer_name
+        search_words = name_lower.split()
+        if search_words:
+            first_word = search_words[0]
+            if 3 <= len(first_word) <= 6:
+                for d in dealer_names:
+                    d_words = d.lower().split()
+                    if d_words:
+                        d_first = d_words[0]
+                        common_prefix_len = 0
+                        min_len = min(len(first_word), len(d_first))
+                        for i in range(min_len):
+                            if first_word[i] == d_first[i]:
+                                common_prefix_len += 1
+                            else:
+                                break
+                        
+                        if common_prefix_len >= max(2, len(first_word) * 0.7):
+                            score = self._calculate_match_score(first_word, d_first)
+                            if score >= MATCH_THRESHOLD - 10:
+                                logger.info(f"✅ PARTIAL WORD MATCH in customer_name: '{name}' -> '{d}'")
+                                return d
+        
+        # STEP 5: FIRST WORD MATCH (with expanded name)
         search_first = expanded_name.split()[0] if expanded_name.split() else ""
         if len(search_first) >= 3:
             for d in dealer_names:
@@ -1027,21 +1097,68 @@ class DealerAnalyticsService:
                 if d_first == search_first:
                     score = self._calculate_match_score(expanded_name, d.lower())
                     if score >= MATCH_THRESHOLD:
-                        logger.info(f"✅ FIRST WORD ({score:.0f}%): '{d}'")
+                        logger.info(f"✅ FIRST WORD ({score:.0f}%) in customer_name: '{d}'")
                         return d
         
-        # 5. FUZZY MATCH (with lower threshold for better matching)
+        # STEP 6: CONTAINS MATCH in customer_name
+        for d in dealer_names:
+            d_lower = d.lower()
+            if name_lower in d_lower:
+                score = self._calculate_match_score(name_lower, d_lower)
+                if score >= MATCH_THRESHOLD - 5:
+                    logger.info(f"✅ CONTAINS MATCH in customer_name: '{d}'")
+                    return d
+            if d_lower in name_lower:
+                score = self._calculate_match_score(name_lower, d_lower)
+                if score >= MATCH_THRESHOLD - 5:
+                    logger.info(f"✅ REVERSE CONTAINS MATCH in customer_name: '{d}'")
+                    return d
+        
+        # STEP 7: FUZZY MATCH against customer_name
         if RAPIDFUZZ_AVAILABLE:
             try:
-                results = process.extract(name_lower, dealer_names, scorer=fuzz.token_set_ratio, limit=10)
+                results = process.extract(name_lower, dealer_names, scorer=fuzz.partial_ratio, limit=10)
                 for match, score, _ in results:
-                    if score >= MATCH_THRESHOLD:
-                        logger.info(f"✅ FUZZY ({score:.0f}%): '{match}'")
-                        return match
+                    if score >= MATCH_THRESHOLD - 5:
+                        verify_score = fuzz.token_set_ratio(name_lower, match.lower())
+                        if verify_score >= MATCH_THRESHOLD - 10:
+                            logger.info(f"✅ FUZZY TYPO ({score:.0f}%) in customer_name: '{match}'")
+                            return match
             except Exception as e:
                 logger.debug(f"Fuzzy failed: {e}")
         
-        logger.info(f"❌ No match found for '{name}'")
+        # STEP 8: WORD OVERLAP MATCH in customer_name
+        search_words = set(name_lower.split())
+        for d in dealer_names:
+            d_lower = d.lower()
+            d_words = set(d_lower.split())
+            common = search_words & d_words
+            if common and (len(common) / max(len(search_words), 1)) >= 0.5:
+                score = self._calculate_match_score(name_lower, d_lower)
+                if score >= MATCH_THRESHOLD - 5:
+                    logger.info(f"✅ WORD OVERLAP ({score:.0f}%) in customer_name: '{d}'")
+                    return d
+        
+        # STEP 9: Search in dealer_code as fallback (if customer_name fails)
+        try:
+            with self._session() as session:
+                # Search dealer_code column
+                dealer_code_result = session.query(DeliveryReport.dealer_code).filter(
+                    func.lower(DeliveryReport.dealer_code).ilike(f"%{name_lower}%")
+                ).first()
+                if dealer_code_result and dealer_code_result[0]:
+                    logger.info(f"✅ Found in dealer_code: '{dealer_code_result[0]}'")
+                    # Now find the corresponding customer_name
+                    customer_result = session.query(DeliveryReport.customer_name).filter(
+                        DeliveryReport.dealer_code == dealer_code_result[0]
+                    ).first()
+                    if customer_result and customer_result[0]:
+                        logger.info(f"✅ Resolved dealer_code to customer_name: '{customer_result[0]}'")
+                        return customer_result[0]
+        except Exception as e:
+            logger.debug(f"Dealer_code fallback failed: {e}")
+        
+        logger.info(f"❌ No match found in customer_name for '{name}'")
         return None
     
     def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
@@ -1053,7 +1170,7 @@ class DealerAnalyticsService:
         if not dealer_names:
             return []
         
-        logger.info(f"🔍 Finding suggestions for '{query_lower}'")
+        logger.info(f"🔍 Finding suggestions in customer_name for '{query_lower}'")
         
         scored = []
         for d in dealer_names:
@@ -1065,7 +1182,7 @@ class DealerAnalyticsService:
         scored.sort(key=lambda x: x[1], reverse=True)
         suggestions = [d[0] for d in scored[:limit]]
         
-        logger.info(f"💡 Found {len(suggestions)} suggestions")
+        logger.info(f"💡 Found {len(suggestions)} suggestions from customer_name")
         return suggestions
     
     def _get_dashboard(self, dealer_name: str) -> Dict[str, Any]:
@@ -1145,7 +1262,7 @@ class DealerAnalyticsService:
                 response = self._renderer.render_suggestions(user_input, suggestions)
                 return {"response": response, "exit_menu": False}
             
-            return {"response": self._renderer.render_dealer_selection(f"Dealer '{user_input}' not found. Try again:"), "exit_menu": False}
+            return {"response": self._renderer.render_dealer_selection(f"Dealer '{user_input}' not found in customer_name. Try again:"), "exit_menu": False}
         
         if context.awaiting_comparison:
             resolved = self._resolve_dealer_name(user_input)
@@ -1154,7 +1271,7 @@ class DealerAnalyticsService:
                 if suggestions:
                     response = self._renderer.render_suggestions(user_input, suggestions)
                     return {"response": response, "exit_menu": False}
-                return {"response": self._renderer.render_comparison_selection() + f"\n\nDealer '{user_input}' not found. Try again:", "exit_menu": False}
+                return {"response": self._renderer.render_comparison_selection() + f"\n\nDealer '{user_input}' not found in customer_name. Try again:", "exit_menu": False}
             
             context.comparison_dealers.append(resolved)
             if len(context.comparison_dealers) == 1:
@@ -1209,7 +1326,6 @@ class DealerAnalyticsService:
     @staticmethod
     def _session() -> Session:
         return SessionLocal()
-
 # ============================================================
 # BLOCK 8: SINGLETON & EXPORTS
 # ============================================================
