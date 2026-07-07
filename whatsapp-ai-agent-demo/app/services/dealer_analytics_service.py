@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/dealer_analytics_service.py
-# VERSION: 12.5 - ENTERPRISE DEALER INTELLIGENCE PLATFORM
+# VERSION: 12.6 - ENTERPRISE DEALER INTELLIGENCE PLATFORM
 # ============================================================
 
 """
 ================================================================================
-DEALER LOGISTICS INTELLIGENCE PLATFORM - ENTERPRISE EDITION v12.5
+DEALER LOGISTICS INTELLIGENCE PLATFORM - ENTERPRISE EDITION v12.6
 ================================================================================
 
-SOURCE OF TRUTH: PostgreSQL ONLY
+SOURCE OF TRUTH: PostgreSQL ONLY - NO CACHE FOR DATA EXTRACTION
 TABLE: delivery_reports
 COLUMN: customer_name (Sold-To Party)
 
-FIXES v12.5:
-- ✅ FIXED: Service now shows ✅ in main menu (working status)
+FIXES v12.6:
+- ✅ FIXED: NO CACHE for data extraction - DIRECT PostgreSQL queries only
 - ✅ FIXED: Database query properly searches customer_name
 - ✅ FIXED: Added fallback to dealer_code if customer_name search fails
 - ✅ FIXED: Case-insensitive search with ILIKE
-- ✅ FIXED: Cache clearing on failed searches
 - ✅ FIXED: Better error logging for debugging
 - ✅ FIXED: Exact match for all dealers now works
-- ✅ FIXED: Added Best Electronics, Shaheen, Zoon patterns
 - ✅ FIXED: Service initialization now properly returns instance
+- ✅ FIXED: Removed ALL cache dependencies for dealer data
+- ✅ FIXED: Direct PostgreSQL connection for every query
 
 ================================================================================
 """
@@ -38,7 +38,6 @@ from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Any, Optional, Dict, List, Tuple
 
-from cachetools import TTLCache
 from sqlalchemy import case, distinct, func, or_, and_, text
 from sqlalchemy.orm import Session
 
@@ -67,10 +66,9 @@ except ImportError:
 # BLOCK 2: CONFIGURATION & CONSTANTS
 # ============================================================
 
-CACHE_TTL = max(60, int(os.getenv("DEALER_ANALYTICS_CACHE_TTL", "300")))
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
-VERSION = "12.5"
+VERSION = "12.6"
 
 # Lowered threshold for better matching
 MATCH_THRESHOLD = 60
@@ -141,7 +139,7 @@ SPECIAL_PATTERNS = {
     "zoon": "Zoon Electronics MZD",
     
     # ==========================================================
-    # Best Electronics variations (Based on PostgreSQL data)
+    # Best Electronics variations
     # ==========================================================
     "best electronics bagh": "Best Electronics Bagh",
     "best electronics": "Best Electronics Bagh",
@@ -351,16 +349,16 @@ def _generate_ai_insights(data: Dict[str, Any]) -> List[str]:
     return insights
 
 # ============================================================
-# BLOCK 5: DEALER REPOSITORY
+# BLOCK 5: DEALER REPOSITORY - NO CACHE, DIRECT POSTGRESQL ONLY
 # ============================================================
 
 class DealerRepository:
     def __init__(self, session: Session):
         self.session = session
-        self._cache: TTLCache[str, Dict[str, Any]] = TTLCache(maxsize=2048, ttl=CACHE_TTL)
-        self._lock = threading.RLock()
+        # NO CACHE - Direct PostgreSQL only
     
     def get_top_dealers_by_revenue(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get top dealers by revenue - DIRECT POSTGRESQL QUERY"""
         try:
             results = self.session.query(
                 DeliveryReport.customer_name,
@@ -380,6 +378,7 @@ class DealerRepository:
             return []
     
     def get_latest_dn(self, customer_name: str) -> Optional[str]:
+        """Get latest DN number - DIRECT POSTGRESQL QUERY"""
         try:
             result = self.session.query(DeliveryReport.dn_no).filter(
                 DeliveryReport.customer_name == customer_name
@@ -389,6 +388,7 @@ class DealerRepository:
             return None
     
     def get_latest_pgi_date(self, customer_name: str) -> Optional[date]:
+        """Get latest PGI date - DIRECT POSTGRESQL QUERY"""
         try:
             result = self.session.query(DeliveryReport.good_issue_date).filter(
                 DeliveryReport.customer_name == customer_name,
@@ -399,6 +399,7 @@ class DealerRepository:
             return None
     
     def get_latest_pod_date(self, customer_name: str) -> Optional[date]:
+        """Get latest POD date - DIRECT POSTGRESQL QUERY"""
         try:
             result = self.session.query(DeliveryReport.pod_date).filter(
                 DeliveryReport.customer_name == customer_name,
@@ -409,6 +410,7 @@ class DealerRepository:
             return None
     
     def get_highest_value_dn(self, customer_name: str) -> float:
+        """Get highest value DN - DIRECT POSTGRESQL QUERY"""
         try:
             result = self.session.query(func.max(DeliveryReport.dn_amount)).filter(
                 DeliveryReport.customer_name == customer_name
@@ -418,6 +420,7 @@ class DealerRepository:
             return 0
     
     def get_top_products(self, customer_name: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Get top selling products - DIRECT POSTGRESQL QUERY"""
         try:
             results = self.session.query(
                 DeliveryReport.material_no,
@@ -448,18 +451,12 @@ class DealerRepository:
         """
         Get dealer data by searching customer_name column in PostgreSQL.
         
-        FIX v12.5: Properly searches customer_name with multiple strategies.
+        v12.6: NO CACHE - DIRECT POSTGRESQL QUERY ONLY.
         """
         dealer_clean = dealer_identifier.strip()
         dealer_lower = dealer_clean.lower()
-        cache_key = f"dealer_{dealer_lower}"
         
-        with self._lock:
-            if cache_key in self._cache:
-                logger.info(f"✅ Cache hit for: {dealer_identifier}")
-                return self._cache[cache_key].copy()
-        
-        logger.info(f"🔍 Searching database for customer_name: '{dealer_identifier}'")
+        logger.info(f"🔍 DIRECT POSTGRESQL SEARCH for customer_name: '{dealer_identifier}'")
         
         try:
             # FIRST: Try exact match on customer_name (case-insensitive)
@@ -496,11 +493,11 @@ class DealerRepository:
             ).first()
             
             if query:
-                logger.info(f"✅ Found exact match: {query.customer_name}")
+                logger.info(f"✅ Found exact match in PostgreSQL: {query.customer_name}")
                 return self._build_dealer_data(query)
             
             # SECOND: Try ILIKE with wildcards (partial match)
-            logger.info(f"🔍 No exact match, trying ILIKE for: '{dealer_identifier}'")
+            logger.info(f"🔍 No exact match, trying ILIKE in PostgreSQL: '{dealer_identifier}'")
             
             query = self.session.query(
                 DeliveryReport.customer_name,
@@ -535,11 +532,11 @@ class DealerRepository:
             ).first()
             
             if query:
-                logger.info(f"✅ Found ILIKE match: {query.customer_name}")
+                logger.info(f"✅ Found ILIKE match in PostgreSQL: {query.customer_name}")
                 return self._build_dealer_data(query)
             
             # THIRD: Try searching in dealer_code
-            logger.info(f"🔍 No customer_name match, trying dealer_code for: '{dealer_identifier}'")
+            logger.info(f"🔍 No customer_name match, trying dealer_code in PostgreSQL: '{dealer_identifier}'")
             
             query = self.session.query(
                 DeliveryReport.customer_name,
@@ -574,14 +571,53 @@ class DealerRepository:
             ).first()
             
             if query:
-                logger.info(f"✅ Found via dealer_code: {query.customer_name}")
+                logger.info(f"✅ Found via dealer_code in PostgreSQL: {query.customer_name}")
                 return self._build_dealer_data(query)
             
-            logger.info(f"❌ No match found for: '{dealer_identifier}'")
+            # FOURTH: Try searching in ship_to_city
+            logger.info(f"🔍 No match, trying ship_to_city in PostgreSQL: '{dealer_identifier}'")
+            
+            query = self.session.query(
+                DeliveryReport.customer_name,
+                DeliveryReport.dealer_code,
+                DeliveryReport.customer_code,
+                DeliveryReport.ship_to_city,
+                DeliveryReport.warehouse,
+                DeliveryReport.sales_office,
+                DeliveryReport.sales_manager,
+                DeliveryReport.division,
+                func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
+                func.sum(DeliveryReport.dn_qty).label('total_units'),
+                func.sum(DeliveryReport.dn_amount).label('total_revenue'),
+                func.count(distinct(DeliveryReport.customer_name)).label('dealer_count'),
+                func.min(DeliveryReport.dn_create_date).label('first_sale'),
+                func.max(DeliveryReport.dn_create_date).label('last_sale'),
+                func.avg(DeliveryReport.dn_amount).label('avg_dn_value'),
+                func.count(distinct(case((DeliveryReport.pod_date.is_(None), DeliveryReport.dn_no)))).label('pending_dn'),
+                func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no)))).label('pgi_pending_dn'),
+                func.count(distinct(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label('pod_pending_dn'),
+                func.count(distinct(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)))).label('pod_completed'),
+                func.count(distinct(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.dn_no)))).label('pgi_completed'),
+                func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label('avg_delivery_days'),
+                func.avg(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.isnot(None)), DeliveryReport.pod_date - DeliveryReport.good_issue_date))).label('avg_pod_days'),
+            ).filter(
+                func.lower(DeliveryReport.ship_to_city).ilike(f"%{dealer_lower}%")
+            ).group_by(
+                DeliveryReport.customer_name, DeliveryReport.dealer_code,
+                DeliveryReport.customer_code, DeliveryReport.ship_to_city,
+                DeliveryReport.warehouse, DeliveryReport.sales_office,
+                DeliveryReport.sales_manager, DeliveryReport.division
+            ).first()
+            
+            if query:
+                logger.info(f"✅ Found via ship_to_city in PostgreSQL: {query.customer_name}")
+                return self._build_dealer_data(query)
+            
+            logger.info(f"❌ No match found in PostgreSQL for: '{dealer_identifier}'")
             return None
             
         except Exception as e:
-            logger.error(f"❌ Failed to get dealer: {e}")
+            logger.error(f"❌ Failed to get dealer from PostgreSQL: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return None
@@ -637,7 +673,7 @@ class DealerRepository:
         
         data['distance'] = _get_distance_ors(data.get('warehouse', ''), data.get('city', ''))
         
-        # Get top product
+        # Get top product - DIRECT POSTGRESQL QUERY
         top_product = self.session.query(
             DeliveryReport.material_no,
             DeliveryReport.division,
@@ -652,7 +688,7 @@ class DealerRepository:
             DeliveryReport.customer_name == data['customer_name']
         ).scalar() or 0
         
-        # Revenue rank
+        # Revenue rank - DIRECT POSTGRESQL QUERY
         rank_query = self.session.query(
             DeliveryReport.customer_name,
             func.sum(DeliveryReport.dn_amount).label('revenue')
@@ -662,7 +698,7 @@ class DealerRepository:
         
         data['revenue_rank'] = next((i+1 for i, r in enumerate(rank_query) if r[0] == data['customer_name']), 0)
         
-        # Latest activity
+        # Latest activity - DIRECT POSTGRESQL QUERIES
         data['latest_dn'] = self.get_latest_dn(data['customer_name']) or 'N/A'
         latest_pgi = self.get_latest_pgi_date(data['customer_name'])
         data['latest_pgi'] = _date_text(latest_pgi) if latest_pgi else 'N/A'
@@ -671,11 +707,6 @@ class DealerRepository:
         data['highest_dn_value'] = self.get_highest_value_dn(data['customer_name'])
         data['top_products'] = self.get_top_products(data['customer_name'], 5)
         data['ai_insights'] = _generate_ai_insights(data)
-        
-        # Cache the result
-        cache_key = f"dealer_{data['customer_name'].lower()}"
-        with self._lock:
-            self._cache[cache_key] = data.copy()
         
         return data
 
@@ -939,10 +970,7 @@ class DealerMenuRenderer:
         return "\n".join(lines)
 
 # ============================================================
-# BLOCK 7: MAIN DEALER ANALYTICS SERVICE
-# ============================================================
-# ============================================================
-# BLOCK 7: MAIN DEALER ANALYTICS SERVICE
+# BLOCK 7: MAIN DEALER ANALYTICS SERVICE - NO CACHE
 # ============================================================
 
 class DealerAnalyticsService:
@@ -951,12 +979,10 @@ class DealerAnalyticsService:
         self._renderer = DealerMenuRenderer()
         self._contexts: Dict[str, DealerContext] = {}
         self._context_lock = threading.RLock()
-        self._dealer_cache: List[str] = []
-        self._cache_lock = threading.RLock()
         logger.info(f"✅ DealerAnalyticsService v{self._version} initialized")
         logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
         logger.info(f"   Match Threshold: {MATCH_THRESHOLD}%")
-        logger.info(f"   🔍 Searching customer_name column in PostgreSQL")
+        logger.info(f"   🔍 DIRECT POSTGRESQL CONNECTION - NO CACHE")
     
     def handle_message(self, message: str, sender: str) -> str:
         try:
@@ -980,37 +1006,37 @@ class DealerAnalyticsService:
                 self._contexts[session_id] = DealerContext()
             return self._contexts[session_id]
     
-    def _get_all_dealers(self, refresh: bool = False) -> List[str]:
-        """Get all dealer names from customer_name column with caching"""
-        with self._cache_lock:
-            if self._dealer_cache and not refresh:
-                return self._dealer_cache
-            
-            try:
-                with self._session() as session:
-                    customer_names = session.query(DeliveryReport.customer_name).filter(
-                        DeliveryReport.customer_name.isnot(None),
-                        DeliveryReport.customer_name != ''
-                    ).distinct().all()
-                    
-                    all_dealers = []
-                    for r in customer_names:
-                        if r.customer_name:
-                            all_dealers.append(r.customer_name)
-                    
-                    seen = set()
-                    unique_dealers = []
-                    for d in all_dealers:
-                        if d not in seen:
-                            seen.add(d)
-                            unique_dealers.append(d)
-                    
-                    self._dealer_cache = unique_dealers
-                    logger.info(f"📋 Loaded {len(self._dealer_cache)} dealers from customer_name")
-                    return self._dealer_cache
-            except Exception as e:
-                logger.error(f"Error getting dealers: {e}")
-                return []
+    def _get_all_dealers(self) -> List[str]:
+        """
+        Get all dealer names from PostgreSQL - NO CACHE.
+        DIRECT POSTGRESQL QUERY every time.
+        """
+        try:
+            with self._session() as session:
+                logger.info("🔍 DIRECT POSTGRESQL: Fetching all dealer names")
+                customer_names = session.query(DeliveryReport.customer_name).filter(
+                    DeliveryReport.customer_name.isnot(None),
+                    DeliveryReport.customer_name != ''
+                ).distinct().all()
+                
+                all_dealers = []
+                for r in customer_names:
+                    if r.customer_name:
+                        all_dealers.append(r.customer_name)
+                
+                # Remove duplicates
+                seen = set()
+                unique_dealers = []
+                for d in all_dealers:
+                    if d not in seen:
+                        seen.add(d)
+                        unique_dealers.append(d)
+                
+                logger.info(f"📋 DIRECT POSTGRESQL: Loaded {len(unique_dealers)} dealers")
+                return unique_dealers
+        except Exception as e:
+            logger.error(f"❌ Error getting dealers from PostgreSQL: {e}")
+            return []
     
     def _calculate_match_score(self, search: str, target: str) -> float:
         if not search or not target:
@@ -1050,10 +1076,8 @@ class DealerAnalyticsService:
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
         """
-        FIXED v12.5: Dealer resolution with DIRECT DATABASE SEARCH.
-        
-        This method ALWAYS checks the database directly.
-        It does NOT rely on cache for the final answer.
+        Dealer resolution with DIRECT DATABASE SEARCH.
+        NO CACHE - Always queries PostgreSQL directly.
         """
         if not name or not name.strip():
             return None
@@ -1061,10 +1085,10 @@ class DealerAnalyticsService:
             return None
         
         name_lower = name.strip().lower()
-        logger.info(f"🔍 Searching customer_name: '{name_lower}'")
+        logger.info(f"🔍 DIRECT POSTGRESQL SEARCH for: '{name_lower}'")
         
         # ==========================================================
-        # STEP 1: CHECK SPECIAL PATTERNS FIRST (Fast)
+        # STEP 1: CHECK SPECIAL PATTERNS FIRST (Fast lookup)
         # ==========================================================
         if name_lower in SPECIAL_PATTERNS:
             result = SPECIAL_PATTERNS[name_lower]
@@ -1077,100 +1101,72 @@ class DealerAnalyticsService:
                 return result
         
         # ==========================================================
-        # STEP 2: DIRECT DATABASE SEARCH (BYPASSES CACHE)
+        # STEP 2: DIRECT POSTGRESQL SEARCH
         # ==========================================================
         try:
             with self._session() as session:
                 # 2a: Exact match (case-insensitive)
-                logger.info(f"🔍 Trying exact match in database: '{name_lower}'")
+                logger.info(f"🔍 PostgreSQL EXACT match: '{name_lower}'")
                 result = session.query(DeliveryReport.customer_name).filter(
                     func.lower(DeliveryReport.customer_name) == name_lower
                 ).first()
                 if result and result[0]:
-                    logger.info(f"✅ DIRECT DB EXACT MATCH: '{result[0]}'")
+                    logger.info(f"✅ POSTGRESQL EXACT MATCH: '{result[0]}'")
                     return result[0]
                 
                 # 2b: ILIKE partial match (case-insensitive)
-                logger.info(f"🔍 Trying ILIKE match: '%{name_lower}%'")
+                logger.info(f"🔍 PostgreSQL ILIKE match: '%{name_lower}%'")
                 result = session.query(DeliveryReport.customer_name).filter(
                     func.lower(DeliveryReport.customer_name).ilike(f"%{name_lower}%")
                 ).first()
                 if result and result[0]:
-                    logger.info(f"✅ DIRECT DB ILIKE MATCH: '{result[0]}'")
+                    logger.info(f"✅ POSTGRESQL ILIKE MATCH: '{result[0]}'")
                     return result[0]
                 
                 # 2c: Search in dealer_code
-                logger.info(f"🔍 Trying dealer_code match: '%{name_lower}%'")
+                logger.info(f"🔍 PostgreSQL dealer_code match: '%{name_lower}%'")
                 result = session.query(DeliveryReport.customer_name).filter(
                     func.lower(DeliveryReport.dealer_code).ilike(f"%{name_lower}%")
                 ).first()
                 if result and result[0]:
-                    logger.info(f"✅ DIRECT DB DEALER_CODE MATCH: '{result[0]}'")
+                    logger.info(f"✅ POSTGRESQL DEALER_CODE MATCH: '{result[0]}'")
                     return result[0]
                 
                 # 2d: Search in ship_to_city
-                logger.info(f"🔍 Trying ship_to_city match: '%{name_lower}%'")
+                logger.info(f"🔍 PostgreSQL ship_to_city match: '%{name_lower}%'")
                 result = session.query(DeliveryReport.customer_name).filter(
                     func.lower(DeliveryReport.ship_to_city).ilike(f"%{name_lower}%")
                 ).first()
                 if result and result[0]:
-                    logger.info(f"✅ DIRECT DB CITY MATCH: '{result[0]}'")
+                    logger.info(f"✅ POSTGRESQL CITY MATCH: '{result[0]}'")
                     return result[0]
                 
         except Exception as e:
-            logger.error(f"❌ Database search failed: {e}")
+            logger.error(f"❌ PostgreSQL search failed: {e}")
             import traceback
             logger.error(traceback.format_exc())
         
         # ==========================================================
-        # STEP 3: CHECK CACHED DEALER LIST (Fallback)
+        # STEP 3: Fuzzy Match (Only if RapidFuzz is available)
         # ==========================================================
-        dealer_names = self._get_all_dealers()
-        if dealer_names:
-            # 3a: Exact match in cache
-            for d in dealer_names:
-                if d.lower() == name_lower:
-                    logger.info(f"✅ CACHE EXACT MATCH: '{d}'")
-                    return d
-            
-            # 3b: Normalized match in cache
-            normalized_name = name_lower.replace(' - ', '-').replace(' -', '-').replace('- ', '-')
-            normalized_name = normalized_name.replace('.', '').replace(',', '')
-            for d in dealer_names:
-                d_normalized = d.lower().replace(' - ', '-').replace(' -', '-').replace('- ', '-')
-                d_normalized = d_normalized.replace('.', '').replace(',', '')
-                if d_normalized == normalized_name:
-                    logger.info(f"✅ CACHE NORMALIZED MATCH: '{d}'")
-                    return d
-            
-            # 3c: Contains match in cache
-            for d in dealer_names:
-                d_lower = d.lower()
-                if name_lower in d_lower:
-                    logger.info(f"✅ CACHE CONTAINS MATCH: '{d}'")
-                    return d
-                if d_lower in name_lower:
-                    logger.info(f"✅ CACHE REVERSE CONTAINS MATCH: '{d}'")
-                    return d
-        
-        # ==========================================================
-        # STEP 4: FUZZY MATCH (Only if RapidFuzz is available)
-        # ==========================================================
-        if RAPIDFUZZ_AVAILABLE and dealer_names:
+        if RAPIDFUZZ_AVAILABLE:
             try:
-                logger.info(f"🔍 Trying fuzzy match for: '{name_lower}'")
-                results = process.extract(name_lower, dealer_names, scorer=fuzz.token_set_ratio, limit=5)
-                for match, score, _ in results:
-                    if score >= MATCH_THRESHOLD:
-                        logger.info(f"✅ FUZZY MATCH ({score:.0f}%): '{match}'")
-                        return match
+                dealer_names = self._get_all_dealers()
+                if dealer_names:
+                    logger.info(f"🔍 Fuzzy match for: '{name_lower}'")
+                    results = process.extract(name_lower, dealer_names, scorer=fuzz.token_set_ratio, limit=5)
+                    for match, score, _ in results:
+                        if score >= MATCH_THRESHOLD:
+                            logger.info(f"✅ FUZZY MATCH ({score:.0f}%): '{match}'")
+                            return match
             except Exception as e:
                 logger.debug(f"Fuzzy match failed: {e}")
         
-        logger.info(f"❌ No match found for '{name}'")
+        logger.info(f"❌ No match found in PostgreSQL for '{name}'")
         return None
     
     def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
+        """Get suggestions from PostgreSQL - NO CACHE"""
         if not query:
             return []
         query_lower = query.strip().lower()
@@ -1192,6 +1188,7 @@ class DealerAnalyticsService:
         return suggestions
     
     def _get_dashboard(self, dealer_name: str) -> Dict[str, Any]:
+        """Get dealer dashboard - DIRECT POSTGRESQL"""
         try:
             with self._session() as session:
                 repo = DealerRepository(session)
@@ -1207,6 +1204,7 @@ class DealerAnalyticsService:
             return {"response": None, "data": None}
     
     def _handle_ranking(self) -> Dict[str, Any]:
+        """Get ranking - DIRECT POSTGRESQL"""
         try:
             with self._session() as session:
                 repo = DealerRepository(session)
@@ -1218,6 +1216,7 @@ class DealerAnalyticsService:
             return {"response": f"⚠️ Error: {str(e)}\n\n0. Main Menu\n99. Back"}
     
     def _compare_dealers(self, d1: str, d2: str) -> Dict[str, Any]:
+        """Compare dealers - DIRECT POSTGRESQL"""
         try:
             with self._session() as session:
                 repo = DealerRepository(session)
@@ -1333,6 +1332,7 @@ class DealerAnalyticsService:
     @staticmethod
     def _session() -> Session:
         return SessionLocal()
+
 # ============================================================
 # BLOCK 8: SINGLETON & EXPORTS
 # ============================================================
