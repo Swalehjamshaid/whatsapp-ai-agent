@@ -1344,8 +1344,17 @@ class ResponseFormatter:
 # ============================================================
 # BLOCK 10: MAIN DEALER ANALYTICS SERVICE
 # ============================================================
+# ============================================================
+# BLOCK 10: MAIN DEALER ANALYTICS SERVICE (UPDATED - FIRST NAME PRIORITY)
+# ============================================================
 
 class DealerAnalyticsService:
+    """
+    Dealer Domain AI Expert with Full Menu System
+    Single entry point for all dealer-related business questions
+    PostgreSQL is the ONLY source of truth.
+    """
+    
     def __init__(self) -> None:
         self._version = VERSION
         self._renderer = DealerMenuRenderer()
@@ -1361,20 +1370,36 @@ class DealerAnalyticsService:
         logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
         logger.info(f"   Geopy: {'✅' if GEOPY_AVAILABLE else '❌'}")
     
+    # ============================================================
+    # MAIN ENTRY POINT - SYNC VERSION
+    # ============================================================
+    
     def handle_message(self, message: str, sender: str) -> str:
         try:
-            logger.info(f"📨 Dealer service: '{message}' from {sender}")
-            result = self.process_menu_input(sender, message)
+            logger.info(f"📨 Dealer service received: '{message}' from {sender}")
+            session_id = sender
+            result = self.process_menu_input(session_id, message)
             return result.get("response", self._renderer.render_main_menu())
         except Exception as e:
-            logger.error(f"❌ Error: {e}", exc_info=True)
+            logger.error(f"❌ Error in handle_message: {e}", exc_info=True)
             return self._renderer.render_main_menu()
+    
+    # ============================================================
+    # ALIAS for compatibility
+    # ============================================================
     
     def process_whatsapp_query(self, message: str, sender: str) -> str:
         return self.handle_message(message, sender)
     
+    # ============================================================
+    # MENU AND PROCESSING METHODS
+    # ============================================================
+    
     def get_main_menu(self) -> str:
         return self._renderer.render_main_menu()
+    
+    def get_dealer_selection_menu(self) -> str:
+        return self._renderer.render_dealer_selection()
     
     def _get_context(self, session_id: str) -> DealerContext:
         with self._context_lock:
@@ -1382,259 +1407,708 @@ class DealerAnalyticsService:
                 self._contexts[session_id] = DealerContext()
             return self._contexts[session_id]
     
+    # ============================================================
+    # CRITICAL: IMPROVED DEALER RESOLUTION - FIRST NAME PRIORITY
+    # ============================================================
+    
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
+        """
+        Resolve dealer name from database with FIRST NAME PRIORITY.
+        Requires at least 70% match confidence.
+        """
         if not name or not name.strip():
             return None
+        
+        # Skip single digits (menu options)
         if name.isdigit() and 1 <= int(name) <= 9:
             return None
         
-        name_clean = name.strip().lower()
-        logger.info(f"🔍 Searching: '{name_clean}'")
+        name_clean = name.strip()
+        name_lower = name_clean.lower()
+        logger.info(f"🔍 Searching for dealer: '{name_clean}'")
         
         try:
             with self._session() as session:
+                # Get all distinct dealer names
                 all_dealers = session.query(DeliveryReport.customer_name).filter(
                     DeliveryReport.customer_name.isnot(None)
                 ).distinct().all()
                 dealer_names = [d.customer_name for d in all_dealers if d.customer_name]
+                
                 if not dealer_names:
+                    logger.warning("⚠️ No dealers found in database")
                     return None
                 
-                search_parts = name_clean.split()
+                logger.info(f"📋 Found {len(dealer_names)} dealers in database")
                 
-                # Exact match
+                # ============================================================
+                # STEP 1: EXACT MATCH (100% confidence)
+                # ============================================================
                 for d in dealer_names:
-                    if d.lower() == name_clean:
-                        logger.info(f"✅ Exact match: '{d}'")
+                    if d.lower() == name_lower:
+                        logger.info(f"✅ EXACT MATCH (100%): '{d}'")
                         return d
                 
-                # Starts with
-                for d in dealer_names:
-                    if d.lower().startswith(name_clean):
-                        logger.info(f"✅ Starts with: '{d}'")
-                        return d
+                # ============================================================
+                # STEP 2: FIRST NAME MATCH (Highest priority)
+                # Extract first word from search and compare with first word of dealer
+                # ============================================================
+                search_first_word = name_lower.split()[0] if name_lower.split() else ""
                 
-                # Word match
+                if len(search_first_word) >= 2:  # At least 2 characters
+                    for d in dealer_names:
+                        d_lower = d.lower()
+                        d_first_word = d_lower.split()[0] if d_lower.split() else ""
+                        
+                        # Check if first words match
+                        if d_first_word == search_first_word:
+                            # Check if rest of name matches at least partially
+                            # Calculate match score
+                            match_score = self._calculate_match_score(name_lower, d_lower)
+                            if match_score >= 70:
+                                logger.info(f"✅ FIRST NAME MATCH ({match_score:.0f}%): '{d}' (First word: '{search_first_word}')")
+                                return d
+                        
+                        # Check if search first word is in dealer name
+                        if len(search_first_word) >= 3 and search_first_word in d_lower:
+                            match_score = self._calculate_match_score(name_lower, d_lower)
+                            if match_score >= 70:
+                                logger.info(f"✅ FIRST NAME CONTAINS ({match_score:.0f}%): '{d}'")
+                                return d
+                
+                # ============================================================
+                # STEP 3: STARTS WITH (Search term at beginning)
+                # ============================================================
                 for d in dealer_names:
                     d_lower = d.lower()
-                    for part in search_parts:
-                        if len(part) >= 3 and part in d_lower:
-                            logger.info(f"✅ Word match: '{d}'")
+                    if d_lower.startswith(name_lower):
+                        match_score = self._calculate_match_score(name_lower, d_lower)
+                        if match_score >= 70:
+                            logger.info(f"✅ STARTS WITH ({match_score:.0f}%): '{d}'")
                             return d
                 
-                # Contains
+                # ============================================================
+                # STEP 4: WORD MATCH (Search term is complete word)
+                # ============================================================
+                search_words = set(name_lower.split())
                 for d in dealer_names:
-                    if name_clean in d.lower():
-                        logger.info(f"✅ Contains: '{d}'")
-                        return d
+                    d_lower = d.lower()
+                    d_words = set(d_lower.split())
+                    
+                    # Check if any search word is in dealer words
+                    matching_words = search_words & d_words
+                    if matching_words:
+                        match_score = self._calculate_match_score(name_lower, d_lower)
+                        if match_score >= 70:
+                            logger.info(f"✅ WORD MATCH ({match_score:.0f}%): '{d}' (Matched: {matching_words})")
+                            return d
                 
-                # Fuzzy match
+                # ============================================================
+                # STEP 5: PARTIAL WORD MATCH (At least 70% of search words match)
+                # ============================================================
+                for d in dealer_names:
+                    d_lower = d.lower()
+                    match_count = 0
+                    total_words = len(search_words)
+                    
+                    if total_words > 0:
+                        for word in search_words:
+                            if len(word) >= 3 and word in d_lower:
+                                match_count += 1
+                        
+                        # If at least 70% of words match
+                        if match_count / total_words >= 0.7:
+                            match_score = self._calculate_match_score(name_lower, d_lower)
+                            if match_score >= 70:
+                                logger.info(f"✅ PARTIAL WORD MATCH ({match_score:.0f}%): '{d}'")
+                                return d
+                
+                # ============================================================
+                # STEP 6: FUZZY MATCH (Requires 80%+ confidence)
+                # ============================================================
                 if RAPIDFUZZ_AVAILABLE:
                     try:
-                        results = process.extract(name_clean, dealer_names, scorer=fuzz.partial_ratio, limit=5)
+                        from rapidfuzz import fuzz, process
+                        
+                        # Try with token set ratio (better for word order variations)
+                        results = process.extract(
+                            name_lower,
+                            dealer_names,
+                            scorer=fuzz.token_set_ratio,
+                            limit=10
+                        )
+                        
                         for match, score, _ in results:
-                            if score >= 60:
-                                logger.info(f"✅ Fuzzy match: '{match}' ({score}%)")
+                            if score >= 80:  # 80% threshold for fuzzy
+                                logger.info(f"✅ FUZZY MATCH ({score:.0f}%): '{match}'")
                                 return match
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Fuzzy matching failed: {e}")
                 
-                # Cleaned match
-                cleaned = _clean_dealer_name(name_clean)
-                if cleaned and cleaned != name_clean:
+                # ============================================================
+                # STEP 7: CLEANED MATCH (Remove suffixes)
+                # ============================================================
+                cleaned_search = _clean_dealer_name(name_lower)
+                if cleaned_search and cleaned_search != name_lower:
                     for d in dealer_names:
-                        if cleaned in _clean_dealer_name(d.lower()):
-                            logger.info(f"✅ Cleaned match: '{d}'")
+                        cleaned_dealer = _clean_dealer_name(d.lower())
+                        if cleaned_dealer == cleaned_search:
+                            logger.info(f"✅ CLEANED MATCH: '{d}'")
                             return d
+                        
+                        # Check cleaned word match
+                        cleaned_words = set(cleaned_search.split())
+                        cleaned_dealer_words = set(cleaned_dealer.split())
+                        if cleaned_words & cleaned_dealer_words:
+                            match_score = self._calculate_match_score(name_lower, d.lower())
+                            if match_score >= 70:
+                                logger.info(f"✅ CLEANED WORD MATCH ({match_score:.0f}%): '{d}'")
+                                return d
                 
+                # ============================================================
+                # STEP 8: City abbreviation match
+                # ============================================================
+                for city_abbr, city_name in CITY_ABBREVIATIONS.items():
+                    if city_abbr in name_lower:
+                        for d in dealer_names:
+                            if city_name in d.lower():
+                                # Check if any meaningful part matches
+                                for part in name_lower.split():
+                                    if len(part) >= 3 and part in d.lower():
+                                        match_score = self._calculate_match_score(name_lower, d.lower())
+                                        if match_score >= 70:
+                                            logger.info(f"✅ CITY MATCH ({match_score:.0f}%): '{d}'")
+                                            return d
+                
+                # ============================================================
+                # STEP 9: No match found - return None for suggestions
+                # ============================================================
+                logger.warning(f"⚠️ No match found for '{name}' (minimum 70% confidence required)")
                 return None
+                    
         except Exception as e:
-            logger.error(f"Error resolving dealer: {e}")
+            logger.error(f"❌ Error resolving dealer name '{name}': {e}")
             return None
     
+    def _calculate_match_score(self, search: str, target: str) -> float:
+        """
+        Calculate match score between search and target strings.
+        Returns score as percentage (0-100).
+        """
+        if not search or not target:
+            return 0.0
+        
+        search = search.lower().strip()
+        target = target.lower().strip()
+        
+        # Exact match
+        if search == target:
+            return 100.0
+        
+        # Calculate word overlap
+        search_words = set(search.split())
+        target_words = set(target.split())
+        
+        if not search_words or not target_words:
+            return 0.0
+        
+        # Intersection of words
+        common_words = search_words & target_words
+        
+        # Score based on common words
+        word_score = (len(common_words) / max(len(search_words), 1)) * 100
+        
+        # Bonus if search starts with target or vice versa
+        bonus = 0
+        if target.startswith(search):
+            bonus = 20
+        elif search.startswith(target):
+            bonus = 15
+        
+        # Check if words are similar (fuzzy word match)
+        if RAPIDFUZZ_AVAILABLE and common_words:
+            try:
+                from rapidfuzz import fuzz
+                for word in search_words:
+                    for tword in target_words:
+                        if len(word) >= 3 and len(tword) >= 3:
+                            if fuzz.ratio(word, tword) >= 80:
+                                bonus += 10
+                                break
+            except Exception:
+                pass
+        
+        # Check if search has first word match
+        search_first = search.split()[0] if search.split() else ""
+        target_first = target.split()[0] if target.split() else ""
+        if search_first and target_first and search_first == target_first:
+            bonus += 25
+        elif search_first and target_first and search_first in target_first:
+            bonus += 15
+        
+        # Final score (capped at 100)
+        final_score = min(100, word_score + bonus)
+        return final_score
+    
+    # ============================================================
+    # IMPROVED SUGGESTIONS WITH SCORING
+    # ============================================================
+    
     def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
-        if not query:
+        """Get dealer name suggestions with scoring - prioritizes first word match"""
+        if not query or not query.strip():
             return []
+        
+        query_lower = query.strip().lower()
+        query_first_word = query_lower.split()[0] if query_lower.split() else ""
+        
         try:
             with self._session() as session:
                 results = session.query(DeliveryReport.customer_name).filter(
                     DeliveryReport.customer_name.isnot(None)
-                ).distinct().limit(100).all()
+                ).distinct().limit(200).all()
                 dealer_names = [d.customer_name for d in results if d.customer_name]
+                
                 if not dealer_names:
                     return []
                 
-                query_lower = query.lower()
-                scored = []
-                for d in dealer_names:
-                    d_lower = d.lower()
+                # Score each dealer
+                scored_dealers = []
+                for dealer in dealer_names:
+                    dealer_lower = dealer.lower()
                     score = 0
-                    if d_lower == query_lower: score += 100
-                    if d_lower.startswith(query_lower): score += 50
-                    if query_lower in d_lower: score += 30
-                    if d_lower in query_lower: score += 25
-                    for part in query_lower.split():
-                        if len(part) >= 3 and part in d_lower:
-                            score += 10
-                    if len(d_lower) < 30: score += 5
-                    if score > 0: scored.append((d, score))
+                    
+                    # Extract first word of dealer
+                    dealer_first_word = dealer_lower.split()[0] if dealer_lower.split() else ""
+                    
+                    # 1. EXACT MATCH (highest)
+                    if dealer_lower == query_lower:
+                        score += 1000
+                    
+                    # 2. FIRST WORD MATCH (priority)
+                    if query_first_word and dealer_first_word:
+                        if query_first_word == dealer_first_word:
+                            score += 500
+                        elif query_first_word in dealer_first_word or dealer_first_word in query_first_word:
+                            score += 300
+                    
+                    # 3. STARTS WITH
+                    if dealer_lower.startswith(query_lower):
+                        score += 200
+                    
+                    # 4. COMPLETE WORD MATCH
+                    query_words = set(query_lower.split())
+                    dealer_words = set(dealer_lower.split())
+                    common_words = query_words & dealer_words
+                    if common_words:
+                        score += len(common_words) * 50
+                    
+                    # 5. CONTAINS QUERY
+                    if query_lower in dealer_lower:
+                        score += 30
+                    
+                    # 6. FUZZY MATCH
+                    if RAPIDFUZZ_AVAILABLE:
+                        try:
+                            from rapidfuzz import fuzz
+                            fuzzy_score = fuzz.token_set_ratio(query_lower, dealer_lower)
+                            if fuzzy_score >= 70:
+                                score += fuzzy_score
+                        except Exception:
+                            pass
+                    
+                    # 7. BONUS FOR SHORTER CLEAN NAMES
+                    if len(dealer_lower) < 30:
+                        score += 10
+                    
+                    # 8. PENALTY FOR LONG COMPLEX NAMES
+                    if len(dealer_lower) > 50:
+                        score -= 10
+                    
+                    if score > 0:
+                        scored_dealers.append((dealer, score))
                 
-                scored.sort(key=lambda x: x[1], reverse=True)
-                suggestions = [d[0] for d in scored[:limit]]
+                # Sort by score descending
+                scored_dealers.sort(key=lambda x: x[1], reverse=True)
                 
+                # Get top suggestions
+                suggestions = [d[0] for d in scored_dealers[:limit]]
+                
+                # If no suggestions, try fuzzy only
                 if not suggestions and RAPIDFUZZ_AVAILABLE:
                     try:
-                        results = process.extract(query_lower, dealer_names, scorer=fuzz.partial_ratio, limit=limit)
+                        from rapidfuzz import fuzz, process
+                        results = process.extract(
+                            query_lower,
+                            dealer_names,
+                            scorer=fuzz.token_set_ratio,
+                            limit=limit
+                        )
                         for match, score, _ in results:
-                            if score >= 50 and match not in suggestions:
+                            if score >= 70 and match not in suggestions:
                                 suggestions.append(match)
                     except Exception:
                         pass
                 
-                return suggestions[:limit] if suggestions else dealer_names[:limit]
-        except Exception:
+                # If still no suggestions, return first few dealers
+                if not suggestions and dealer_names:
+                    suggestions = dealer_names[:min(limit, len(dealer_names))]
+                
+                return suggestions[:limit]
+                
+        except Exception as e:
+            logger.error(f"Error getting suggestions: {e}")
             return []
     
+    # ============================================================
+    # MENU INPUT PROCESSING
+    # ============================================================
+    
     def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
+        """Process menu input and return response"""
         context = self._get_context(session_id)
         user_input = user_input.strip()
+        logger.info(f"📥 Processing input: '{user_input}' for session {session_id}, state: {context.menu_state}")
         
-        # Navigation
+        # ============================================================
+        # STEP 1: Navigation commands
+        # ============================================================
         if user_input in ["0", "99"]:
             context.clear()
             return {"response": self._renderer.render_main_menu(), "menu_type": "dealer_menu", "action": "main_menu", "data": {}, "exit_menu": True}
         
-        # Awaiting dealer
+        # ============================================================
+        # STEP 2: Awaiting dealer
+        # ============================================================
         if context.awaiting_dealer:
+            logger.info(f"🔍 Awaiting dealer name, checking: '{user_input}'")
+            
+            # Try to resolve with improved matching
             dealer = self._resolve_dealer_name(user_input)
             if dealer:
                 context.current_dealer = dealer
                 context.awaiting_dealer = False
+                context.selected_option = None
                 return self._get_dashboard_response(context, dealer)
             
+            # Get suggestions
             suggestions = self._get_suggestions(user_input)
+            
+            # If only one suggestion with high confidence, auto-select
             if len(suggestions) == 1:
-                dealer = suggestions[0]
-                context.current_dealer = dealer
-                context.awaiting_dealer = False
-                return self._get_dashboard_response(context, dealer)
+                # Check confidence
+                match_score = self._calculate_match_score(user_input, suggestions[0])
+                if match_score >= 70:
+                    dealer = suggestions[0]
+                    logger.info(f"🔄 Auto-selecting single suggestion ({match_score:.0f}%): '{dealer}'")
+                    context.current_dealer = dealer
+                    context.awaiting_dealer = False
+                    context.selected_option = None
+                    return self._get_dashboard_response(context, dealer)
             
             if suggestions:
-                text = "🔍 *Dealer not found.*\n\n💡 *Did you mean:*\n" + "\n".join(f"• {s}" for s in suggestions[:5])
-                return {"response": text + "\n\n0. Main Menu\n99. Back", "menu_type": "dealer_menu", "action": "dealer_selection", "data": {"awaiting": True}, "exit_menu": False}
+                suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
+                response = (
+                    f"🔍 *Dealer '{user_input}' not found.*\n\n"
+                    f"💡 *Did you mean:*\n{suggestion_text}\n\n"
+                    f"Please type the exact dealer name or:\n"
+                    f"0. Main Menu\n"
+                    f"99. Back"
+                )
+            else:
+                response = self._renderer.render_dealer_selection(
+                    f"Dealer '{user_input}' not found. Please try again:"
+                )
             
-            return {"response": self._renderer.render_dealer_selection(f"Dealer '{user_input}' not found. Try again:"), "menu_type": "dealer_menu", "action": "dealer_selection", "data": {"awaiting": True}, "exit_menu": False}
+            return {
+                "response": response,
+                "menu_type": "dealer_menu",
+                "action": "dealer_selection",
+                "data": {"awaiting": True, "query": user_input},
+                "exit_menu": False
+            }
         
-        # Awaiting comparison
+        # ============================================================
+        # STEP 3: Awaiting comparison
+        # ============================================================
         if context.awaiting_comparison:
             return self._handle_comparison_input(context, user_input)
         
-        # Menu options
+        # ============================================================
+        # STEP 4: Menu options (1-18)
+        # ============================================================
         if user_input.isdigit() and 1 <= int(user_input) <= 18:
+            logger.info(f"🎯 Valid menu option: {user_input}")
             return self._handle_menu_option(context, user_input)
         
-        # Quick query
+        # ============================================================
+        # STEP 5: Special states (search)
+        # ============================================================
+        if context.selected_option == "search":
+            return self._handle_search(context, user_input)
+        
+        # ============================================================
+        # STEP 6: Try to resolve as dealer name (quick query)
+        # ============================================================
         dealer = self._resolve_dealer_name(user_input)
         if dealer:
+            logger.info(f"🔍 Quick query resolved to dealer: {dealer}")
             context.current_dealer = dealer
             return self._get_dashboard_response(context, dealer)
         
-        # Quick commands
-        if "top dealers" in user_input.lower() or "ranking" in user_input.lower():
+        # ============================================================
+        # STEP 7: Natural language quick commands
+        # ============================================================
+        user_lower = user_input.lower()
+        if "top dealers" in user_lower or "ranking" in user_lower:
             return self._handle_ranking(context)
         
-        return {"response": self._renderer.render_main_menu(), "menu_type": "dealer_menu", "action": "main_menu", "data": {}, "exit_menu": False}
+        if "compare" in user_lower or "vs" in user_lower:
+            match = re.search(r'compare\s+([\w\s]+)\s+and\s+([\w\s]+)', user_lower, re.IGNORECASE)
+            if match:
+                dealer1 = match.group(1).strip()
+                dealer2 = match.group(2).strip()
+                resolved1 = self._resolve_dealer_name(dealer1)
+                resolved2 = self._resolve_dealer_name(dealer2)
+                if resolved1 and resolved2:
+                    return self._compare_dealers(context, resolved1, resolved2)
+        
+        # ============================================================
+        # STEP 8: Default - show main menu
+        # ============================================================
+        return {
+            "response": self._renderer.render_main_menu(),
+            "menu_type": "dealer_menu",
+            "action": "main_menu",
+            "data": {},
+            "exit_menu": False
+        }
+    
+    # ============================================================
+    # HANDLER METHODS
+    # ============================================================
     
     def _handle_menu_option(self, context: DealerContext, option: str) -> Dict[str, Any]:
+        """Handle main menu option selection"""
+        logger.info(f"🎯 Handling menu option: '{option}'")
+        
         option_map = {
-            "1": ("dashboard", "Enter dealer name:"), "2": ("revenue", "Enter dealer name:"),
-            "3": ("units", "Enter dealer name:"), "4": ("logistics", "Enter dealer name:"),
-            "5": ("warehouses", "Enter dealer name:"), "6": ("cities", "Enter dealer name:"),
-            "7": ("pending_dn", "Enter dealer name:"), "8": ("pending_pgi", "Enter dealer name:"),
-            "9": ("pending_pod", "Enter dealer name:"), "10": ("comparison", "Enter first dealer name:"),
-            "11": ("ranking", ""), "12": ("trend", "Enter dealer name:"),
-            "13": ("executive", "Enter dealer name:"), "14": ("ai_insights", "Enter dealer name:"),
-            "15": ("recommendations", "Enter dealer name:"), "16": ("performance", "Enter dealer name:"),
-            "17": ("score", "Enter dealer name:"), "18": ("search", "Enter search term:")
+            "1": ("dashboard", "Enter dealer name:"),
+            "2": ("revenue", "Enter dealer name:"),
+            "3": ("units", "Enter dealer name:"),
+            "4": ("logistics", "Enter dealer name:"),
+            "5": ("warehouses", "Enter dealer name:"),
+            "6": ("cities", "Enter dealer name:"),
+            "7": ("pending_dn", "Enter dealer name:"),
+            "8": ("pending_pgi", "Enter dealer name:"),
+            "9": ("pending_pod", "Enter dealer name:"),
+            "10": ("comparison", "Enter first dealer name:"),
+            "11": ("ranking", ""),
+            "12": ("trend", "Enter dealer name:"),
+            "13": ("executive", "Enter dealer name:"),
+            "14": ("ai_insights", "Enter dealer name:"),
+            "15": ("recommendations", "Enter dealer name:"),
+            "16": ("performance", "Enter dealer name:"),
+            "17": ("score", "Enter dealer name:"),
+            "18": ("search", "Enter search term:")
         }
         
         if option in option_map:
             action, prompt = option_map[option]
+            
             if action == "ranking":
                 return self._handle_ranking(context)
+            
             if action == "comparison":
                 context.awaiting_comparison = True
-                return {"response": self._renderer.render_comparison_selection(), "menu_type": "dealer_menu", "action": "comparison_selection", "data": {"awaiting": True}, "exit_menu": False}
+                return {
+                    "response": self._renderer.render_comparison_selection(),
+                    "menu_type": "dealer_menu",
+                    "action": "comparison_selection",
+                    "data": {"awaiting": True},
+                    "exit_menu": False
+                }
             
             context.awaiting_dealer = True
             context.selected_option = action
-            return {"response": self._renderer.render_dealer_selection(prompt), "menu_type": "dealer_menu", "action": "dealer_selection", "data": {"awaiting": True, "option": action}, "exit_menu": False}
+            return {
+                "response": self._renderer.render_dealer_selection(prompt),
+                "menu_type": "dealer_menu",
+                "action": "dealer_selection",
+                "data": {"awaiting": True, "option": action},
+                "exit_menu": False
+            }
         
-        return {"response": self._renderer.render_main_menu(), "menu_type": "dealer_menu", "action": "invalid", "data": {}, "exit_menu": False}
+        return {
+            "response": self._renderer.render_main_menu(),
+            "menu_type": "dealer_menu",
+            "action": "invalid_option",
+            "data": {},
+            "exit_menu": False
+        }
     
     def _handle_comparison_input(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
+        """Handle comparison dealer input with improved matching"""
         resolved = self._resolve_dealer_name(dealer_name)
+        
         if not resolved:
             suggestions = self._get_suggestions(dealer_name)
+            
+            # Auto-select if one suggestion with high confidence
             if len(suggestions) == 1:
-                resolved = suggestions[0]
-            else:
-                text = "🔍 *Dealer not found.*\n\n" + ("💡 *Did you mean:*\n" + "\n".join(f"• {s}" for s in suggestions[:5]) if suggestions else "")
-                return {"response": text + "\n\n0. Main Menu\n99. Back", "menu_type": "dealer_menu", "action": "comparison_selection", "data": {"awaiting": True}, "exit_menu": False}
+                match_score = self._calculate_match_score(dealer_name, suggestions[0])
+                if match_score >= 70:
+                    resolved = suggestions[0]
+                    logger.info(f"🔄 Auto-selecting for comparison ({match_score:.0f}%): '{resolved}'")
+            
+            if not resolved:
+                if suggestions:
+                    suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
+                    response = (
+                        f"🔍 *Dealer '{dealer_name}' not found.*\n\n"
+                        f"💡 *Did you mean:*\n{suggestion_text}\n\n"
+                        f"Please type the exact dealer name or:\n"
+                        f"0. Main Menu\n"
+                        f"99. Back"
+                    )
+                else:
+                    response = self._renderer.render_comparison_selection() + f"\n\nDealer '{dealer_name}' not found. Try again:"
+                
+                return {
+                    "response": response,
+                    "menu_type": "dealer_menu",
+                    "action": "comparison_selection",
+                    "data": {"awaiting": True},
+                    "exit_menu": False
+                }
         
         context.comparison_dealers.append(resolved)
+        
         if len(context.comparison_dealers) == 1:
-            return {"response": "Enter second dealer name:", "menu_type": "dealer_menu", "action": "comparison_selection", "data": {"awaiting": True}, "exit_menu": False}
+            return {
+                "response": "Enter second dealer name:",
+                "menu_type": "dealer_menu",
+                "action": "comparison_selection",
+                "data": {"awaiting": True, "first_dealer": resolved},
+                "exit_menu": False
+            }
         else:
-            d1, d2 = context.comparison_dealers
+            dealer1, dealer2 = context.comparison_dealers
             context.awaiting_comparison = False
             context.comparison_dealers = []
-            return self._compare_dealers(context, d1, d2)
+            return self._compare_dealers(context, dealer1, dealer2)
     
     def _get_dashboard_response(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
+        """Get dealer dashboard with improved matching"""
         try:
             with self._session() as session:
                 builder = DealerDashboardBuilder(session)
                 dashboard = builder.build(dealer_name)
+                
                 if dashboard:
                     response = self._renderer.render_dealer_dashboard(dealer_name, dashboard)
-                    return {"response": response, "menu_type": "dealer_menu", "action": "dashboard", "data": {"dealer": dealer_name}, "exit_menu": False}
+                    return {
+                        "response": response,
+                        "menu_type": "dealer_menu",
+                        "action": "dashboard",
+                        "data": {"dealer": dealer_name},
+                        "exit_menu": False
+                    }
                 
+                # Try to find with better matching
                 suggestions = self._get_suggestions(dealer_name)
-                if len(suggestions) == 1:
-                    return self._get_dashboard_response(context, suggestions[0])
-                if suggestions:
-                    text = "⚠️ *Multiple dealers found:*\n" + "\n".join(f"• {s}" for s in suggestions[:5])
-                    return {"response": text + "\n\n0. Main Menu\n99. Back", "menu_type": "dealer_menu", "action": "dealer_not_found", "data": {}, "exit_menu": False}
                 
-                return {"response": f"⚠️ No data found for: {dealer_name}\n\n0. Main Menu\n99. Back", "menu_type": "dealer_menu", "action": "dealer_not_found", "data": {}, "exit_menu": False}
+                if len(suggestions) == 1:
+                    match_score = self._calculate_match_score(dealer_name, suggestions[0])
+                    if match_score >= 70:
+                        logger.info(f"🔄 Auto-selecting dashboard suggestion ({match_score:.0f}%): '{suggestions[0]}'")
+                        return self._get_dashboard_response(context, suggestions[0])
+                
+                if suggestions:
+                    suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
+                    response = (
+                        f"⚠️ *No data found for: {dealer_name}*\n\n"
+                        f"💡 *Did you mean:*\n{suggestion_text}\n\n"
+                        f"0. Main Menu\n"
+                        f"99. Back"
+                    )
+                else:
+                    response = f"⚠️ No data found for dealer: {dealer_name}\n\n0. Main Menu\n99. Back"
+                
+                return {
+                    "response": response,
+                    "menu_type": "dealer_menu",
+                    "action": "dealer_not_found",
+                    "data": {"dealer": dealer_name},
+                    "exit_menu": False
+                }
+                
         except Exception as e:
-            logger.error(f"Dashboard error: {e}")
-            return {"response": f"⚠️ Error: {str(e)}\n\n0. Main Menu\n99. Back", "menu_type": "dealer_menu", "action": "error", "data": {}, "exit_menu": False}
+            logger.error(f"❌ Error getting dealer dashboard: {e}", exc_info=True)
+            return {
+                "response": f"⚠️ Error loading dashboard: {str(e)}\n\n0. Main Menu\n99. Back",
+                "menu_type": "dealer_menu",
+                "action": "error",
+                "data": {},
+                "exit_menu": False
+            }
     
     def _handle_ranking(self, context: DealerContext) -> Dict[str, Any]:
+        """Handle ranking request"""
         try:
             with self._session() as session:
                 repo = DealerRepository(session)
                 ranking = repo.get_top_dealers_by_revenue(10)
+                
                 if not ranking:
-                    return {"response": "📋 No data available.\n\n0. Main Menu\n99. Back", "menu_type": "dealer_menu", "action": "ranking", "data": {}, "exit_menu": False}
-                return {"response": self._renderer.render_ranking(ranking, "revenue", 10), "menu_type": "dealer_menu", "action": "ranking", "data": {"ranking": ranking}, "exit_menu": False}
+                    return {
+                        "response": "📋 No dealer data available.\n\n0. Main Menu\n99. Back",
+                        "menu_type": "dealer_menu",
+                        "action": "ranking",
+                        "data": {},
+                        "exit_menu": False
+                    }
+                
+                response = self._renderer.render_ranking(ranking, "revenue", 10)
+                
+                return {
+                    "response": response,
+                    "menu_type": "dealer_menu",
+                    "action": "ranking",
+                    "data": {"ranking": ranking},
+                    "exit_menu": False
+                }
+                
         except Exception as e:
-            logger.error(f"Ranking error: {e}")
-            return {"response": f"⚠️ Error: {str(e)}\n\n0. Main Menu\n99. Back", "menu_type": "dealer_menu", "action": "error", "data": {}, "exit_menu": False}
+            logger.error(f"Error getting ranking: {e}")
+            return {
+                "response": f"⚠️ Error loading ranking: {str(e)}\n\n0. Main Menu\n99. Back",
+                "menu_type": "dealer_menu",
+                "action": "error",
+                "data": {},
+                "exit_menu": False
+            }
     
     def _compare_dealers(self, context: DealerContext, dealer1: str, dealer2: str) -> Dict[str, Any]:
+        """Compare two dealers"""
         try:
             with self._session() as session:
                 builder = DealerDashboardBuilder(session)
-                d1 = builder.build(dealer1)
-                d2 = builder.build(dealer2)
-                if not d1 or not d2:
-                    return {"response": "⚠️ Could not find data for one or both dealers.\n\n0. Main Menu\n99. Back", "menu_type": "dealer_menu", "action": "error", "data": {}, "exit_menu": False}
+                dashboard1 = builder.build(dealer1)
+                dashboard2 = builder.build(dealer2)
+                
+                if not dashboard1 or not dashboard2:
+                    return {
+                        "response": f"⚠️ Could not find data for one or both dealers.\n\n0. Main Menu\n99. Back",
+                        "menu_type": "dealer_menu",
+                        "action": "comparison_error",
+                        "data": {},
+                        "exit_menu": False
+                    }
                 
                 metrics = {}
-                for dealer, data in [(dealer1, d1), (dealer2, d2)]:
+                
+                for dealer, data in [(dealer1, dashboard1), (dealer2, dashboard2)]:
                     delivery = data.get('delivery', {})
                     sales = data.get('sales', {})
                     perf = data.get('performance', {})
@@ -1643,22 +2117,132 @@ class DealerAnalyticsService:
                         "Total DN": str(delivery.get('total_dn', 0)),
                         "Pending DN": str(delivery.get('pending_dn', 0)),
                         "Delivery Rate": f"{delivery.get('delivery_rate', 0):.1f}%",
+                        "POD Rate": f"{delivery.get('pod_rate', 0):.1f}%",
                         "Business Score": f"{perf.get('business_score', 0):.1f}",
+                        "Performance Tier": perf.get('performance_tier', 'Standard')
                     }
                 
-                s1 = d1.get('performance', {}).get('business_score', 0)
-                s2 = d2.get('performance', {}).get('business_score', 0)
-                metrics['explanation'] = f"{dealer1} ({s1:.1f}) vs {dealer2} ({s2:.1f})" + (" - Higher" if s1 > s2 else " - Lower" if s2 > s1 else " - Equal")
+                score1 = dashboard1.get('performance', {}).get('business_score', 0)
+                score2 = dashboard2.get('performance', {}).get('business_score', 0)
                 
-                return {"response": self._renderer.render_comparison_result(dealer1, dealer2, metrics), "menu_type": "dealer_menu", "action": "comparison", "data": {"dealer1": dealer1, "dealer2": dealer2}, "exit_menu": False}
+                if score1 > score2:
+                    explanation = f"{dealer1} has a higher business score ({score1:.1f}) vs {dealer2} ({score2:.1f})"
+                elif score2 > score1:
+                    explanation = f"{dealer2} has a higher business score ({score2:.1f}) vs {dealer1} ({score1:.1f})"
+                else:
+                    explanation = "Both dealers have similar business scores."
+                
+                metrics['explanation'] = explanation
+                
+                response = self._renderer.render_comparison_result(dealer1, dealer2, metrics)
+                
+                return {
+                    "response": response,
+                    "menu_type": "dealer_menu",
+                    "action": "comparison",
+                    "data": {"dealer1": dealer1, "dealer2": dealer2},
+                    "exit_menu": False
+                }
+                
         except Exception as e:
-            logger.error(f"Comparison error: {e}")
-            return {"response": f"⚠️ Error: {str(e)}\n\n0. Main Menu\n99. Back", "menu_type": "dealer_menu", "action": "error", "data": {}, "exit_menu": False}
+            logger.error(f"Error comparing dealers: {e}")
+            return {
+                "response": f"⚠️ Error comparing dealers: {str(e)}\n\n0. Main Menu\n99. Back",
+                "menu_type": "dealer_menu",
+                "action": "error",
+                "data": {},
+                "exit_menu": False
+            }
+    
+    def _handle_search(self, context: DealerContext, query: str) -> Dict[str, Any]:
+        """Handle dealer search"""
+        try:
+            with self._session() as session:
+                repo = DealerRepository(session)
+                results = repo.search_dealers(query)
+                
+                if not results:
+                    suggestions = self._get_suggestions(query)
+                    if suggestions:
+                        if len(suggestions) == 1:
+                            match_score = self._calculate_match_score(query, suggestions[0])
+                            if match_score >= 70:
+                                auto_dealer = suggestions[0]
+                                logger.info(f"🔄 Auto-selecting search result ({match_score:.0f}%): '{auto_dealer}'")
+                                context.current_dealer = auto_dealer
+                                return self._get_dashboard_response(context, auto_dealer)
+                        
+                        suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
+                        response = (
+                            f"🔍 No dealers found matching '{query}'\n\n"
+                            f"💡 *Did you mean:*\n{suggestion_text}\n\n"
+                            f"0. Main Menu\n"
+                            f"99. Back"
+                        )
+                    else:
+                        response = f"🔍 No dealers found matching '{query}'\n\n0. Main Menu\n99. Back"
+                    
+                    return {
+                        "response": response,
+                        "menu_type": "dealer_menu",
+                        "action": "search",
+                        "data": {},
+                        "exit_menu": False
+                    }
+                
+                lines = [f"🔍 *Search Results for '{query}'*", ""]
+                for i, dealer in enumerate(results[:10], 1):
+                    lines.append(f"{i}. {dealer.get('dealer', 'Unknown')}")
+                    lines.append(f"   City: {dealer.get('city', 'N/A')}")
+                    lines.append(f"   Warehouse: {dealer.get('warehouse', 'N/A')}")
+                    lines.append("")
+                
+                if len(results) > 10:
+                    lines.append(f"... and {len(results) - 10} more results")
+                
+                lines.extend(["", "0. Main Menu", "99. Back"])
+                
+                return {
+                    "response": "\n".join(lines),
+                    "menu_type": "dealer_menu",
+                    "action": "search",
+                    "data": {"results": results},
+                    "exit_menu": False
+                }
+                
+        except Exception as e:
+            logger.error(f"Error searching dealers: {e}")
+            return {
+                "response": f"⚠️ Error searching: {str(e)}\n\n0. Main Menu\n99. Back",
+                "menu_type": "dealer_menu",
+                "action": "error",
+                "data": {},
+                "exit_menu": False
+            }
+    
+    def _handle_quick_query(self, context: DealerContext, user_input: str) -> Dict[str, Any]:
+        """Handle quick query (natural language)"""
+        user_lower = user_input.lower()
+        
+        if "top dealers" in user_lower or "ranking" in user_lower:
+            return self._handle_ranking(context)
+        
+        dealer = self._resolve_dealer_name(user_input)
+        if dealer:
+            context.current_dealer = dealer
+            return self._get_dashboard_response(context, dealer)
+        
+        return {
+            "response": self._renderer.render_main_menu(),
+            "menu_type": "dealer_menu",
+            "action": "main_menu",
+            "data": {},
+            "exit_menu": False
+        }
     
     @staticmethod
     def _session() -> Session:
         return SessionLocal()
-
 # ============================================================
 # BLOCK 11: SINGLETON & EXPORTS
 # ============================================================
