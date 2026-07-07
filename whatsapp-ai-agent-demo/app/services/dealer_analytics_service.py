@@ -1043,8 +1043,7 @@ class DealerMenuRenderer:
 # ============================================================
 # BLOCK 7: MAIN DEALER ANALYTICS SERVICE
 # ============================================================
-# ============================================================
-# BLOCK 7: MAIN DEALER ANALYTICS SERVICE - SIMPLIFIED
+# BLOCK 7: MAIN DEALER ANALYTICS SERVICE - WITH RAW SQL
 # ============================================================
 
 class DealerAnalyticsService:
@@ -1110,9 +1109,10 @@ class DealerAnalyticsService:
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
         """
-        SIMPLIFIED - Direct database search ONLY.
-        No cache, no special patterns, just PostgreSQL.
+        DEBUG VERSION - Uses RAW SQL to eliminate SQLAlchemy issues.
         """
+        import traceback
+        
         if not name or not name.strip():
             return None
         if name.isdigit():
@@ -1122,58 +1122,123 @@ class DealerAnalyticsService:
         name_lower = name_original.lower()
         
         logger.info("=" * 80)
-        logger.info(f"🔍 _resolve_dealer_name: '{name_original}'")
+        logger.info(f"🔍 _resolve_dealer_name RAW INPUT: '{name_original}'")
         logger.info("=" * 80)
         
+        # ==========================================================
+        # STEP 1: RAW SQL - Exact Match
+        # ==========================================================
         try:
             with self._session() as session:
-                # ==========================================================
-                # DIRECT POSTGRESQL SEARCH - Exact match
-                # ==========================================================
-                logger.info(f"🔍 Searching PostgreSQL for: '{name_original}'")
+                logger.info(f"🔍 STEP 1: RAW SQL EXACT MATCH")
                 
-                result = session.query(DeliveryReport.customer_name).filter(
-                    func.lower(DeliveryReport.customer_name) == name_lower
-                ).first()
+                raw_sql = text("""
+                    SELECT customer_name 
+                    FROM delivery_reports 
+                    WHERE LOWER(customer_name) = :name
+                    LIMIT 1
+                """)
                 
-                if result and result[0]:
-                    logger.info(f"✅ FOUND: '{result[0]}'")
+                result = session.execute(raw_sql, {"name": name_lower}).first()
+                
+                if result:
+                    logger.info(f"✅ RAW SQL FOUND: '{result[0]}'")
                     return result[0]
+                else:
+                    logger.warning("❌ RAW SQL EXACT returned nothing")
+                    
+        except Exception as e:
+            logger.error(f"❌ RAW SQL failed: {e}")
+            logger.error(traceback.format_exc())
+        
+        # ==========================================================
+        # STEP 2: RAW SQL - ILIKE
+        # ==========================================================
+        try:
+            with self._session() as session:
+                logger.info(f"🔍 STEP 2: RAW SQL ILIKE")
                 
-                # ==========================================================
-                # DIRECT POSTGRESQL SEARCH - ILIKE
-                # ==========================================================
-                logger.info(f"🔍 Searching PostgreSQL with ILIKE: '%{name_original}%'")
+                raw_sql = text("""
+                    SELECT customer_name 
+                    FROM delivery_reports 
+                    WHERE customer_name ILIKE :name
+                    LIMIT 1
+                """)
                 
-                result = session.query(DeliveryReport.customer_name).filter(
-                    DeliveryReport.customer_name.ilike(f"%{name_original}%")
-                ).first()
+                result = session.execute(raw_sql, {"name": f"%{name_original}%"}).first()
                 
-                if result and result[0]:
-                    logger.info(f"✅ FOUND (ILIKE): '{result[0]}'")
+                if result:
+                    logger.info(f"✅ RAW SQL ILIKE FOUND: '{result[0]}'")
                     return result[0]
+                else:
+                    logger.warning("❌ RAW SQL ILIKE returned nothing")
+                    
+        except Exception as e:
+            logger.error(f"❌ RAW SQL ILIKE failed: {e}")
+            logger.error(traceback.format_exc())
+        
+        # ==========================================================
+        # STEP 3: RAW SQL - dealer_code
+        # ==========================================================
+        try:
+            with self._session() as session:
+                logger.info(f"🔍 STEP 3: RAW SQL dealer_code")
                 
-                # ==========================================================
-                # DIRECT POSTGRESQL SEARCH - dealer_code
-                # ==========================================================
-                logger.info(f"🔍 Searching PostgreSQL dealer_code: '%{name_original}%'")
+                raw_sql = text("""
+                    SELECT customer_name 
+                    FROM delivery_reports 
+                    WHERE dealer_code ILIKE :name
+                    LIMIT 1
+                """)
                 
-                result = session.query(DeliveryReport.customer_name).filter(
-                    DeliveryReport.dealer_code.ilike(f"%{name_original}%")
-                ).first()
+                result = session.execute(raw_sql, {"name": f"%{name_original}%"}).first()
                 
-                if result and result[0]:
-                    logger.info(f"✅ FOUND (dealer_code): '{result[0]}'")
+                if result:
+                    logger.info(f"✅ RAW SQL dealer_code FOUND: '{result[0]}'")
                     return result[0]
+                else:
+                    logger.warning("❌ RAW SQL dealer_code returned nothing")
+                    
+        except Exception as e:
+            logger.error(f"❌ RAW SQL dealer_code failed: {e}")
+            logger.error(traceback.format_exc())
+        
+        # ==========================================================
+        # STEP 4: Get ALL dealers to verify data exists
+        # ==========================================================
+        try:
+            with self._session() as session:
+                logger.info("🔍 STEP 4: GET ALL DEALERS")
                 
-                logger.info(f"❌ NOT FOUND: '{name_original}'")
-                return None
+                raw_sql = text("""
+                    SELECT DISTINCT customer_name 
+                    FROM delivery_reports 
+                    WHERE customer_name IS NOT NULL 
+                    ORDER BY customer_name
+                    LIMIT 20
+                """)
+                
+                results = session.execute(raw_sql).fetchall()
+                dealer_list = [r[0] for r in results if r[0]]
+                
+                logger.info(f"📋 First 20 dealers in DB:")
+                for i, d in enumerate(dealer_list, 1):
+                    logger.info(f"   {i}. '{d}'")
+                
+                # Check if our dealer is in the list
+                for d in dealer_list:
+                    if d.lower() == name_lower:
+                        logger.info(f"✅ FOUND IN DEALER LIST: '{d}'")
+                        return d
+                
+                logger.warning(f"❌ '{name_original}' NOT in dealer list")
                 
         except Exception as e:
-            logger.error(f"❌ Database search failed: {e}")
-            import traceback
+            logger.error(f"❌ Get all dealers failed: {e}")
             logger.error(traceback.format_exc())
-            return None
+        
+        logger.warning(f"❌ ALL SEARCH METHODS FAILED for: '{name_original}'")
+        return None
     
     def _get_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         logger.info(f"📊 Getting dashboard for: '{dealer_name}'")
@@ -1196,7 +1261,6 @@ class DealerAnalyticsService:
         context = self._get_context(session_id)
         user_input = user_input.strip()
         
-        # CRITICAL: Log exactly what was received
         logger.info("=" * 80)
         logger.info(f"📥 process_menu_input received: '{user_input}'")
         logger.info(f"📥 Awaiting dealer: {context.awaiting_dealer}")
@@ -1255,7 +1319,6 @@ class DealerAnalyticsService:
                 prompt = f"Enter dealer name for {action}:"
                 return {"response": self._renderer.render_dealer_selection(prompt), "exit_menu": False}
         
-        # Quick query
         dealer = self._resolve_dealer_name(user_input)
         if dealer:
             context.current_dealer = dealer
