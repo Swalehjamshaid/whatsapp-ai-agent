@@ -22,7 +22,7 @@ FEATURES:
 - ✅ WhatsApp-Optimized Formatting
 - ✅ PostgreSQL Integration
 - ✅ Full Analytics Suite
-- ✅ Distance Calculation (ORS + Geopy + Haversine)
+- ✅ Distance Calculation (OpenRouteService ONLY)
 - ✅ AI Summary (Groq - Optional)
 - ✅ Auto-Dealer Name Resolution (90% Confidence)
 - ✅ Smart Suggestions
@@ -45,7 +45,7 @@ from enum import Enum
 from typing import Any, Optional, Dict, List, Tuple
 
 from cachetools import TTLCache
-from sqlalchemy import and_, case, distinct, func, or_
+from sqlalchemy import case, distinct, func, or_
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
@@ -74,12 +74,7 @@ try:
     ORS_AVAILABLE = True
 except ImportError:
     ORS_AVAILABLE = False
-
-try:
-    from geopy.distance import geodesic
-    GEOPY_AVAILABLE = True
-except ImportError:
-    GEOPY_AVAILABLE = False
+    logger.warning("⚠️ openrouteservice not installed. Install with: pip install openrouteservice")
 
 # ============================================================
 # BLOCK 2: CONFIGURATION & CONSTANTS
@@ -92,7 +87,7 @@ ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
 
 VERSION = "12.1"
-MATCH_THRESHOLD = 90  # 90% confidence required
+MATCH_THRESHOLD = 90
 
 CITY_ABBREVIATIONS = {
     'khi': 'karachi', 'lhr': 'lahore', 'isb': 'islamabad', 'rwp': 'rawalpindi',
@@ -252,15 +247,8 @@ def _clean_dealer_name(name: str) -> str:
     cleaned = re.sub(r'-[a-z]{3}$', '', cleaned)
     return cleaned.strip()
 
-def _calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    R = 6371
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-    return R * c
-
 def _get_coordinates(city: str) -> Tuple[float, float]:
+    """Get coordinates using OpenRouteService geocoding."""
     city_lower = city.lower()
     
     if ORS_AVAILABLE and ORS_API_KEY:
@@ -270,9 +258,10 @@ def _get_coordinates(city: str) -> Tuple[float, float]:
             if result and 'features' in result and len(result['features']) > 0:
                 coords = result['features'][0]['geometry']['coordinates']
                 return (coords[1], coords[0])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"ORS geocoding failed for {city}: {e}")
     
+    # Fallback to coordinates dictionary
     coords = CITY_COORDINATES.get(city_lower)
     if coords:
         return coords
@@ -280,57 +269,48 @@ def _get_coordinates(city: str) -> Tuple[float, float]:
     logger.warning(f"No coordinates for city: {city}, using fallback")
     return FALLBACK_COORDINATES
 
-def _get_distance_info(warehouse: str, city: str) -> Dict[str, Any]:
+def _get_distance_ors(warehouse: str, city: str) -> Dict[str, Any]:
+    """Calculate distance using OpenRouteService ONLY."""
     if not warehouse or not city:
-        return {"distance_km": None, "estimated_delivery": "Unknown", "transportation_zone": "Unknown", "source": "Missing data"}
+        return {"distance_km": None, "estimated_delivery": "Unknown", "source": "Missing data"}
+    
+    if not ORS_AVAILABLE or not ORS_API_KEY:
+        logger.warning("OpenRouteService not available. Please set ORS_API_KEY.")
+        return {"distance_km": None, "estimated_delivery": "Unknown", "source": "ORS not configured"}
     
     warehouse_coord = _get_coordinates(warehouse)
     city_coord = _get_coordinates(city)
     
-    if warehouse_coord and city_coord:
-        if ORS_AVAILABLE and ORS_API_KEY:
-            try:
-                client = openrouteservice.Client(key=ORS_API_KEY)
-                coords = [[warehouse_coord[1], warehouse_coord[0]], [city_coord[1], city_coord[0]]]
-                routes = client.directions(coordinates=coords, profile=ORS_PROFILE, format='json')
-                if routes and 'routes' in routes and len(routes['routes']) > 0:
-                    route = routes['routes'][0]
-                    summary = route.get('summary', {})
-                    distance_km = summary.get('distance', 0) / 1000
-                    duration_min = summary.get('duration', 0) / 60
-                    
-                    if distance_km <= 80: zone, est = "Local", "Same Day"
-                    elif distance_km <= 200: zone, est = "Short Haul", "1 Day"
-                    elif distance_km <= 400: zone, est = "Medium Haul", "2 Days"
-                    elif distance_km <= 700: zone, est = "Long Haul", "3 Days"
-                    else: zone, est = "Extended Haul", "4-5 Days"
-                    
-                    return {
-                        "distance_km": round(distance_km, 1),
-                        "duration_hours": round(duration_min / 60, 1),
-                        "estimated_delivery": est,
-                        "transportation_zone": zone,
-                        "source": "OpenRouteService"
-                    }
-            except Exception:
-                pass
-        
-        distance = _calculate_distance(warehouse_coord[0], warehouse_coord[1], city_coord[0], city_coord[1])
-        if distance <= 80: zone, est = "Local", "Same Day"
-        elif distance <= 200: zone, est = "Short Haul", "1 Day"
-        elif distance <= 400: zone, est = "Medium Haul", "2 Days"
-        elif distance <= 700: zone, est = "Long Haul", "3 Days"
-        else: zone, est = "Extended Haul", "4-5 Days"
-        
-        return {
-            "distance_km": round(distance, 1),
-            "duration_hours": round(distance / 50, 1),
-            "estimated_delivery": est,
-            "transportation_zone": zone,
-            "source": "Haversine (Fallback)"
-        }
+    if not warehouse_coord or not city_coord:
+        return {"distance_km": None, "estimated_delivery": "Unknown", "source": "No coordinates"}
     
-    return {"distance_km": None, "estimated_delivery": "Unknown", "transportation_zone": "Unknown", "source": "Unavailable"}
+    try:
+        client = openrouteservice.Client(key=ORS_API_KEY)
+        coords = [[warehouse_coord[1], warehouse_coord[0]], [city_coord[1], city_coord[0]]]
+        routes = client.directions(coordinates=coords, profile=ORS_PROFILE, format='json')
+        
+        if routes and 'routes' in routes and len(routes['routes']) > 0:
+            summary = routes['routes'][0].get('summary', {})
+            distance_km = summary.get('distance', 0) / 1000
+            duration_min = summary.get('duration', 0) / 60
+            
+            if distance_km <= 80: zone, est = "Local", "Same Day"
+            elif distance_km <= 200: zone, est = "Short Haul", "1 Day"
+            elif distance_km <= 400: zone, est = "Medium Haul", "2 Days"
+            elif distance_km <= 700: zone, est = "Long Haul", "3 Days"
+            else: zone, est = "Extended Haul", "4-5 Days"
+            
+            return {
+                "distance_km": round(distance_km, 1),
+                "duration_hours": round(duration_min / 60, 1),
+                "estimated_delivery": est,
+                "transportation_zone": zone,
+                "source": "OpenRouteService"
+            }
+    except Exception as e:
+        logger.error(f"ORS distance calculation failed: {e}")
+    
+    return {"distance_km": None, "estimated_delivery": "Unknown", "source": "ORS failed"}
 
 # ============================================================
 # BLOCK 5: MENU RENDERER
@@ -692,7 +672,7 @@ class DealerRepository:
             dealer_data['pod_rate'] = _percent(dealer_data.get('pod_completed', 0), dealer_data.get('dn_count', 0))
             dealer_data['pending_pct'] = _percent(dealer_data.get('pending_dn', 0), dealer_data.get('dn_count', 0))
             dealer_data['avg_units_per_dn'] = dealer_data.get('total_units', 0) / dealer_data.get('dn_count', 1) if dealer_data.get('dn_count', 0) > 0 else 0
-            dealer_data['distance'] = _get_distance_info(dealer_data.get('warehouse', ''), dealer_data.get('city', ''))
+            dealer_data['distance'] = _get_distance_ors(dealer_data.get('warehouse', ''), dealer_data.get('city', ''))
             
             score = (dealer_data.get('delivery_success_pct', 0) * 0.25 +
                     (100 - dealer_data.get('pending_pct', 0)) * 0.25 +
@@ -950,6 +930,7 @@ class DealerDashboardBuilder:
         return dashboard
     
     def _get_top_models(self, dealer_identifier: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """Get top models using customer_model (material_no)"""
         try:
             with self.session as session:
                 results = session.query(
@@ -1324,13 +1305,11 @@ class DealerAnalyticsService:
                 if not dealer_names:
                     return None
                 
-                # Exact match
                 for d in dealer_names:
                     if d.lower() == name_lower:
                         logger.info(f"✅ EXACT MATCH: '{d}'")
                         return d
                 
-                # First word exact match
                 search_first = name_lower.split()[0] if name_lower.split() else ""
                 if len(search_first) >= 3:
                     for d in dealer_names:
@@ -1341,7 +1320,6 @@ class DealerAnalyticsService:
                                 logger.info(f"✅ FIRST WORD ({score:.0f}%): '{d}'")
                                 return d
                 
-                # Starts with
                 for d in dealer_names:
                     d_lower = d.lower()
                     if d_lower.startswith(name_lower):
@@ -1350,7 +1328,6 @@ class DealerAnalyticsService:
                             logger.info(f"✅ STARTS WITH ({score:.0f}%): '{d}'")
                             return d
                 
-                # Word overlap
                 search_words = set(name_lower.split())
                 for d in dealer_names:
                     d_lower = d.lower()
@@ -1363,7 +1340,6 @@ class DealerAnalyticsService:
                                 logger.info(f"✅ WORD OVERLAP ({score:.0f}%): '{d}'")
                                 return d
                 
-                # Fuzzy match (90%+)
                 if RAPIDFUZZ_AVAILABLE:
                     try:
                         results = process.extract(name_lower, dealer_names, scorer=fuzz.token_set_ratio, limit=10)
@@ -1407,57 +1383,6 @@ class DealerAnalyticsService:
             logger.error(f"Error getting suggestions: {e}")
             return []
     
-    def _get_correct_distance(self, warehouse: str, city: str) -> Dict[str, Any]:
-        if not warehouse or not city:
-            return {"distance_km": None, "estimated_delivery": "Unknown", "source": "Missing data"}
-        
-        warehouse_coord = _get_coordinates(warehouse)
-        city_coord = _get_coordinates(city)
-        
-        if not warehouse_coord or not city_coord:
-            return {"distance_km": None, "estimated_delivery": "Unknown", "source": "No coordinates"}
-        
-        if ORS_AVAILABLE and ORS_API_KEY:
-            try:
-                client = openrouteservice.Client(key=ORS_API_KEY)
-                coords = [[warehouse_coord[1], warehouse_coord[0]], [city_coord[1], city_coord[0]]]
-                routes = client.directions(coordinates=coords, profile=ORS_PROFILE, format='json')
-                if routes and 'routes' in routes:
-                    summary = routes['routes'][0].get('summary', {})
-                    distance_km = summary.get('distance', 0) / 1000
-                    duration_min = summary.get('duration', 0) / 60
-                    
-                    if distance_km <= 80: zone, est = "Local", "Same Day"
-                    elif distance_km <= 200: zone, est = "Short Haul", "1 Day"
-                    elif distance_km <= 400: zone, est = "Medium Haul", "2 Days"
-                    elif distance_km <= 700: zone, est = "Long Haul", "3 Days"
-                    else: zone, est = "Extended Haul", "4-5 Days"
-                    
-                    return {
-                        "distance_km": round(distance_km, 1),
-                        "duration_hours": round(duration_min / 60, 1),
-                        "estimated_delivery": est,
-                        "transportation_zone": zone,
-                        "source": "OpenRouteService"
-                    }
-            except Exception:
-                pass
-        
-        distance = _calculate_distance(warehouse_coord[0], warehouse_coord[1], city_coord[0], city_coord[1])
-        if distance <= 80: zone, est = "Local", "Same Day"
-        elif distance <= 200: zone, est = "Short Haul", "1 Day"
-        elif distance <= 400: zone, est = "Medium Haul", "2 Days"
-        elif distance <= 700: zone, est = "Long Haul", "3 Days"
-        else: zone, est = "Extended Haul", "4-5 Days"
-        
-        return {
-            "distance_km": round(distance, 1),
-            "duration_hours": round(distance / 50, 1),
-            "estimated_delivery": est,
-            "transportation_zone": zone,
-            "source": "Haversine (Fallback)"
-        }
-    
     def _get_dashboard(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
         try:
             with self._session() as session:
@@ -1470,7 +1395,7 @@ class DealerAnalyticsService:
                     city = identity.get('city', '')
                     
                     if warehouse and city:
-                        correct = self._get_correct_distance(warehouse, city)
+                        correct = _get_distance_ors(warehouse, city)
                         dashboard['distance'] = correct
                         insights = [i for i in dashboard.get('insights', []) 
                                    if not i.startswith('Distance to dealer:') and not i.startswith('Estimated transit:')]
