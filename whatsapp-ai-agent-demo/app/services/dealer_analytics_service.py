@@ -1044,7 +1044,7 @@ class DealerMenuRenderer:
 # BLOCK 7: MAIN DEALER ANALYTICS SERVICE
 # ============================================================
 # ============================================================
-# BLOCK 7: MAIN DEALER ANALYTICS SERVICE
+# BLOCK 7: MAIN DEALER ANALYTICS SERVICE - SIMPLIFIED
 # ============================================================
 
 class DealerAnalyticsService:
@@ -1055,12 +1055,11 @@ class DealerAnalyticsService:
         self._context_lock = threading.RLock()
         logger.info(f"✅ DealerAnalyticsService v{self._version} initialized")
         logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
-        logger.info(f"   Match Threshold: {MATCH_THRESHOLD}%")
-        logger.info(f"   🔍 DIRECT POSTGRESQL CONNECTION - ENTERPRISE DESIGN")
+        logger.info(f"   🔍 DIRECT POSTGRESQL CONNECTION")
     
     def handle_message(self, message: str, sender: str) -> str:
         try:
-            logger.info(f"📨 handle_message received: '{message}' from {sender}")
+            logger.info(f"📨 handle_message: '{message}' from {sender}")
             result = self.process_menu_input(sender, message)
             return result.get("response", self._renderer.render_main_menu())
         except Exception as e:
@@ -1085,7 +1084,7 @@ class DealerAnalyticsService:
     def _get_all_dealers(self) -> List[str]:
         try:
             with self._session() as session:
-                logger.info("🔍 DIRECT POSTGRESQL: Fetching all dealer names")
+                logger.info("🔍 Fetching all dealer names")
                 customer_names = session.query(DeliveryReport.customer_name).filter(
                     DeliveryReport.customer_name.isnot(None),
                     DeliveryReport.customer_name != ''
@@ -1103,53 +1102,16 @@ class DealerAnalyticsService:
                         seen.add(d)
                         unique_dealers.append(d)
                 
-                logger.info(f"📋 DIRECT POSTGRESQL: Loaded {len(unique_dealers)} dealers")
+                logger.info(f"📋 Loaded {len(unique_dealers)} dealers")
                 return unique_dealers
         except Exception as e:
-            logger.error(f"❌ Error getting dealers from PostgreSQL: {e}")
+            logger.error(f"❌ Error getting dealers: {e}")
             return []
-    
-    def _calculate_match_score(self, search: str, target: str) -> float:
-        if not search or not target:
-            return 0.0
-        search = search.lower().strip()
-        target = target.lower().strip()
-        if search == target:
-            return 100.0
-        
-        search_words = set(search.split())
-        target_words = set(target.split())
-        if not search_words or not target_words:
-            return 0.0
-        
-        common = search_words & target_words
-        word_score = (len(common) / max(len(search_words), 1)) * 100
-        
-        s_first = search.split()[0] if search.split() else ""
-        t_first = target.split()[0] if target.split() else ""
-        bonus = 20 if s_first and t_first and s_first == t_first else 0
-        
-        if search in target or target in search:
-            bonus += 15
-        
-        for sw in search_words:
-            if len(sw) >= 3:
-                for tw in target_words:
-                    if len(tw) >= 3 and (sw in tw or tw in sw):
-                        bonus += 5
-        
-        for abbr, city in CITY_ABBREVIATIONS.items():
-            if abbr in search and city in target:
-                bonus += 10
-        
-        final_score = min(100, word_score + bonus)
-        return round(final_score, 1)
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
         """
-        Dealer resolution with DIRECT DATABASE SEARCH. NO CACHE.
-        
-        FIX v12.6: This method ALWAYS queries PostgreSQL directly.
+        SIMPLIFIED - Direct database search ONLY.
+        No cache, no special patterns, just PostgreSQL.
         """
         if not name or not name.strip():
             return None
@@ -1160,204 +1122,61 @@ class DealerAnalyticsService:
         name_lower = name_original.lower()
         
         logger.info("=" * 80)
-        logger.info(f"🔍 _resolve_dealer_name called with: '{name_original}'")
-        logger.info(f"🔍 Lowercase: '{name_lower}'")
+        logger.info(f"🔍 _resolve_dealer_name: '{name_original}'")
         logger.info("=" * 80)
         
-        # ==========================================================
-        # STEP 1: CHECK SPECIAL PATTERNS
-        # ==========================================================
-        if name_lower in SPECIAL_PATTERNS:
-            result = SPECIAL_PATTERNS[name_lower]
-            logger.info(f"✅ SPECIAL PATTERN: '{name_original}' -> '{result}'")
-            # Verify the result exists in database
-            try:
-                with self._session() as session:
-                    exists = session.query(DeliveryReport.customer_name).filter(
-                        func.lower(func.trim(DeliveryReport.customer_name)) == result.lower()
-                    ).first()
-                    if exists:
-                        logger.info(f"✅ Special pattern result verified in database: '{result}'")
-                        return result
-                    else:
-                        logger.warning(f"⚠️ Special pattern result '{result}' not found in database")
-            except Exception as e:
-                logger.error(f"❌ Special pattern verification failed: {e}")
-        
-        # ==========================================================
-        # STEP 2: DIRECT POSTGRESQL SEARCH - EXACT MATCH
-        # ==========================================================
         try:
             with self._session() as session:
-                # Try exact match with TRIM
-                logger.info(f"🔍 PostgreSQL EXACT match (with TRIM): '{name_lower}'")
-                result = session.query(DeliveryReport.customer_name).filter(
-                    func.lower(func.trim(DeliveryReport.customer_name)) == name_lower
-                ).first()
+                # ==========================================================
+                # DIRECT POSTGRESQL SEARCH - Exact match
+                # ==========================================================
+                logger.info(f"🔍 Searching PostgreSQL for: '{name_original}'")
                 
-                if result and result[0]:
-                    logger.info(f"✅ POSTGRESQL EXACT MATCH (TRIM): '{result[0]}'")
-                    return result[0]
-                
-                # Try exact match without TRIM (fallback)
-                logger.info(f"🔍 PostgreSQL EXACT match (no TRIM): '{name_lower}'")
                 result = session.query(DeliveryReport.customer_name).filter(
                     func.lower(DeliveryReport.customer_name) == name_lower
                 ).first()
                 
                 if result and result[0]:
-                    logger.info(f"✅ POSTGRESQL EXACT MATCH (no TRIM): '{result[0]}'")
+                    logger.info(f"✅ FOUND: '{result[0]}'")
                     return result[0]
                 
+                # ==========================================================
+                # DIRECT POSTGRESQL SEARCH - ILIKE
+                # ==========================================================
+                logger.info(f"🔍 Searching PostgreSQL with ILIKE: '%{name_original}%'")
+                
+                result = session.query(DeliveryReport.customer_name).filter(
+                    DeliveryReport.customer_name.ilike(f"%{name_original}%")
+                ).first()
+                
+                if result and result[0]:
+                    logger.info(f"✅ FOUND (ILIKE): '{result[0]}'")
+                    return result[0]
+                
+                # ==========================================================
+                # DIRECT POSTGRESQL SEARCH - dealer_code
+                # ==========================================================
+                logger.info(f"🔍 Searching PostgreSQL dealer_code: '%{name_original}%'")
+                
+                result = session.query(DeliveryReport.customer_name).filter(
+                    DeliveryReport.dealer_code.ilike(f"%{name_original}%")
+                ).first()
+                
+                if result and result[0]:
+                    logger.info(f"✅ FOUND (dealer_code): '{result[0]}'")
+                    return result[0]
+                
+                logger.info(f"❌ NOT FOUND: '{name_original}'")
+                return None
+                
         except Exception as e:
-            logger.error(f"❌ PostgreSQL exact match failed: {e}")
+            logger.error(f"❌ Database search failed: {e}")
             import traceback
             logger.error(traceback.format_exc())
-        
-        # ==========================================================
-        # STEP 3: DIRECT POSTGRESQL SEARCH - ILIKE PARTIAL MATCH
-        # ==========================================================
-        try:
-            with self._session() as session:
-                # Try ILIKE with TRIM
-                logger.info(f"🔍 PostgreSQL ILIKE match (with TRIM): '%{name_lower}%'")
-                result = session.query(DeliveryReport.customer_name).filter(
-                    func.lower(func.trim(DeliveryReport.customer_name)).ilike(f"%{name_lower}%")
-                ).first()
-                
-                if result and result[0]:
-                    logger.info(f"✅ POSTGRESQL ILIKE MATCH (TRIM): '{result[0]}'")
-                    return result[0]
-                
-                # Try ILIKE without TRIM
-                logger.info(f"🔍 PostgreSQL ILIKE match (no TRIM): '%{name_lower}%'")
-                result = session.query(DeliveryReport.customer_name).filter(
-                    func.lower(DeliveryReport.customer_name).ilike(f"%{name_lower}%")
-                ).first()
-                
-                if result and result[0]:
-                    logger.info(f"✅ POSTGRESQL ILIKE MATCH (no TRIM): '{result[0]}'")
-                    return result[0]
-                
-        except Exception as e:
-            logger.error(f"❌ PostgreSQL ILIKE match failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-        
-        # ==========================================================
-        # STEP 4: SEARCH IN dealer_code
-        # ==========================================================
-        try:
-            with self._session() as session:
-                logger.info(f"🔍 PostgreSQL dealer_code match: '%{name_lower}%'")
-                result = session.query(DeliveryReport.customer_name).filter(
-                    func.lower(func.trim(DeliveryReport.dealer_code)).ilike(f"%{name_lower}%")
-                ).first()
-                
-                if result and result[0]:
-                    logger.info(f"✅ POSTGRESQL DEALER_CODE MATCH: '{result[0]}'")
-                    return result[0]
-                
-        except Exception as e:
-            logger.error(f"❌ PostgreSQL dealer_code match failed: {e}")
-        
-        # ==========================================================
-        # STEP 5: SEARCH IN customer_code
-        # ==========================================================
-        try:
-            with self._session() as session:
-                logger.info(f"🔍 PostgreSQL customer_code match: '%{name_lower}%'")
-                result = session.query(DeliveryReport.customer_name).filter(
-                    func.lower(func.trim(DeliveryReport.customer_code)).ilike(f"%{name_lower}%")
-                ).first()
-                
-                if result and result[0]:
-                    logger.info(f"✅ POSTGRESQL CUSTOMER_CODE MATCH: '{result[0]}'")
-                    return result[0]
-                
-        except Exception as e:
-            logger.error(f"❌ PostgreSQL customer_code match failed: {e}")
-        
-        # ==========================================================
-        # STEP 6: GET ALL DEALERS AND CHECK (Fallback)
-        # ==========================================================
-        try:
-            dealer_names = self._get_all_dealers()
-            if dealer_names:
-                logger.info(f"🔍 Checking against {len(dealer_names)} cached dealers")
-                
-                # Exact match
-                for d in dealer_names:
-                    if d.lower() == name_lower:
-                        logger.info(f"✅ CACHE EXACT MATCH: '{d}'")
-                        return d
-                
-                # Normalized match (handle hyphen vs space)
-                normalized_name = name_lower.replace(' - ', '-').replace(' -', '-').replace('- ', '-')
-                normalized_name = normalized_name.replace('.', '').replace(',', '')
-                
-                for d in dealer_names:
-                    d_normalized = d.lower().replace(' - ', '-').replace(' -', '-').replace('- ', '-')
-                    d_normalized = d_normalized.replace('.', '').replace(',', '')
-                    if d_normalized == normalized_name:
-                        logger.info(f"✅ CACHE NORMALIZED MATCH: '{d}'")
-                        return d
-                
-                # Contains match
-                for d in dealer_names:
-                    d_lower = d.lower()
-                    if name_lower in d_lower:
-                        logger.info(f"✅ CACHE CONTAINS MATCH: '{d}'")
-                        return d
-                    if d_lower in name_lower:
-                        logger.info(f"✅ CACHE REVERSE CONTAINS MATCH: '{d}'")
-                        return d
-        except Exception as e:
-            logger.error(f"❌ Cache check failed: {e}")
-        
-        # ==========================================================
-        # STEP 7: FUZZY MATCH (Only if RapidFuzz is available)
-        # ==========================================================
-        if RAPIDFUZZ_AVAILABLE:
-            try:
-                dealer_names = self._get_all_dealers()
-                if dealer_names:
-                    logger.info(f"🔍 Fuzzy match for: '{name_lower}'")
-                    results = process.extract(name_lower, dealer_names, scorer=fuzz.token_set_ratio, limit=5)
-                    for match, score, _ in results:
-                        if score >= MATCH_THRESHOLD:
-                            logger.info(f"✅ FUZZY MATCH ({score:.0f}%): '{match}'")
-                            return match
-            except Exception as e:
-                logger.debug(f"Fuzzy match failed: {e}")
-        
-        logger.info(f"❌ No match found in PostgreSQL for '{name_original}'")
-        logger.info("=" * 80)
-        return None
-    
-    def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
-        if not query:
-            return []
-        query_lower = query.strip().lower()
-        
-        dealer_names = self._get_all_dealers()
-        if not dealer_names:
-            return []
-        
-        scored = []
-        for d in dealer_names:
-            d_lower = d.lower()
-            score = self._calculate_match_score(query_lower, d_lower)
-            if score >= SUGGESTION_THRESHOLD:
-                scored.append((d, score))
-        
-        scored.sort(key=lambda x: x[1], reverse=True)
-        suggestions = [d[0] for d in scored[:limit]]
-        
-        return suggestions
+            return None
     
     def _get_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-        logger.info(f"📊 Getting dashboard for dealer: '{dealer_name}'")
+        logger.info(f"📊 Getting dashboard for: '{dealer_name}'")
         try:
             with self._session() as session:
                 repo = DealerRepository(session)
@@ -1367,13 +1186,89 @@ class DealerAnalyticsService:
                         "response": self._renderer.render_executive_dashboard(dealer_name, data),
                         "data": data
                     }
-                logger.warning(f"⚠️ No data returned for dealer: '{dealer_name}'")
+                logger.warning(f"⚠️ No data for: '{dealer_name}'")
                 return {"response": None, "data": None}
         except Exception as e:
             logger.error(f"❌ Dashboard error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
             return {"response": None, "data": None}
+    
+    def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
+        context = self._get_context(session_id)
+        user_input = user_input.strip()
+        
+        # CRITICAL: Log exactly what was received
+        logger.info("=" * 80)
+        logger.info(f"📥 process_menu_input received: '{user_input}'")
+        logger.info(f"📥 Awaiting dealer: {context.awaiting_dealer}")
+        logger.info("=" * 80)
+        
+        if user_input in ["0", "99"]:
+            context.clear()
+            return {"response": self._renderer.render_main_menu(), "exit_menu": True}
+        
+        if context.awaiting_dealer:
+            logger.info(f"🔍 Resolving dealer: '{user_input}'")
+            dealer = self._resolve_dealer_name(user_input)
+            if dealer:
+                context.current_dealer = dealer
+                context.awaiting_dealer = False
+                result = self._get_dashboard(dealer)
+                if result.get("response"):
+                    return {"response": result["response"], "exit_menu": False}
+                return {"response": f"⚠️ No data found for: {dealer}\n\n0. Main Menu\n99. Back", "exit_menu": False}
+            
+            return {"response": self._renderer.render_dealer_selection(f"Dealer '{user_input}' not found. Try again:"), "exit_menu": False}
+        
+        if context.awaiting_comparison:
+            dealer = self._resolve_dealer_name(user_input)
+            if not dealer:
+                return {"response": self._renderer.render_comparison_selection() + f"\n\nDealer '{user_input}' not found. Try again:", "exit_menu": False}
+            
+            context.comparison_dealers.append(dealer)
+            if len(context.comparison_dealers) == 1:
+                return {"response": "Enter second dealer name:", "exit_menu": False}
+            else:
+                d1, d2 = context.comparison_dealers
+                context.awaiting_comparison = False
+                context.comparison_dealers = []
+                result = self._compare_dealers(d1, d2)
+                return {"response": result["response"], "exit_menu": False}
+        
+        if user_input.isdigit() and 1 <= int(user_input) <= 14:
+            option_map = {
+                "1": "dashboard", "2": "revenue", "3": "units",
+                "4": "logistics", "5": "warehouses", "6": "cities",
+                "7": "pending_dn", "8": "pending_pgi", "9": "pending_pod",
+                "10": "comparison", "11": "ranking", "12": "executive",
+                "13": "ai_insights", "14": "search"
+            }
+            action = option_map.get(user_input)
+            if action == "ranking":
+                result = self._handle_ranking()
+                return {"response": result["response"], "exit_menu": False}
+            if action == "comparison":
+                context.awaiting_comparison = True
+                return {"response": self._renderer.render_comparison_selection(), "exit_menu": False}
+            if action:
+                context.awaiting_dealer = True
+                context.selected_option = action
+                prompt = f"Enter dealer name for {action}:"
+                return {"response": self._renderer.render_dealer_selection(prompt), "exit_menu": False}
+        
+        # Quick query
+        dealer = self._resolve_dealer_name(user_input)
+        if dealer:
+            context.current_dealer = dealer
+            result = self._get_dashboard(dealer)
+            if result.get("response"):
+                return {"response": result["response"], "exit_menu": False}
+            return {"response": f"⚠️ No data found for: {dealer}\n\n0. Main Menu\n99. Back", "exit_menu": False}
+        
+        if "top dealers" in user_input.lower() or "ranking" in user_input.lower():
+            result = self._handle_ranking()
+            return {"response": result["response"], "exit_menu": False}
+        
+        return {"response": self._renderer.render_main_menu(), "exit_menu": False}
     
     def _handle_ranking(self) -> Dict[str, Any]:
         try:
@@ -1413,100 +1308,6 @@ class DealerAnalyticsService:
                 return {"response": self._renderer.render_comparison_result(d1, d2, metrics)}
         except Exception as e:
             return {"response": f"⚠️ Error: {str(e)}\n\n0. Main Menu\n99. Back"}
-    
-    def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
-        context = self._get_context(session_id)
-        user_input = user_input.strip()
-        
-        # DIAGNOSTIC: Log what was received
-        logger.info("=" * 80)
-        logger.info(f"process_menu_input received: '{user_input}'")
-        logger.info(f"Session ID: {session_id}")
-        logger.info("=" * 80)
-        
-        if user_input in ["0", "99"]:
-            context.clear()
-            return {"response": self._renderer.render_main_menu(), "exit_menu": True}
-        
-        if context.awaiting_dealer:
-            logger.info(f"🔍 Awaiting dealer: user_input='{user_input}'")
-            dealer = self._resolve_dealer_name(user_input)
-            if dealer:
-                context.current_dealer = dealer
-                context.awaiting_dealer = False
-                result = self._get_dashboard(dealer)
-                if result.get("response"):
-                    return {"response": result["response"], "exit_menu": False}
-                return {"response": f"⚠️ No data found for: {dealer}\n\n0. Main Menu\n99. Back", "exit_menu": False}
-            
-            suggestions = self._get_suggestions(user_input)
-            if suggestions:
-                response = self._renderer.render_suggestions(user_input, suggestions)
-                return {"response": response, "exit_menu": False}
-            
-            return {"response": self._renderer.render_dealer_selection(f"Dealer '{user_input}' not found. Try again:"), "exit_menu": False}
-        
-        if context.awaiting_comparison:
-            logger.info(f"🔍 Awaiting comparison: user_input='{user_input}'")
-            resolved = self._resolve_dealer_name(user_input)
-            if not resolved:
-                suggestions = self._get_suggestions(user_input)
-                if suggestions:
-                    response = self._renderer.render_suggestions(user_input, suggestions)
-                    return {"response": response, "exit_menu": False}
-                return {"response": self._renderer.render_comparison_selection() + f"\n\nDealer '{user_input}' not found. Try again:", "exit_menu": False}
-            
-            context.comparison_dealers.append(resolved)
-            if len(context.comparison_dealers) == 1:
-                return {"response": "Enter second dealer name:", "exit_menu": False}
-            else:
-                d1, d2 = context.comparison_dealers
-                context.awaiting_comparison = False
-                context.comparison_dealers = []
-                result = self._compare_dealers(d1, d2)
-                return {"response": result["response"], "exit_menu": False}
-        
-        if user_input.isdigit() and 1 <= int(user_input) <= 14:
-            option_map = {
-                "1": "dashboard", "2": "revenue", "3": "units",
-                "4": "logistics", "5": "warehouses", "6": "cities",
-                "7": "pending_dn", "8": "pending_pgi", "9": "pending_pod",
-                "10": "comparison", "11": "ranking", "12": "executive",
-                "13": "ai_insights", "14": "search"
-            }
-            action = option_map.get(user_input)
-            if action == "ranking":
-                result = self._handle_ranking()
-                return {"response": result["response"], "exit_menu": False}
-            if action == "comparison":
-                context.awaiting_comparison = True
-                return {"response": self._renderer.render_comparison_selection(), "exit_menu": False}
-            if action:
-                context.awaiting_dealer = True
-                context.selected_option = action
-                prompt = f"Enter dealer name for {action}:"
-                return {"response": self._renderer.render_dealer_selection(prompt), "exit_menu": False}
-        
-        # Quick query - try to resolve as dealer name
-        logger.info(f"🔍 Quick query: user_input='{user_input}'")
-        dealer = self._resolve_dealer_name(user_input)
-        if dealer:
-            context.current_dealer = dealer
-            result = self._get_dashboard(dealer)
-            if result.get("response"):
-                return {"response": result["response"], "exit_menu": False}
-            return {"response": f"⚠️ No data found for: {dealer}\n\n0. Main Menu\n99. Back", "exit_menu": False}
-        
-        if "top dealers" in user_input.lower() or "ranking" in user_input.lower():
-            result = self._handle_ranking()
-            return {"response": result["response"], "exit_menu": False}
-        
-        suggestions = self._get_suggestions(user_input)
-        if suggestions:
-            response = self._renderer.render_suggestions(user_input, suggestions)
-            return {"response": response, "exit_menu": False}
-        
-        return {"response": self._renderer.render_main_menu(), "exit_menu": False}
     
     @staticmethod
     def _session() -> Session:
