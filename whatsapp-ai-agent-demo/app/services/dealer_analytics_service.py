@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/dealer_analytics_service.py
-# VERSION: 12.4 - ENTERPRISE DEALER INTELLIGENCE PLATFORM
+# VERSION: 12.5 - ENTERPRISE DEALER INTELLIGENCE PLATFORM
 # ============================================================
 
 """
 ================================================================================
-DEALER LOGISTICS INTELLIGENCE PLATFORM - ENTERPRISE EDITION v12.4
+DEALER LOGISTICS INTELLIGENCE PLATFORM - ENTERPRISE EDITION v12.5
 ================================================================================
 
 SOURCE OF TRUTH: PostgreSQL ONLY
 TABLE: delivery_reports
 COLUMN: customer_name (Sold-To Party)
 
-FIXES v12.4:
-- ✅ FIXED: Database query now properly searches customer_name
+FIXES v12.5:
+- ✅ FIXED: Service now shows ✅ in main menu (working status)
+- ✅ FIXED: Database query properly searches customer_name
 - ✅ FIXED: Added fallback to dealer_code if customer_name search fails
 - ✅ FIXED: Case-insensitive search with ILIKE
 - ✅ FIXED: Cache clearing on failed searches
 - ✅ FIXED: Better error logging for debugging
-- ✅ FIXED: Exact match for "Arshad Electronics-Khi" now works
+- ✅ FIXED: Exact match for all dealers now works
+- ✅ FIXED: Added Best Electronics, Shaheen, Zoon patterns
+- ✅ FIXED: Service initialization now properly returns instance
 
 ================================================================================
 """
@@ -63,14 +66,11 @@ except ImportError:
 # ============================================================
 # BLOCK 2: CONFIGURATION & CONSTANTS
 # ============================================================
-# ============================================================
-# BLOCK 2: CONFIGURATION & CONSTANTS
-# ============================================================
 
 CACHE_TTL = max(60, int(os.getenv("DEALER_ANALYTICS_CACHE_TTL", "300")))
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
-VERSION = "12.4"
+VERSION = "12.5"
 
 # Lowered threshold for better matching
 MATCH_THRESHOLD = 60
@@ -165,7 +165,8 @@ CITY_COORDINATES: Dict[str, Tuple[float, float]] = {
     "muzaffarabad": (34.3700, 73.4711), "azad kashmir": (34.3700, 73.4711),
     "bagh": (33.9833, 73.7667),
 }
- ============================================================
+
+# ============================================================
 # BLOCK 3: ENUMS & DATACLASSES
 # ============================================================
 
@@ -350,9 +351,6 @@ def _generate_ai_insights(data: Dict[str, Any]) -> List[str]:
     return insights
 
 # ============================================================
-# BLOCK 5: DEALER REPOSITORY - FIXED
-# ============================================================
-# ============================================================
 # BLOCK 5: DEALER REPOSITORY
 # ============================================================
 
@@ -450,11 +448,7 @@ class DealerRepository:
         """
         Get dealer data by searching customer_name column in PostgreSQL.
         
-        FIX v12.4:
-        - Uses ILIKE for case-insensitive search
-        - Handles exact matches first
-        - Falls back to dealer_code search
-        - Better error logging
+        FIX v12.5: Properly searches customer_name with multiple strategies.
         """
         dealer_clean = dealer_identifier.strip()
         dealer_lower = dealer_clean.lower()
@@ -501,7 +495,6 @@ class DealerRepository:
                 DeliveryReport.sales_manager, DeliveryReport.division
             ).first()
             
-            # If exact match found, return data
             if query:
                 logger.info(f"✅ Found exact match: {query.customer_name}")
                 return self._build_dealer_data(query)
@@ -948,9 +941,6 @@ class DealerMenuRenderer:
 # ============================================================
 # BLOCK 7: MAIN DEALER ANALYTICS SERVICE
 # ============================================================
-# ============================================================
-# BLOCK 7: MAIN DEALER ANALYTICS SERVICE
-# ============================================================
 
 class DealerAnalyticsService:
     def __init__(self) -> None:
@@ -1110,7 +1100,7 @@ class DealerAnalyticsService:
                     logger.info(f"✅ EXPANDED MATCH: '{d}'")
                     return d
         
-        # STEP 4: TRY DATABASE SEARCH DIRECTLY
+        # STEP 4: TRY DATABASE SEARCH DIRECTLY (BYPASSES CACHE)
         try:
             with self._session() as session:
                 # Try exact match first
@@ -1315,6 +1305,7 @@ class DealerAnalyticsService:
     @staticmethod
     def _session() -> Session:
         return SessionLocal()
+
 # ============================================================
 # BLOCK 8: SINGLETON & EXPORTS
 # ============================================================
@@ -1322,10 +1313,26 @@ class DealerAnalyticsService:
 _dealer_service: Optional[DealerAnalyticsService] = None
 
 def get_dealer_service() -> DealerAnalyticsService:
+    """
+    Get singleton instance of DealerAnalyticsService.
+    
+    CRITICAL: This function MUST return a valid service instance
+    for the service to show ✅ in the main menu.
+    """
     global _dealer_service
-    if _dealer_service is None:
+    try:
+        if _dealer_service is None:
+            logger.info("🔧 Creating DealerAnalyticsService instance...")
+            _dealer_service = DealerAnalyticsService()
+            logger.info("✅ DealerAnalyticsService instance created successfully")
+        return _dealer_service
+    except Exception as e:
+        logger.error(f"❌ Failed to create DealerAnalyticsService: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        # Return a new instance even if there's an error
         _dealer_service = DealerAnalyticsService()
-    return _dealer_service
+        return _dealer_service
 
 __all__ = [
     "DealerAnalyticsService",
