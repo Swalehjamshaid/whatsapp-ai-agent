@@ -885,6 +885,9 @@ class DealerRepository:
 # ============================================================
 # BLOCK 7: DEALER DASHBOARD BUILDER
 # ============================================================
+# ============================================================
+# BLOCK 7: DEALER DASHBOARD BUILDER (UPDATED)
+# ============================================================
 
 class DealerDashboardBuilder:
     def __init__(self, session: Session):
@@ -902,6 +905,9 @@ class DealerDashboardBuilder:
         dealer_data = self.repository.get_dealer_by_name(dealer_identifier)
         if not dealer_data:
             return None
+        
+        # Get top models with categories
+        top_models = self._get_top_models(dealer_identifier)
         
         dashboard = {
             'identity': {
@@ -938,9 +944,9 @@ class DealerDashboardBuilder:
             },
             'product': {
                 'total_models': self._get_product_count(dealer_identifier),
-                'top_models': self._get_top_models(dealer_identifier),
-                'top_model': 'N/A',
-                'top_category': 'N/A',
+                'top_models': top_models,
+                'top_model': top_models[0].get('model', 'N/A') if top_models else 'N/A',
+                'top_category': top_models[0].get('category', 'N/A') if top_models else 'N/A',
             },
             'warehouse': {
                 'primary_warehouse': dealer_data.get('warehouse', ''),
@@ -970,15 +976,113 @@ class DealerDashboardBuilder:
             'executive_summary': dealer_data.get('executive_summary', ''),
         }
         
-        if dashboard['product']['top_models']:
-            dashboard['product']['top_model'] = dashboard['product']['top_models'][0].get('model', 'N/A')
-            dashboard['product']['top_category'] = dashboard['product']['top_models'][0].get('category', 'N/A')
-        
         dashboard['insights'].extend(self._get_warehouse_insights(dashboard))
         
         with self._lock:
             self._cache[cache_key] = dashboard.copy()
         return dashboard
+    
+    def _get_top_models(self, dealer_identifier: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """Get top models for dealer with category"""
+        try:
+            with self.session as session:
+                # Try to get category from database first
+                try:
+                    # Check if category column exists
+                    from sqlalchemy import inspect
+                    inspector = inspect(session.bind)
+                    columns = [c['name'] for c in inspector.get_columns('delivery_reports')]
+                    
+                    if 'category' in columns:
+                        results = session.query(
+                            DeliveryReport.material_no.label('model'),
+                            DeliveryReport.category.label('category'),
+                            func.count(DeliveryReport.dn_no).label('dn_count'),
+                            func.sum(DeliveryReport.dn_qty).label('total_units')
+                        ).filter(DeliveryReport.customer_name == dealer_identifier).group_by(
+                            DeliveryReport.material_no,
+                            DeliveryReport.category
+                        ).order_by(func.sum(DeliveryReport.dn_qty).desc()).limit(limit).all()
+                        
+                        return [{
+                            'model': r.model,
+                            'category': r.category or self._derive_category(r.model),
+                            'dn_count': r.dn_count,
+                            'total_units': r.total_units
+                        } for r in results]
+                except Exception as e:
+                    logger.debug(f"Category column not found, using fallback: {e}")
+                
+                # Fallback: get without category
+                results = session.query(
+                    DeliveryReport.material_no.label('model'),
+                    func.count(DeliveryReport.dn_no).label('dn_count'),
+                    func.sum(DeliveryReport.dn_qty).label('total_units')
+                ).filter(DeliveryReport.customer_name == dealer_identifier).group_by(
+                    DeliveryReport.material_no
+                ).order_by(func.sum(DeliveryReport.dn_qty).desc()).limit(limit).all()
+                
+                return [{
+                    'model': r.model,
+                    'category': self._derive_category(r.model),
+                    'dn_count': r.dn_count,
+                    'total_units': r.total_units
+                } for r in results]
+        except Exception as e:
+            logger.error(f"Error getting top models: {e}")
+            return []
+    
+    def _derive_category(self, material_no: str) -> str:
+        """Derive product category from material number"""
+        if not material_no:
+            return 'N/A'
+        
+        material = material_no.upper()
+        
+        # Category patterns based on material number prefix
+        category_patterns = {
+            'Air Conditioner': ['AAC', 'AC-', 'INV-', 'AC'],
+            'Refrigerator': ['REF', 'FRIDGE', 'RF-', 'REFRIG'],
+            'Washing Machine': ['WASH', 'WM-', 'WASHING'],
+            'Television': ['TV-', 'LED-', 'LCD-', 'OLED-'],
+            'Microwave': ['MIC', 'MW-', 'MICRO'],
+            'Dishwasher': ['DW-', 'DISH'],
+            'Freezer': ['FREEZ', 'CHEST'],
+            'Water Dispenser': ['WD-', 'WATER'],
+            'Deep Freezer': ['DF-', 'DEEP'],
+            'Iron': ['IRON', 'STEAM'],
+            'Blender': ['BLEND', 'MIXER'],
+            'Fan': ['FAN', 'CEILING'],
+            'Heater': ['HEAT', 'ROOM'],
+            'Cooler': ['COOL', 'AIRCOOL'],
+        }
+        
+        for category, patterns in category_patterns.items():
+            for pattern in patterns:
+                if material.startswith(pattern):
+                    return category
+                # Also check if pattern is anywhere in the material number
+                if pattern in material:
+                    return category
+        
+        # Check common keywords
+        material_lower = material_no.lower()
+        if 'ac' in material_lower or 'air' in material_lower or 'cool' in material_lower:
+            return 'Air Conditioner'
+        elif 'fridge' in material_lower or 'refrig' in material_lower or 'freez' in material_lower:
+            return 'Refrigerator'
+        elif 'wash' in material_lower or 'laundry' in material_lower:
+            return 'Washing Machine'
+        elif 'tv' in material_lower or 'led' in material_lower or 'lcd' in material_lower:
+            return 'Television'
+        elif 'mic' in material_lower or 'oven' in material_lower:
+            return 'Microwave'
+        elif 'fan' in material_lower:
+            return 'Fan'
+        elif 'iron' in material_lower:
+            return 'Iron'
+        
+        return 'Electronics'
     
     def _get_product_count(self, dealer_identifier: str) -> int:
         try:
@@ -989,20 +1093,6 @@ class DealerDashboardBuilder:
                 return count or 0
         except Exception:
             return 0
-    
-    def _get_top_models(self, dealer_identifier: str, limit: int = 3) -> List[Dict[str, Any]]:
-        try:
-            with self.session as session:
-                results = session.query(
-                    DeliveryReport.material_no.label('model'),
-                    func.count(DeliveryReport.dn_no).label('dn_count'),
-                    func.sum(DeliveryReport.dn_qty).label('total_units')
-                ).filter(DeliveryReport.customer_name == dealer_identifier).group_by(
-                    DeliveryReport.material_no
-                ).order_by(func.sum(DeliveryReport.dn_qty).desc()).limit(limit).all()
-                return [{'model': r.model, 'dn_count': r.dn_count, 'total_units': r.total_units} for r in results]
-        except Exception:
-            return []
     
     def _get_warehouse_distribution(self, dealer_identifier: str) -> List[Dict[str, Any]]:
         try:
@@ -1064,7 +1154,6 @@ class DealerDashboardBuilder:
         if warehouse:
             insights.append(f"Primary warehouse: {warehouse}")
         return insights
-
 # ============================================================
 # BLOCK 8: AI SUMMARY ENGINE (Optional)
 # ============================================================
