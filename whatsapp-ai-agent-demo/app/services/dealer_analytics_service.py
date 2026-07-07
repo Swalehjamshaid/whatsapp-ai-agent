@@ -1347,6 +1347,8 @@ class ResponseFormatter:
 # ============================================================
 # BLOCK 10: MAIN DEALER ANALYTICS SERVICE (UPDATED - FIRST NAME PRIORITY)
 # ============================================================
+# BLOCK 10: MAIN DEALER ANALYTICS SERVICE (90% CONFIDENCE FIX)
+# ============================================================
 
 class DealerAnalyticsService:
     """
@@ -1369,6 +1371,7 @@ class DealerAnalyticsService:
         logger.info(f"   AI Engine: {'✅' if self._ai_engine._available else '❌'}")
         logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
         logger.info(f"   Geopy: {'✅' if GEOPY_AVAILABLE else '❌'}")
+        logger.info(f"   Match Threshold: 90%")
     
     # ============================================================
     # MAIN ENTRY POINT - SYNC VERSION
@@ -1408,13 +1411,12 @@ class DealerAnalyticsService:
             return self._contexts[session_id]
     
     # ============================================================
-    # CRITICAL: IMPROVED DEALER RESOLUTION - FIRST NAME PRIORITY
+    # CRITICAL: IMPROVED DEALER RESOLUTION - 90% CONFIDENCE
     # ============================================================
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
         """
-        Resolve dealer name from database with FIRST NAME PRIORITY.
-        Requires at least 70% match confidence.
+        Resolve dealer name from database with 90%+ confidence required.
         """
         if not name or not name.strip():
             return None
@@ -1425,7 +1427,7 @@ class DealerAnalyticsService:
         
         name_clean = name.strip()
         name_lower = name_clean.lower()
-        logger.info(f"🔍 Searching for dealer: '{name_clean}'")
+        logger.info(f"🔍 Searching for dealer: '{name_clean}' (90% confidence required)")
         
         try:
             with self._session() as session:
@@ -1442,7 +1444,7 @@ class DealerAnalyticsService:
                 logger.info(f"📋 Found {len(dealer_names)} dealers in database")
                 
                 # ============================================================
-                # STEP 1: EXACT MATCH (100% confidence)
+                # STEP 1: EXACT MATCH (100% confidence) - Always return
                 # ============================================================
                 for d in dealer_names:
                     if d.lower() == name_lower:
@@ -1450,87 +1452,74 @@ class DealerAnalyticsService:
                         return d
                 
                 # ============================================================
-                # STEP 2: FIRST NAME MATCH (Highest priority)
-                # Extract first word from search and compare with first word of dealer
+                # STEP 2: EXACT FIRST WORD MATCH (High priority)
                 # ============================================================
                 search_first_word = name_lower.split()[0] if name_lower.split() else ""
                 
-                if len(search_first_word) >= 2:  # At least 2 characters
+                if len(search_first_word) >= 3:  # At least 3 characters
                     for d in dealer_names:
                         d_lower = d.lower()
                         d_first_word = d_lower.split()[0] if d_lower.split() else ""
                         
-                        # Check if first words match
+                        # Check if first words match exactly
                         if d_first_word == search_first_word:
-                            # Check if rest of name matches at least partially
-                            # Calculate match score
+                            # Calculate full match score
                             match_score = self._calculate_match_score(name_lower, d_lower)
-                            if match_score >= 70:
-                                logger.info(f"✅ FIRST NAME MATCH ({match_score:.0f}%): '{d}' (First word: '{search_first_word}')")
-                                return d
-                        
-                        # Check if search first word is in dealer name
-                        if len(search_first_word) >= 3 and search_first_word in d_lower:
-                            match_score = self._calculate_match_score(name_lower, d_lower)
-                            if match_score >= 70:
-                                logger.info(f"✅ FIRST NAME CONTAINS ({match_score:.0f}%): '{d}'")
+                            if match_score >= 90:
+                                logger.info(f"✅ FIRST WORD EXACT ({match_score:.0f}%): '{d}'")
                                 return d
                 
                 # ============================================================
-                # STEP 3: STARTS WITH (Search term at beginning)
+                # STEP 3: STARTS WITH (90%+ confidence)
                 # ============================================================
                 for d in dealer_names:
                     d_lower = d.lower()
                     if d_lower.startswith(name_lower):
                         match_score = self._calculate_match_score(name_lower, d_lower)
-                        if match_score >= 70:
+                        if match_score >= 90:
                             logger.info(f"✅ STARTS WITH ({match_score:.0f}%): '{d}'")
                             return d
                 
                 # ============================================================
-                # STEP 4: WORD MATCH (Search term is complete word)
+                # STEP 4: ALL WORDS MATCH (90%+ confidence)
                 # ============================================================
                 search_words = set(name_lower.split())
                 for d in dealer_names:
                     d_lower = d.lower()
                     d_words = set(d_lower.split())
                     
-                    # Check if any search word is in dealer words
-                    matching_words = search_words & d_words
-                    if matching_words:
+                    # Check if ALL search words are in dealer words
+                    if search_words.issubset(d_words):
                         match_score = self._calculate_match_score(name_lower, d_lower)
-                        if match_score >= 70:
-                            logger.info(f"✅ WORD MATCH ({match_score:.0f}%): '{d}' (Matched: {matching_words})")
+                        if match_score >= 90:
+                            logger.info(f"✅ ALL WORDS MATCH ({match_score:.0f}%): '{d}'")
                             return d
                 
                 # ============================================================
-                # STEP 5: PARTIAL WORD MATCH (At least 70% of search words match)
+                # STEP 5: 90%+ WORD OVERLAP
                 # ============================================================
                 for d in dealer_names:
                     d_lower = d.lower()
-                    match_count = 0
-                    total_words = len(search_words)
+                    d_words = set(d_lower.split())
                     
-                    if total_words > 0:
-                        for word in search_words:
-                            if len(word) >= 3 and word in d_lower:
-                                match_count += 1
+                    if search_words and d_words:
+                        common_words = search_words & d_words
+                        overlap_percent = (len(common_words) / max(len(search_words), 1)) * 100
                         
-                        # If at least 70% of words match
-                        if match_count / total_words >= 0.7:
+                        if overlap_percent >= 90:
                             match_score = self._calculate_match_score(name_lower, d_lower)
-                            if match_score >= 70:
-                                logger.info(f"✅ PARTIAL WORD MATCH ({match_score:.0f}%): '{d}'")
+                            if match_score >= 90:
+                                logger.info(f"✅ WORD OVERLAP 90%+ ({match_score:.0f}%): '{d}'")
                                 return d
                 
                 # ============================================================
-                # STEP 6: FUZZY MATCH (Requires 80%+ confidence)
+                # STEP 6: FUZZY MATCH (90%+ confidence only)
                 # ============================================================
                 if RAPIDFUZZ_AVAILABLE:
                     try:
                         from rapidfuzz import fuzz, process
                         
-                        # Try with token set ratio (better for word order variations)
+                        # Use token set ratio for better matching
                         results = process.extract(
                             name_lower,
                             dealer_names,
@@ -1539,51 +1528,16 @@ class DealerAnalyticsService:
                         )
                         
                         for match, score, _ in results:
-                            if score >= 80:  # 80% threshold for fuzzy
+                            if score >= 90:  # 90% threshold
                                 logger.info(f"✅ FUZZY MATCH ({score:.0f}%): '{match}'")
                                 return match
                     except Exception as e:
                         logger.debug(f"Fuzzy matching failed: {e}")
                 
                 # ============================================================
-                # STEP 7: CLEANED MATCH (Remove suffixes)
+                # STEP 7: No match found - return None
                 # ============================================================
-                cleaned_search = _clean_dealer_name(name_lower)
-                if cleaned_search and cleaned_search != name_lower:
-                    for d in dealer_names:
-                        cleaned_dealer = _clean_dealer_name(d.lower())
-                        if cleaned_dealer == cleaned_search:
-                            logger.info(f"✅ CLEANED MATCH: '{d}'")
-                            return d
-                        
-                        # Check cleaned word match
-                        cleaned_words = set(cleaned_search.split())
-                        cleaned_dealer_words = set(cleaned_dealer.split())
-                        if cleaned_words & cleaned_dealer_words:
-                            match_score = self._calculate_match_score(name_lower, d.lower())
-                            if match_score >= 70:
-                                logger.info(f"✅ CLEANED WORD MATCH ({match_score:.0f}%): '{d}'")
-                                return d
-                
-                # ============================================================
-                # STEP 8: City abbreviation match
-                # ============================================================
-                for city_abbr, city_name in CITY_ABBREVIATIONS.items():
-                    if city_abbr in name_lower:
-                        for d in dealer_names:
-                            if city_name in d.lower():
-                                # Check if any meaningful part matches
-                                for part in name_lower.split():
-                                    if len(part) >= 3 and part in d.lower():
-                                        match_score = self._calculate_match_score(name_lower, d.lower())
-                                        if match_score >= 70:
-                                            logger.info(f"✅ CITY MATCH ({match_score:.0f}%): '{d}'")
-                                            return d
-                
-                # ============================================================
-                # STEP 9: No match found - return None for suggestions
-                # ============================================================
-                logger.warning(f"⚠️ No match found for '{name}' (minimum 70% confidence required)")
+                logger.warning(f"⚠️ No 90%+ match found for '{name}'")
                 return None
                     
         except Exception as e:
@@ -1605,57 +1559,75 @@ class DealerAnalyticsService:
         if search == target:
             return 100.0
         
-        # Calculate word overlap
+        # Split into words
         search_words = set(search.split())
         target_words = set(target.split())
         
         if not search_words or not target_words:
             return 0.0
         
-        # Intersection of words
+        # Calculate word overlap percentage
         common_words = search_words & target_words
-        
-        # Score based on common words
         word_score = (len(common_words) / max(len(search_words), 1)) * 100
         
-        # Bonus if search starts with target or vice versa
-        bonus = 0
-        if target.startswith(search):
-            bonus = 20
-        elif search.startswith(target):
-            bonus = 15
+        # Check first word match (high importance)
+        search_first = search.split()[0] if search.split() else ""
+        target_first = target.split()[0] if target.split() else ""
         
-        # Check if words are similar (fuzzy word match)
-        if RAPIDFUZZ_AVAILABLE and common_words:
+        first_word_bonus = 0
+        if search_first and target_first:
+            if search_first == target_first:
+                first_word_bonus = 20
+            elif search_first in target_first or target_first in search_first:
+                first_word_bonus = 10
+        
+        # Check if search is contained in target
+        contains_bonus = 0
+        if search in target:
+            contains_bonus = 10
+        elif target in search:
+            contains_bonus = 5
+        
+        # Check individual word matches
+        word_match_bonus = 0
+        for sw in search_words:
+            if len(sw) >= 3:
+                for tw in target_words:
+                    if len(tw) >= 3 and sw == tw:
+                        word_match_bonus += 5
+                    elif len(tw) >= 3 and sw in tw:
+                        word_match_bonus += 3
+        
+        # Use fuzzy for word similarity if available
+        fuzzy_bonus = 0
+        if RAPIDFUZZ_AVAILABLE:
             try:
                 from rapidfuzz import fuzz
-                for word in search_words:
-                    for tword in target_words:
-                        if len(word) >= 3 and len(tword) >= 3:
-                            if fuzz.ratio(word, tword) >= 80:
-                                bonus += 10
-                                break
+                for sw in search_words:
+                    if len(sw) >= 3:
+                        for tw in target_words:
+                            if len(tw) >= 3:
+                                if fuzz.ratio(sw, tw) >= 85:
+                                    fuzzy_bonus += 5
+                                    break
             except Exception:
                 pass
         
-        # Check if search has first word match
-        search_first = search.split()[0] if search.split() else ""
-        target_first = target.split()[0] if target.split() else ""
-        if search_first and target_first and search_first == target_first:
-            bonus += 25
-        elif search_first and target_first and search_first in target_first:
-            bonus += 15
-        
         # Final score (capped at 100)
-        final_score = min(100, word_score + bonus)
-        return final_score
+        final_score = min(100, word_score + first_word_bonus + contains_bonus + word_match_bonus + fuzzy_bonus)
+        
+        # If score is very low, return 0
+        if final_score < 10:
+            return 0.0
+        
+        return round(final_score, 1)
     
     # ============================================================
-    # IMPROVED SUGGESTIONS WITH SCORING
+    # IMPROVED SUGGESTIONS WITH SCORING - 90% threshold
     # ============================================================
     
     def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
-        """Get dealer name suggestions with scoring - prioritizes first word match"""
+        """Get dealer name suggestions with scoring - 90% threshold"""
         if not query or not query.strip():
             return []
         
@@ -1678,32 +1650,30 @@ class DealerAnalyticsService:
                     dealer_lower = dealer.lower()
                     score = 0
                     
-                    # Extract first word of dealer
+                    # Extract first word
                     dealer_first_word = dealer_lower.split()[0] if dealer_lower.split() else ""
                     
-                    # 1. EXACT MATCH (highest)
+                    # 1. EXACT MATCH
                     if dealer_lower == query_lower:
                         score += 1000
                     
-                    # 2. FIRST WORD MATCH (priority)
+                    # 2. FIRST WORD EXACT MATCH
                     if query_first_word and dealer_first_word:
                         if query_first_word == dealer_first_word:
                             score += 500
-                        elif query_first_word in dealer_first_word or dealer_first_word in query_first_word:
-                            score += 300
                     
                     # 3. STARTS WITH
                     if dealer_lower.startswith(query_lower):
                         score += 200
                     
-                    # 4. COMPLETE WORD MATCH
+                    # 4. ALL WORDS MATCH
                     query_words = set(query_lower.split())
                     dealer_words = set(dealer_lower.split())
                     common_words = query_words & dealer_words
                     if common_words:
                         score += len(common_words) * 50
                     
-                    # 5. CONTAINS QUERY
+                    # 5. CONTAINS
                     if query_lower in dealer_lower:
                         score += 30
                     
@@ -1712,18 +1682,18 @@ class DealerAnalyticsService:
                         try:
                             from rapidfuzz import fuzz
                             fuzzy_score = fuzz.token_set_ratio(query_lower, dealer_lower)
-                            if fuzzy_score >= 70:
+                            if fuzzy_score >= 85:
                                 score += fuzzy_score
                         except Exception:
                             pass
                     
-                    # 7. BONUS FOR SHORTER CLEAN NAMES
+                    # 7. BONUS FOR SHORTER NAMES
                     if len(dealer_lower) < 30:
                         score += 10
                     
                     # 8. PENALTY FOR LONG COMPLEX NAMES
                     if len(dealer_lower) > 50:
-                        score -= 10
+                        score -= 20
                     
                     if score > 0:
                         scored_dealers.append((dealer, score))
@@ -1731,34 +1701,141 @@ class DealerAnalyticsService:
                 # Sort by score descending
                 scored_dealers.sort(key=lambda x: x[1], reverse=True)
                 
-                # Get top suggestions
-                suggestions = [d[0] for d in scored_dealers[:limit]]
+                # Get top suggestions (only those with 85+ score)
+                suggestions = []
+                for d, s in scored_dealers:
+                    if s >= 85:  # Only suggest if 85+ score
+                        suggestions.append(d)
+                    if len(suggestions) >= limit:
+                        break
                 
-                # If no suggestions, try fuzzy only
-                if not suggestions and RAPIDFUZZ_AVAILABLE:
-                    try:
-                        from rapidfuzz import fuzz, process
-                        results = process.extract(
-                            query_lower,
-                            dealer_names,
-                            scorer=fuzz.token_set_ratio,
-                            limit=limit
-                        )
-                        for match, score, _ in results:
-                            if score >= 70 and match not in suggestions:
-                                suggestions.append(match)
-                    except Exception:
-                        pass
-                
-                # If still no suggestions, return first few dealers
-                if not suggestions and dealer_names:
-                    suggestions = dealer_names[:min(limit, len(dealer_names))]
-                
+                # If no suggestions, return empty
                 return suggestions[:limit]
                 
         except Exception as e:
             logger.error(f"Error getting suggestions: {e}")
             return []
+    
+    # ============================================================
+    # FIX: CORRECT DISTANCE CALCULATION USING WAREHOUSE LOCATION
+    # ============================================================
+    
+    def _get_correct_distance_info(self, warehouse: str, city: str) -> Dict[str, Any]:
+        """
+        Calculate correct distance using OpenRouteService with fallback.
+        Uses the actual warehouse location, not the dealer's primary warehouse.
+        """
+        if not warehouse or not city:
+            return {
+                "distance_km": None,
+                "estimated_delivery": "Unknown",
+                "transportation_zone": "Unknown",
+                "source": "Missing data"
+            }
+        
+        # Get coordinates for warehouse and city
+        warehouse_coord = _get_coordinates(warehouse)
+        city_coord = _get_coordinates(city)
+        
+        if not warehouse_coord or not city_coord:
+            logger.warning(f"⚠️ Could not get coordinates for {warehouse} -> {city}")
+            return {
+                "distance_km": None,
+                "estimated_delivery": "Unknown",
+                "transportation_zone": "Unknown",
+                "source": "No coordinates"
+            }
+        
+        logger.info(f"📍 Warehouse: {warehouse} ({warehouse_coord[0]:.4f}, {warehouse_coord[1]:.4f})")
+        logger.info(f"📍 City: {city} ({city_coord[0]:.4f}, {city_coord[1]:.4f})")
+        
+        # Try OpenRouteService for driving distance
+        if ORS_AVAILABLE and ORS_API_KEY:
+            try:
+                client = openrouteservice.Client(key=ORS_API_KEY)
+                coords = [
+                    [warehouse_coord[1], warehouse_coord[0]],  # ORS expects [lon, lat]
+                    [city_coord[1], city_coord[0]]
+                ]
+                routes = client.directions(
+                    coordinates=coords,
+                    profile=ORS_PROFILE,
+                    format='json'
+                )
+                
+                if routes and 'routes' in routes and len(routes['routes']) > 0:
+                    route = routes['routes'][0]
+                    summary = route.get('summary', {})
+                    distance_km = summary.get('distance', 0) / 1000
+                    duration_min = summary.get('duration', 0) / 60
+                    
+                    # Determine zone based on distance
+                    if distance_km <= 80:
+                        zone = "Local"
+                        estimated = "Same Day"
+                    elif distance_km <= 200:
+                        zone = "Short Haul"
+                        estimated = "1 Day"
+                    elif distance_km <= 400:
+                        zone = "Medium Haul"
+                        estimated = "2 Days"
+                    elif distance_km <= 700:
+                        zone = "Long Haul"
+                        estimated = "3 Days"
+                    else:
+                        zone = "Extended Haul"
+                        estimated = "4-5 Days"
+                    
+                    logger.info(f"✅ ORS distance: {distance_km:.1f} km from {warehouse} to {city}")
+                    
+                    return {
+                        "distance_km": round(distance_km, 1),
+                        "duration_hours": round(duration_min / 60, 1),
+                        "duration_min": round(duration_min, 1),
+                        "estimated_delivery": estimated,
+                        "transportation_zone": zone,
+                        "source": "OpenRouteService",
+                        "warehouse": warehouse,
+                        "city": city
+                    }
+            except Exception as e:
+                logger.warning(f"⚠️ ORS failed for {warehouse}->{city}: {e}")
+        
+        # Fallback to Haversine
+        distance = _calculate_distance(
+            warehouse_coord[0], warehouse_coord[1],
+            city_coord[0], city_coord[1]
+        )
+        
+        if distance <= 80:
+            zone = "Local"
+            estimated = "Same Day"
+        elif distance <= 200:
+            zone = "Short Haul"
+            estimated = "1 Day"
+        elif distance <= 400:
+            zone = "Medium Haul"
+            estimated = "2 Days"
+        elif distance <= 700:
+            zone = "Long Haul"
+            estimated = "3 Days"
+        else:
+            zone = "Extended Haul"
+            estimated = "4-5 Days"
+        
+        logger.info(f"⚠️ Haversine fallback: {distance:.1f} km from {warehouse} to {city}")
+        
+        return {
+            "distance_km": round(distance, 1),
+            "duration_hours": round(distance / 50, 1),
+            "duration_min": round(distance / 50 * 60, 1),
+            "estimated_delivery": estimated,
+            "transportation_zone": zone,
+            "source": "Haversine (Fallback)",
+            "warehouse": warehouse,
+            "city": city,
+            "is_fallback": True
+        }
     
     # ============================================================
     # MENU INPUT PROCESSING
@@ -1768,22 +1845,16 @@ class DealerAnalyticsService:
         """Process menu input and return response"""
         context = self._get_context(session_id)
         user_input = user_input.strip()
-        logger.info(f"📥 Processing input: '{user_input}' for session {session_id}, state: {context.menu_state}")
+        logger.info(f"📥 Processing input: '{user_input}' for session {session_id}")
         
-        # ============================================================
-        # STEP 1: Navigation commands
-        # ============================================================
+        # Navigation commands
         if user_input in ["0", "99"]:
             context.clear()
             return {"response": self._renderer.render_main_menu(), "menu_type": "dealer_menu", "action": "main_menu", "data": {}, "exit_menu": True}
         
-        # ============================================================
-        # STEP 2: Awaiting dealer
-        # ============================================================
+        # Awaiting dealer
         if context.awaiting_dealer:
-            logger.info(f"🔍 Awaiting dealer name, checking: '{user_input}'")
-            
-            # Try to resolve with improved matching
+            logger.info(f"🔍 Awaiting dealer name: '{user_input}'")
             dealer = self._resolve_dealer_name(user_input)
             if dealer:
                 context.current_dealer = dealer
@@ -1791,25 +1862,11 @@ class DealerAnalyticsService:
                 context.selected_option = None
                 return self._get_dashboard_response(context, dealer)
             
-            # Get suggestions
             suggestions = self._get_suggestions(user_input)
-            
-            # If only one suggestion with high confidence, auto-select
-            if len(suggestions) == 1:
-                # Check confidence
-                match_score = self._calculate_match_score(user_input, suggestions[0])
-                if match_score >= 70:
-                    dealer = suggestions[0]
-                    logger.info(f"🔄 Auto-selecting single suggestion ({match_score:.0f}%): '{dealer}'")
-                    context.current_dealer = dealer
-                    context.awaiting_dealer = False
-                    context.selected_option = None
-                    return self._get_dashboard_response(context, dealer)
-            
             if suggestions:
                 suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
                 response = (
-                    f"🔍 *Dealer '{user_input}' not found.*\n\n"
+                    f"🔍 *Dealer '{user_input}' not found (90% confidence required)*\n\n"
                     f"💡 *Did you mean:*\n{suggestion_text}\n\n"
                     f"Please type the exact dealer name or:\n"
                     f"0. Main Menu\n"
@@ -1828,37 +1885,27 @@ class DealerAnalyticsService:
                 "exit_menu": False
             }
         
-        # ============================================================
-        # STEP 3: Awaiting comparison
-        # ============================================================
+        # Awaiting comparison
         if context.awaiting_comparison:
             return self._handle_comparison_input(context, user_input)
         
-        # ============================================================
-        # STEP 4: Menu options (1-18)
-        # ============================================================
+        # Menu options
         if user_input.isdigit() and 1 <= int(user_input) <= 18:
-            logger.info(f"🎯 Valid menu option: {user_input}")
+            logger.info(f"🎯 Menu option: {user_input}")
             return self._handle_menu_option(context, user_input)
         
-        # ============================================================
-        # STEP 5: Special states (search)
-        # ============================================================
+        # Special states
         if context.selected_option == "search":
             return self._handle_search(context, user_input)
         
-        # ============================================================
-        # STEP 6: Try to resolve as dealer name (quick query)
-        # ============================================================
+        # Quick query
         dealer = self._resolve_dealer_name(user_input)
         if dealer:
-            logger.info(f"🔍 Quick query resolved to dealer: {dealer}")
+            logger.info(f"🔍 Quick query resolved: {dealer}")
             context.current_dealer = dealer
             return self._get_dashboard_response(context, dealer)
         
-        # ============================================================
-        # STEP 7: Natural language quick commands
-        # ============================================================
+        # Natural language commands
         user_lower = user_input.lower()
         if "top dealers" in user_lower or "ranking" in user_lower:
             return self._handle_ranking(context)
@@ -1873,9 +1920,7 @@ class DealerAnalyticsService:
                 if resolved1 and resolved2:
                     return self._compare_dealers(context, resolved1, resolved2)
         
-        # ============================================================
-        # STEP 8: Default - show main menu
-        # ============================================================
+        # Default
         return {
             "response": self._renderer.render_main_menu(),
             "menu_type": "dealer_menu",
@@ -1890,8 +1935,6 @@ class DealerAnalyticsService:
     
     def _handle_menu_option(self, context: DealerContext, option: str) -> Dict[str, Any]:
         """Handle main menu option selection"""
-        logger.info(f"🎯 Handling menu option: '{option}'")
-        
         option_map = {
             "1": ("dashboard", "Enter dealer name:"),
             "2": ("revenue", "Enter dealer name:"),
@@ -1948,39 +1991,30 @@ class DealerAnalyticsService:
         }
     
     def _handle_comparison_input(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Handle comparison dealer input with improved matching"""
+        """Handle comparison dealer input with 90% threshold"""
         resolved = self._resolve_dealer_name(dealer_name)
         
         if not resolved:
             suggestions = self._get_suggestions(dealer_name)
+            if suggestions:
+                suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
+                response = (
+                    f"🔍 *Dealer '{dealer_name}' not found (90% confidence required)*\n\n"
+                    f"💡 *Did you mean:*\n{suggestion_text}\n\n"
+                    f"Please type the exact dealer name or:\n"
+                    f"0. Main Menu\n"
+                    f"99. Back"
+                )
+            else:
+                response = self._renderer.render_comparison_selection() + f"\n\nDealer '{dealer_name}' not found. Try again:"
             
-            # Auto-select if one suggestion with high confidence
-            if len(suggestions) == 1:
-                match_score = self._calculate_match_score(dealer_name, suggestions[0])
-                if match_score >= 70:
-                    resolved = suggestions[0]
-                    logger.info(f"🔄 Auto-selecting for comparison ({match_score:.0f}%): '{resolved}'")
-            
-            if not resolved:
-                if suggestions:
-                    suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
-                    response = (
-                        f"🔍 *Dealer '{dealer_name}' not found.*\n\n"
-                        f"💡 *Did you mean:*\n{suggestion_text}\n\n"
-                        f"Please type the exact dealer name or:\n"
-                        f"0. Main Menu\n"
-                        f"99. Back"
-                    )
-                else:
-                    response = self._renderer.render_comparison_selection() + f"\n\nDealer '{dealer_name}' not found. Try again:"
-                
-                return {
-                    "response": response,
-                    "menu_type": "dealer_menu",
-                    "action": "comparison_selection",
-                    "data": {"awaiting": True},
-                    "exit_menu": False
-                }
+            return {
+                "response": response,
+                "menu_type": "dealer_menu",
+                "action": "comparison_selection",
+                "data": {"awaiting": True},
+                "exit_menu": False
+            }
         
         context.comparison_dealers.append(resolved)
         
@@ -1999,13 +2033,36 @@ class DealerAnalyticsService:
             return self._compare_dealers(context, dealer1, dealer2)
     
     def _get_dashboard_response(self, context: DealerContext, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer dashboard with improved matching"""
+        """Get dealer dashboard with correct distance calculation"""
         try:
             with self._session() as session:
                 builder = DealerDashboardBuilder(session)
                 dashboard = builder.build(dealer_name)
                 
                 if dashboard:
+                    # ============================================================
+                    # FIX: Recalculate distance with correct warehouse
+                    # ============================================================
+                    identity = dashboard.get('identity', {})
+                    warehouse = identity.get('warehouse', '')
+                    city = identity.get('city', '')
+                    
+                    if warehouse and city:
+                        # Get correct distance
+                        correct_distance = self._get_correct_distance_info(warehouse, city)
+                        # Update dashboard with correct distance
+                        dashboard['distance'] = correct_distance
+                        
+                        # Update insights to avoid duplicates
+                        insights = dashboard.get('insights', [])
+                        # Remove old distance insights
+                        insights = [i for i in insights if not i.startswith('Distance to dealer:') and not i.startswith('Estimated transit:')]
+                        # Add new distance insights
+                        if correct_distance.get('distance_km'):
+                            insights.append(f"Distance to dealer: {correct_distance['distance_km']} km")
+                            insights.append(f"Estimated transit: {correct_distance.get('estimated_delivery', 'N/A')}")
+                        dashboard['insights'] = insights
+                    
                     response = self._renderer.render_dealer_dashboard(dealer_name, dashboard)
                     return {
                         "response": response,
@@ -2015,15 +2072,8 @@ class DealerAnalyticsService:
                         "exit_menu": False
                     }
                 
-                # Try to find with better matching
+                # Try suggestions
                 suggestions = self._get_suggestions(dealer_name)
-                
-                if len(suggestions) == 1:
-                    match_score = self._calculate_match_score(dealer_name, suggestions[0])
-                    if match_score >= 70:
-                        logger.info(f"🔄 Auto-selecting dashboard suggestion ({match_score:.0f}%): '{suggestions[0]}'")
-                        return self._get_dashboard_response(context, suggestions[0])
-                
                 if suggestions:
                     suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
                     response = (
@@ -2164,14 +2214,6 @@ class DealerAnalyticsService:
                 if not results:
                     suggestions = self._get_suggestions(query)
                     if suggestions:
-                        if len(suggestions) == 1:
-                            match_score = self._calculate_match_score(query, suggestions[0])
-                            if match_score >= 70:
-                                auto_dealer = suggestions[0]
-                                logger.info(f"🔄 Auto-selecting search result ({match_score:.0f}%): '{auto_dealer}'")
-                                context.current_dealer = auto_dealer
-                                return self._get_dashboard_response(context, auto_dealer)
-                        
                         suggestion_text = "\n".join([f"• {s}" for s in suggestions[:5]])
                         response = (
                             f"🔍 No dealers found matching '{query}'\n\n"
@@ -2221,7 +2263,7 @@ class DealerAnalyticsService:
             }
     
     def _handle_quick_query(self, context: DealerContext, user_input: str) -> Dict[str, Any]:
-        """Handle quick query (natural language)"""
+        """Handle quick query"""
         user_lower = user_input.lower()
         
         if "top dealers" in user_lower or "ranking" in user_lower:
@@ -2243,6 +2285,8 @@ class DealerAnalyticsService:
     @staticmethod
     def _session() -> Session:
         return SessionLocal()
+
+# ============================================================
 # ============================================================
 # BLOCK 11: SINGLETON & EXPORTS
 # ============================================================
