@@ -2222,7 +2222,6 @@ class ResponseFormatter:
 # ============================================================
 # BLOCK 14: MAIN DEALER ANALYTICS SERVICE WITH MENU
 # ============================================================
-# ============================================================
 # BLOCK 14: MAIN DEALER ANALYTICS SERVICE WITH MENU
 # ============================================================
 
@@ -2287,7 +2286,7 @@ class DealerAnalyticsService:
             return self._menu_renderer.render_main_menu()
     
     # ============================================================
-    # ALIAS for compatibility (points to handle_message)
+    # ALIAS for compatibility
     # ============================================================
     
     def process_whatsapp_query(self, message: str, sender: str) -> str:
@@ -2324,9 +2323,17 @@ class DealerAnalyticsService:
         
         logger.info(f"📥 Processing input: '{user_input}' for session {session_id}, state: {context.menu_state}")
         
+        # ============================================================
+        # STEP 1: Handle navigation commands (ALWAYS check these first)
+        # ============================================================
+        
         # Handle main menu navigation
         if user_input == "0" or user_input == "99":
             return self._handle_main_menu_return(context)
+        
+        # ============================================================
+        # STEP 2: Handle awaiting states
+        # ============================================================
         
         # If awaiting dealer name, treat input as dealer name
         if context.awaiting_dealer:
@@ -2348,18 +2355,57 @@ class DealerAnalyticsService:
                     "exit_menu": False
                 }
         
-        # Handle dealer names directly (quick commands)
+        # If awaiting comparison
+        if context.awaiting_comparison:
+            return self._handle_comparison_input(context, user_input)
+        
+        # ============================================================
+        # STEP 3: Check if this is a menu option (1-18)
+        # ============================================================
+        
+        # Menu options are ONLY 1-18 (and 0, 99 handled above)
+        is_menu_option = user_input.isdigit() and 1 <= int(user_input) <= 18
+        
+        if is_menu_option:
+            logger.info(f"🎯 Valid menu option: {user_input}")
+            return self._handle_main_menu_option(context, user_input)
+        
+        # ============================================================
+        # STEP 4: Handle special states (search, etc.)
+        # ============================================================
+        
+        if context.selected_option == "search":
+            return self._handle_search(context, user_input)
+        
+        # ============================================================
+        # STEP 5: Try to resolve as dealer name (quick query)
+        # ============================================================
+        
         dealer_name = self._resolve_dealer_name(user_input)
         if dealer_name:
+            logger.info(f"🔍 Quick query resolved to dealer: {dealer_name}")
             context.current_dealer = dealer_name
             return self._get_dealer_dashboard(context, dealer_name)
         
-        # Handle menu options based on state
-        if context.menu_state == MenuState.MAIN:
-            return self._handle_main_menu_option(context, user_input)
+        # ============================================================
+        # STEP 6: Handle natural language quick commands
+        # ============================================================
         
-        # Default: treat as quick query
-        return self._handle_quick_query(context, user_input)
+        user_lower = user_input.lower()
+        if "top dealers" in user_lower or "ranking" in user_lower:
+            return self._handle_ranking(context)
+        
+        # ============================================================
+        # STEP 7: Default - show main menu
+        # ============================================================
+        
+        return {
+            "response": self._menu_renderer.render_main_menu(),
+            "menu_type": "dealer_menu",
+            "action": "main_menu",
+            "data": {},
+            "exit_menu": False
+        }
     
     def _handle_main_menu_return(self, context: DealerContext) -> Dict[str, Any]:
         """Return to main menu"""
@@ -2433,14 +2479,6 @@ class DealerAnalyticsService:
                 "exit_menu": False
             }
         
-        # Handle comparison input
-        if context.awaiting_comparison:
-            return self._handle_comparison_input(context, option)
-        
-        # Handle search
-        if context.selected_option == "search":
-            return self._handle_search(context, option)
-        
         # Default: show menu
         return {
             "response": self._menu_renderer.render_main_menu(),
@@ -2483,6 +2521,16 @@ class DealerAnalyticsService:
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
         """Resolve dealer name from database"""
         if not name or not name.strip():
+            return None
+        
+        # ============================================================
+        # CRITICAL FIX: Don't resolve single digits (1-9) as dealer names
+        # These are menu options, not dealer names
+        # ============================================================
+        
+        # If it's a single digit 1-9, it's a menu option, NOT a dealer name
+        if name.isdigit() and 1 <= int(name) <= 9:
+            logger.info(f"⏭️ Skipping '{name}' as dealer name (it's a menu option)")
             return None
         
         name_lower = name.lower().strip()
