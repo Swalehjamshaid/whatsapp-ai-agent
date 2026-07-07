@@ -301,133 +301,259 @@ class DealerAnswer:
 # ============================================================
 # BLOCK 6: UTILITY FUNCTIONS
 # ============================================================
+# ============================================================
+# BLOCK 6: UTILITY FUNCTIONS (UPDATED WITH ORS + GEOPY)
+# ============================================================
 
-def _text(value: Any, default: str = "Unknown") -> str:
-    if value is None:
-        return default
-    try:
-        result = str(value).strip()
-        return result if result else default
-    except (TypeError, ValueError):
-        return default
+import math
+import os
+import re
+from typing import Any, Dict, List, Tuple, Optional
+from datetime import date, datetime, timedelta
 
-def _number(value: Any) -> float:
-    try:
-        return float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
+# ============================================================
+# OPTIONAL IMPORTS FOR DISTANCE CALCULATION
+# ============================================================
 
-def _percent(numerator: Any, denominator: Any) -> float:
-    bottom = _number(denominator)
-    return round((_number(numerator) * 100.0 / bottom), 2) if bottom else 0.0
+try:
+    import openrouteservice
+    from openrouteservice.exceptions import ApiError, HTTPError
+    ORS_AVAILABLE = True
+except ImportError:
+    ORS_AVAILABLE = False
 
-def _days(value: Any) -> float:
-    if value is None:
-        return 0.0
-    if hasattr(value, "days"):
-        return round(float(value.days), 2)
-    return round(_number(value), 2)
+try:
+    from geopy.distance import geodesic
+    from geopy.geocoders import Nominatim
+    GEOPY_AVAILABLE = True
+except ImportError:
+    GEOPY_AVAILABLE = False
 
-def _date_text(value: Any) -> str:
-    if isinstance(value, (date, datetime)):
-        return value.strftime("%d-%b-%Y")
-    return _text(value, "N/A")
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
-def _growth(current: float, previous: float) -> float:
-    if previous == 0:
-        return 100.0 if current > 0 else 0.0
-    return round(((current - previous) / previous) * 100, 2)
+ORS_API_KEY = os.getenv("ORS_API_KEY", "")
+ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")  # driving-car, driving-hgv, cycling-regular, etc.
+USE_ORS_FALLBACK = os.getenv("USE_ORS_FALLBACK", "true").lower() == "true"
 
-def _flag(value: Any) -> bool:
-    return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "pending"}
+# ============================================================
+# GEOPY CACHE (for reverse geocoding)
+# ============================================================
 
-def _format_date(value: Any) -> str:
-    if not value:
-        return "N/A"
-    if isinstance(value, datetime):
-        return value.strftime("%d-%b-%Y")
-    if isinstance(value, date):
-        return value.strftime("%d-%b-%Y")
-    if isinstance(value, str):
+_geolocator = None
+_geocode_cache: Dict[str, Tuple[float, float]] = {}
+
+def _get_geolocator():
+    """Get geopy geolocator with user agent"""
+    global _geolocator
+    if _geolocator is None and GEOPY_AVAILABLE:
         try:
-            dt = datetime.fromisoformat(value)
-            return dt.strftime("%d-%b-%Y")
-        except (ValueError, TypeError):
-            return str(value)[:10]
-    return str(value)
+            _geolocator = Nominatim(user_agent="logistics_intelligence_platform")
+        except Exception:
+            pass
+    return _geolocator
 
-def _format_currency(amount: float) -> str:
-    """Format currency in PKR"""
-    if amount >= 100_000_000:
-        return f"PKR {amount/100_000_000:.2f}Cr"
-    elif amount >= 1_000_000:
-        return f"PKR {amount/1_000_000:.2f}M"
-    elif amount >= 1_000:
-        return f"PKR {amount/1_000:.2f}K"
-    else:
-        return f"PKR {amount:,.0f}"
+# ============================================================
+# OPENROUTESERVICE DISTANCE CALCULATION
+# ============================================================
 
-def _normalize_text(text: str) -> str:
-    """Normalize text for search - PRESERVES hyphens"""
-    if not text:
-        return ""
-    normalized = text.lower()
-    normalized = re.sub(r'[&\./,()\'\"]', ' ', normalized)
-    normalized = re.sub(r'\s+', ' ', normalized).strip()
-    return normalized
+def _get_ors_client():
+    """Get OpenRouteService client"""
+    if not ORS_AVAILABLE or not ORS_API_KEY:
+        return None
+    
+    try:
+        client = openrouteservice.Client(key=ORS_API_KEY)
+        return client
+    except Exception as e:
+        logger.error(f"Failed to initialize ORS client: {e}")
+        return None
 
-def _clean_dealer_name(name: str) -> str:
-    """Clean dealer name by removing common suffixes"""
-    if not name:
-        return ""
-    cleaned = name.lower().strip()
-    for suffix in DEALER_SUFFIXES:
-        cleaned = re.sub(r'\s*' + suffix.lower() + r'\s*$', '', cleaned)
-    cleaned = re.sub(r'-[a-z]{3}$', '', cleaned)
-    return cleaned.strip()
+def _get_coordinates_from_address(address: str) -> Optional[Tuple[float, float]]:
+    """Get coordinates from address using geopy"""
+    if not GEOPY_AVAILABLE or not address:
+        return None
+    
+    cache_key = address.lower().strip()
+    if cache_key in _geocode_cache:
+        return _geocode_cache[cache_key]
+    
+    try:
+        geolocator = _get_geolocator()
+        if not geolocator:
+            return None
+        
+        location = geolocator.geocode(address)
+        if location:
+            coords = (location.latitude, location.longitude)
+            _geocode_cache[cache_key] = coords
+            return coords
+    except Exception as e:
+        logger.warning(f"Geocoding failed for '{address}': {e}")
+    
+    return None
 
-def _calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calculate distance using Haversine formula"""
-    R = 6371
+def _calculate_distance_ors(
+    lat1: float, 
+    lon1: float, 
+    lat2: float, 
+    lon2: float
+) -> Optional[Dict[str, Any]]:
+    """
+    Calculate distance using OpenRouteService.
+    Returns actual driving distance, duration, and route info.
+    """
+    if not ORS_AVAILABLE or not ORS_API_KEY:
+        return None
+    
+    client = _get_ors_client()
+    if not client:
+        return None
+    
+    try:
+        # OpenRouteService expects coordinates as [longitude, latitude]
+        coords = [
+            [lon1, lat1],  # Start
+            [lon2, lat2]   # End
+        ]
+        
+        # Get directions
+        routes = client.directions(
+            coordinates=coords,
+            profile=ORS_PROFILE,
+            format='json'
+        )
+        
+        if routes and 'routes' in routes and len(routes['routes']) > 0:
+            route = routes['routes'][0]
+            summary = route.get('summary', {})
+            
+            distance_km = summary.get('distance', 0) / 1000  # Convert meters to km
+            duration_min = summary.get('duration', 0) / 60   # Convert seconds to minutes
+            
+            # Extract segments info
+            segments = route.get('segments', [])
+            street_names = []
+            for segment in segments:
+                for step in segment.get('steps', []):
+                    if 'name' in step and step['name']:
+                        street_names.append(step['name'])
+            
+            # Determine route type
+            if distance_km <= 80:
+                zone = "Local"
+                estimated = "Same Day"
+            elif distance_km <= 200:
+                zone = "Short Haul"
+                estimated = "1 Day"
+            elif distance_km <= 400:
+                zone = "Medium Haul"
+                estimated = "2 Days"
+            elif distance_km <= 700:
+                zone = "Long Haul"
+                estimated = "3 Days"
+            else:
+                zone = "Extended Haul"
+                estimated = "4-5 Days"
+            
+            return {
+                "distance_km": round(distance_km, 1),
+                "duration_min": round(duration_min, 1),
+                "duration_hours": round(duration_min / 60, 1),
+                "estimated_delivery": estimated,
+                "transportation_zone": zone,
+                "source": "OpenRouteService",
+                "route_type": ORS_PROFILE,
+                "street_names": list(set(street_names[:3])),  # Top 3 streets
+                "raw_route": routes
+            }
+        
+    except ApiError as e:
+        logger.warning(f"ORS API Error: {e}")
+        if USE_ORS_FALLBACK:
+            return _calculate_distance_haversine_fallback(lat1, lon1, lat2, lon2)
+    except HTTPError as e:
+        logger.warning(f"ORS HTTP Error: {e}")
+        if USE_ORS_FALLBACK:
+            return _calculate_distance_haversine_fallback(lat1, lon1, lat2, lon2)
+    except Exception as e:
+        logger.warning(f"ORS calculation failed: {e}")
+        if USE_ORS_FALLBACK:
+            return _calculate_distance_haversine_fallback(lat1, lon1, lat2, lon2)
+    
+    return None
+
+def _calculate_distance_haversine_fallback(
+    lat1: float, 
+    lon1: float, 
+    lat2: float, 
+    lon2: float
+) -> Dict[str, Any]:
+    """
+    Fallback: Calculate straight-line distance using Haversine formula.
+    """
+    R = 6371  # Earth's radius in km
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-    return R * c
-
-def _get_coordinates(city: str) -> Tuple[float, float]:
-    """Get coordinates with fallback"""
-    city_lower = city.lower()
-    coords = WAREHOUSE_COORDINATES.get(city_lower)
-    if not coords:
-        logger.warning(f"No coordinates for city: {city}, using fallback")
-        return FALLBACK_COORDINATES
-    return coords
-
-def _get_distance_info(warehouse: str, city: str) -> Dict[str, Any]:
-    """Calculate distance and estimated delivery time"""
-    warehouse_lower = warehouse.lower()
-    city_lower = city.lower()
+    distance = R * c
     
-    warehouse_coord = WAREHOUSE_COORDINATES.get(warehouse_lower)
-    city_coord = CITY_COORDINATES.get(city_lower)
+    if distance <= 80:
+        zone = "Local"
+        estimated = "Same Day"
+    elif distance <= 200:
+        zone = "Short Haul"
+        estimated = "1 Day"
+    elif distance <= 400:
+        zone = "Medium Haul"
+        estimated = "2 Days"
+    elif distance <= 700:
+        zone = "Long Haul"
+        estimated = "3 Days"
+    else:
+        zone = "Extended Haul"
+        estimated = "4-5 Days"
     
-    if warehouse_coord and city_coord:
-        distance = _calculate_distance(
-            warehouse_coord[0], warehouse_coord[1],
-            city_coord[0], city_coord[1]
-        )
+    return {
+        "distance_km": round(distance, 1),
+        "duration_min": round(distance / 50 * 60, 1),  # Estimate: 50 km/h average
+        "duration_hours": round(distance / 50, 1),
+        "estimated_delivery": estimated,
+        "transportation_zone": zone,
+        "source": "Haversine (Fallback)",
+        "route_type": "straight_line",
+        "street_names": [],
+        "is_fallback": True
+    }
+
+def _calculate_distance_geopy(
+    lat1: float, 
+    lon1: float, 
+    lat2: float, 
+    lon2: float
+) -> Optional[Dict[str, Any]]:
+    """
+    Calculate distance using geopy (geodesic distance).
+    More accurate than Haversine but still straight-line.
+    """
+    if not GEOPY_AVAILABLE:
+        return None
+    
+    try:
+        distance_km = geodesic((lat1, lon1), (lat2, lon2)).kilometers
         
-        if distance <= 80:
+        if distance_km <= 80:
             zone = "Local"
             estimated = "Same Day"
-        elif distance <= 200:
+        elif distance_km <= 200:
             zone = "Short Haul"
             estimated = "1 Day"
-        elif distance <= 400:
+        elif distance_km <= 400:
             zone = "Medium Haul"
             estimated = "2 Days"
-        elif distance <= 700:
+        elif distance_km <= 700:
             zone = "Long Haul"
             estimated = "3 Days"
         else:
@@ -435,19 +561,151 @@ def _get_distance_info(warehouse: str, city: str) -> Dict[str, Any]:
             estimated = "4-5 Days"
         
         return {
-            "distance_km": round(distance, 1),
+            "distance_km": round(distance_km, 1),
+            "duration_min": round(distance_km / 50 * 60, 1),
+            "duration_hours": round(distance_km / 50, 1),
             "estimated_delivery": estimated,
             "transportation_zone": zone,
-            "source": "Haversine"
+            "source": "Geopy Geodesic",
+            "route_type": "geodesic",
+            "street_names": [],
+            "is_fallback": True
         }
+    except Exception as e:
+        logger.warning(f"Geopy calculation failed: {e}")
+        return None
+
+def _get_coordinates(city: str) -> Tuple[float, float]:
+    """
+    Get coordinates with fallback.
+    Tries: OpenRouteService geocoding → City coordinates → Fallback
+    """
+    city_lower = city.lower()
+    
+    # Try geocoding with OpenRouteService first
+    if ORS_AVAILABLE and ORS_API_KEY:
+        try:
+            client = _get_ors_client()
+            if client:
+                # Try geocoding
+                result = client.pelias_search(text=city)
+                if result and 'features' in result and len(result['features']) > 0:
+                    coords = result['features'][0]['geometry']['coordinates']
+                    # ORS returns [longitude, latitude]
+                    return (coords[1], coords[0])
+        except Exception:
+            pass
+    
+    # Try geopy geocoding
+    if GEOPY_AVAILABLE:
+        coords = _get_coordinates_from_address(city)
+        if coords:
+            return coords
+    
+    # Use city coordinates from our database
+    coords = CITY_COORDINATES.get(city_lower)
+    if coords:
+        return coords
+    
+    # Try warehouse coordinates as fallback
+    coords = WAREHOUSE_COORDINATES.get(city_lower)
+    if coords:
+        return coords
+    
+    logger.warning(f"No coordinates for city: {city}, using fallback")
+    return FALLBACK_COORDINATES
+
+def _get_distance_info(warehouse: str, city: str) -> Dict[str, Any]:
+    """
+    Calculate distance and estimated delivery time.
+    Priority: OpenRouteService → Geopy → Haversine (fallback)
+    """
+    warehouse_lower = warehouse.lower()
+    city_lower = city.lower()
+    
+    # Get coordinates
+    warehouse_coord = _get_coordinates(warehouse)
+    city_coord = _get_coordinates(city)
+    
+    if warehouse_coord and city_coord:
+        # Try OpenRouteService first (driving distance)
+        ors_result = _calculate_distance_ors(
+            warehouse_coord[0], warehouse_coord[1],
+            city_coord[0], city_coord[1]
+        )
+        
+        if ors_result:
+            # Add route details
+            ors_result["warehouse"] = warehouse
+            ors_result["city"] = city
+            return ors_result
+        
+        # Try Geopy as second choice
+        geopy_result = _calculate_distance_geopy(
+            warehouse_coord[0], warehouse_coord[1],
+            city_coord[0], city_coord[1]
+        )
+        
+        if geopy_result:
+            geopy_result["warehouse"] = warehouse
+            geopy_result["city"] = city
+            return geopy_result
+        
+        # Fallback to Haversine
+        haversine_result = _calculate_distance_haversine_fallback(
+            warehouse_coord[0], warehouse_coord[1],
+            city_coord[0], city_coord[1]
+        )
+        haversine_result["warehouse"] = warehouse
+        haversine_result["city"] = city
+        return haversine_result
     
     return {
         "distance_km": None,
+        "duration_min": None,
+        "duration_hours": None,
         "estimated_delivery": "Unknown",
         "transportation_zone": "Unknown",
-        "source": "Unavailable"
+        "source": "Unavailable",
+        "warehouse": warehouse,
+        "city": city,
+        "error": "Could not calculate distance"
     }
 
+# ============================================================
+# ENHANCED DISTANCE DISPLAY
+# ============================================================
+
+def _format_distance_info(distance_info: Dict[str, Any]) -> str:
+    """Format distance information for display"""
+    if not distance_info:
+        return "N/A"
+    
+    distance = distance_info.get('distance_km')
+    duration = distance_info.get('duration_hours')
+    estimated = distance_info.get('estimated_delivery', 'N/A')
+    zone = distance_info.get('transportation_zone', 'N/A')
+    source = distance_info.get('source', 'N/A')
+    
+    if distance is None:
+        return "Not available"
+    
+    parts = []
+    parts.append(f"📏 Distance: {distance} km")
+    
+    if duration:
+        parts.append(f"⏱️ Driving Time: {duration} hours")
+    
+    parts.append(f"📦 Delivery: {estimated}")
+    parts.append(f"📍 Zone: {zone}")
+    parts.append(f"🔍 Source: {source}")
+    
+    # Add street names if available
+    streets = distance_info.get('street_names', [])
+    if streets:
+        parts.append(f"🛣️ Via: {', '.join(streets)}")
+    
+    return "\n".join(parts)
 # ============================================================
 # BLOCK 7: MENU SYSTEM
 # ============================================================
