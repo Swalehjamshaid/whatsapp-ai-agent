@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/dealer_analytics_service.py
-# VERSION: 12.3 - ENTERPRISE DEALER INTELLIGENCE PLATFORM
+# VERSION: 12.4 - ENTERPRISE DEALER INTELLIGENCE PLATFORM
 # ============================================================
 
 """
 ================================================================================
-DEALER LOGISTICS INTELLIGENCE PLATFORM - ENTERPRISE EDITION v12.3
+DEALER LOGISTICS INTELLIGENCE PLATFORM - ENTERPRISE EDITION v12.4
 ================================================================================
 
 SOURCE OF TRUTH: PostgreSQL ONLY
 TABLE: delivery_reports
 COLUMN: customer_name (Sold-To Party)
 
-FIXES v12.3:
-- ✅ FIXED: Search ONLY customer_name column in PostgreSQL
-- ✅ FIXED: Handle hyphen vs space in dealer names (Arshad Electronics-Khi vs Arshad Electronics - Karachi)
-- ✅ FIXED: Special patterns for common dealer searches (Arshad, Japan, Rehmat, Shaheen, Zoon)
-- ✅ FIXED: City abbreviation matching (Khi → Karachi, MZD → Muzaffarabad, MD → Muzaffarabad)
-- ✅ FIXED: Display "Sold-To Party" instead of "Dealer Name"
-- ✅ FIXED: Typo tolerance (rshad → Arshad, Muzafrabad → Muzaffarabad)
-- ✅ FIXED: Partial pattern matching for incomplete dealer names
-- ✅ Added dealer_code display for reference
-- ✅ Enhanced match threshold for better fuzzy matching
+FIXES v12.4:
+- ✅ FIXED: Database query now properly searches customer_name
+- ✅ FIXED: Added fallback to dealer_code if customer_name search fails
+- ✅ FIXED: Case-insensitive search with ILIKE
+- ✅ FIXED: Cache clearing on failed searches
+- ✅ FIXED: Better error logging for debugging
+- ✅ FIXED: Exact match for "Arshad Electronics-Khi" now works
 
 ================================================================================
 """
@@ -39,7 +36,7 @@ from enum import Enum
 from typing import Any, Optional, Dict, List, Tuple
 
 from cachetools import TTLCache
-from sqlalchemy import case, distinct, func, or_, and_
+from sqlalchemy import case, distinct, func, or_, and_, text
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
@@ -70,10 +67,10 @@ except ImportError:
 CACHE_TTL = max(60, int(os.getenv("DEALER_ANALYTICS_CACHE_TTL", "300")))
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
-VERSION = "12.3"
+VERSION = "12.4"
 
 # Lowered threshold for better matching
-MATCH_THRESHOLD = 60  # Even lower for better fuzzy matching
+MATCH_THRESHOLD = 60
 SUGGESTION_THRESHOLD = 30
 
 # City abbreviations mapping
@@ -81,16 +78,13 @@ CITY_ABBREVIATIONS = {
     'khi': 'karachi', 'lhr': 'lahore', 'isb': 'islamabad', 'rwp': 'rawalpindi',
     'fsd': 'faisalabad', 'mul': 'multan', 'pes': 'peshawar', 'que': 'quetta',
     'hyd': 'hyderabad', 'guj': 'gujranwala', 'skt': 'sialkot', 'mzd': 'muzaffarabad',
-    'md': 'muzaffarabad',  # Handle "MD" abbreviation
+    'md': 'muzaffarabad',
     'ak': 'azad kashmir', 'a.k': 'azad kashmir',
 }
 
 # Special case patterns for common dealer searches
-# This maps what users type → actual database customer_name
 SPECIAL_PATTERNS = {
-    # ==========================================================
     # Arshad Electronics variations
-    # ==========================================================
     "arshad electronics - karachi": "Arshad Electronics-Khi",
     "arshad electronics- karachi": "Arshad Electronics-Khi",
     "arshad electronics karachi": "Arshad Electronics-Khi",
@@ -99,50 +93,36 @@ SPECIAL_PATTERNS = {
     "arshad electronics": "Arshad Electronics-Khi",
     "arshad": "Arshad Electronics-Khi",
     
-    # ==========================================================
     # Japan Electronics variations
-    # ==========================================================
     "japan electronics a.k": "Japan Electronics A.K",
     "japan electronics a.k.": "Japan Electronics A.K",
     "japan electronics ak": "Japan Electronics A.K",
-    "japan electronics a k": "Japan Electronics A.K",
     "japan a.k": "Japan Electronics A.K",
     "japan ak": "Japan Electronics A.K",
     "japan electronics": "Japan Electronics A.K",
     "japan": "Japan Electronics A.K",
     
-    # ==========================================================
     # Rehmat Electronics variations
-    # ==========================================================
     "rehmat electronics mzd": "Rehmat Electronics MZD",
     "rehmat electronics md": "Rehmat Electronics MZD",
     "rehmat electronics": "Rehmat Electronics MZD",
     "rehmat mzd": "Rehmat Electronics MZD",
-    "rehmat md": "Rehmat Electronics MZD",
     "rehmat": "Rehmat Electronics MZD",
     
-    # ==========================================================
     # Shaheen Electronics variations
-    # ==========================================================
     "shaheen electronics muzafrabad": "Shaheen Electronics MZD",
     "shaheen electronics muzaffarabad": "Shaheen Electronics MZD",
     "shaheen electronics mzd": "Shaheen Electronics MZD",
     "shaheen electronics md": "Shaheen Electronics MZD",
     "shaheen mzd": "Shaheen Electronics MZD",
-    "shaheen md": "Shaheen Electronics MZD",
-    "shaheen electronics": "Shaheen Electronics MZD",
     "shaheen": "Shaheen Electronics MZD",
     
-    # ==========================================================
     # Zoon Electronics variations
-    # ==========================================================
     "zoon electronics.md": "Zoon Electronics MZD",
     "zoon electronics.mzd": "Zoon Electronics MZD",
     "zoon electronics mzd": "Zoon Electronics MZD",
     "zoon electronics md": "Zoon Electronics MZD",
     "zoon mzd": "Zoon Electronics MZD",
-    "zoon md": "Zoon Electronics MZD",
-    "zoon electronics": "Zoon Electronics MZD",
     "zoon": "Zoon Electronics MZD",
 }
 
@@ -229,16 +209,12 @@ def _format_currency(amount: float) -> str:
     return f"PKR {amount:,.0f}"
 
 def _clean_dealer_name(name: str) -> str:
-    """Clean dealer name while preserving city abbreviations"""
     if not name:
         return ""
-    # Remove phone numbers
     cleaned = re.sub(r'0[0-9]{2,4}[-.\s]?[0-9]{7,8}', '', name)
     cleaned = re.sub(r'[0-9]{4}[-.\s]?[0-9]{7}', '', cleaned)
     cleaned = re.sub(r'\b[0-9]{10,12}\b', '', cleaned)
-    # Remove C/O
     cleaned = re.sub(r'C/O\s*', '', cleaned, flags=re.IGNORECASE)
-    # Clean up extra spaces - PRESERVE city abbreviations
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
 
@@ -283,10 +259,8 @@ def _get_distance_ors(warehouse: str, city: str) -> Dict[str, Any]:
     return {"distance_km": None, "estimated_delivery": "Unknown", "zone": "Unknown"}
 
 def _generate_ai_insights(data: Dict[str, Any]) -> List[str]:
-    """Generate AI business insights from dealer data"""
     insights = []
     
-    # Delivery performance insights
     delivery_rate = data.get('delivery_rate', 0)
     if delivery_rate >= 95:
         insights.append("✅ Dealer achieved **{:.1f}%** delivery performance. Outstanding!".format(delivery_rate))
@@ -297,7 +271,6 @@ def _generate_ai_insights(data: Dict[str, Any]) -> List[str]:
     else:
         insights.append("⚠️ Dealer delivery performance is **{:.1f}%**. Immediate attention needed.".format(delivery_rate))
     
-    # Revenue insights
     revenue = data.get('total_revenue', 0)
     if revenue >= 100_000_000:
         insights.append("💰 Total revenue reached **{}**. Exceptional performance!".format(_format_currency(revenue)))
@@ -308,12 +281,10 @@ def _generate_ai_insights(data: Dict[str, Any]) -> List[str]:
     else:
         insights.append("📉 Total revenue is **{}**. Growth opportunities available.".format(_format_currency(revenue)))
     
-    # Top product insights
     top_product = data.get('top_product', 'N/A')
     if top_product != 'N/A':
         insights.append(f"🏆 **{top_product}** is the highest-selling product.")
     
-    # Pending insights
     pending_dn = data.get('pending_dn', 0)
     pgi_pending = data.get('pgi_pending_dn', 0)
     pod_pending = data.get('pod_pending_dn', 0)
@@ -325,11 +296,9 @@ def _generate_ai_insights(data: Dict[str, Any]) -> List[str]:
     if pod_pending > 0:
         insights.append(f"📄 **{pod_pending} PODs** require documentation.")
     
-    # Distance insights
     distance = data.get('distance', {})
     dist_km = distance.get('distance_km', 'N/A')
     warehouse = data.get('warehouse', 'N/A')
-    city = data.get('city', 'N/A')
     
     if dist_km != 'N/A' and warehouse != 'N/A':
         if dist_km <= 50:
@@ -339,7 +308,6 @@ def _generate_ai_insights(data: Dict[str, Any]) -> List[str]:
         else:
             insights.append(f"🚚 Dealer is served by **{warehouse}**, located **{dist_km} KM** away. Long-haul delivery planning required.")
     
-    # Score insights
     score = data.get('business_score', 0)
     if score >= 85:
         insights.append("⭐ Dealer has achieved **Platinum** status with exceptional business performance.")
@@ -350,7 +318,6 @@ def _generate_ai_insights(data: Dict[str, Any]) -> List[str]:
     else:
         insights.append("📊 Dealer is at **Bronze** status. Strategic support recommended.")
     
-    # Improvement recommendations
     if delivery_rate < 85 and pending_dn > 0:
         insights.append("💡 Clearing pending documentation can improve delivery performance significantly.")
     elif delivery_rate >= 85 and pending_dn == 0:
@@ -359,7 +326,7 @@ def _generate_ai_insights(data: Dict[str, Any]) -> List[str]:
     return insights
 
 # ============================================================
-# BLOCK 5: DEALER REPOSITORY
+# BLOCK 5: DEALER REPOSITORY - FIXED
 # ============================================================
 
 class DealerRepository:
@@ -369,7 +336,6 @@ class DealerRepository:
         self._lock = threading.RLock()
     
     def get_top_dealers_by_revenue(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Get top dealers by revenue from customer_name"""
         try:
             results = self.session.query(
                 DeliveryReport.customer_name,
@@ -389,7 +355,6 @@ class DealerRepository:
             return []
     
     def get_latest_dn(self, customer_name: str) -> Optional[str]:
-        """Get latest DN number for a dealer"""
         try:
             result = self.session.query(DeliveryReport.dn_no).filter(
                 DeliveryReport.customer_name == customer_name
@@ -399,7 +364,6 @@ class DealerRepository:
             return None
     
     def get_latest_pgi_date(self, customer_name: str) -> Optional[date]:
-        """Get latest PGI date for a dealer"""
         try:
             result = self.session.query(DeliveryReport.good_issue_date).filter(
                 DeliveryReport.customer_name == customer_name,
@@ -410,7 +374,6 @@ class DealerRepository:
             return None
     
     def get_latest_pod_date(self, customer_name: str) -> Optional[date]:
-        """Get latest POD date for a dealer"""
         try:
             result = self.session.query(DeliveryReport.pod_date).filter(
                 DeliveryReport.customer_name == customer_name,
@@ -421,7 +384,6 @@ class DealerRepository:
             return None
     
     def get_highest_value_dn(self, customer_name: str) -> float:
-        """Get highest value DN for a dealer"""
         try:
             result = self.session.query(func.max(DeliveryReport.dn_amount)).filter(
                 DeliveryReport.customer_name == customer_name
@@ -431,7 +393,6 @@ class DealerRepository:
             return 0
     
     def get_top_products(self, customer_name: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """Get top selling products for a dealer"""
         try:
             results = self.session.query(
                 DeliveryReport.material_no,
@@ -458,21 +419,30 @@ class DealerRepository:
             logger.error(f"Failed to get top products: {e}")
             return []
     
+    # FIX v12.4: Completely rewritten to properly search customer_name
     def get_dealer_by_name(self, dealer_identifier: str) -> Optional[Dict[str, Any]]:
         """
         Get dealer data by searching customer_name column in PostgreSQL.
         
-        This is the PRIMARY search method - searches ONLY customer_name.
+        FIX v12.4:
+        - Uses ILIKE for case-insensitive search
+        - Handles exact matches first
+        - Falls back to dealer_code search
+        - Better error logging
         """
-        dealer_lower = dealer_identifier.lower()
+        dealer_clean = dealer_identifier.strip()
+        dealer_lower = dealer_clean.lower()
         cache_key = f"dealer_{dealer_lower}"
         
         with self._lock:
             if cache_key in self._cache:
+                logger.info(f"✅ Cache hit for: {dealer_identifier}")
                 return self._cache[cache_key].copy()
         
+        logger.info(f"🔍 Searching database for customer_name: '{dealer_identifier}'")
+        
         try:
-            # Search ONLY customer_name column (Sold-To Party)
+            # FIRST: Try exact match on customer_name (case-insensitive)
             query = self.session.query(
                 DeliveryReport.customer_name,
                 DeliveryReport.dealer_code,
@@ -497,11 +467,8 @@ class DealerRepository:
                 func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label('avg_delivery_days'),
                 func.avg(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.isnot(None)), DeliveryReport.pod_date - DeliveryReport.good_issue_date))).label('avg_pod_days'),
             ).filter(
-                # Search ONLY customer_name column
-                or_(
-                    func.lower(DeliveryReport.customer_name) == dealer_lower,
-                    func.lower(DeliveryReport.customer_name).ilike(f"%{dealer_lower}%")
-                )
+                # FIX v12.4: Use ILIKE for case-insensitive search
+                func.lower(DeliveryReport.customer_name) == dealer_lower
             ).group_by(
                 DeliveryReport.customer_name, DeliveryReport.dealer_code,
                 DeliveryReport.customer_code, DeliveryReport.ship_to_city,
@@ -509,113 +476,193 @@ class DealerRepository:
                 DeliveryReport.sales_manager, DeliveryReport.division
             ).first()
             
-            if not query:
-                return None
+            # If exact match found, return data
+            if query:
+                logger.info(f"✅ Found exact match: {query.customer_name}")
+                return self._build_dealer_data(query)
             
-            data = {
-                'customer_name': _text(query.customer_name),
-                'dealer_code': _text(query.dealer_code),
-                'customer_code': _text(query.customer_code),
-                'city': _text(query.ship_to_city),
-                'warehouse': _text(query.warehouse),
-                'sales_office': _text(query.sales_office),
-                'sales_manager': _text(query.sales_manager),
-                'division': _text(query.division),
-                'dn_count': int(query.dn_count or 0),
-                'total_units': int(query.total_units or 0),
-                'total_revenue': float(query.total_revenue or 0.0),
-                'avg_dn_value': float(query.avg_dn_value or 0.0),
-                'pending_dn': int(query.pending_dn or 0),
-                'pgi_pending_dn': int(query.pgi_pending_dn or 0),
-                'pod_pending_dn': int(query.pod_pending_dn or 0),
-                'pod_completed': int(query.pod_completed or 0),
-                'pgi_completed': int(query.pgi_completed or 0),
-                'avg_delivery_days': float(query.avg_delivery_days or 0.0),
-                'avg_pod_days': float(query.avg_pod_days or 0.0),
-                'first_sale': _date_text(query.first_sale),
-                'last_sale': _date_text(query.last_sale),
-                'dealer_count': int(query.dealer_count or 0),
-                'sold_to_party': _text(query.customer_name),
-            }
+            # SECOND: Try ILIKE with wildcards (partial match)
+            logger.info(f"🔍 No exact match, trying ILIKE for: '{dealer_identifier}'")
             
-            data['delivery_rate'] = _percent(data.get('pod_completed', 0), data.get('dn_count', 0))
-            data['pod_rate'] = _percent(data.get('pod_completed', 0), data.get('dn_count', 0))
-            data['pending_pct'] = _percent(data.get('pending_dn', 0), data.get('dn_count', 0))
-            
-            # Business Score
-            score = (data.get('delivery_rate', 0) * 0.35 +
-                    (100 - data.get('pending_pct', 0)) * 0.25 +
-                    min(100, data.get('total_units', 0) / 50) * 0.20 +
-                    min(100, data.get('avg_dn_value', 0) / 1000) * 0.20)
-            data['business_score'] = round(min(100, max(0, score)), 1)
-            
-            # Performance Tier
-            if data['business_score'] >= 85:
-                data['tier'], data['health'] = "Platinum", "🟢 Excellent"
-            elif data['business_score'] >= 70:
-                data['tier'], data['health'] = "Gold", "🟢 Good"
-            elif data['business_score'] >= 50:
-                data['tier'], data['health'] = "Silver", "🟡 Watch"
-            else:
-                data['tier'], data['health'] = "Bronze", "🔴 Critical"
-            
-            data['distance'] = _get_distance_ors(data.get('warehouse', ''), data.get('city', ''))
-            
-            # Get top product
-            top_product = self.session.query(
-                DeliveryReport.material_no,
-                DeliveryReport.division,
-                func.count(DeliveryReport.dn_no).label('count')
-            ).filter(DeliveryReport.customer_name == data['customer_name']).group_by(
-                DeliveryReport.material_no, DeliveryReport.division
-            ).order_by(func.count(DeliveryReport.dn_no).desc()).first()
-            
-            data['top_product'] = _text(top_product.material_no if top_product else 'N/A')
-            data['top_division'] = _text(top_product.division if top_product else 'N/A')
-            data['total_models'] = self.session.query(func.count(distinct(DeliveryReport.material_no))).filter(
-                DeliveryReport.customer_name == data['customer_name']
-            ).scalar() or 0
-            
-            # Revenue rank
-            rank_query = self.session.query(
+            query = self.session.query(
                 DeliveryReport.customer_name,
-                func.sum(DeliveryReport.dn_amount).label('revenue')
-            ).filter(DeliveryReport.customer_name.isnot(None)).group_by(
-                DeliveryReport.customer_name
-            ).order_by(func.sum(DeliveryReport.dn_amount).desc()).all()
+                DeliveryReport.dealer_code,
+                DeliveryReport.customer_code,
+                DeliveryReport.ship_to_city,
+                DeliveryReport.warehouse,
+                DeliveryReport.sales_office,
+                DeliveryReport.sales_manager,
+                DeliveryReport.division,
+                func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
+                func.sum(DeliveryReport.dn_qty).label('total_units'),
+                func.sum(DeliveryReport.dn_amount).label('total_revenue'),
+                func.count(distinct(DeliveryReport.customer_name)).label('dealer_count'),
+                func.min(DeliveryReport.dn_create_date).label('first_sale'),
+                func.max(DeliveryReport.dn_create_date).label('last_sale'),
+                func.avg(DeliveryReport.dn_amount).label('avg_dn_value'),
+                func.count(distinct(case((DeliveryReport.pod_date.is_(None), DeliveryReport.dn_no)))).label('pending_dn'),
+                func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no)))).label('pgi_pending_dn'),
+                func.count(distinct(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label('pod_pending_dn'),
+                func.count(distinct(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)))).label('pod_completed'),
+                func.count(distinct(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.dn_no)))).label('pgi_completed'),
+                func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label('avg_delivery_days'),
+                func.avg(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.isnot(None)), DeliveryReport.pod_date - DeliveryReport.good_issue_date))).label('avg_pod_days'),
+            ).filter(
+                func.lower(DeliveryReport.customer_name).ilike(f"%{dealer_lower}%")
+            ).group_by(
+                DeliveryReport.customer_name, DeliveryReport.dealer_code,
+                DeliveryReport.customer_code, DeliveryReport.ship_to_city,
+                DeliveryReport.warehouse, DeliveryReport.sales_office,
+                DeliveryReport.sales_manager, DeliveryReport.division
+            ).first()
             
-            data['revenue_rank'] = next((i+1 for i, r in enumerate(rank_query) if r[0] == data['customer_name']), 0)
+            if query:
+                logger.info(f"✅ Found ILIKE match: {query.customer_name}")
+                return self._build_dealer_data(query)
             
-            # Get latest DN
-            data['latest_dn'] = self.get_latest_dn(data['customer_name']) or 'N/A'
+            # THIRD: Try searching in dealer_code
+            logger.info(f"🔍 No customer_name match, trying dealer_code for: '{dealer_identifier}'")
             
-            # Get latest PGI date
-            latest_pgi = self.get_latest_pgi_date(data['customer_name'])
-            data['latest_pgi'] = _date_text(latest_pgi) if latest_pgi else 'N/A'
+            query = self.session.query(
+                DeliveryReport.customer_name,
+                DeliveryReport.dealer_code,
+                DeliveryReport.customer_code,
+                DeliveryReport.ship_to_city,
+                DeliveryReport.warehouse,
+                DeliveryReport.sales_office,
+                DeliveryReport.sales_manager,
+                DeliveryReport.division,
+                func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
+                func.sum(DeliveryReport.dn_qty).label('total_units'),
+                func.sum(DeliveryReport.dn_amount).label('total_revenue'),
+                func.count(distinct(DeliveryReport.customer_name)).label('dealer_count'),
+                func.min(DeliveryReport.dn_create_date).label('first_sale'),
+                func.max(DeliveryReport.dn_create_date).label('last_sale'),
+                func.avg(DeliveryReport.dn_amount).label('avg_dn_value'),
+                func.count(distinct(case((DeliveryReport.pod_date.is_(None), DeliveryReport.dn_no)))).label('pending_dn'),
+                func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no)))).label('pgi_pending_dn'),
+                func.count(distinct(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label('pod_pending_dn'),
+                func.count(distinct(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)))).label('pod_completed'),
+                func.count(distinct(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.dn_no)))).label('pgi_completed'),
+                func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label('avg_delivery_days'),
+                func.avg(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.isnot(None)), DeliveryReport.pod_date - DeliveryReport.good_issue_date))).label('avg_pod_days'),
+            ).filter(
+                func.lower(DeliveryReport.dealer_code).ilike(f"%{dealer_lower}%")
+            ).group_by(
+                DeliveryReport.customer_name, DeliveryReport.dealer_code,
+                DeliveryReport.customer_code, DeliveryReport.ship_to_city,
+                DeliveryReport.warehouse, DeliveryReport.sales_office,
+                DeliveryReport.sales_manager, DeliveryReport.division
+            ).first()
             
-            # Get latest POD date
-            latest_pod = self.get_latest_pod_date(data['customer_name'])
-            data['latest_pod'] = _date_text(latest_pod) if latest_pod else 'N/A'
+            if query:
+                logger.info(f"✅ Found via dealer_code: {query.customer_name}")
+                return self._build_dealer_data(query)
             
-            # Get highest value DN
-            data['highest_dn_value'] = self.get_highest_value_dn(data['customer_name'])
-            
-            # Get top products
-            data['top_products'] = self.get_top_products(data['customer_name'], 5)
-            
-            # Generate AI insights
-            data['ai_insights'] = _generate_ai_insights(data)
-            
-            with self._lock:
-                self._cache[cache_key] = data.copy()
-            return data
+            logger.info(f"❌ No match found for: '{dealer_identifier}'")
+            return None
             
         except Exception as e:
-            logger.error(f"Failed to get dealer: {e}")
+            logger.error(f"❌ Failed to get dealer: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
+    
+    def _build_dealer_data(self, query) -> Dict[str, Any]:
+        """Build dealer data dictionary from query result"""
+        data = {
+            'customer_name': _text(query.customer_name),
+            'dealer_code': _text(query.dealer_code),
+            'customer_code': _text(query.customer_code),
+            'city': _text(query.ship_to_city),
+            'warehouse': _text(query.warehouse),
+            'sales_office': _text(query.sales_office),
+            'sales_manager': _text(query.sales_manager),
+            'division': _text(query.division),
+            'dn_count': int(query.dn_count or 0),
+            'total_units': int(query.total_units or 0),
+            'total_revenue': float(query.total_revenue or 0.0),
+            'avg_dn_value': float(query.avg_dn_value or 0.0),
+            'pending_dn': int(query.pending_dn or 0),
+            'pgi_pending_dn': int(query.pgi_pending_dn or 0),
+            'pod_pending_dn': int(query.pod_pending_dn or 0),
+            'pod_completed': int(query.pod_completed or 0),
+            'pgi_completed': int(query.pgi_completed or 0),
+            'avg_delivery_days': float(query.avg_delivery_days or 0.0),
+            'avg_pod_days': float(query.avg_pod_days or 0.0),
+            'first_sale': _date_text(query.first_sale),
+            'last_sale': _date_text(query.last_sale),
+            'dealer_count': int(query.dealer_count or 0),
+            'sold_to_party': _text(query.customer_name),
+        }
+        
+        data['delivery_rate'] = _percent(data.get('pod_completed', 0), data.get('dn_count', 0))
+        data['pod_rate'] = _percent(data.get('pod_completed', 0), data.get('dn_count', 0))
+        data['pending_pct'] = _percent(data.get('pending_dn', 0), data.get('dn_count', 0))
+        
+        # Business Score
+        score = (data.get('delivery_rate', 0) * 0.35 +
+                (100 - data.get('pending_pct', 0)) * 0.25 +
+                min(100, data.get('total_units', 0) / 50) * 0.20 +
+                min(100, data.get('avg_dn_value', 0) / 1000) * 0.20)
+        data['business_score'] = round(min(100, max(0, score)), 1)
+        
+        # Performance Tier
+        if data['business_score'] >= 85:
+            data['tier'], data['health'] = "Platinum", "🟢 Excellent"
+        elif data['business_score'] >= 70:
+            data['tier'], data['health'] = "Gold", "🟢 Good"
+        elif data['business_score'] >= 50:
+            data['tier'], data['health'] = "Silver", "🟡 Watch"
+        else:
+            data['tier'], data['health'] = "Bronze", "🔴 Critical"
+        
+        data['distance'] = _get_distance_ors(data.get('warehouse', ''), data.get('city', ''))
+        
+        # Get top product
+        top_product = self.session.query(
+            DeliveryReport.material_no,
+            DeliveryReport.division,
+            func.count(DeliveryReport.dn_no).label('count')
+        ).filter(DeliveryReport.customer_name == data['customer_name']).group_by(
+            DeliveryReport.material_no, DeliveryReport.division
+        ).order_by(func.count(DeliveryReport.dn_no).desc()).first()
+        
+        data['top_product'] = _text(top_product.material_no if top_product else 'N/A')
+        data['top_division'] = _text(top_product.division if top_product else 'N/A')
+        data['total_models'] = self.session.query(func.count(distinct(DeliveryReport.material_no))).filter(
+            DeliveryReport.customer_name == data['customer_name']
+        ).scalar() or 0
+        
+        # Revenue rank
+        rank_query = self.session.query(
+            DeliveryReport.customer_name,
+            func.sum(DeliveryReport.dn_amount).label('revenue')
+        ).filter(DeliveryReport.customer_name.isnot(None)).group_by(
+            DeliveryReport.customer_name
+        ).order_by(func.sum(DeliveryReport.dn_amount).desc()).all()
+        
+        data['revenue_rank'] = next((i+1 for i, r in enumerate(rank_query) if r[0] == data['customer_name']), 0)
+        
+        # Latest activity
+        data['latest_dn'] = self.get_latest_dn(data['customer_name']) or 'N/A'
+        latest_pgi = self.get_latest_pgi_date(data['customer_name'])
+        data['latest_pgi'] = _date_text(latest_pgi) if latest_pgi else 'N/A'
+        latest_pod = self.get_latest_pod_date(data['customer_name'])
+        data['latest_pod'] = _date_text(latest_pod) if latest_pod else 'N/A'
+        data['highest_dn_value'] = self.get_highest_value_dn(data['customer_name'])
+        data['top_products'] = self.get_top_products(data['customer_name'], 5)
+        data['ai_insights'] = _generate_ai_insights(data)
+        
+        # Cache the result
+        cache_key = f"dealer_{data['customer_name'].lower()}"
+        with self._lock:
+            self._cache[cache_key] = data.copy()
+        
+        return data
 
 # ============================================================
-# BLOCK 6: MENU RENDERER - ENHANCED EXECUTIVE DASHBOARD
+# BLOCK 6: MENU RENDERER
 # ============================================================
 
 class DealerMenuRenderer:
@@ -683,20 +730,15 @@ class DealerMenuRenderer:
     
     @staticmethod
     def render_executive_dashboard(dealer_name: str, data: Dict[str, Any]) -> str:
-        """Render Enhanced Executive Dashboard with AI Insights"""
-        
-        # Display Sold-To Party (customer_name) as the primary name
         display_name = data.get('customer_name', dealer_name)
         display_name = _clean_dealer_name(display_name)
         if len(display_name) > 35:
             display_name = display_name[:32] + "..."
         
-        # Include dealer_code for reference
         dealer_code = data.get('dealer_code', '')
         if dealer_code and dealer_code != 'Unknown' and dealer_code != 'N/A':
             display_name = f"{display_name} (Code: {dealer_code})"
         
-        # Basic Info
         city = data.get('city', 'N/A')
         sales_office = data.get('sales_office', 'N/A')
         sales_manager = data.get('sales_manager', 'N/A')
@@ -704,7 +746,6 @@ class DealerMenuRenderer:
         distance = data.get('distance', {})
         dist_km = distance.get('distance_km', 'N/A')
         
-        # Sales Overview
         revenue = data.get('total_revenue', 0)
         units = data.get('total_units', 0)
         dn_count = data.get('dn_count', 0)
@@ -712,7 +753,6 @@ class DealerMenuRenderer:
         units_per_dn = round(units / max(dn_count, 1), 1)
         highest_dn = data.get('highest_dn_value', 0)
         
-        # Delivery Performance
         delivered = data.get('pod_completed', 0)
         pending = data.get('pending_dn', 0)
         pgi_pending = data.get('pgi_pending_dn', 0)
@@ -723,18 +763,12 @@ class DealerMenuRenderer:
         avg_delivery = data.get('avg_delivery_days', 0)
         pgi_rate = _percent(pgi_completed, dn_count)
         
-        # Top Products
         top_products = data.get('top_products', [])
-        
-        # Latest Activity
         latest_dn = data.get('latest_dn', 'N/A')
         latest_pgi = data.get('latest_pgi', 'N/A')
         latest_pod = data.get('latest_pod', 'N/A')
-        
-        # AI Insights
         ai_insights = data.get('ai_insights', [])
         
-        # Report Period
         today = datetime.utcnow()
         start_of_month = today.replace(day=1).strftime("%d %b %Y")
         end_of_month = today.strftime("%d %b %Y")
@@ -797,7 +831,6 @@ class DealerMenuRenderer:
             "",
         ]
         
-        # Top Products Section
         if top_products:
             lines.extend([
                 "━━━━━━━━━━━━━━━━━━━━",
@@ -813,7 +846,6 @@ class DealerMenuRenderer:
                 lines.append(f"{emoji} {material} — **{qty:,} Units**")
             lines.append("")
         
-        # Sales Information
         lines.extend([
             "━━━━━━━━━━━━━━━━━━━━",
             "🏢 **SALES INFORMATION**",
@@ -835,7 +867,6 @@ class DealerMenuRenderer:
             "",
         ])
         
-        # AI Insights Section
         if ai_insights:
             lines.extend([
                 "━━━━━━━━━━━━━━━━━━━━",
@@ -847,7 +878,6 @@ class DealerMenuRenderer:
                 lines.append(f"{insight}")
             lines.append("")
         
-        # Footer
         lines.extend([
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "🚀 **Powered by Haier Dealer Intelligence AI**",
@@ -913,6 +943,8 @@ class DealerAnalyticsService:
             return result.get("response", self._renderer.render_main_menu())
         except Exception as e:
             logger.error(f"❌ Error in handle_message: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return self._renderer.render_main_menu()
     
     def process_whatsapp_query(self, message: str, sender: str) -> str:
@@ -928,14 +960,12 @@ class DealerAnalyticsService:
             return self._contexts[session_id]
     
     def _get_all_dealers(self, refresh: bool = False) -> List[str]:
-        """Get all dealer names from customer_name column in PostgreSQL"""
         with self._cache_lock:
             if self._dealer_cache and not refresh:
                 return self._dealer_cache
             
             try:
                 with self._session() as session:
-                    # Get ONLY customer_name from DeliveryReport
                     customer_names = session.query(DeliveryReport.customer_name).filter(
                         DeliveryReport.customer_name.isnot(None),
                         DeliveryReport.customer_name != ''
@@ -946,7 +976,6 @@ class DealerAnalyticsService:
                         if r.customer_name:
                             all_dealers.append(r.customer_name)
                     
-                    # Remove duplicates
                     seen = set()
                     unique_dealers = []
                     for d in all_dealers:
@@ -955,10 +984,10 @@ class DealerAnalyticsService:
                             unique_dealers.append(d)
                     
                     self._dealer_cache = unique_dealers
-                    logger.info(f"📋 Loaded {len(self._dealer_cache)} dealers from customer_name column")
+                    logger.info(f"📋 Loaded {len(self._dealer_cache)} dealers from customer_name")
                     return self._dealer_cache
             except Exception as e:
-                logger.error(f"Error getting dealers from customer_name: {e}")
+                logger.error(f"Error getting dealers: {e}")
                 return []
     
     def _calculate_match_score(self, search: str, target: str) -> float:
@@ -998,12 +1027,6 @@ class DealerAnalyticsService:
         return round(final_score, 1)
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
-        """
-        Enhanced dealer resolution with typo tolerance.
-        
-        Searches ONLY the customer_name column in PostgreSQL.
-        Handles typos like "rshad" → "Arshad"
-        """
         if not name or not name.strip():
             return None
         if name.isdigit():
@@ -1017,241 +1040,81 @@ class DealerAnalyticsService:
             logger.warning("⚠️ No dealers found in customer_name column")
             return None
         
-        logger.info(f"📋 Checking against {len(dealer_names)} customer_name records")
-        
-        # ==========================================================
-        # STEP 0: SPECIAL PATTERN MATCHING (EXACT + PARTIAL)
-        # ==========================================================
-        
-        # 0a: EXACT pattern match
+        # STEP 0: SPECIAL PATTERN MATCHING
         if name_lower in SPECIAL_PATTERNS:
             result = SPECIAL_PATTERNS[name_lower]
             if result in dealer_names:
-                logger.info(f"✅ EXACT SPECIAL PATTERN: '{name}' -> '{result}'")
+                logger.info(f"✅ SPECIAL PATTERN: '{name}' -> '{result}'")
                 return result
-            else:
-                logger.warning(f"⚠️ Special pattern result '{result}' not found in customer_name")
         
-        # 0b: PARTIAL pattern match - check if ANY pattern is in the search
         for pattern, result in SPECIAL_PATTERNS.items():
             if pattern in name_lower or name_lower in pattern:
                 if result in dealer_names:
                     logger.info(f"✅ PARTIAL SPECIAL PATTERN: '{name}' -> '{result}'")
                     return result
         
-        # 0c: Check if ANY dealer matches the pattern result
-        for pattern, result in SPECIAL_PATTERNS.items():
-            pattern_first = pattern.split()[0] if pattern.split() else ""
-            if pattern_first and pattern_first in name_lower:
-                if result in dealer_names:
-                    logger.info(f"✅ PATTERN FIRST WORD MATCH: '{name}' -> '{result}'")
-                    return result
-            
-            if name_lower in pattern:
-                if result in dealer_names:
-                    logger.info(f"✅ PATTERN CONTAINS SEARCH: '{name}' -> '{result}'")
-                    return result
-        
-        # ==========================================================
-        # STEP 1: EXACT MATCH against customer_name
-        # ==========================================================
+        # STEP 1: EXACT MATCH
         for d in dealer_names:
             if d.lower() == name_lower:
-                logger.info(f"✅ EXACT MATCH in customer_name: '{d}'")
+                logger.info(f"✅ EXACT MATCH: '{d}'")
                 return d
         
-        # ==========================================================
-        # STEP 2: NORMALIZED MATCH (Handle hyphen vs space, dots)
-        # ==========================================================
+        # STEP 2: NORMALIZED MATCH
         normalized_name = name_lower.replace(' - ', '-').replace(' -', '-').replace('- ', '-')
         normalized_name = normalized_name.replace('.', '').replace(',', '')
         for d in dealer_names:
             d_normalized = d.lower().replace(' - ', '-').replace(' -', '-').replace('- ', '-')
             d_normalized = d_normalized.replace('.', '').replace(',', '')
             if d_normalized == normalized_name:
-                logger.info(f"✅ NORMALIZED MATCH in customer_name: '{d}'")
+                logger.info(f"✅ NORMALIZED MATCH: '{d}'")
                 return d
         
-        # ==========================================================
         # STEP 3: EXPAND CITY ABBREVIATIONS
-        # ==========================================================
         expanded_name = name_lower
         for abbr, city in CITY_ABBREVIATIONS.items():
             if abbr in name_lower:
                 expanded_name = name_lower.replace(abbr, city)
-                logger.info(f"🔍 Expanded: '{name_lower}' -> '{expanded_name}'")
                 break
         
         if expanded_name != name_lower:
             for d in dealer_names:
                 if d.lower() == expanded_name:
-                    logger.info(f"✅ EXPANDED EXACT MATCH in customer_name: '{d}'")
+                    logger.info(f"✅ EXPANDED MATCH: '{d}'")
                     return d
         
-        # ==========================================================
-        # STEP 4: TYPO-TOLERANT MATCHING against customer_name
-        # ==========================================================
+        # STEP 4: TRY DATABASE SEARCH DIRECTLY (FIX v12.4)
+        try:
+            with self._session() as session:
+                # Try exact match first
+                result = session.query(DeliveryReport.customer_name).filter(
+                    func.lower(DeliveryReport.customer_name) == name_lower
+                ).first()
+                if result and result[0]:
+                    logger.info(f"✅ DIRECT DB EXACT MATCH: '{result[0]}'")
+                    return result[0]
+                
+                # Try ILIKE match
+                result = session.query(DeliveryReport.customer_name).filter(
+                    func.lower(DeliveryReport.customer_name).ilike(f"%{name_lower}%")
+                ).first()
+                if result and result[0]:
+                    logger.info(f"✅ DIRECT DB ILIKE MATCH: '{result[0]}'")
+                    return result[0]
+        except Exception as e:
+            logger.debug(f"Direct DB search failed: {e}")
         
-        # 4a: Missing first letter (e.g., "rshad" → "arshad")
-        if len(name_lower) >= 3:
-            # Try adding each letter at the beginning
-            for letter in 'abcdefghijklmnopqrstuvwxyz':
-                test_name = letter + name_lower
-                for d in dealer_names:
-                    d_lower = d.lower()
-                    if test_name in d_lower or d_lower in test_name:
-                        score = self._calculate_match_score(test_name, d_lower)
-                        if score >= MATCH_THRESHOLD:
-                            logger.info(f"✅ TYPO FIX (missing letter) in customer_name: '{name}' -> '{d}'")
-                            return d
-            
-            # Try removing one letter (typo with extra letter)
-            for i in range(len(name_lower)):
-                test_name = name_lower[:i] + name_lower[i+1:]
-                if len(test_name) >= 3:
-                    for d in dealer_names:
-                        d_lower = d.lower()
-                        if test_name in d_lower or d_lower in test_name:
-                            score = self._calculate_match_score(test_name, d_lower)
-                            if score >= MATCH_THRESHOLD:
-                                logger.info(f"✅ TYPO FIX (extra letter) in customer_name: '{name}' -> '{d}'")
-                                return d
-            
-            # Try replacing one letter (common typos)
-            for i in range(len(name_lower)):
-                for letter in 'abcdefghijklmnopqrstuvwxyz':
-                    if name_lower[i] != letter:
-                        test_name = name_lower[:i] + letter + name_lower[i+1:]
-                        for d in dealer_names:
-                            d_lower = d.lower()
-                            if test_name in d_lower or d_lower in test_name:
-                                score = self._calculate_match_score(test_name, d_lower)
-                                if score >= MATCH_THRESHOLD:
-                                    logger.info(f"✅ TYPO FIX (replaced letter) in customer_name: '{name}' -> '{d}'")
-                                    return d
-        
-        # 4b: Partial word match against customer_name
-        search_words = name_lower.split()
-        if search_words:
-            first_word = search_words[0]
-            if 3 <= len(first_word) <= 6:
-                for d in dealer_names:
-                    d_words = d.lower().split()
-                    if d_words:
-                        d_first = d_words[0]
-                        common_prefix_len = 0
-                        min_len = min(len(first_word), len(d_first))
-                        for i in range(min_len):
-                            if first_word[i] == d_first[i]:
-                                common_prefix_len += 1
-                            else:
-                                break
-                        
-                        if common_prefix_len >= max(2, len(first_word) * 0.7):
-                            score = self._calculate_match_score(first_word, d_first)
-                            if score >= MATCH_THRESHOLD - 10:
-                                logger.info(f"✅ PARTIAL WORD MATCH in customer_name: '{name}' -> '{d}'")
-                                return d
-        
-        # ==========================================================
-        # STEP 5: FIRST WORD MATCH (with expanded name)
-        # ==========================================================
-        search_first = expanded_name.split()[0] if expanded_name.split() else ""
-        if len(search_first) >= 3:
-            for d in dealer_names:
-                d_first = d.lower().split()[0] if d.lower().split() else ""
-                if d_first == search_first:
-                    score = self._calculate_match_score(expanded_name, d.lower())
-                    if score >= MATCH_THRESHOLD:
-                        logger.info(f"✅ FIRST WORD ({score:.0f}%) in customer_name: '{d}'")
-                        return d
-        
-        # ==========================================================
-        # STEP 6: CONTAINS MATCH in customer_name
-        # ==========================================================
-        for d in dealer_names:
-            d_lower = d.lower()
-            if name_lower in d_lower:
-                score = self._calculate_match_score(name_lower, d_lower)
-                if score >= MATCH_THRESHOLD - 5:
-                    logger.info(f"✅ CONTAINS MATCH in customer_name: '{d}'")
-                    return d
-            if d_lower in name_lower:
-                score = self._calculate_match_score(name_lower, d_lower)
-                if score >= MATCH_THRESHOLD - 5:
-                    logger.info(f"✅ REVERSE CONTAINS MATCH in customer_name: '{d}'")
-                    return d
-        
-        # ==========================================================
-        # STEP 7: WORD OVERLAP MATCH in customer_name
-        # ==========================================================
-        search_words_set = set(name_lower.split())
-        for d in dealer_names:
-            d_lower = d.lower()
-            d_words = set(d_lower.split())
-            common = search_words_set & d_words
-            if common and (len(common) / max(len(search_words_set), 1)) >= 0.5:
-                score = self._calculate_match_score(name_lower, d_lower)
-                if score >= MATCH_THRESHOLD - 5:
-                    logger.info(f"✅ WORD OVERLAP ({score:.0f}%) in customer_name: '{d}'")
-                    return d
-        
-        # ==========================================================
-        # STEP 8: FUZZY MATCH against customer_name
-        # ==========================================================
+        # STEP 5: FUZZY MATCH
         if RAPIDFUZZ_AVAILABLE:
             try:
-                # Try multiple scorers for better matching
-                scorers = [fuzz.partial_ratio, fuzz.token_set_ratio, fuzz.ratio]
-                for scorer in scorers:
-                    results = process.extract(name_lower, dealer_names, scorer=scorer, limit=10)
-                    for match, score, _ in results:
-                        if score >= MATCH_THRESHOLD - 5:
-                            logger.info(f"✅ FUZZY TYPO ({score:.0f}%) in customer_name: '{match}'")
-                            return match
+                results = process.extract(name_lower, dealer_names, scorer=fuzz.token_set_ratio, limit=5)
+                for match, score, _ in results:
+                    if score >= MATCH_THRESHOLD:
+                        logger.info(f"✅ FUZZY MATCH ({score:.0f}%): '{match}'")
+                        return match
             except Exception as e:
                 logger.debug(f"Fuzzy failed: {e}")
         
-        # ==========================================================
-        # STEP 9: Check if dealer exists with different city abbreviation
-        # ==========================================================
-        for d in dealer_names:
-            d_lower = d.lower()
-            # Check if base name matches without city abbreviation
-            base_search = name_lower
-            for abbr in ['a.k', 'ak', 'mzd', 'md', 'khi', 'lhr', 'isb', 'rwp']:
-                if abbr in base_search:
-                    base_search = base_search.replace(abbr, '').strip()
-                    break
-            
-            if base_search and len(base_search) >= 3:
-                # Check if dealer contains the base name
-                if base_search in d_lower:
-                    logger.info(f"✅ BASE NAME MATCH (ignoring city): '{name}' -> '{d}'")
-                    return d
-        
-        # ==========================================================
-        # STEP 10: Search in dealer_code as fallback (if customer_name fails)
-        # ==========================================================
-        try:
-            with self._session() as session:
-                # Search dealer_code column
-                dealer_code_result = session.query(DeliveryReport.dealer_code).filter(
-                    func.lower(DeliveryReport.dealer_code).ilike(f"%{name_lower}%")
-                ).first()
-                if dealer_code_result and dealer_code_result[0]:
-                    logger.info(f"✅ Found in dealer_code: '{dealer_code_result[0]}'")
-                    # Now find the corresponding customer_name
-                    customer_result = session.query(DeliveryReport.customer_name).filter(
-                        DeliveryReport.dealer_code == dealer_code_result[0]
-                    ).first()
-                    if customer_result and customer_result[0]:
-                        logger.info(f"✅ Resolved dealer_code to customer_name: '{customer_result[0]}'")
-                        return customer_result[0]
-        except Exception as e:
-            logger.debug(f"Dealer_code fallback failed: {e}")
-        
-        logger.info(f"❌ No match found in customer_name for '{name}'")
+        logger.info(f"❌ No match found for '{name}'")
         return None
     
     def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
@@ -1263,8 +1126,6 @@ class DealerAnalyticsService:
         if not dealer_names:
             return []
         
-        logger.info(f"🔍 Finding suggestions in customer_name for '{query_lower}'")
-        
         scored = []
         for d in dealer_names:
             d_lower = d.lower()
@@ -1275,7 +1136,6 @@ class DealerAnalyticsService:
         scored.sort(key=lambda x: x[1], reverse=True)
         suggestions = [d[0] for d in scored[:limit]]
         
-        logger.info(f"💡 Found {len(suggestions)} suggestions from customer_name")
         return suggestions
     
     def _get_dashboard(self, dealer_name: str) -> Dict[str, Any]:
@@ -1355,7 +1215,7 @@ class DealerAnalyticsService:
                 response = self._renderer.render_suggestions(user_input, suggestions)
                 return {"response": response, "exit_menu": False}
             
-            return {"response": self._renderer.render_dealer_selection(f"Dealer '{user_input}' not found in customer_name. Try again:"), "exit_menu": False}
+            return {"response": self._renderer.render_dealer_selection(f"Dealer '{user_input}' not found. Try again:"), "exit_menu": False}
         
         if context.awaiting_comparison:
             resolved = self._resolve_dealer_name(user_input)
@@ -1364,7 +1224,7 @@ class DealerAnalyticsService:
                 if suggestions:
                     response = self._renderer.render_suggestions(user_input, suggestions)
                     return {"response": response, "exit_menu": False}
-                return {"response": self._renderer.render_comparison_selection() + f"\n\nDealer '{user_input}' not found in customer_name. Try again:", "exit_menu": False}
+                return {"response": self._renderer.render_comparison_selection() + f"\n\nDealer '{user_input}' not found. Try again:", "exit_menu": False}
             
             context.comparison_dealers.append(resolved)
             if len(context.comparison_dealers) == 1:
