@@ -418,30 +418,40 @@ class DealerRepository:
     def get_dealer_by_name(self, dealer_identifier: str) -> Optional[Dict[str, Any]]:
         """
         Get dealer data using direct PostgreSQL connection.
+        FIXED: Using TRIM() and consistent normalization.
         """
         from app.database import engine
         
+        if not dealer_identifier:
+            logger.warning("[Repository] Empty dealer identifier provided")
+            return None
+        
+        # Normalize the dealer name consistently
         dealer_clean = dealer_identifier.strip()
-        dealer_lower = dealer_clean.lower().strip()
+        dealer_normalized = " ".join(dealer_clean.lower().split())
         
         logger.info("=" * 80)
-        logger.info(f"🔍 get_dealer_by_name: '{dealer_identifier}'")
+        logger.info(f"[Repository] 🔍 get_dealer_by_name called")
+        logger.info(f"[Repository] Original: '{dealer_identifier}'")
+        logger.info(f"[Repository] Normalized: '{dealer_normalized}'")
         logger.info("=" * 80)
         
         try:
             with engine.connect() as conn:
-                # Query to get dealer data
+                logger.info("[Repository] Executing SQL query...")
+                
+                # Query to get dealer data with TRIM
                 result = conn.execute(
                     text("""
                         SELECT 
-                            customer_name,
-                            dealer_code,
-                            customer_code,
-                            MAX(ship_to_city) as ship_to_city,
-                            MAX(warehouse) as warehouse,
-                            MAX(sales_office) as sales_office,
-                            MAX(sales_manager) as sales_manager,
-                            MAX(division) as division,
+                            TRIM(customer_name) as customer_name,
+                            TRIM(dealer_code) as dealer_code,
+                            TRIM(customer_code) as customer_code,
+                            TRIM(MAX(ship_to_city)) as ship_to_city,
+                            TRIM(MAX(warehouse)) as warehouse,
+                            TRIM(MAX(sales_office)) as sales_office,
+                            TRIM(MAX(sales_manager)) as sales_manager,
+                            TRIM(MAX(division)) as division,
                             COUNT(DISTINCT dn_no) as dn_count,
                             SUM(dn_qty) as total_units,
                             SUM(dn_amount) as total_revenue,
@@ -456,23 +466,21 @@ class DealerRepository:
                             AVG(CASE WHEN good_issue_date IS NOT NULL THEN good_issue_date - dn_create_date END) as avg_delivery_days,
                             AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN pod_date - good_issue_date END) as avg_pod_days
                         FROM delivery_reports 
-                        WHERE LOWER(customer_name) = :name
+                        WHERE LOWER(TRIM(customer_name)) = LOWER(TRIM(:name))
                         GROUP BY customer_name, dealer_code, customer_code
                     """),
-                    {"name": dealer_lower}
+                    {"name": dealer_normalized}
                 ).first()
                 
                 if result:
-                    logger.info(f"✅ Found dealer: {result[0]}")
+                    logger.info(f"[Repository] ✅ Found dealer: {result[0]}")
                     return self._build_dealer_data(result)
                 
-                logger.warning(f"❌ No data found for: '{dealer_identifier}'")
+                logger.warning(f"[Repository] ❌ No data found for: '{dealer_identifier}'")
                 return None
                 
         except Exception as e:
-            logger.error(f"❌ Failed to get dealer: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.exception(f"[Repository] ❌ Failed to get dealer: {dealer_identifier}")
             return None
     
     def _build_dealer_data(self, row) -> Dict[str, Any]:
@@ -533,7 +541,7 @@ class DealerRepository:
                     text("""
                         SELECT material_no, division, COUNT(dn_no) as count
                         FROM delivery_reports 
-                        WHERE customer_name = :name
+                        WHERE LOWER(TRIM(customer_name)) = LOWER(TRIM(:name))
                         GROUP BY material_no, division
                         ORDER BY count DESC
                         LIMIT 1
@@ -555,7 +563,7 @@ class DealerRepository:
                     text("""
                         SELECT COUNT(DISTINCT material_no)
                         FROM delivery_reports 
-                        WHERE customer_name = :name
+                        WHERE LOWER(TRIM(customer_name)) = LOWER(TRIM(:name))
                     """),
                     {"name": data['customer_name']}
                 ).first()
@@ -568,10 +576,10 @@ class DealerRepository:
             with engine.connect() as conn:
                 rank_query = conn.execute(
                     text("""
-                        SELECT customer_name, SUM(dn_amount) as revenue
+                        SELECT TRIM(customer_name) as customer_name, SUM(dn_amount) as revenue
                         FROM delivery_reports 
                         WHERE customer_name IS NOT NULL
-                        GROUP BY customer_name
+                        GROUP BY TRIM(customer_name)
                         ORDER BY revenue DESC
                     """)
                 ).fetchall()
@@ -852,10 +860,7 @@ class DealerMenuRenderer:
         return "\n".join(lines)
 
 # ============================================================
-# BLOCK 7: MAIN DEALER ANALYTICS SERVICE - FIXED
-# ============================================================
-# ============================================================
-# BLOCK 7: MAIN DEALER ANALYTICS SERVICE - IMPROVED
+# BLOCK 7: MAIN DEALER ANALYTICS SERVICE
 # ============================================================
 
 class DealerAnalyticsService:
@@ -868,13 +873,6 @@ class DealerAnalyticsService:
         "13": "ai_insights", "14": "search"
     }
     
-    # Quick commands mapping
-    QUICK_COMMANDS = {
-        "top dealers": "ranking",
-        "ranking": "ranking",
-        "compare": "comparison"
-    }
-    
     def __init__(self) -> None:
         self._version = VERSION
         self._renderer = DealerMenuRenderer()
@@ -883,19 +881,18 @@ class DealerAnalyticsService:
         logger.info(f"✅ DealerAnalyticsService v{self._version} initialized")
         logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
         logger.info(f"   Match Threshold: {MATCH_THRESHOLD}%")
-        logger.info(f"   🔍 DIRECT POSTGRESQL CONNECTION - NO CACHE")
     
     def handle_message(self, message: str, sender: str) -> str:
         try:
-            logger.info("[Dealer Service] handle_message: '%s' from %s", message, sender)
+            logger.info("[Service] handle_message: '%s' from %s", message, sender)
             result = self.process_menu_input(sender, message)
             return result.get("response", self._renderer.render_main_menu())
         except Exception as e:
-            logger.exception("[Dealer Service] Error in handle_message")
+            logger.exception("[Service] Error in handle_message")
             return self._renderer.render_main_menu()
     
     def process_whatsapp_query(self, message: str, sender: str) -> str:
-        logger.info("[Dealer Service] process_whatsapp_query: '%s' from %s", message, sender)
+        logger.info("[Service] process_whatsapp_query: '%s' from %s", message, sender)
         return self.handle_message(message, sender)
     
     def get_main_menu(self) -> str:
@@ -913,30 +910,8 @@ class DealerAnalyticsService:
             return ""
         return " ".join(name.strip().lower().split())
     
-    def _get_all_dealers(self) -> List[str]:
-        try:
-            with engine.connect() as conn:
-                logger.info("[Dealer Service] Fetching all dealer names from PostgreSQL")
-                results = conn.execute(
-                    text("""
-                        SELECT DISTINCT customer_name 
-                        FROM delivery_reports 
-                        WHERE customer_name IS NOT NULL 
-                        AND customer_name != ''
-                        ORDER BY customer_name
-                    """)
-                ).fetchall()
-                
-                all_dealers = [r[0] for r in results if r[0]]
-                logger.info("[Dealer Service] Loaded %d dealers", len(all_dealers))
-                return all_dealers
-        except Exception as e:
-            logger.exception("[Dealer Service] Error getting dealers from PostgreSQL")
-            return []
-    
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
         """Resolve dealer name using direct database connection."""
-        import traceback
         from app.database import engine
         
         if not name or not name.strip():
@@ -945,92 +920,50 @@ class DealerAnalyticsService:
             return None
         
         # Normalize once
-        name_original = name.strip()
-        name_normalized = self._normalize_name(name_original)
+        name_normalized = self._normalize_name(name)
         
-        logger.info("[Dealer Search] Searching for: '%s' (normalized: '%s')", name_original, name_normalized)
+        logger.info("[Service] Searching for: '%s'", name_normalized)
         
         try:
             with engine.connect() as conn:
-                logger.info("[Dealer Search] Database connection established")
-                
-                # STEP 1: Exact match
-                logger.info("[Dealer Search] STEP 1: Exact match...")
+                # STEP 1: Exact match with TRIM
+                logger.info("[Service] STEP 1: Exact match...")
                 result = conn.execute(
                     text("""
-                        SELECT customer_name 
+                        SELECT TRIM(customer_name) as customer_name
                         FROM delivery_reports 
-                        WHERE LOWER(customer_name) = :name
+                        WHERE LOWER(TRIM(customer_name)) = LOWER(TRIM(:name))
                         LIMIT 1
                     """),
                     {"name": name_normalized}
                 ).first()
                 
                 if result:
-                    logger.info("[Dealer Search] ✅ FOUND (exact): '%s'", result[0])
+                    logger.info("[Service] ✅ FOUND (exact): '%s'", result[0])
                     return result[0]
                 
-                # STEP 2: ILIKE
-                logger.info("[Dealer Search] STEP 2: ILIKE match...")
+                # STEP 2: ILIKE with TRIM
+                logger.info("[Service] STEP 2: ILIKE match...")
                 result = conn.execute(
                     text("""
-                        SELECT customer_name 
+                        SELECT TRIM(customer_name) as customer_name
                         FROM delivery_reports 
-                        WHERE customer_name ILIKE :name
+                        WHERE TRIM(customer_name) ILIKE TRIM(:name)
                         LIMIT 1
                     """),
-                    {"name": f"%{name_original}%"}
+                    {"name": f"%{name}%"}
                 ).first()
                 
                 if result:
-                    logger.info("[Dealer Search] ✅ FOUND (ILIKE): '%s'", result[0])
+                    logger.info("[Service] ✅ FOUND (ILIKE): '%s'", result[0])
                     return result[0]
                 
-                # STEP 3: dealer_code
-                logger.info("[Dealer Search] STEP 3: dealer_code match...")
-                result = conn.execute(
-                    text("""
-                        SELECT customer_name 
-                        FROM delivery_reports 
-                        WHERE dealer_code ILIKE :name
-                        LIMIT 1
-                    """),
-                    {"name": f"%{name_original}%"}
-                ).first()
-                
-                if result:
-                    logger.info("[Dealer Search] ✅ FOUND (dealer_code): '%s'", result[0])
-                    return result[0]
-                
-                logger.info("[Dealer Search] ❌ '%s' NOT found in any search", name_original)
+                logger.info("[Service] ❌ No match found for: '%s'", name_normalized)
                 
         except Exception as e:
-            logger.exception("[Dealer Search] Database error")
+            logger.exception("[Service] Error resolving dealer name: %s", name_normalized)
         
         return None
-    
-    def _show_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-        """Helper method to show dealer dashboard."""
-        logger.info("[Dashboard] Request for: '%s'", dealer_name)
-        
-        try:
-            with self._session() as session:
-                repo = DealerRepository(session)
-                data = repo.get_dealer_by_name(dealer_name)
-                
-                if data:
-                    logger.info("[Dashboard] ✅ Data found for: '%s'", dealer_name)
-                    return {
-                        "response": self._renderer.render_executive_dashboard(dealer_name, data),
-                        "data": data
-                    }
-                else:
-                    logger.warning("[Dashboard] ❌ No data found for: '%s'", dealer_name)
-                    return {"response": None, "data": None}
-                    
-        except Exception as e:
-            logger.exception("[Dashboard] Failed to build dashboard for: %s", dealer_name)
-            return {"response": None, "data": None}
     
     def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
         """Get dealer name suggestions based on query."""
@@ -1038,65 +971,65 @@ class DealerAnalyticsService:
             return []
         
         query_normalized = self._normalize_name(query)
-        dealer_names = self._get_all_dealers()
         
-        if not dealer_names:
+        try:
+            with engine.connect() as conn:
+                results = conn.execute(
+                    text("""
+                        SELECT DISTINCT TRIM(customer_name) as customer_name
+                        FROM delivery_reports 
+                        WHERE LOWER(TRIM(customer_name)) LIKE LOWER(TRIM(:pattern))
+                        ORDER BY customer_name
+                        LIMIT :limit
+                    """),
+                    {"pattern": f"%{query_normalized}%", "limit": limit}
+                ).fetchall()
+                
+                suggestions = [r[0] for r in results if r[0]]
+                logger.info("[Service] Found %d suggestions for: '%s'", len(suggestions), query)
+                return suggestions
+                
+        except Exception as e:
+            logger.exception("[Service] Error getting suggestions for: %s", query)
             return []
-        
-        scored = []
-        for d in dealer_names:
-            d_normalized = self._normalize_name(d)
-            score = self._calculate_match_score(query_normalized, d_normalized)
-            if score >= SUGGESTION_THRESHOLD:
-                scored.append((d, score))
-        
-        scored.sort(key=lambda x: x[1], reverse=True)
-        suggestions = [d[0] for d in scored[:limit]]
-        
-        return suggestions
     
-    def _calculate_match_score(self, search: str, target: str) -> float:
-        """Calculate match score between search and target strings."""
-        if not search or not target:
-            return 0.0
+    def _show_dashboard(self, dealer_name: str) -> Dict[str, Any]:
+        """Show dealer dashboard - uses repository as single source of truth."""
+        logger.info("[Service] Dashboard request for: '%s'", dealer_name)
         
-        search = search.lower().strip()
-        target = target.lower().strip()
-        
-        if search == target:
-            return 100.0
-        
-        search_words = set(search.split())
-        target_words = set(target.split())
-        
-        if not search_words or not target_words:
-            return 0.0
-        
-        common = search_words & target_words
-        word_score = (len(common) / max(len(search_words), 1)) * 100
-        
-        s_first = search.split()[0] if search.split() else ""
-        t_first = target.split()[0] if target.split() else ""
-        bonus = 20 if s_first and t_first and s_first == t_first else 0
-        
-        if search in target or target in search:
-            bonus += 15
-        
-        for sw in search_words:
-            if len(sw) >= 3:
-                for tw in target_words:
-                    if len(tw) >= 3 and (sw in tw or tw in sw):
-                        bonus += 5
-        
-        for abbr, city in CITY_ABBREVIATIONS.items():
-            if abbr in search and city in target:
-                bonus += 10
-        
-        final_score = min(100, word_score + bonus)
-        return round(final_score, 1)
+        try:
+            with self._session() as session:
+                repo = DealerRepository(session)
+                data = repo.get_dealer_by_name(dealer_name)
+                
+                if data:
+                    logger.info("[Service] ✅ Dashboard data found for: '%s'", dealer_name)
+                    return {
+                        "response": self._renderer.render_executive_dashboard(dealer_name, data),
+                        "data": data
+                    }
+                else:
+                    logger.warning("[Service] ❌ No dashboard data for: '%s'", dealer_name)
+                    suggestions = self._get_suggestions(dealer_name)
+                    if suggestions:
+                        return {
+                            "response": self._renderer.render_suggestions(dealer_name, suggestions),
+                            "data": None
+                        }
+                    return {
+                        "response": f"⚠️ No data found for: {dealer_name}\n\n0. Main Menu\n99. Back",
+                        "data": None
+                    }
+                    
+        except Exception as e:
+            logger.exception("[Service] Error building dashboard for: %s", dealer_name)
+            return {
+                "response": f"⚠️ Error loading dashboard: {str(e)}\n\n0. Main Menu\n99. Back",
+                "data": None
+            }
     
     def _handle_ranking(self) -> Dict[str, Any]:
-        """Handle dealer ranking request."""
+        """Handle dealer ranking."""
         try:
             with self._session() as session:
                 repo = DealerRepository(session)
@@ -1105,11 +1038,11 @@ class DealerAnalyticsService:
                     return {"response": "📋 No data available.\n\n0. Main Menu\n99. Back"}
                 return {"response": self._renderer.render_ranking(ranking, "revenue", 10)}
         except Exception as e:
-            logger.exception("[Ranking] Failed to get ranking")
+            logger.exception("[Service] Error in ranking")
             return {"response": f"⚠️ Error: {str(e)}\n\n0. Main Menu\n99. Back"}
     
     def _compare_dealers(self, d1: str, d2: str) -> Dict[str, Any]:
-        """Handle dealer comparison request."""
+        """Handle dealer comparison."""
         try:
             with self._session() as session:
                 repo = DealerRepository(session)
@@ -1117,7 +1050,7 @@ class DealerAnalyticsService:
                 data2 = repo.get_dealer_by_name(d2)
                 
                 if not data1 or not data2:
-                    logger.warning("[Comparison] Could not find data for one or both dealers: %s, %s", d1, d2)
+                    logger.warning("[Service] Missing data for comparison: %s, %s", d1, d2)
                     return {"response": "⚠️ Could not find data for one or both dealers.\n\n0. Main Menu\n99. Back"}
                 
                 metrics = {}
@@ -1138,7 +1071,7 @@ class DealerAnalyticsService:
                 return {"response": self._renderer.render_comparison_result(d1, d2, metrics)}
                 
         except Exception as e:
-            logger.exception("[Comparison] Failed to compare dealers")
+            logger.exception("[Service] Error in comparison")
             return {"response": f"⚠️ Error: {str(e)}\n\n0. Main Menu\n99. Back"}
     
     def _handle_menu_selection(self, context: DealerContext, option: str) -> Optional[Dict[str, Any]]:
@@ -1147,11 +1080,9 @@ class DealerAnalyticsService:
         
         if action == "ranking":
             return self._handle_ranking()
-            
         elif action == "comparison":
             context.awaiting_comparison = True
             return {"response": self._renderer.render_comparison_selection(), "exit_menu": False}
-            
         elif action:
             context.awaiting_dealer = True
             context.selected_option = action
@@ -1160,96 +1091,75 @@ class DealerAnalyticsService:
         
         return None
     
-    def _handle_dealer_search(self, context: DealerContext, user_input: str) -> Optional[Dict[str, Any]]:
-        """Handle dealer search and dashboard display."""
-        dealer = self._resolve_dealer_name(user_input)
-        
-        if dealer:
-            context.current_dealer = dealer
-            result = self._show_dashboard(dealer)
-            if result.get("response"):
-                return {"response": result["response"], "exit_menu": False}
-            
-            # No data found, offer suggestions
-            suggestions = self._get_suggestions(user_input)
-            if suggestions:
-                return {"response": self._renderer.render_suggestions(user_input, suggestions), "exit_menu": False}
-            
-            return {"response": f"⚠️ No data found for: {dealer}\n\n0. Main Menu\n99. Back", "exit_menu": False}
-        
-        return None
-    
     def _handle_quick_commands(self, user_input: str) -> Optional[Dict[str, Any]]:
-        """Handle quick command phrases."""
+        """Handle quick commands like 'compare' and 'ranking'."""
         user_lower = user_input.lower()
         
-        # Check for comparison command
-        if "compare" in user_lower or "vs" in user_lower:
-            # Extract dealer names from "Compare X and Y" or "X vs Y"
-            parts = re.split(r'\s+(?:compare|vs|and)\s+', user_lower, flags=re.IGNORECASE)
-            if len(parts) >= 2:
-                d1 = parts[0].strip()
-                d2 = parts[1].strip()
-                if d1 and d2:
-                    return self._compare_dealers(d1, d2)
+        # Handle comparison
+        if "compare" in user_lower or " vs " in user_lower:
+            # Extract dealer names - strip "compare" first
+            cleaned = user_lower
+            if cleaned.startswith("compare "):
+                cleaned = cleaned[8:].strip()
+            
+            for separator in [" and ", " vs "]:
+                if separator in cleaned:
+                    parts = cleaned.split(separator)
+                    if len(parts) >= 2:
+                        d1 = parts[0].strip()
+                        d2 = parts[1].strip()
+                        if d1 and d2:
+                            logger.info("[Service] Quick compare: '%s' vs '%s'", d1, d2)
+                            return self._compare_dealers(d1, d2)
         
-        # Check for ranking command
-        for cmd, action in self.QUICK_COMMANDS.items():
-            if cmd in user_lower:
-                if action == "ranking":
-                    return self._handle_ranking()
-                elif action == "comparison":
-                    return None  # Already handled above
+        # Handle ranking
+        if "top dealers" in user_lower or "ranking" in user_lower:
+            return self._handle_ranking()
         
         return None
     
     def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
-        """Process menu input from user."""
+        """Process menu input - pure coordinator."""
         context = self._get_context(session_id)
         user_input = user_input.strip()
         
-        logger.info("[Menu Input] Processing: '%s' from session: %s", user_input, session_id)
+        logger.info("[Service] Processing: '%s' from %s", user_input, session_id)
         
-        # Handle navigation commands
+        # Handle navigation
         if user_input in ["0", "99"]:
             context.clear()
             return {"response": self._renderer.render_main_menu(), "exit_menu": True}
         
-        # Handle awaiting dealer state
+        # Handle awaiting dealer
         if context.awaiting_dealer:
-            logger.info("[Menu Input] Awaiting dealer: '%s'", user_input)
-            result = self._handle_dealer_search(context, user_input)
-            if result:
-                return result
+            dealer = self._resolve_dealer_name(user_input)
+            if dealer:
+                context.current_dealer = dealer
+                context.awaiting_dealer = False
+                return self._show_dashboard(dealer)
             
-            # Dealer not found, show suggestions
             suggestions = self._get_suggestions(user_input)
             if suggestions:
-                response = self._renderer.render_suggestions(user_input, suggestions)
-                return {"response": response, "exit_menu": False}
+                return {"response": self._renderer.render_suggestions(user_input, suggestions), "exit_menu": False}
             
             return {"response": self._renderer.render_dealer_selection(f"Dealer '{user_input}' not found. Try again:"), "exit_menu": False}
         
-        # Handle awaiting comparison state
+        # Handle awaiting comparison
         if context.awaiting_comparison:
-            logger.info("[Menu Input] Awaiting comparison: '%s'", user_input)
             dealer = self._resolve_dealer_name(user_input)
-            
             if not dealer:
                 return {"response": self._renderer.render_comparison_selection() + f"\n\nDealer '{user_input}' not found. Try again:", "exit_menu": False}
             
             context.comparison_dealers.append(dealer)
-            
             if len(context.comparison_dealers) == 1:
                 return {"response": "Enter second dealer name:", "exit_menu": False}
             else:
                 d1, d2 = context.comparison_dealers
                 context.awaiting_comparison = False
                 context.comparison_dealers = []
-                result = self._compare_dealers(d1, d2)
-                return {"response": result["response"], "exit_menu": False}
+                return self._compare_dealers(d1, d2)
         
-        # Handle numeric menu selection
+        # Handle numeric menu
         if user_input.isdigit() and 1 <= int(user_input) <= 14:
             result = self._handle_menu_selection(context, user_input)
             if result:
@@ -1262,51 +1172,22 @@ class DealerAnalyticsService:
         
         # Handle dealer search
         if user_input:
-            result = self._handle_dealer_search(context, user_input)
-            if result:
-                return result
+            dealer = self._resolve_dealer_name(user_input)
+            if dealer:
+                context.current_dealer = dealer
+                return self._show_dashboard(dealer)
             
-            # Dealer not found, show suggestions
             suggestions = self._get_suggestions(user_input)
             if suggestions:
-                response = self._renderer.render_suggestions(user_input, suggestions)
-                return {"response": response, "exit_menu": False}
+                return {"response": self._renderer.render_suggestions(user_input, suggestions), "exit_menu": False}
         
-        # Fallback - show main menu with suggestions
+        # Fallback
         return {"response": self._renderer.render_main_menu(), "exit_menu": False}
     
     @staticmethod
     def _session() -> Session:
-        """Create a new database session."""
         return SessionLocal()
 
-# ============================================================
-# BLOCK 8: SINGLETON & EXPORTS
-# ============================================================
-
-_dealer_service: Optional[DealerAnalyticsService] = None
-
-def get_dealer_service() -> DealerAnalyticsService:
-    global _dealer_service
-    try:
-        if _dealer_service is None:
-            logger.info("🔧 Creating DealerAnalyticsService instance...")
-            _dealer_service = DealerAnalyticsService()
-            logger.info("✅ DealerAnalyticsService instance created successfully")
-        return _dealer_service
-    except Exception as e:
-        logger.error(f"❌ Failed to create DealerAnalyticsService: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        _dealer_service = DealerAnalyticsService()
-        return _dealer_service
-
-__all__ = [
-    "DealerAnalyticsService",
-    "get_dealer_service",
-    "DealerContext",
-    "VERSION"
-]
 # ============================================================
 # BLOCK 8: SINGLETON & EXPORTS
 # ============================================================
