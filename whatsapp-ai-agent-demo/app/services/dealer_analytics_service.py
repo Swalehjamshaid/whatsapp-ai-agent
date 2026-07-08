@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/dealer_analytics_service.py
-# VERSION: 12.10 - WITH OPENROUTESERVICE SUPPORT
+# VERSION: 12.11 - IMPROVED DISTANCE CALCULATION
 # ============================================================
 
 from __future__ import annotations
@@ -26,35 +26,29 @@ logger = logging.getLogger(__name__)
 
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
-VERSION = "12.10"
+VERSION = "12.11"
 
-# Try to import openrouteservice
+# Try to import geocoding libraries
+try:
+    from geopy.geocoders import Nominatim
+    from geopy.extra.rate_limiter import RateLimiter
+    GEOCODE_AVAILABLE = True
+    logger.info("✅ Geopy imported successfully")
+except ImportError:
+    GEOCODE_AVAILABLE = False
+    logger.warning("⚠️ Geopy not available")
+
 try:
     import openrouteservice
     ORS_AVAILABLE = True
     logger.info("✅ OpenRouteService imported successfully")
 except ImportError:
     ORS_AVAILABLE = False
-    logger.warning("⚠️ OpenRouteService not available. Using fallback distance calculation.")
+    logger.warning("⚠️ OpenRouteService not available")
 
-# City coordinates for fallback distance calculation
-CITY_COORDINATES: Dict[str, Tuple[float, float]] = {
-    "karachi": (24.8607, 67.0011),
-    "lahore": (31.5204, 74.3587),
-    "rawalpindi": (33.5651, 73.0169),
-    "islamabad": (33.6844, 73.0479),
-    "multan": (30.1575, 71.5249),
-    "peshawar": (34.0151, 71.5249),
-    "quetta": (30.1798, 66.9750),
-    "hyderabad": (25.3960, 68.3578),
-    "faisalabad": (31.4504, 73.1350),
-    "sialkot": (32.4945, 74.5229),
-    "gujranwala": (32.1617, 74.1883),
-    "muzaffarabad": (34.3700, 73.4711),
-    "azad kashmir": (34.3700, 73.4711),
-    "bagh": (33.9833, 73.7667),
-    "ajk": (34.3700, 73.4711),
-}
+# Cache for geocoding results
+_GEOCODE_CACHE: Dict[str, Tuple[float, float]] = {}
+_DISTANCE_CACHE: Dict[str, Tuple[float, str]] = {}
 
 # ============================================================
 # UTILITY FUNCTIONS
@@ -88,68 +82,144 @@ def _format_currency(amount: float) -> str:
 def _format_number(num: int) -> str:
     return f"{num:,}"
 
-def _get_city_coordinates(city: str) -> Tuple[float, float]:
-    """Get coordinates for a city using OpenRouteService geocoding or fallback"""
-    city_clean = city.lower().strip()
+def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
+    """Geocode a city name to get coordinates using geopy"""
+    if not city:
+        return None
     
-    # Handle special cases
-    if city_clean == "ajk":
-        city_clean = "azad kashmir"
+    city_clean = city.strip()
+    cache_key = city_clean.lower()
     
-    # Try OpenRouteService geocoding first
+    # Check cache first
+    if cache_key in _GEOCODE_CACHE:
+        return _GEOCODE_CACHE[cache_key]
+    
+    # Try geopy first
+    if GEOCODE_AVAILABLE:
+        try:
+            geolocator = Nominatim(user_agent="dealer_intelligence")
+            geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
+            
+            # Try with "Pakistan" to improve accuracy
+            location = geocode(f"{city_clean}, Pakistan")
+            if location:
+                coords = (location.latitude, location.longitude)
+                _GEOCODE_CACHE[cache_key] = coords
+                logger.info(f"✅ Geocoded '{city_clean}' → {coords}")
+                return coords
+        except Exception as e:
+            logger.warning(f"Geopy geocoding failed for '{city_clean}': {e}")
+    
+    # Try OpenRouteService geocoding
     if ORS_AVAILABLE and ORS_API_KEY:
         try:
             client = openrouteservice.Client(key=ORS_API_KEY)
-            # Search for the city
-            response = client.pelias_search(text=city)
+            response = client.pelias_search(text=f"{city_clean}, Pakistan")
             if response and 'features' in response and response['features']:
                 coords = response['features'][0]['geometry']['coordinates']
                 # ORS returns [lng, lat], we need [lat, lng]
-                return (coords[1], coords[0])
+                coords_tuple = (coords[1], coords[0])
+                _GEOCODE_CACHE[cache_key] = coords_tuple
+                logger.info(f"✅ ORS geocoded '{city_clean}' → {coords_tuple}")
+                return coords_tuple
         except Exception as e:
-            logger.warning(f"ORS geocoding failed for '{city}': {e}")
+            logger.warning(f"ORS geocoding failed for '{city_clean}': {e}")
     
-    # Fallback to hardcoded coordinates
-    return CITY_COORDINATES.get(city_clean, (30.3753, 69.3451))
+    # Fallback: Try to find in hardcoded city list
+    fallback_coords = _get_fallback_coordinates(city_clean)
+    if fallback_coords:
+        _GEOCODE_CACHE[cache_key] = fallback_coords
+        return fallback_coords
+    
+    logger.warning(f"❌ Could not geocode '{city_clean}'")
+    return None
 
-def _get_distance_ors(city1: str, city2: str) -> Tuple[float, str]:
+def _get_fallback_coordinates(city: str) -> Optional[Tuple[float, float]]:
+    """Get fallback coordinates from hardcoded list"""
+    city_lower = city.lower()
+    
+    # Extended city coordinates for Pakistan
+    fallback_coords = {
+        # Major cities
+        "karachi": (24.8607, 67.0011),
+        "lahore": (31.5204, 74.3587),
+        "rawalpindi": (33.5651, 73.0169),
+        "islamabad": (33.6844, 73.0479),
+        "multan": (30.1575, 71.5249),
+        "peshawar": (34.0151, 71.5249),
+        "quetta": (30.1798, 66.9750),
+        "hyderabad": (25.3960, 68.3578),
+        "faisalabad": (31.4504, 73.1350),
+        "sialkot": (32.4945, 74.5229),
+        "gujranwala": (32.1617, 74.1883),
+        "hafizabad": (32.0667, 73.6833),  # Added Hafizabad
+        "ajk": (34.3700, 73.4711),
+        "azad kashmir": (34.3700, 73.4711),
+        "muzaffarabad": (34.3700, 73.4711),
+        "bagh": (33.9833, 73.7667),
+        "sahiwal": (30.6667, 73.1000),
+        "okara": (30.8167, 73.4500),
+        "sheikhupura": (31.7167, 73.9833),
+        "gujrat": (32.5667, 74.0833),
+        "jhelum": (32.9333, 73.7333),
+        "sargodha": (32.0833, 72.6667),
+        "bahawalpur": (29.3956, 71.6836),
+        "sukkur": (27.7060, 68.8530),
+        "dg khan": (30.0430, 70.6402),
+        "abbottabad": (34.1490, 73.2210),
+        "gwadar": (25.1260, 62.3250),
+        "gilgit": (35.9208, 74.3144),
+        "narowal": (32.1167, 74.8833),
+        "chakwal": (32.9333, 72.8667),
+        "mandi bahauddin": (32.5833, 73.4833),
+        "jehlum": (32.9333, 73.7333),
+        "kasur": (31.1167, 74.4500),
+    }
+    
+    return fallback_coords.get(city_lower)
+
+def _get_distance_between_cities(city1: str, city2: str) -> Tuple[float, str]:
     """Get distance between two cities using OpenRouteService"""
     
-    # Clean city names
-    city1_clean = city1.lower().strip()
-    city2_clean = city2.lower().strip()
+    if not city1 or not city2:
+        return (0, "Unknown")
     
-    # Handle special cases
-    if city1_clean == "ajk":
-        city1_clean = "azad kashmir"
-    if city2_clean == "ajk":
-        city2_clean = "azad kashmir"
+    cache_key = f"{city1.lower()}|{city2.lower()}"
+    if cache_key in _DISTANCE_CACHE:
+        return _DISTANCE_CACHE[cache_key]
     
-    # Try OpenRouteService first
+    # Get coordinates for both cities
+    coords1 = _geocode_city(city1)
+    coords2 = _geocode_city(city2)
+    
+    if not coords1 or not coords2:
+        logger.warning(f"Could not get coordinates for {city1} or {city2}")
+        return (0, "Not Available")
+    
+    # Try OpenRouteService for route distance
     if ORS_AVAILABLE and ORS_API_KEY:
         try:
             client = openrouteservice.Client(key=ORS_API_KEY)
             
-            # Get coordinates for both cities
-            coords1 = _get_city_coordinates(city1)
-            coords2 = _get_city_coordinates(city2)
-            
             # ORS expects [lng, lat]
-            coordinates = [[coords1[1], coords1[0]], [coords2[1], coords2[0]]]
+            coordinates = [
+                [coords1[1], coords1[0]],
+                [coords2[1], coords2[0]]
+            ]
             
-            # Get route
             routes = client.directions(
                 coordinates=coordinates,
                 profile=ORS_PROFILE,
-                format='json'
+                format='json',
+                validate=False
             )
             
             if routes and 'routes' in routes and routes['routes']:
                 summary = routes['routes'][0].get('summary', {})
                 distance_km = summary.get('distance', 0) / 1000
-                
-                # Get duration
                 duration_sec = summary.get('duration', 0)
+                
+                # Format duration
                 hours = int(duration_sec // 3600)
                 minutes = int((duration_sec % 3600) // 60)
                 
@@ -160,37 +230,19 @@ def _get_distance_ors(city1: str, city2: str) -> Tuple[float, str]:
                 else:
                     time_str = f"{minutes} mins"
                 
-                logger.info(f"ORS distance: {distance_km:.1f} KM, {time_str}")
-                return round(distance_km, 1), time_str
+                result = (round(distance_km, 1), time_str)
+                _DISTANCE_CACHE[cache_key] = result
+                logger.info(f"✅ ORS distance: {city1} → {city2}: {distance_km:.1f} KM, {time_str}")
+                return result
                 
         except Exception as e:
             logger.error(f"ORS distance calculation failed: {e}")
     
-    # Fallback to Haversine formula
-    logger.info("Using fallback distance calculation")
-    return _get_distance_haversine(city1_clean, city2_clean)
-
-def _get_distance_haversine(city1: str, city2: str) -> Tuple[float, str]:
-    """Calculate distance using Haversine formula (straight-line)"""
-    from math import radians, sin, cos, sqrt, atan2
+    # Fallback: Calculate straight-line distance using Haversine
+    distance_km = _haversine_distance(coords1, coords2)
     
-    c1 = CITY_COORDINATES.get(city1, (30.3753, 69.3451))
-    c2 = CITY_COORDINATES.get(city2, (30.3753, 69.3451))
-    
-    lat1, lon1 = c1
-    lat2, lon2 = c2
-    
-    R = 6371  # Earth's radius in km
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    
-    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-    c = 2 * atan2(sqrt(a), sqrt(1-a))
-    distance_km = R * c
-    
-    # Estimate time (assuming avg speed 40 km/h)
-    hours = distance_km / 40
+    # Estimate travel time (assuming avg speed 50 km/h for highways)
+    hours = distance_km / 50
     if hours < 1:
         minutes = int(hours * 60)
         time_str = f"{minutes} mins"
@@ -199,9 +251,29 @@ def _get_distance_haversine(city1: str, city2: str) -> Tuple[float, str]:
         m = int((hours - h) * 60)
         time_str = f"{h}h {m}m" if m > 0 else f"{h}h"
     
-    return round(distance_km, 1), time_str
+    result = (round(distance_km, 1), time_str)
+    _DISTANCE_CACHE[cache_key] = result
+    logger.info(f"⚠️ Fallback distance: {city1} → {city2}: {distance_km:.1f} KM, {time_str}")
+    return result
 
-def _get_dealer_rating(delivery_rate: float, revenue: float, pending_dn: int = 0) -> str:
+def _haversine_distance(coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:
+    """Calculate straight-line distance using Haversine formula"""
+    from math import radians, sin, cos, sqrt, atan2
+    
+    lat1, lon1 = coord1
+    lat2, lon2 = coord2
+    
+    R = 6371  # Earth's radius in km
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    
+    return R * c
+
+def _get_dealer_rating(delivery_rate: float, revenue: float, pending_dn: int = 0, dn_count: int = 0) -> str:
     """Calculate dealer rating based on performance"""
     score = 0
     
@@ -222,18 +294,34 @@ def _get_dealer_rating(delivery_rate: float, revenue: float, pending_dn: int = 0
         score += 22
     elif revenue >= 10_000_000:
         score += 15
-    else:
-        score += 8
-    
-    # Volume performance (20% weight - based on DN count)
-    if pending_dn > 50:
-        score += 20
-    elif pending_dn > 20:
-        score += 15
-    elif pending_dn > 10:
+    elif revenue >= 1_000_000:
         score += 10
     else:
         score += 5
+    
+    # Volume performance (20% weight based on DN count)
+    if dn_count > 100:
+        score += 20
+    elif dn_count > 50:
+        score += 15
+    elif dn_count > 20:
+        score += 10
+    elif dn_count > 10:
+        score += 8
+    else:
+        score += 5
+    
+    # Pending DNs penalty (10% weight)
+    if pending_dn == 0:
+        score += 10
+    elif pending_dn <= 2:
+        score += 8
+    elif pending_dn <= 5:
+        score += 5
+    elif pending_dn <= 10:
+        score += 3
+    else:
+        score += 0
     
     if score >= 85:
         return "A+"
@@ -351,7 +439,7 @@ class DealerRepository:
         data['pgi_achievement'] = _percent(data.get('pgi_completed', 0), dn_count)
         data['pending_pct'] = _percent(data.get('pending_dn', 0), dn_count)
         
-        # Get distance using ORS
+        # Get distance using improved geocoding
         city = data.get('city', '')
         warehouse = data.get('warehouse', '')
         
@@ -359,8 +447,8 @@ class DealerRepository:
         
         if city and warehouse and city != 'Unknown' and warehouse != 'Unknown':
             try:
-                # Use ORS for distance calculation
-                distance_km, time_str = _get_distance_ors(warehouse, city)
+                # Use improved distance calculation
+                distance_km, time_str = _get_distance_between_cities(warehouse, city)
                 data['distance_km'] = distance_km
                 data['distance_time'] = time_str
                 logger.info(f"[Repository] Distance calculated: {distance_km} KM, {time_str}")
@@ -373,8 +461,13 @@ class DealerRepository:
             data['distance_km'] = None
             data['distance_time'] = "Not Available"
         
-        # Get rating
-        data['rating'] = _get_dealer_rating(data['delivery_rate'], total_revenue, pending_dn)
+        # Get rating with more factors
+        data['rating'] = _get_dealer_rating(
+            data['delivery_rate'], 
+            total_revenue, 
+            pending_dn,
+            dn_count
+        )
         
         return data
 
@@ -386,12 +479,15 @@ class DealerAnalyticsService:
     def __init__(self) -> None:
         self._version = VERSION
         logger.info(f"✅ DealerAnalyticsService v{self._version} initialized")
+        logger.info(f"   Geopy: {'✅' if GEOCODE_AVAILABLE else '❌'}")
         logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
         
         if ORS_AVAILABLE and ORS_API_KEY:
             logger.info("   Using OpenRouteService for distance calculations")
+        elif GEOCODE_AVAILABLE:
+            logger.info("   Using Geopy for geocoding with fallback")
         else:
-            logger.info("   Using fallback distance calculation (Haversine formula)")
+            logger.info("   Using fallback distance calculation")
     
     def handle_message(self, message: str, sender: str) -> str:
         """Main entry point - searches for dealer and returns dashboard"""
@@ -420,6 +516,7 @@ class DealerAnalyticsService:
     def _get_welcome_message(self) -> str:
         """Get welcome message"""
         ors_status = "✅ Active" if ORS_AVAILABLE and ORS_API_KEY else "⚠️ Fallback Mode"
+        geopy_status = "✅ Active" if GEOCODE_AVAILABLE else "❌"
         
         return f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🏢 DEALER INTELLIGENCE CENTER
@@ -439,7 +536,11 @@ Welcome to the Dealer Intelligence Platform!
 • Sales performance metrics
 • Delivery statistics
 • AI-powered insights
-• Distance from warehouse (ORS: {ors_status})
+• Distance from warehouse
+
+🗺️ **Distance Services:**
+• OpenRouteService: {ors_status}
+• Geopy (Geocoding): {geopy_status}
 
 💡 **Pro tip:** 
 Type partial names and we'll suggest matches!
