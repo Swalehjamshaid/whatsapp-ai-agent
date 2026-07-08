@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/dealer_analytics_service.py
-# VERSION: 12.8 - SIMPLIFIED DEALER SEARCH
+# VERSION: 12.10 - WITH OPENROUTESERVICE SUPPORT
 # ============================================================
 
 from __future__ import annotations
@@ -25,9 +25,19 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
-VERSION = "12.8"
+ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
+VERSION = "12.10"
 
-# City coordinates for distance calculation
+# Try to import openrouteservice
+try:
+    import openrouteservice
+    ORS_AVAILABLE = True
+    logger.info("✅ OpenRouteService imported successfully")
+except ImportError:
+    ORS_AVAILABLE = False
+    logger.warning("⚠️ OpenRouteService not available. Using fallback distance calculation.")
+
+# City coordinates for fallback distance calculation
 CITY_COORDINATES: Dict[str, Tuple[float, float]] = {
     "karachi": (24.8607, 67.0011),
     "lahore": (31.5204, 74.3587),
@@ -43,6 +53,7 @@ CITY_COORDINATES: Dict[str, Tuple[float, float]] = {
     "muzaffarabad": (34.3700, 73.4711),
     "azad kashmir": (34.3700, 73.4711),
     "bagh": (33.9833, 73.7667),
+    "ajk": (34.3700, 73.4711),
 }
 
 # ============================================================
@@ -77,13 +88,94 @@ def _format_currency(amount: float) -> str:
 def _format_number(num: int) -> str:
     return f"{num:,}"
 
-def _get_distance(city1: str, city2: str) -> Tuple[float, str]:
-    """Get distance between two cities in KM"""
-    c1 = CITY_COORDINATES.get(city1.lower(), (30.3753, 69.3451))
-    c2 = CITY_COORDINATES.get(city2.lower(), (30.3753, 69.3451))
+def _get_city_coordinates(city: str) -> Tuple[float, float]:
+    """Get coordinates for a city using OpenRouteService geocoding or fallback"""
+    city_clean = city.lower().strip()
     
-    # Simple Haversine distance calculation
+    # Handle special cases
+    if city_clean == "ajk":
+        city_clean = "azad kashmir"
+    
+    # Try OpenRouteService geocoding first
+    if ORS_AVAILABLE and ORS_API_KEY:
+        try:
+            client = openrouteservice.Client(key=ORS_API_KEY)
+            # Search for the city
+            response = client.pelias_search(text=city)
+            if response and 'features' in response and response['features']:
+                coords = response['features'][0]['geometry']['coordinates']
+                # ORS returns [lng, lat], we need [lat, lng]
+                return (coords[1], coords[0])
+        except Exception as e:
+            logger.warning(f"ORS geocoding failed for '{city}': {e}")
+    
+    # Fallback to hardcoded coordinates
+    return CITY_COORDINATES.get(city_clean, (30.3753, 69.3451))
+
+def _get_distance_ors(city1: str, city2: str) -> Tuple[float, str]:
+    """Get distance between two cities using OpenRouteService"""
+    
+    # Clean city names
+    city1_clean = city1.lower().strip()
+    city2_clean = city2.lower().strip()
+    
+    # Handle special cases
+    if city1_clean == "ajk":
+        city1_clean = "azad kashmir"
+    if city2_clean == "ajk":
+        city2_clean = "azad kashmir"
+    
+    # Try OpenRouteService first
+    if ORS_AVAILABLE and ORS_API_KEY:
+        try:
+            client = openrouteservice.Client(key=ORS_API_KEY)
+            
+            # Get coordinates for both cities
+            coords1 = _get_city_coordinates(city1)
+            coords2 = _get_city_coordinates(city2)
+            
+            # ORS expects [lng, lat]
+            coordinates = [[coords1[1], coords1[0]], [coords2[1], coords2[0]]]
+            
+            # Get route
+            routes = client.directions(
+                coordinates=coordinates,
+                profile=ORS_PROFILE,
+                format='json'
+            )
+            
+            if routes and 'routes' in routes and routes['routes']:
+                summary = routes['routes'][0].get('summary', {})
+                distance_km = summary.get('distance', 0) / 1000
+                
+                # Get duration
+                duration_sec = summary.get('duration', 0)
+                hours = int(duration_sec // 3600)
+                minutes = int((duration_sec % 3600) // 60)
+                
+                if hours > 0 and minutes > 0:
+                    time_str = f"{hours}h {minutes}m"
+                elif hours > 0:
+                    time_str = f"{hours}h"
+                else:
+                    time_str = f"{minutes} mins"
+                
+                logger.info(f"ORS distance: {distance_km:.1f} KM, {time_str}")
+                return round(distance_km, 1), time_str
+                
+        except Exception as e:
+            logger.error(f"ORS distance calculation failed: {e}")
+    
+    # Fallback to Haversine formula
+    logger.info("Using fallback distance calculation")
+    return _get_distance_haversine(city1_clean, city2_clean)
+
+def _get_distance_haversine(city1: str, city2: str) -> Tuple[float, str]:
+    """Calculate distance using Haversine formula (straight-line)"""
     from math import radians, sin, cos, sqrt, atan2
+    
+    c1 = CITY_COORDINATES.get(city1, (30.3753, 69.3451))
+    c2 = CITY_COORDINATES.get(city2, (30.3753, 69.3451))
     
     lat1, lon1 = c1
     lat2, lon2 = c2
@@ -97,18 +189,19 @@ def _get_distance(city1: str, city2: str) -> Tuple[float, str]:
     c = 2 * atan2(sqrt(a), sqrt(1-a))
     distance_km = R * c
     
-    # Estimate time (assuming avg speed 35 km/h in city)
-    time_minutes = int((distance_km / 35) * 60)
-    if time_minutes < 60:
-        time_str = f"{time_minutes} mins"
+    # Estimate time (assuming avg speed 40 km/h)
+    hours = distance_km / 40
+    if hours < 1:
+        minutes = int(hours * 60)
+        time_str = f"{minutes} mins"
     else:
-        hours = time_minutes // 60
-        mins = time_minutes % 60
-        time_str = f"{hours}h {mins}m" if mins > 0 else f"{hours}h"
+        h = int(hours)
+        m = int((hours - h) * 60)
+        time_str = f"{h}h {m}m" if m > 0 else f"{h}h"
     
     return round(distance_km, 1), time_str
 
-def _get_dealer_rating(delivery_rate: float, revenue: float) -> str:
+def _get_dealer_rating(delivery_rate: float, revenue: float, pending_dn: int = 0) -> str:
     """Calculate dealer rating based on performance"""
     score = 0
     
@@ -132,8 +225,15 @@ def _get_dealer_rating(delivery_rate: float, revenue: float) -> str:
     else:
         score += 8
     
-    # Volume performance (30% weight)
-    # This would require additional data, using placeholder logic
+    # Volume performance (20% weight - based on DN count)
+    if pending_dn > 50:
+        score += 20
+    elif pending_dn > 20:
+        score += 15
+    elif pending_dn > 10:
+        score += 10
+    else:
+        score += 5
     
     if score >= 85:
         return "A+"
@@ -219,6 +319,7 @@ class DealerRepository:
         dn_count = int(row[8] or 0)
         total_revenue = float(row[10] or 0.0)
         total_units = int(row[9] or 0)
+        pending_dn = int(row[14] or 0)
         
         data = {
             'customer_name': _text(row[0]),
@@ -235,7 +336,7 @@ class DealerRepository:
             'first_sale': _text(row[11]),
             'last_sale': _text(row[12]),
             'avg_dn_value': float(row[13] or 0.0),
-            'pending_dn': int(row[14] or 0),
+            'pending_dn': pending_dn,
             'pgi_pending_dn': int(row[15] or 0),
             'pod_pending_dn': int(row[16] or 0),
             'pod_completed': int(row[17] or 0),
@@ -250,19 +351,30 @@ class DealerRepository:
         data['pgi_achievement'] = _percent(data.get('pgi_completed', 0), dn_count)
         data['pending_pct'] = _percent(data.get('pending_dn', 0), dn_count)
         
-        # Get distance
+        # Get distance using ORS
         city = data.get('city', '')
         warehouse = data.get('warehouse', '')
-        if city and warehouse:
-            distance_km, time_str = _get_distance(warehouse, city)
-            data['distance_km'] = distance_km
-            data['distance_time'] = time_str
+        
+        logger.info(f"[Repository] Calculating distance: Warehouse='{warehouse}', City='{city}'")
+        
+        if city and warehouse and city != 'Unknown' and warehouse != 'Unknown':
+            try:
+                # Use ORS for distance calculation
+                distance_km, time_str = _get_distance_ors(warehouse, city)
+                data['distance_km'] = distance_km
+                data['distance_time'] = time_str
+                logger.info(f"[Repository] Distance calculated: {distance_km} KM, {time_str}")
+            except Exception as e:
+                logger.error(f"[Repository] Error calculating distance: {e}")
+                data['distance_km'] = None
+                data['distance_time'] = "Not Available"
         else:
+            logger.warning(f"[Repository] Cannot calculate distance: city='{city}', warehouse='{warehouse}'")
             data['distance_km'] = None
-            data['distance_time'] = "Unknown"
+            data['distance_time'] = "Not Available"
         
         # Get rating
-        data['rating'] = _get_dealer_rating(data['delivery_rate'], total_revenue)
+        data['rating'] = _get_dealer_rating(data['delivery_rate'], total_revenue, pending_dn)
         
         return data
 
@@ -274,23 +386,92 @@ class DealerAnalyticsService:
     def __init__(self) -> None:
         self._version = VERSION
         logger.info(f"✅ DealerAnalyticsService v{self._version} initialized")
+        logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
+        
+        if ORS_AVAILABLE and ORS_API_KEY:
+            logger.info("   Using OpenRouteService for distance calculations")
+        else:
+            logger.info("   Using fallback distance calculation (Haversine formula)")
     
     def handle_message(self, message: str, sender: str) -> str:
         """Main entry point - searches for dealer and returns dashboard"""
         try:
-            logger.info("[Service] Searching for: '%s' from %s", message, sender)
+            message_clean = message.strip()
             
-            dealer_name = message.strip()
-            if not dealer_name:
-                return "Please enter a dealer name."
+            # Check if it's a numeric command (1-9)
+            if message_clean.isdigit() and len(message_clean) == 1:
+                logger.info("[Service] Numeric input detected, showing help")
+                return self._get_help_message()
+            
+            # Check if it's a greeting or empty
+            if not message_clean or message_clean.lower() in ['hi', 'hello', 'hey', 'start']:
+                return self._get_welcome_message()
+            
+            logger.info("[Service] Searching for: '%s' from %s", message_clean, sender)
             
             # Search for the dealer
-            result = self._search_dealer(dealer_name)
+            result = self._search_dealer(message_clean)
             return result
             
         except Exception as e:
             logger.exception("[Service] Error in handle_message")
             return f"⚠️ Error: {str(e)}\n\nPlease try again with a different dealer name."
+    
+    def _get_welcome_message(self) -> str:
+        """Get welcome message"""
+        ors_status = "✅ Active" if ORS_AVAILABLE and ORS_API_KEY else "⚠️ Fallback Mode"
+        
+        return f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏢 DEALER INTELLIGENCE CENTER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Welcome to the Dealer Intelligence Platform!
+
+🔍 **How to use:**
+• Type any dealer name to get their dashboard
+• Examples:
+  - Arshad Electronics-Khi
+  - Mega Digital
+  - Japan Electronics
+
+📊 **What you'll see:**
+• Dealer profile and location
+• Sales performance metrics
+• Delivery statistics
+• AI-powered insights
+• Distance from warehouse (ORS: {ors_status})
+
+💡 **Pro tip:** 
+Type partial names and we'll suggest matches!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Type a dealer name to get started!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+    
+    def _get_help_message(self) -> str:
+        """Get help message for numeric commands"""
+        return """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 QUICK HELP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This is a dealer search system.
+
+🔍 **To search:**
+Simply type the dealer name.
+
+📊 **Examples:**
+• Arshad Electronics-Khi
+• Mega Digital
+• Japan Electronics
+
+🔄 **Tips:**
+• You can type partial names
+• We'll show suggestions if no exact match
+• All data is real-time from the database
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Type a dealer name to get started!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
     
     def _search_dealer(self, dealer_name: str) -> str:
         """Search for dealer and return dashboard or suggestions"""
@@ -306,7 +487,21 @@ class DealerAnalyticsService:
             return self._format_suggestions(dealer_name, suggestions)
         
         # No results
-        return f"🔍 No dealer found matching '{dealer_name}'\n\nPlease try:\n- Full dealer name\n- Partial name\n- City name"
+        return f"""🔍 No dealer found matching '{dealer_name}'
+
+💡 Suggestions:
+• Try the full dealer name
+• Try a partial name
+• Check for spelling errors
+
+Examples:
+• Arshad Electronics-Khi
+• Mega Digital
+• Japan Electronics
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Type a dealer name to search again
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
     
     def _resolve_dealer_name(self, name: str) -> Optional[str]:
         """Resolve dealer name using direct database connection."""
@@ -429,6 +624,9 @@ class DealerAnalyticsService:
         lines.extend([
             "",
             f"Type the exact name or try: {query}",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "Type a dealer name to search"
         ])
         
         return "\n".join(lines)
@@ -442,7 +640,7 @@ class DealerAnalyticsService:
         city = data.get('city', 'N/A')
         warehouse = data.get('warehouse', 'N/A')
         distance_km = data.get('distance_km')
-        distance_time = data.get('distance_time', 'Unknown')
+        distance_time = data.get('distance_time', 'Not Available')
         division = data.get('division', 'N/A')
         
         revenue = data.get('total_revenue', 0)
@@ -456,10 +654,15 @@ class DealerAnalyticsService:
         rating = data.get('rating', 'C')
         
         # Format distance
-        if distance_km:
+        if distance_km is not None and distance_km > 0:
             distance_str = f"{distance_km} KM (Estimated {distance_time})"
         else:
             distance_str = "Not Available"
+        
+        # Clean dealer name - remove phone numbers and C/O
+        clean_name = re.sub(r'0[0-9]{2,4}[-.\s]?[0-9]{7,8}', '', customer_name)
+        clean_name = re.sub(r'C/O\s*', '', clean_name, flags=re.IGNORECASE)
+        clean_name = re.sub(r'\s+', ' ', clean_name).strip()
         
         lines = [
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -467,7 +670,7 @@ class DealerAnalyticsService:
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
             f"👤 Dealer",
-            f"{customer_name}",
+            f"{clean_name}",
             "",
             f"🆔 Dealer Code",
             f"{dealer_code}",
@@ -534,6 +737,8 @@ class DealerAnalyticsService:
         
         lines.extend([
             "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "Type a dealer name to search",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         ])
         
@@ -634,6 +839,8 @@ class DealerAnalyticsService:
         pending = data.get('pending_dn', 0)
         if pending > 0:
             recommendations.append(f"Expedite {pending} pending deliveries.")
+        else:
+            recommendations.append("All deliveries completed. Excellent efficiency!")
         
         # Performance based recommendations
         delivery_rate = data.get('delivery_rate', 0)
@@ -645,7 +852,7 @@ class DealerAnalyticsService:
         # Warehouse recommendation
         warehouse = data.get('warehouse', '')
         city = data.get('city', '')
-        if warehouse and city:
+        if warehouse and city and warehouse != 'Unknown' and city != 'Unknown':
             recommendations.append(f"Current warehouse is the nearest dispatch point.")
         
         # Rating based recommendations
