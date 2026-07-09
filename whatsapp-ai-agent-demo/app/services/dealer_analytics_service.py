@@ -877,11 +877,11 @@ Type a dealer name to search again
         clean_name = re.sub(r'C/O\s*', '', clean_name, flags=re.IGNORECASE)
         clean_name = re.sub(r'\s+', ' ', clean_name).strip()
         
-        # Format distance
+        # Format road distance
         if distance_km is not None and distance_km > 0:
-            distance_str = f"{distance_km} KM (Road, {distance_time})"
+            distance_display = f"{distance_km} KM ({distance_time})"
         else:
-            distance_str = "Not Available"
+            distance_display = "Not Available"
         
         lines = [
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -891,6 +891,7 @@ Type a dealer name to search again
             f"👤 {clean_name}",
             f"📍 {city}",
             f"🏬 Dispatch WH : {warehouse}",
+            f"📏 Distance      : {distance_display}",
             "",
             "━━━━━━━━━━━━━━━━━━━━",
             "💼 BUSINESS SUMMARY",
@@ -908,22 +909,36 @@ Type a dealer name to search again
             "",
         ]
         
-        # Add top customer models with proper formatting
+        # Add top customer models with clean formatting
         if top_models:
             for i, (model, count) in enumerate(top_models):
-                # Format model name - clean up if needed
+                # Clean up model name - remove extra spaces
                 model_display = model.strip() if model else "N/A"
                 
-                if i == 0:
-                    lines.append(f"🥇 {model_display}             {count} Units")
-                elif i == 1:
-                    lines.append(f"🥈 {model_display}             {count} Units")
-                elif i == 2:
-                    lines.append(f"🥉 {model_display}               {count} Unit")
+                # Format count with proper pluralization
+                count_display = f"{count} Unit{'s' if count > 1 else ''}"
+                
+                # Calculate spacing for alignment
+                model_len = len(model_display)
+                if model_len <= 10:
+                    padding = " " * 18
+                elif model_len <= 15:
+                    padding = " " * 15
+                elif model_len <= 20:
+                    padding = " " * 12
                 else:
-                    lines.append(f"• {model_display}             {count} Unit")
+                    padding = " " * 8
+                
+                if i == 0:
+                    lines.append(f"🥇 {model_display}{padding}{count_display}")
+                elif i == 1:
+                    lines.append(f"🥈 {model_display}{padding}{count_display}")
+                elif i == 2:
+                    lines.append(f"🥉 {model_display}{padding}{count_display}")
+                else:
+                    lines.append(f"•  {model_display}{padding}{count_display}")
         else:
-            lines.append("No models found")
+            lines.append("   No models found")
         
         lines.extend([
             "",
