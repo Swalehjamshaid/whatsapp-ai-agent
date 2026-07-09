@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/warehouse_service.py
-# VERSION: 2.0 - WAREHOUSE INTELLIGENCE CENTER
+# VERSION: 2.1 - FAULT TOLERANT WITH ORS ERROR HANDLING
 # PURPOSE: Warehouse analytics with road distance calculation
 # ============================================================
 
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
-VERSION = "2.0"
+VERSION = "2.1"
 
 # Try to import geocoding libraries
 try:
@@ -137,7 +137,7 @@ def _set_redis_cache(key: str, value: str, ttl: int = 2592000) -> None:
             pass
 
 def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
-    """Geocode a city name using geopy with Redis caching"""
+    """Geocode a city name using geopy with Redis caching - FAULT TOLERANT"""
     if not city:
         return None
     
@@ -158,10 +158,12 @@ def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
     if cache_key in _geocode_cache:
         return _geocode_cache[cache_key]
     
+    coords = None
+    
     # Try geopy
     if GEOCODE_AVAILABLE:
         try:
-            geolocator = Nominatim(user_agent="warehouse_intelligence")
+            geolocator = Nominatim(user_agent="warehouse_intelligence", timeout=10)
             geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
             location = geocode(f"{city_clean}, Pakistan")
             if location:
@@ -169,24 +171,57 @@ def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
                 _geocode_cache[cache_key] = coords
                 _set_redis_cache(redis_key, f"{coords[0]},{coords[1]}", 604800)
                 return coords
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Geopy geocoding failed for '{city_clean}': {e}")
     
-    # Try OpenRouteService
-    if ORS_AVAILABLE and ORS_API_KEY:
+    # Try OpenRouteService - with timeout protection
+    if ORS_AVAILABLE and ORS_API_KEY and coords is None:
         try:
-            client = openrouteservice.Client(key=ORS_API_KEY)
-            response = client.pelias_search(text=f"{city_clean}, Pakistan")
-            if response and 'features' in response and response['features']:
-                coords = response['features'][0]['geometry']['coordinates']
-                coords_tuple = (coords[1], coords[0])
-                _geocode_cache[cache_key] = coords_tuple
-                _set_redis_cache(redis_key, f"{coords_tuple[0]},{coords_tuple[1]}", 604800)
-                return coords_tuple
-        except Exception:
-            pass
+            import requests
+            import json
+            
+            # Use ORS API directly with timeout
+            url = "https://api.openrouteservice.org/geocode/search"
+            headers = {
+                "Authorization": ORS_API_KEY,
+                "Content-Type": "application/json"
+            }
+            params = {
+                "text": f"{city_clean}, Pakistan",
+                "size": 1
+            }
+            
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if data and 'features' in data and data['features']:
+                    coords_data = data['features'][0]['geometry']['coordinates']
+                    if coords_data:
+                        coords = (coords_data[1], coords_data[0])
+                        _geocode_cache[cache_key] = coords
+                        _set_redis_cache(redis_key, f"{coords[0]},{coords[1]}", 604800)
+                        return coords
+        except requests.exceptions.Timeout:
+            logger.warning(f"ORS geocoding timeout for '{city_clean}'")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"ORS geocoding request error for '{city_clean}': {e}")
+        except Exception as e:
+            logger.warning(f"ORS geocoding failed for '{city_clean}': {e}")
     
     # Fallback coordinates
+    fallback_coords = _get_fallback_coordinates(city_clean)
+    if fallback_coords:
+        _geocode_cache[cache_key] = fallback_coords
+        _set_redis_cache(redis_key, f"{fallback_coords[0]},{fallback_coords[1]}", 604800)
+        return fallback_coords
+    
+    logger.warning(f"❌ Could not geocode '{city_clean}'")
+    return None
+
+def _get_fallback_coordinates(city: str) -> Optional[Tuple[float, float]]:
+    """Get fallback coordinates from hardcoded list"""
+    city_lower = city.lower()
+    
     fallback_coords = {
         "karachi": (24.8607, 67.0011),
         "lahore": (31.5204, 74.3587),
@@ -204,14 +239,23 @@ def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
         "gujrat": (32.5667, 74.0833),
         "narowal": (32.1167, 74.8833),
         "daska": (32.3167, 74.3500),
+        "hafizabad": (32.0667, 73.6833),
+        "sheikhupura": (31.7167, 73.9833),
+        "sargodha": (32.0833, 72.6667),
+        "dg khan": (30.0430, 70.6402),
+        "abbottabad": (34.1490, 73.2210),
+        "gwadar": (25.1260, 62.3250),
+        "gilgit": (35.9208, 74.3144),
     }
     
-    return fallback_coords.get(cache_key)
+    return fallback_coords.get(city_lower)
 
 def _get_road_distance_between_cities(city1: str, city2: str) -> Tuple[float, str]:
     """
-    Get ROAD distance between two cities using OpenRouteService
-    This uses actual road networks, not straight-line distance
+    Get ROAD distance between two cities - FAULT TOLERANT with timeout
+    
+    This function uses OpenRouteService with proper timeout handling.
+    If ORS fails, it falls back to Haversine distance.
     """
     if not city1 or not city2:
         return (0, "Unknown")
@@ -237,60 +281,80 @@ def _get_road_distance_between_cities(city1: str, city2: str) -> Tuple[float, st
     coords2 = _geocode_city(city2)
     
     if not coords1 or not coords2:
+        logger.warning(f"Could not get coordinates for {city1} or {city2}")
         return (0, "Not Available")
     
-    # Try OpenRouteService
+    # Try OpenRouteService - with timeout protection
     if ORS_AVAILABLE and ORS_API_KEY:
         try:
-            client = openrouteservice.Client(key=ORS_API_KEY)
-            coordinates = [[coords1[1], coords1[0]], [coords2[1], coords2[0]]]
+            import requests
+            import json
             
-            routes = client.directions(
-                coordinates=coordinates,
-                profile=ORS_PROFILE,
-                format='json',
-                validate=False,
-                alternatives=False,
-                geometry=False
-            )
+            # Use ORS directions API directly with timeout
+            url = "https://api.openrouteservice.org/v2/directions/driving-car"
+            headers = {
+                "Authorization": ORS_API_KEY,
+                "Content-Type": "application/json"
+            }
             
-            if routes and 'routes' in routes and routes['routes']:
-                summary = routes['routes'][0].get('summary', {})
-                distance_km = summary.get('distance', 0) / 1000
-                duration_sec = summary.get('duration', 0)
+            # Format coordinates: [[lng, lat], [lng, lat]]
+            coordinates = [
+                [coords1[1], coords1[0]],
+                [coords2[1], coords2[0]]
+            ]
+            
+            body = {
+                "coordinates": coordinates,
+                "format": "json"
+            }
+            
+            logger.info(f"Calculating ROAD distance from {city1} to {city2} using ORS...")
+            
+            response = requests.post(url, headers=headers, json=body, timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data and 'routes' in data and data['routes']:
+                    summary = data['routes'][0].get('summary', {})
+                    distance_km = summary.get('distance', 0) / 1000
+                    duration_sec = summary.get('duration', 0)
+                    
+                    # Format duration
+                    hours = int(duration_sec // 3600)
+                    minutes = int((duration_sec % 3600) // 60)
+                    
+                    if hours > 0 and minutes > 0:
+                        time_str = f"{hours}h {minutes}m"
+                    elif hours > 0:
+                        time_str = f"{hours}h"
+                    else:
+                        time_str = f"{minutes} mins"
+                    
+                    result = (round(distance_km, 1), time_str)
+                    _distance_cache[cache_key] = result
+                    _set_redis_cache(redis_key, f"{distance_km}||{time_str}", 2592000)
+                    
+                    logger.info(f"✅ ROAD distance (ORS): {city1} → {city2}: {distance_km:.1f} KM, {time_str}")
+                    return result
+            else:
+                logger.warning(f"ORS API returned status {response.status_code} for {city1} → {city2}")
                 
-                hours = int(duration_sec // 3600)
-                minutes = int((duration_sec % 3600) // 60)
-                
-                if hours > 0 and minutes > 0:
-                    time_str = f"{hours}h {minutes}m"
-                elif hours > 0:
-                    time_str = f"{hours}h"
-                else:
-                    time_str = f"{minutes} mins"
-                
-                result = (round(distance_km, 1), time_str)
-                _distance_cache[cache_key] = result
-                _set_redis_cache(redis_key, f"{distance_km}||{time_str}", 2592000)
-                return result
+        except requests.exceptions.Timeout:
+            logger.warning(f"ORS road distance timeout for {city1} → {city2}")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"ORS road distance request error for {city1} → {city2}: {e}")
         except Exception as e:
-            logger.error(f"ORS road distance failed: {e}")
+            logger.warning(f"ORS road distance failed for {city1} → {city2}: {e}")
     
     # Fallback: Haversine
-    from math import radians, sin, cos, sqrt, atan2
-    lat1, lon1 = coords1
-    lat2, lon2 = coords2
-    R = 6371
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-    c = 2 * atan2(sqrt(a), sqrt(1-a))
-    distance_km = R * c
+    logger.info(f"Using Haversine fallback for {city1} → {city2}")
+    distance_km = _haversine_distance(coords1, coords2)
     
+    # Estimate travel time (assuming avg speed 50 km/h for highways)
     hours = distance_km / 50
     if hours < 1:
-        time_str = f"{int(hours * 60)} mins"
+        minutes = int(hours * 60)
+        time_str = f"{minutes} mins"
     else:
         h = int(hours)
         m = int((hours - h) * 60)
@@ -298,7 +362,25 @@ def _get_road_distance_between_cities(city1: str, city2: str) -> Tuple[float, st
     
     result = (round(distance_km, 1), time_str)
     _distance_cache[cache_key] = result
+    logger.info(f"⚠️ Fallback (Haversine) distance: {city1} → {city2}: {distance_km:.1f} KM, {time_str}")
     return result
+
+def _haversine_distance(coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:
+    """Calculate straight-line distance using Haversine formula (fallback only)"""
+    from math import radians, sin, cos, sqrt, atan2
+    
+    lat1, lon1 = coord1
+    lat2, lon2 = coord2
+    
+    R = 6371  # Earth's radius in km
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    
+    return R * c
 
 # ============================================================
 # WAREHOUSE ANALYTICS SERVICE
@@ -312,6 +394,7 @@ class WarehouseAnalyticsService:
         logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
         logger.info(f"   Redis: {'✅' if _redis_client else '❌'}")
         logger.info(f"   Cachetools: {'✅' if CACHETOOLS_AVAILABLE else '❌'}")
+        logger.info("   ⚠️ ORS errors are handled gracefully with fallback to Haversine")
     
     def handle_message(self, message: str, sender: str) -> str:
         """Main entry point - searches for warehouse and returns dashboard"""
@@ -593,7 +676,7 @@ Type a warehouse name to get started!
                 # Get top 5 customer models
                 models = self._get_top_models(warehouse_name)
                 
-                # Get distance statistics (avg and farthest)
+                # Get distance statistics (avg and farthest) - FAULT TOLERANT
                 avg_distance, farthest_city, farthest_distance = self._get_distance_stats(warehouse_name)
                 
                 # Build the dashboard
@@ -774,7 +857,7 @@ Type a warehouse name to get started!
             return []
     
     def _get_distance_stats(self, warehouse_name: str) -> Tuple[str, str, str]:
-        """Get average and farthest distance statistics"""
+        """Get average and farthest distance statistics - FAULT TOLERANT"""
         try:
             with engine.connect() as conn:
                 # Get unique cities served by this warehouse
@@ -800,11 +883,15 @@ Type a warehouse name to get started!
                 count = 0
                 
                 for city in cities:
-                    distance_km, _ = _get_road_distance_between_cities(warehouse_name, city)
-                    if distance_km > 0:
-                        distances.append((city, distance_km))
-                        total_distance += distance_km
-                        count += 1
+                    try:
+                        distance_km, _ = _get_road_distance_between_cities(warehouse_name, city)
+                        if distance_km > 0:
+                            distances.append((city, distance_km))
+                            total_distance += distance_km
+                            count += 1
+                    except Exception as e:
+                        logger.warning(f"Distance calculation failed for {warehouse_name} → {city}: {e}")
+                        continue
                 
                 if count == 0:
                     return ("N/A", "N/A", "N/A")
@@ -879,6 +966,7 @@ Type a warehouse name to get started!
             "geocode_available": GEOCODE_AVAILABLE,
             "redis_available": _redis_client is not None,
             "cache_available": CACHETOOLS_AVAILABLE,
+            "fault_tolerant": True,
         }
 
 # ============================================================
@@ -887,14 +975,8 @@ Type a warehouse name to get started!
 
 _warehouse_service: Optional[WarehouseAnalyticsService] = None
 
-# CRITICAL: This function name MUST match what ai_provider_service.py expects
 def get_warehouse_analytics_service() -> WarehouseAnalyticsService:
-    """
-    Get singleton instance of WarehouseAnalyticsService.
-    
-    This function name is REQUIRED by ai_provider_service.py.
-    DO NOT CHANGE - it will break the service integration.
-    """
+    """Get singleton instance of WarehouseAnalyticsService."""
     global _warehouse_service
     if _warehouse_service is None:
         logger.info("🔧 Creating WarehouseAnalyticsService instance...")
@@ -902,7 +984,6 @@ def get_warehouse_analytics_service() -> WarehouseAnalyticsService:
         logger.info("✅ WarehouseAnalyticsService instance created successfully")
     return _warehouse_service
 
-# Also provide the shorter alias for backward compatibility
 def get_warehouse_service() -> WarehouseAnalyticsService:
     """Alias for get_warehouse_analytics_service()"""
     return get_warehouse_analytics_service()
