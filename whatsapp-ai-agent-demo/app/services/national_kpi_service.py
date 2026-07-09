@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/national_kpi_service.py
-# VERSION: 6.2 - FIXED POSTGRESQL DATE DIFFERENCE
-# PURPOSE: National executive dashboard and logistics intelligence
+# VERSION: 6.3 - FINAL WITH 99 OPTION
+# PURPOSE: National KPI dashboard with 99 return option
 # ============================================================
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 CACHE_TTL = max(60, int(os.getenv("NATIONAL_KPI_CACHE_TTL", "300")))
-VERSION = "6.2"
+VERSION = "6.3"
 
 # ============================================================
 # BLOCK 2: UTILITY FUNCTIONS
@@ -96,9 +96,10 @@ class NationalKPIService:
         try:
             message_clean = message.strip()
             
-            # Check if it's 99
+            # Check if it's 99 - Return to Main Menu
             if message_clean == '99':
-                return self._get_help_message()
+                logger.info("[Service] 99 detected, returning to main menu")
+                return self._get_main_menu_return()
             
             # Check if it's a greeting or empty
             if not message_clean or message_clean.lower() in ['hi', 'hello', 'hey', 'start', 'menu']:
@@ -118,6 +119,27 @@ class NationalKPIService:
         except Exception as e:
             logger.exception(f"Error in handle_message: {e}")
             return f"⚠️ Error: {str(e)}\n\nPlease try again."
+    
+    def _get_main_menu_return(self) -> str:
+        """Return to main menu with 99 option"""
+        return """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     📦  LOGISTICS INTELLIGENCE CENTER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Please choose from:
+
+1. ✅ National KPI
+2. ✅ DN Analysis
+3. ✅ Dealer Analytics
+4. ✅ Warehouse Analytics
+5. ✅ Product Analytics
+6. ✅ City Analytics
+7. ✅ AI Assistant
+
+99 - Return to Main Menu
+
+📌 Services with ✅ are working
+📌 Services with ❌ are currently unavailable"""
     
     def _get_welcome_message(self) -> str:
         """Get welcome message"""
@@ -142,31 +164,7 @@ Welcome to the National Logistics Intelligence Platform!
 • AI-powered insights
 
 💡 **Pro tip:** 
-Type **99** for quick help anytime!
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Type a command to get started!
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
-    
-    def _get_help_message(self) -> str:
-        """Get help message"""
-        return """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 QUICK HELP
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-This is the National Logistics Intelligence system.
-
-🔍 **Commands:**
-• 'dashboard' or 'kpi' - Show national KPI dashboard
-• 'Lahore' - Show Lahore warehouse KPI
-• 'Karachi' - Show Karachi warehouse KPI
-• '99' - Return to main menu
-
-📊 **What you'll see:**
-• Warehouse KPI Performance dashboard
-• POD, PGI, Delivery, and Cycle times
-• National averages
-• AI-powered insights
+Type **99** to return to Main Menu anytime!
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Type a command to get started!
@@ -232,8 +230,7 @@ Type a command to get started!
             
             with engine.connect() as conn:
                 # ============================================================
-                # FIXED: Using EXTRACT(EPOCH FROM (timestamp - timestamp))
-                # PostgreSQL requires: EXTRACT(EPOCH FROM (timestamp1 - timestamp2))
+                # FIXED: Explicitly cast dates to timestamp for EXTRACT
                 # ============================================================
                 query = """
                     SELECT 
@@ -242,13 +239,13 @@ Type a command to get started!
                         COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) as pod_completed,
                         COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) as pgi_completed,
                         AVG(CASE WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL
-                            THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400 
+                            THEN EXTRACT(EPOCH FROM (good_issue_date::timestamp - dn_create_date::timestamp)) / 86400 
                             ELSE NULL END) as avg_delivery_days,
                         AVG(CASE WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
-                            THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400 
+                            THEN EXTRACT(EPOCH FROM (pod_date::timestamp - good_issue_date::timestamp)) / 86400 
                             ELSE NULL END) as avg_pod_days,
                         AVG(CASE WHEN pod_date IS NOT NULL AND dn_create_date IS NOT NULL 
-                            THEN EXTRACT(EPOCH FROM (pod_date - dn_create_date)) / 86400 
+                            THEN EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp)) / 86400 
                             ELSE NULL END) as avg_cycle_days
                     FROM delivery_reports 
                     WHERE warehouse IS NOT NULL 
@@ -344,10 +341,14 @@ Type a command to get started!
                 for insight in insights:
                     lines.append(insight)
                 
+                # ============================================================
+                # ADD 99 OPTION AT THE BOTTOM
+                # ============================================================
                 lines.extend([
                     "",
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
                     "Type a warehouse name to search",
+                    "Type **99** to return to Main Menu",
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
                 ])
                 
@@ -373,13 +374,13 @@ Type a command to get started!
                             COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) as pod_completed,
                             COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) as pgi_completed,
                             AVG(CASE WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL
-                                THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400 
+                                THEN EXTRACT(EPOCH FROM (good_issue_date::timestamp - dn_create_date::timestamp)) / 86400 
                                 ELSE NULL END) as avg_delivery,
                             AVG(CASE WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
-                                THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400 
+                                THEN EXTRACT(EPOCH FROM (pod_date::timestamp - good_issue_date::timestamp)) / 86400 
                                 ELSE NULL END) as avg_pod,
                             AVG(CASE WHEN pod_date IS NOT NULL AND dn_create_date IS NOT NULL 
-                                THEN EXTRACT(EPOCH FROM (pod_date - dn_create_date)) / 86400 
+                                THEN EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp)) / 86400 
                                 ELSE NULL END) as avg_cycle
                         FROM delivery_reports 
                         WHERE warehouse IS NOT NULL 
