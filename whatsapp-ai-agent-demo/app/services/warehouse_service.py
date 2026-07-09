@@ -85,11 +85,9 @@ if REDIS_AVAILABLE:
 if CACHETOOLS_AVAILABLE:
     _geocode_cache = TTLCache(maxsize=1000, ttl=604800)
     _distance_cache = TTLCache(maxsize=1000, ttl=2592000)
-    _warehouse_cache = TTLCache(maxsize=500, ttl=3600)
 else:
     _geocode_cache = {}
     _distance_cache = {}
-    _warehouse_cache = {}
 
 # ============================================================
 # UTILITY FUNCTIONS (SAME AS DEALER SERVICE)
@@ -170,10 +168,9 @@ def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
                 coords = (location.latitude, location.longitude)
                 _geocode_cache[cache_key] = coords
                 _set_redis_cache(redis_key, f"{coords[0]},{coords[1]}", 604800)
-                logger.info(f"✅ Geocoded '{city_clean}' → {coords}")
                 return coords
-        except Exception as e:
-            logger.warning(f"Geopy geocoding failed for '{city_clean}': {e}")
+        except Exception:
+            pass
     
     # Try OpenRouteService
     if ORS_AVAILABLE and ORS_API_KEY:
@@ -212,7 +209,10 @@ def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
     return fallback_coords.get(cache_key)
 
 def _get_road_distance_between_cities(city1: str, city2: str) -> Tuple[float, str]:
-    """Get ROAD distance between two cities using OpenRouteService"""
+    """
+    Get ROAD distance between two cities using OpenRouteService
+    This uses actual road networks, not straight-line distance
+    """
     if not city1 or not city2:
         return (0, "Unknown")
     
@@ -308,6 +308,218 @@ class WarehouseAnalyticsService:
     def __init__(self) -> None:
         self._version = VERSION
         logger.info(f"✅ WarehouseAnalyticsService v{self._version} initialized")
+        logger.info(f"   Geopy: {'✅' if GEOCODE_AVAILABLE else '❌'}")
+        logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
+        logger.info(f"   Redis: {'✅' if _redis_client else '❌'}")
+        logger.info(f"   Cachetools: {'✅' if CACHETOOLS_AVAILABLE else '❌'}")
+    
+    def handle_message(self, message: str, sender: str) -> str:
+        """Main entry point - searches for warehouse and returns dashboard"""
+        try:
+            message_clean = message.strip()
+            
+            # Check if it's 99
+            if message_clean == '99':
+                logger.info("[Service] 99 detected, showing help")
+                return self._get_help_message()
+            
+            # Check if it's a greeting or empty
+            if not message_clean or message_clean.lower() in ['hi', 'hello', 'hey', 'start', 'menu']:
+                return self._get_welcome_message()
+            
+            logger.info(f"[Service] Searching for warehouse: '{message_clean}' from {sender}")
+            
+            # Search for the warehouse
+            warehouse = self._resolve_warehouse_name(message_clean)
+            if warehouse:
+                return self.get_warehouse_dashboard(warehouse)
+            
+            # Get suggestions
+            suggestions = self._get_suggestions(message_clean)
+            if suggestions:
+                return self._format_suggestions(message_clean, suggestions)
+            
+            # No results
+            return f"""🔍 No warehouse found matching '{message_clean}'
+
+💡 Suggestions:
+• Try the full warehouse name
+• Try a partial name
+• Check for spelling errors
+
+Examples:
+• Lahore
+• Karachi
+• Sialkot
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Type a warehouse name to search again
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+            
+        except Exception as e:
+            logger.exception(f"Error in handle_message: {e}")
+            return f"⚠️ Error: {str(e)}\n\nPlease try again with a different warehouse name."
+    
+    def _get_welcome_message(self) -> str:
+        """Get welcome message"""
+        ors_status = "✅ Active" if ORS_AVAILABLE and ORS_API_KEY else "⚠️ Fallback Mode"
+        geopy_status = "✅ Active" if GEOCODE_AVAILABLE else "❌"
+        redis_status = "✅ Connected" if _redis_client else "❌ Not Connected"
+        
+        return f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏬 WAREHOUSE INTELLIGENCE CENTER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Welcome to the Warehouse Intelligence Platform!
+
+🔍 **How to use:**
+• Type any warehouse name to get their dashboard
+• Examples:
+  - Lahore
+  - Karachi
+  - Sialkot
+
+📊 **What you'll see:**
+• Market coverage metrics
+• Business overview
+• Operational KPIs
+• Top dealers, cities, and models
+• ROAD distance from warehouse (Avg & Farthest)
+• AI-powered insights
+
+🗺️ **Distance Services:**
+• OpenRouteService (Road): {ors_status}
+• Geopy (Geocoding): {geopy_status}
+• Redis Cache: {redis_status}
+
+💡 **Pro tip:** 
+Type partial warehouse names and we'll suggest matches!
+Type **99** for quick help anytime!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Type a warehouse name to get started!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+    
+    def _get_help_message(self) -> str:
+        """Get help message for 99 command"""
+        return """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 QUICK HELP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This is a warehouse search system.
+
+🔍 **To search:**
+Simply type the warehouse name.
+
+📊 **Examples:**
+• Lahore
+• Karachi
+• Sialkot
+
+🔄 **Tips:**
+• You can type partial names
+• We'll show suggestions if no exact match
+• All data is real-time from the database
+• Type **99** for this help menu anytime
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Type a warehouse name to get started!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+    
+    def _resolve_warehouse_name(self, name: str) -> Optional[str]:
+        """Resolve warehouse name from database"""
+        if not name or not name.strip():
+            return None
+        
+        name_normalized = name.strip().lower()
+        logger.info(f"[Service] Resolving warehouse: '{name_normalized}'")
+        
+        try:
+            with engine.connect() as conn:
+                # Exact match
+                result = conn.execute(
+                    text("""
+                        SELECT DISTINCT TRIM(warehouse) as warehouse
+                        FROM delivery_reports 
+                        WHERE LOWER(TRIM(warehouse)) = LOWER(:name)
+                        LIMIT 1
+                    """),
+                    {"name": name_normalized}
+                ).first()
+                
+                if result:
+                    logger.info(f"[Service] ✅ Found warehouse: {result[0]}")
+                    return result[0]
+                
+                # ILIKE match
+                result = conn.execute(
+                    text("""
+                        SELECT DISTINCT TRIM(warehouse) as warehouse
+                        FROM delivery_reports 
+                        WHERE TRIM(warehouse) ILIKE :pattern
+                        LIMIT 1
+                    """),
+                    {"pattern": f"%{name}%"}
+                ).first()
+                
+                if result:
+                    logger.info(f"[Service] ✅ Found warehouse (ILIKE): {result[0]}")
+                    return result[0]
+                
+                logger.info(f"[Service] ❌ No warehouse found: '{name_normalized}'")
+                
+        except Exception as e:
+            logger.exception(f"Error resolving warehouse name: {e}")
+        
+        return None
+    
+    def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
+        """Get warehouse name suggestions"""
+        if not query:
+            return []
+        
+        try:
+            with engine.connect() as conn:
+                results = conn.execute(
+                    text("""
+                        SELECT DISTINCT TRIM(warehouse) as warehouse
+                        FROM delivery_reports 
+                        WHERE LOWER(TRIM(warehouse)) LIKE LOWER(:pattern)
+                        AND warehouse IS NOT NULL
+                        ORDER BY warehouse
+                        LIMIT :limit
+                    """),
+                    {"pattern": f"%{query}%", "limit": limit}
+                ).fetchall()
+                
+                suggestions = [r[0] for r in results if r[0]]
+                logger.info(f"[Service] Found {len(suggestions)} suggestions for: '{query}'")
+                return suggestions
+        except Exception as e:
+            logger.exception(f"Error getting suggestions: {e}")
+            return []
+    
+    def _format_suggestions(self, query: str, suggestions: List[str]) -> str:
+        """Format suggestions for display"""
+        lines = [
+            f"🔍 No exact match for '{query}'",
+            "",
+            "💡 Did you mean:",
+            ""
+        ]
+        
+        for i, s in enumerate(suggestions[:5], 1):
+            lines.append(f"{i}. {s}")
+        
+        lines.extend([
+            "",
+            f"Type the exact name or try: {query}",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "Type a warehouse name to search"
+        ])
+        
+        return "\n".join(lines)
     
     def get_warehouse_dashboard(self, warehouse_name: str) -> str:
         """Get warehouse dashboard with road distance"""
@@ -340,7 +552,8 @@ class WarehouseAnalyticsService:
                 ).first()
                 
                 if not result:
-                    return f"⚠️ Warehouse '{warehouse_name}' not found."
+                    logger.warning(f"[Service] No data found for warehouse: {warehouse_name}")
+                    return f"⚠️ Warehouse '{warehouse_name}' not found.\n\nPlease check the warehouse name and try again."
                 
                 warehouse = _text(result[0])
                 warehouse_code = _text(result[1])
@@ -372,7 +585,7 @@ class WarehouseAnalyticsService:
                 # Get top 5 customer models
                 models = self._get_top_models(warehouse_name)
                 
-                # Get distance statistics
+                # Get distance statistics (avg and farthest)
                 avg_distance, farthest_city, farthest_distance = self._get_distance_stats(warehouse_name)
                 
                 # Build the dashboard
@@ -476,6 +689,7 @@ class WarehouseAnalyticsService:
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
                 ])
                 
+                logger.info(f"[Service] ✅ Dashboard generated for warehouse: {warehouse_name}")
                 return "\n".join(lines)
                 
         except Exception as e:
@@ -500,7 +714,8 @@ class WarehouseAnalyticsService:
                     {"name": warehouse_name, "limit": limit}
                 ).fetchall()
                 return [r[0] for r in results if r[0]]
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error getting top dealers: {e}")
             return []
     
     def _get_top_cities(self, warehouse_name: str, limit: int = 5) -> List[str]:
@@ -521,7 +736,8 @@ class WarehouseAnalyticsService:
                     {"name": warehouse_name, "limit": limit}
                 ).fetchall()
                 return [r[0] for r in results if r[0]]
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error getting top cities: {e}")
             return []
     
     def _get_top_models(self, warehouse_name: str, limit: int = 5) -> List[str]:
@@ -543,7 +759,8 @@ class WarehouseAnalyticsService:
                     {"name": warehouse_name, "limit": limit}
                 ).fetchall()
                 return [r[0] for r in results if r[0]]
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error getting top models: {e}")
             return []
     
     def _get_distance_stats(self, warehouse_name: str) -> Tuple[str, str, str]:
@@ -590,6 +807,7 @@ class WarehouseAnalyticsService:
                 farthest_city, farthest_dist = max(distances, key=lambda x: x[1]) if distances else ("N/A", 0)
                 farthest_display = f"{farthest_dist:.1f} KM"
                 
+                logger.info(f"[Service] Distance stats for {warehouse_name}: Avg={avg_display}, Farthest={farthest_city} ({farthest_display})")
                 return (avg_display, farthest_city, farthest_display)
                 
         except Exception as e:
@@ -639,195 +857,6 @@ class WarehouseAnalyticsService:
         insights.append("📈 Strengthen transporter performance to reduce delivery lead time.")
         
         return insights
-    
-    def get_main_menu(self) -> str:
-        """Get main warehouse menu"""
-        return """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏬 WAREHOUSE INTELLIGENCE CENTER
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Welcome to the Warehouse Intelligence Platform!
-
-🔍 **How to use:**
-• Type any warehouse name to get their dashboard
-• Examples:
-  - Lahore
-  - Karachi
-  - Sialkot
-
-📊 **What you'll see:**
-• Market coverage metrics
-• Business overview
-• Operational KPIs
-• Top dealers, cities, and models
-• Road distance statistics (avg & farthest)
-• AI-powered insights
-
-💡 **Pro tip:** 
-Type partial warehouse names and we'll suggest matches!
-Type **99** for quick help anytime!
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Type a warehouse name to get started!
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
-    
-    def get_help_message(self) -> str:
-        """Get help message"""
-        return """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 QUICK HELP
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-This is a warehouse search system.
-
-🔍 **To search:**
-Simply type the warehouse name.
-
-📊 **Examples:**
-• Lahore
-• Karachi
-• Sialkot
-
-🔄 **Tips:**
-• You can type partial names
-• We'll show suggestions if no exact match
-• All data is real-time from the database
-• Type **99** for this help menu anytime
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Type a warehouse name to get started!
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
-    
-    def handle_message(self, message: str, sender: str) -> str:
-        """Main entry point - searches for warehouse and returns dashboard"""
-        try:
-            message_clean = message.strip()
-            
-            # Check if it's 99
-            if message_clean == '99':
-                return self.get_help_message()
-            
-            # Check if it's a greeting or empty
-            if not message_clean or message_clean.lower() in ['hi', 'hello', 'hey', 'start', 'menu']:
-                return self.get_main_menu()
-            
-            logger.info(f"[Service] Searching for warehouse: '{message_clean}'")
-            
-            # Search for the warehouse
-            warehouse = self._resolve_warehouse_name(message_clean)
-            if warehouse:
-                return self.get_warehouse_dashboard(warehouse)
-            
-            # Get suggestions
-            suggestions = self._get_suggestions(message_clean)
-            if suggestions:
-                return self._format_suggestions(message_clean, suggestions)
-            
-            return f"""🔍 No warehouse found matching '{message_clean}'
-
-💡 Suggestions:
-• Try the full warehouse name
-• Try a partial name
-• Check for spelling errors
-
-Examples:
-• Lahore
-• Karachi
-• Sialkot
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Type a warehouse name to search again
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
-            
-        except Exception as e:
-            logger.exception(f"Error in handle_message: {e}")
-            return f"⚠️ Error: {str(e)}\n\nPlease try again with a different warehouse name."
-    
-    def _resolve_warehouse_name(self, name: str) -> Optional[str]:
-        """Resolve warehouse name from database"""
-        if not name or not name.strip():
-            return None
-        
-        name_normalized = name.strip().lower()
-        
-        try:
-            with engine.connect() as conn:
-                # Exact match
-                result = conn.execute(
-                    text("""
-                        SELECT DISTINCT TRIM(warehouse) as warehouse
-                        FROM delivery_reports 
-                        WHERE LOWER(TRIM(warehouse)) = LOWER(:name)
-                        LIMIT 1
-                    """),
-                    {"name": name_normalized}
-                ).first()
-                
-                if result:
-                    return result[0]
-                
-                # ILIKE match
-                result = conn.execute(
-                    text("""
-                        SELECT DISTINCT TRIM(warehouse) as warehouse
-                        FROM delivery_reports 
-                        WHERE TRIM(warehouse) ILIKE :pattern
-                        LIMIT 1
-                    """),
-                    {"pattern": f"%{name}%"}
-                ).first()
-                
-                if result:
-                    return result[0]
-                
-        except Exception as e:
-            logger.exception(f"Error resolving warehouse name: {e}")
-        
-        return None
-    
-    def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
-        """Get warehouse name suggestions"""
-        if not query:
-            return []
-        
-        try:
-            with engine.connect() as conn:
-                results = conn.execute(
-                    text("""
-                        SELECT DISTINCT TRIM(warehouse) as warehouse
-                        FROM delivery_reports 
-                        WHERE LOWER(TRIM(warehouse)) LIKE LOWER(:pattern)
-                        AND warehouse IS NOT NULL
-                        ORDER BY warehouse
-                        LIMIT :limit
-                    """),
-                    {"pattern": f"%{query}%", "limit": limit}
-                ).fetchall()
-                
-                return [r[0] for r in results if r[0]]
-        except Exception:
-            return []
-    
-    def _format_suggestions(self, query: str, suggestions: List[str]) -> str:
-        """Format suggestions for display"""
-        lines = [
-            f"🔍 No exact match for '{query}'",
-            "",
-            "💡 Did you mean:",
-            ""
-        ]
-        
-        for i, s in enumerate(suggestions[:5], 1):
-            lines.append(f"{i}. {s}")
-        
-        lines.extend([
-            "",
-            f"Type the exact name or try: {query}",
-            "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "Type a warehouse name to search"
-        ])
-        
-        return "\n".join(lines)
 
 # ============================================================
 # SINGLETON
@@ -838,7 +867,9 @@ _warehouse_service: Optional[WarehouseAnalyticsService] = None
 def get_warehouse_service() -> WarehouseAnalyticsService:
     global _warehouse_service
     if _warehouse_service is None:
+        logger.info("🔧 Creating WarehouseAnalyticsService instance...")
         _warehouse_service = WarehouseAnalyticsService()
+        logger.info("✅ WarehouseAnalyticsService instance created successfully")
     return _warehouse_service
 
 __all__ = [
