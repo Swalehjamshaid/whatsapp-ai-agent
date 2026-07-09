@@ -519,7 +519,7 @@ class DealerAnalyticsService:
         geopy_status = "✅ Active" if GEOCODE_AVAILABLE else "❌"
         
         return f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏢 DEALER INTELLIGENCE CENTER
+🏢 HAIER DEALER INTELLIGENCE CENTER
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Welcome to the Dealer Intelligence Platform!
@@ -754,85 +754,97 @@ Type a dealer name to search again
         pgi_achievement = data.get('pgi_achievement', 0)
         rating = data.get('rating', 'C')
         
-        # Format distance
-        if distance_km is not None and distance_km > 0:
-            distance_str = f"{distance_km} KM (Estimated {distance_time})"
-        else:
-            distance_str = "Not Available"
+        # Get top models
+        top_models = self._get_top_models(customer_name)
+        
+        # Get best month
+        best_month = self._get_highest_sales_month(customer_name)
+        
+        # Get revenue trend
+        revenue_trend = self._get_revenue_trend(customer_name)
         
         # Clean dealer name - remove phone numbers and C/O
         clean_name = re.sub(r'0[0-9]{2,4}[-.\s]?[0-9]{7,8}', '', customer_name)
         clean_name = re.sub(r'C/O\s*', '', clean_name, flags=re.IGNORECASE)
         clean_name = re.sub(r'\s+', ' ', clean_name).strip()
         
+        # Format distance
+        if distance_km is not None and distance_km > 0:
+            distance_str = f"{distance_km} KM (Estimated {distance_time})"
+        else:
+            distance_str = "Not Available"
+        
         lines = [
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "🏢 DEALER INTELLIGENCE CENTER",
+            "🏢 HAIER DEALER INTELLIGENCE CENTER",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
-            f"👤 Dealer",
-            f"{clean_name}",
-            "",
-            f"🆔 Dealer Code",
-            f"{dealer_code}",
-            "",
-            f"📍 City",
-            f"{city}",
-            "",
-            f"🏬 Warehouse",
-            f"{warehouse}",
-            "",
-            f"📏 Distance",
-            f"{distance_str}",
-            "",
-            f"📦 Division",
-            f"{division}",
-            "",
-            f"💰 Total Revenue",
-            f"{_format_currency(revenue)}",
-            "",
-            f"📦 Total DNs",
-            f"{_format_number(dn_count)}",
-            "",
-            f"📦 Total Units",
-            f"{_format_number(total_units)}",
-            "",
-            f"🚚 Delivered",
-            f"{_format_number(delivered)} ({pod_achievement:.1f}%)",
-            "",
-            f"⏳ Pending DNs",
-            f"{_format_number(pending_dn)}",
-            "",
-            f"📅 Avg Delivery Time",
-            f"{avg_delivery_days:.1f} Days",
-            "",
-            f"📄 POD Achievement",
-            f"{pod_achievement:.1f}%",
-            "",
-            f"⚡ PGI Achievement",
-            f"{pgi_achievement:.1f}%",
-            "",
-            f"⭐ Dealer Rating",
-            f"{rating}",
+            f"👤 {clean_name}",
+            f"📍 {city}",
+            f"🏬 Dispatch WH : {warehouse}",
             "",
             "━━━━━━━━━━━━━━━━━━━━",
-            "📈 BUSINESS INSIGHTS",
+            "💼 BUSINESS SUMMARY",
             "━━━━━━━━━━━━━━━━━━━━",
             "",
-            f"• Best Selling Model : {self._get_best_selling_model(customer_name)}",
-            f"• Highest Sales Month : {self._get_highest_sales_month(customer_name)}",
-            f"• Revenue Growth : {self._get_revenue_growth(customer_name)}",
-            f"• Delivery Performance : {self._get_delivery_performance(pod_achievement)}",
-            f"• Primary Warehouse : {warehouse}",
+            f"💰 Revenue            {_format_currency(revenue)}",
+            f"📦 Units Sold         {_format_number(total_units)}",
+            f"🚚 Delivery Notes     {_format_number(dn_count)}",
+            f"🏷️ Division           {division}",
+            f"⭐ Dealer Rating       {rating}",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "🏆 TOP CUSTOMER MODELS",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+        ]
+        
+        # Add top models
+        for i, (model, count) in enumerate(top_models):
+            if i == 0:
+                lines.append(f"🥇 {model}             {count} Units")
+            elif i == 1:
+                lines.append(f"🥈 {model}             {count} Units")
+            elif i == 2:
+                lines.append(f"🥉 {model}               {count} Unit")
+            else:
+                lines.append(f"• {model}             {count} Unit")
+        
+        lines.extend([
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "🚛 DELIVERY PERFORMANCE",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"✅ Delivered DNs      {_format_number(delivered)} ({pod_achievement:.1f}%)",
+            f"⏳ Pending DNs        {_format_number(pending_dn)}",
+            f"📅 Avg Delivery       {avg_delivery_days:.1f} Days",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "📊 SERVICE KPIs",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"⚡ PGI Achievement    {pgi_achievement:.1f}%",
+            f"📄 POD Achievement    {pod_achievement:.1f}%",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "📈 SALES INSIGHTS",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"📅 Best Month         {best_month}",
+            f"🏬 Primary Warehouse  {warehouse}",
+            f"📦 Best Seller        {top_models[0][0] if top_models else 'N/A'}",
+            f"📊 Revenue Trend      {revenue_trend}",
+            f"🚛 Delivery Status    {self._get_delivery_performance(pod_achievement)}",
             "",
             "━━━━━━━━━━━━━━━━━━━━",
             "🤖 AI RECOMMENDATIONS",
             "━━━━━━━━━━━━━━━━━━━━",
             "",
-        ]
+        ])
         
         # Add AI recommendations
-        recommendations = self._get_ai_recommendations(data)
+        recommendations = self._get_ai_recommendations(data, top_models)
         for rec in recommendations:
             lines.append(f"✅ {rec}")
         
@@ -845,24 +857,25 @@ Type a dealer name to search again
         
         return "\n".join(lines)
     
-    def _get_best_selling_model(self, customer_name: str) -> str:
-        """Get best selling model for the dealer"""
+    def _get_top_models(self, customer_name: str, limit: int = 7) -> List[Tuple[str, int]]:
+        """Get top selling models for the dealer"""
         try:
             with engine.connect() as conn:
-                result = conn.execute(
+                results = conn.execute(
                     text("""
                         SELECT material_no, COUNT(dn_no) as count
                         FROM delivery_reports 
                         WHERE LOWER(TRIM(customer_name)) = LOWER(TRIM(:name))
                         GROUP BY material_no
                         ORDER BY count DESC
-                        LIMIT 1
+                        LIMIT :limit
                     """),
-                    {"name": customer_name}
-                ).first()
-                return result[0] if result else "N/A"
-        except Exception:
-            return "N/A"
+                    {"name": customer_name, "limit": limit}
+                ).fetchall()
+                return [(r[0], int(r[1])) for r in results if r[0]]
+        except Exception as e:
+            logger.error(f"Error getting top models: {e}")
+            return []
     
     def _get_highest_sales_month(self, customer_name: str) -> str:
         """Get highest sales month"""
@@ -882,39 +895,46 @@ Type a dealer name to search again
                     {"name": customer_name}
                 ).first()
                 return result[0].strip() if result else "N/A"
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error getting best month: {e}")
             return "N/A"
     
-    def _get_revenue_growth(self, customer_name: str) -> str:
-        """Calculate revenue growth"""
+    def _get_revenue_trend(self, customer_name: str) -> str:
+        """Get revenue trend (growth or decline)"""
         try:
             with engine.connect() as conn:
                 # Get last two months revenue
                 result = conn.execute(
                     text("""
                         SELECT 
-                            EXTRACT(MONTH FROM dn_create_date) as month,
                             SUM(dn_amount) as revenue
                         FROM delivery_reports 
                         WHERE LOWER(TRIM(customer_name)) = LOWER(TRIM(:name))
                         AND dn_create_date >= CURRENT_DATE - INTERVAL '3 months'
                         GROUP BY EXTRACT(MONTH FROM dn_create_date)
-                        ORDER BY month DESC
+                        ORDER BY EXTRACT(MONTH FROM dn_create_date) DESC
                         LIMIT 2
                     """),
                     {"name": customer_name}
                 ).fetchall()
                 
                 if len(result) >= 2:
-                    current = float(result[0][1] or 0)
-                    previous = float(result[1][1] or 0)
+                    current = float(result[0][0] or 0)
+                    previous = float(result[1][0] or 0)
                     if previous > 0:
                         growth = ((current - previous) / previous) * 100
-                        arrow = "↑" if growth > 0 else "↓"
-                        return f"{arrow} {abs(growth):.1f}%"
-                return "0.0%"
-        except Exception:
-            return "0.0%"
+                        if growth > 10:
+                            return "High Growth ↑"
+                        elif growth > 0:
+                            return "Growing ↑"
+                        elif growth > -10:
+                            return "Stable →"
+                        else:
+                            return "Declining ↓"
+                return "Stable →"
+        except Exception as e:
+            logger.error(f"Error getting revenue trend: {e}")
+            return "Stable →"
     
     def _get_delivery_performance(self, delivery_rate: float) -> str:
         """Get delivery performance rating"""
@@ -927,43 +947,42 @@ Type a dealer name to search again
         else:
             return "Needs Improvement"
     
-    def _get_ai_recommendations(self, data: Dict[str, Any]) -> List[str]:
+    def _get_ai_recommendations(self, data: Dict[str, Any], top_models: List[Tuple[str, int]]) -> List[str]:
         """Generate AI recommendations"""
         recommendations = []
         
         # Best selling model recommendation
-        model = self._get_best_selling_model(data.get('customer_name', ''))
-        if model != 'N/A':
-            recommendations.append(f"Maintain inventory of {model}.")
+        if top_models:
+            model = top_models[0][0]
+            recommendations.append(f"Maintain stock of {model}.")
         
         # Pending deliveries
         pending = data.get('pending_dn', 0)
         if pending > 0:
-            recommendations.append(f"Expedite {pending} pending deliveries.")
+            recommendations.append(f"🚚 Prioritize dispatch of {pending} pending DNs.")
         else:
             recommendations.append("All deliveries completed. Excellent efficiency!")
         
-        # Performance based recommendations
-        delivery_rate = data.get('delivery_rate', 0)
-        if delivery_rate >= 95:
-            recommendations.append("Dealer qualifies for Premium Service.")
-        elif delivery_rate >= 85:
-            recommendations.append("Dealer qualifies for Priority Service.")
+        # POD compliance
+        pod_achievement = data.get('pod_achievement', 0)
+        if pod_achievement < 90:
+            recommendations.append("📄 Improve POD compliance through timely document submission.")
+        
+        # Rating improvement
+        rating = data.get('rating', 'C')
+        if rating in ['C+', 'C']:
+            recommendations.append("⚡ Improve PGI & POD to achieve an 'A' dealer rating.")
+        
+        # Diversification suggestion
+        if len(top_models) > 1:
+            recommendations.append("📈 Increase focus on AC and Refrigerator models to diversify sales.")
         
         # Warehouse recommendation
         warehouse = data.get('warehouse', '')
-        city = data.get('city', '')
-        if warehouse and city and warehouse != 'Unknown' and city != 'Unknown':
-            recommendations.append(f"Current warehouse is the nearest dispatch point.")
+        if warehouse and warehouse != 'Unknown':
+            recommendations.append(f"🎯 Continue dispatches from {warehouse} for faster deliveries.")
         
-        # Rating based recommendations
-        rating = data.get('rating', 'C')
-        if rating in ['A+', 'A']:
-            recommendations.append("Dealer is eligible for exclusive offers.")
-        elif rating in ['C+', 'C']:
-            recommendations.append("Consider providing additional support to improve performance.")
-        
-        return recommendations[:5]  # Limit to 5 recommendations
+        return recommendations[:6]  # Limit to 6 recommendations
     
     @staticmethod
     def _session() -> Session:
