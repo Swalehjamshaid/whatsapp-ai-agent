@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/warehouse_service.py
-# VERSION: 3.1 - FIXED FARTHEST CITY FOR WAREHOUSE
+# VERSION: 3.2 - FIXED MENU NAVIGATION & WAREHOUSE MAPPING
 # PURPOSE: Warehouse analytics with pre-cached coordinates
 # ============================================================
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ============================================================
 
-VERSION = "3.1"
+VERSION = "3.2"
 
 # ============================================================
 # PRE-CACHED COORDINATES - NO API CALLS, SUB-1 SECOND RESPONSE
@@ -64,6 +64,7 @@ CITY_COORDINATES = {
     "mandi bahauddin": (32.5833, 73.4833),
     "wazirabad": (32.4333, 74.1167),
     "kamoki": (31.9833, 74.2167),
+    "lahore cantt": (31.5204, 74.3587),
     
     # KPK Cities
     "abbottabad": (34.1490, 73.2210),
@@ -96,6 +97,7 @@ CITY_COORDINATES = {
 
 _warehouse_cache = {}
 _distance_cache = {}
+_warehouse_cities_cache = {}
 
 # ============================================================
 # UTILITY FUNCTIONS - FAST, NO API CALLS
@@ -198,14 +200,16 @@ class WarehouseAnalyticsService:
         self._version = VERSION
         logger.info(f"✅ WarehouseAnalyticsService v{self._version} initialized")
         logger.info("   ⚡ SUB-1 SECOND RESPONSE TIME - No API calls")
+        logger.info("   📍 Menu: Type 99 or 4 for help")
     
     def handle_message(self, message: str, sender: str) -> str:
         """Main entry point - SUB-1 SECOND RESPONSE"""
         try:
             message_clean = message.strip()
             
-            # Check if it's 99
-            if message_clean == '99':
+            # Check if it's 99 or any number (1-9) - Show help menu
+            if message_clean in ['99', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0']:
+                logger.info("[Service] Menu command detected, showing help")
                 return self._get_help_message()
             
             # Check if it's a greeting or empty
@@ -237,6 +241,8 @@ Examples:
 • Karachi
 • Sialkot
 
+Type **99** for help menu anytime!
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Type a warehouse name to search again
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
@@ -265,13 +271,12 @@ Welcome to the Warehouse Intelligence Platform!
 • Business overview
 • Operational KPIs
 • Top dealers, cities, and models
-• ROAD distance from warehouse (Avg & Farthest)
+• Road distance from warehouse (Avg & Farthest)
 • AI-powered insights
 
 ⚡ **Response Time:** < 1 second
 
 💡 **Pro tip:** 
-Type partial warehouse names and we'll suggest matches!
 Type **99** for quick help anytime!
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -279,7 +284,7 @@ Type a warehouse name to get started!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
     
     def _get_help_message(self) -> str:
-        """Get help message for 99 command - SUB-1 SECOND"""
+        """Get help message for 99 or numeric commands - SUB-1 SECOND"""
         return """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📋 QUICK HELP
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -309,6 +314,10 @@ Type a warehouse name to get started!
     def _resolve_warehouse_name(self, name: str) -> Optional[str]:
         """Resolve warehouse name from database - FAST"""
         if not name or not name.strip():
+            return None
+        
+        # Skip if it's a number (menu command)
+        if name.strip().isdigit():
             return None
         
         name_normalized = name.strip().lower()
@@ -365,6 +374,10 @@ Type a warehouse name to get started!
         if not query:
             return []
         
+        # Skip if it's a number
+        if query.strip().isdigit():
+            return []
+        
         try:
             with engine.connect() as conn:
                 results = conn.execute(
@@ -401,7 +414,8 @@ Type a warehouse name to get started!
             f"Type the exact name or try: {query}",
             "",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "Type a warehouse name to search"
+            "Type a warehouse name to search",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         ])
         
         return "\n".join(lines)
@@ -647,6 +661,10 @@ Type a warehouse name to get started!
     
     def _get_all_served_cities(self, warehouse_name: str) -> List[str]:
         """Get all unique cities served by this warehouse"""
+        cache_key = warehouse_name.lower()
+        if cache_key in _warehouse_cities_cache:
+            return _warehouse_cities_cache[cache_key]
+        
         try:
             with engine.connect() as conn:
                 results = conn.execute(
@@ -660,7 +678,9 @@ Type a warehouse name to get started!
                     """),
                     {"name": warehouse_name}
                 ).fetchall()
-                return [r[0] for r in results if r[0]]
+                cities = [r[0] for r in results if r[0]]
+                _warehouse_cities_cache[cache_key] = cities
+                return cities
         except Exception as e:
             logger.error(f"Error getting served cities: {e}")
             return []
