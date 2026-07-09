@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/warehouse_service.py
-# VERSION: 3.0 - SUB-1 SECOND RESPONSE TIME
-# PURPOSE: Warehouse analytics with PRE-CACHED coordinates only
+# VERSION: 3.1 - FIXED FARTHEST CITY FOR WAREHOUSE
+# PURPOSE: Warehouse analytics with pre-cached coordinates
 # ============================================================
 
 from __future__ import annotations
@@ -26,14 +26,12 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ============================================================
 
-VERSION = "3.0"
+VERSION = "3.1"
 
 # ============================================================
 # PRE-CACHED COORDINATES - NO API CALLS, SUB-1 SECOND RESPONSE
 # ============================================================
 
-# Complete coordinates for all Pakistani cities
-# This eliminates ALL geocoding API calls
 CITY_COORDINATES = {
     # Major Cities
     "karachi": (24.8607, 67.0011),
@@ -64,6 +62,8 @@ CITY_COORDINATES = {
     "jhelum": (32.9333, 73.7333),
     "chakwal": (32.9333, 72.8667),
     "mandi bahauddin": (32.5833, 73.4833),
+    "wazirabad": (32.4333, 74.1167),
+    "kamoki": (31.9833, 74.2167),
     
     # KPK Cities
     "abbottabad": (34.1490, 73.2210),
@@ -85,73 +85,15 @@ CITY_COORDINATES = {
     "bagh": (33.9833, 73.7667),
     
     # Sindh Cities
-    "sukkur": (27.7060, 68.8530),
     "mirpur khas": (25.5333, 69.0167),
     "nawabshah": (26.2500, 68.4167),
     "larkana": (27.5590, 68.2260),
-}
-
-# Pre-calculated road distances (KM) between major warehouse-city pairs
-# This eliminates ALL distance API calls
-PRE_CALCULATED_DISTANCES = {
-    # From Sialkot
-    "sialkot|karachi": (1245.8, "20h 45m"),
-    "sialkot|lahore": (125.4, "2h 5m"),
-    "sialkot|rawalpindi": (210.3, "3h 30m"),
-    "sialkot|islamabad": (215.6, "3h 35m"),
-    "sialkot|multan": (380.2, "6h 20m"),
-    "sialkot|faisalabad": (180.5, "3h 0m"),
-    "sialkot|gujranwala": (50.2, "0h 50m"),
-    "sialkot|gujrat": (30.5, "0h 30m"),
-    "sialkot|narowal": (45.8, "0h 45m"),
-    "sialkot|hafizabad": (70.3, "1h 10m"),
-    "sialkot|sheikhupura": (100.7, "1h 40m"),
-    "sialkot|sargodha": (280.4, "4h 40m"),
-    "sialkot|bahawalpur": (520.6, "8h 40m"),
-    "sialkot|peshawar": (450.2, "7h 30m"),
-    "sialkot|quetta": (880.5, "14h 40m"),
-    "sialkot|hyderabad": (1120.3, "18h 40m"),
-    "sialkot|sukkur": (680.4, "11h 20m"),
-    "sialkot|abbottabad": (310.5, "5h 10m"),
-    "sialkot|daska": (25.5, "0h 25m"),
-    
-    # From Lahore
-    "lahore|karachi": (1120.5, "18h 40m"),
-    "lahore|rawalpindi": (280.3, "4h 40m"),
-    "lahore|islamabad": (285.6, "4h 45m"),
-    "lahore|multan": (350.2, "5h 50m"),
-    "lahore|faisalabad": (140.5, "2h 20m"),
-    "lahore|sialkot": (125.4, "2h 5m"),
-    "lahore|gujranwala": (85.2, "1h 25m"),
-    "lahore|peshawar": (520.3, "8h 40m"),
-    "lahore|quetta": (800.5, "13h 20m"),
-    "lahore|hyderabad": (1000.4, "16h 40m"),
-    
-    # From Karachi
-    "karachi|lahore": (1120.5, "18h 40m"),
-    "karachi|rawalpindi": (1350.3, "22h 30m"),
-    "karachi|islamabad": (1355.6, "22h 35m"),
-    "karachi|multan": (850.2, "14h 10m"),
-    "karachi|faisalabad": (1100.5, "18h 20m"),
-    "karachi|sialkot": (1245.8, "20h 45m"),
-    "karachi|hyderabad": (150.4, "2h 30m"),
-    "karachi|sukkur": (450.3, "7h 30m"),
-    
-    # From Rawalpindi/Islamabad
-    "rawalpindi|karachi": (1350.3, "22h 30m"),
-    "rawalpindi|lahore": (280.3, "4h 40m"),
-    "rawalpindi|multan": (480.2, "8h 0m"),
-    "rawalpindi|faisalabad": (310.5, "5h 10m"),
-    "rawalpindi|sialkot": (210.3, "3h 30m"),
-    "rawalpindi|peshawar": (170.5, "2h 50m"),
-    "rawalpindi|abbottabad": (130.2, "2h 10m"),
 }
 
 # ============================================================
 # CACHE CONFIGURATION
 # ============================================================
 
-# In-memory caches
 _warehouse_cache = {}
 _distance_cache = {}
 
@@ -194,34 +136,37 @@ def _get_coordinates(city: str) -> Optional[Tuple[float, float]]:
     city_lower = city.lower().strip()
     return CITY_COORDINATES.get(city_lower)
 
+def _haversine_distance(coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:
+    """Calculate straight-line distance using Haversine formula"""
+    from math import radians, sin, cos, sqrt, atan2
+    
+    lat1, lon1 = coord1
+    lat2, lon2 = coord2
+    
+    R = 6371
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    
+    return R * c
+
 def _get_road_distance(city1: str, city2: str) -> Tuple[float, str]:
-    """
-    Get road distance from pre-calculated data - NO API CALLS
-    Falls back to Haversine if not pre-calculated
-    """
+    """Get road distance using Haversine (fast, no API)"""
     if not city1 or not city2:
         return (0, "Unknown")
     
     city1_lower = city1.lower().strip()
     city2_lower = city2.lower().strip()
     
-    # Check both directions
-    cache_key1 = f"{city1_lower}|{city2_lower}"
-    cache_key2 = f"{city2_lower}|{city1_lower}"
-    
-    # Check pre-calculated distances
-    if cache_key1 in PRE_CALCULATED_DISTANCES:
-        return PRE_CALCULATED_DISTANCES[cache_key1]
-    if cache_key2 in PRE_CALCULATED_DISTANCES:
-        return PRE_CALCULATED_DISTANCES[cache_key2]
+    cache_key = f"{city1_lower}|{city2_lower}"
     
     # Check in-memory cache
-    if cache_key1 in _distance_cache:
-        return _distance_cache[cache_key1]
-    if cache_key2 in _distance_cache:
-        return _distance_cache[cache_key2]
+    if cache_key in _distance_cache:
+        return _distance_cache[cache_key]
     
-    # Fallback: Calculate Haversine (fast, no API)
     coords1 = _get_coordinates(city1)
     coords2 = _get_coordinates(city2)
     
@@ -241,25 +186,8 @@ def _get_road_distance(city1: str, city2: str) -> Tuple[float, str]:
         time_str = f"{h}h {m}m" if m > 0 else f"{h}h"
     
     result = (round(distance_km, 1), time_str)
-    _distance_cache[cache_key1] = result
+    _distance_cache[cache_key] = result
     return result
-
-def _haversine_distance(coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:
-    """Calculate straight-line distance using Haversine formula"""
-    from math import radians, sin, cos, sqrt, atan2
-    
-    lat1, lon1 = coord1
-    lat2, lon2 = coord2
-    
-    R = 6371
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    
-    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-    c = 2 * atan2(sqrt(a), sqrt(1-a))
-    
-    return R * c
 
 # ============================================================
 # WAREHOUSE ANALYTICS SERVICE - SUB-1 SECOND RESPONSE
@@ -270,8 +198,6 @@ class WarehouseAnalyticsService:
         self._version = VERSION
         logger.info(f"✅ WarehouseAnalyticsService v{self._version} initialized")
         logger.info("   ⚡ SUB-1 SECOND RESPONSE TIME - No API calls")
-        logger.info(f"   📍 {len(CITY_COORDINATES)} cities pre-cached")
-        logger.info(f"   📏 {len(PRE_CALCULATED_DISTANCES)} distances pre-calculated")
     
     def handle_message(self, message: str, sender: str) -> str:
         """Main entry point - SUB-1 SECOND RESPONSE"""
@@ -540,8 +466,11 @@ Type a warehouse name to get started!
                 cities = self._get_top_cities(warehouse_name)
                 models = self._get_top_models(warehouse_name)
                 
-                # Get distance stats - FAST (no API calls)
-                avg_distance, farthest_city, farthest_distance = self._get_distance_stats(warehouse_name)
+                # Get all cities served by this warehouse for distance calculation
+                all_cities = self._get_all_served_cities(warehouse_name)
+                
+                # Get distance stats - ONLY from cities this warehouse serves
+                avg_distance, farthest_city, farthest_distance = self._get_distance_stats_for_warehouse(warehouse_name, all_cities)
                 
                 # Build the dashboard
                 lines = [
@@ -716,11 +645,10 @@ Type a warehouse name to get started!
         except Exception:
             return []
     
-    def _get_distance_stats(self, warehouse_name: str) -> Tuple[str, str, str]:
-        """Get average and farthest distance - FAST, NO API CALLS"""
+    def _get_all_served_cities(self, warehouse_name: str) -> List[str]:
+        """Get all unique cities served by this warehouse"""
         try:
             with engine.connect() as conn:
-                # Get unique cities
                 results = conn.execute(
                     text("""
                         SELECT DISTINCT TRIM(ship_to_city) as city
@@ -728,37 +656,46 @@ Type a warehouse name to get started!
                         WHERE LOWER(TRIM(warehouse)) = LOWER(TRIM(:name))
                         AND ship_to_city IS NOT NULL
                         AND TRIM(ship_to_city) != ''
-                        LIMIT 50
+                        ORDER BY city
                     """),
                     {"name": warehouse_name}
                 ).fetchall()
-                
-                cities = [r[0] for r in results if r[0]]
-                if not cities:
-                    return ("N/A", "N/A", "N/A")
-                
-                # Calculate distances using pre-cached data
-                distances = []
-                total_distance = 0
-                count = 0
-                
-                for city in cities:
-                    distance_km, _ = _get_road_distance(warehouse_name, city)
-                    if distance_km > 0:
-                        distances.append((city, distance_km))
-                        total_distance += distance_km
-                        count += 1
-                
-                if count == 0:
-                    return ("N/A", "N/A", "N/A")
-                
-                avg = total_distance / count
-                avg_display = f"{avg:.1f} KM"
-                
-                farthest_city, farthest_dist = max(distances, key=lambda x: x[1]) if distances else ("N/A", 0)
-                farthest_display = f"{farthest_dist:.1f} KM"
-                
-                return (avg_display, farthest_city, farthest_display)
+                return [r[0] for r in results if r[0]]
+        except Exception as e:
+            logger.error(f"Error getting served cities: {e}")
+            return []
+    
+    def _get_distance_stats_for_warehouse(self, warehouse_name: str, cities: List[str]) -> Tuple[str, str, str]:
+        """Get average and farthest distance - ONLY from cities this warehouse serves"""
+        try:
+            if not cities:
+                return ("N/A", "N/A", "N/A")
+            
+            # Calculate distances to each city this warehouse serves
+            distances = []
+            total_distance = 0
+            count = 0
+            
+            for city in cities:
+                distance_km, _ = _get_road_distance(warehouse_name, city)
+                if distance_km > 0:
+                    distances.append((city, distance_km))
+                    total_distance += distance_km
+                    count += 1
+            
+            if count == 0:
+                return ("N/A", "N/A", "N/A")
+            
+            # Calculate average
+            avg = total_distance / count
+            avg_display = f"{avg:.1f} KM"
+            
+            # Find farthest city among served cities
+            farthest_city, farthest_dist = max(distances, key=lambda x: x[1]) if distances else ("N/A", 0)
+            farthest_display = f"{farthest_dist:.1f} KM"
+            
+            logger.info(f"[Service] Distance stats for {warehouse_name}: Avg={avg_display}, Farthest={farthest_city} ({farthest_display}) from {count} cities")
+            return (avg_display, farthest_city, farthest_display)
                 
         except Exception as e:
             logger.error(f"Error calculating distance stats: {e}")
@@ -809,7 +746,6 @@ Type a warehouse name to get started!
             "version": self._version,
             "response_time": "< 1 second",
             "cities_cached": len(CITY_COORDINATES),
-            "distances_cached": len(PRE_CALCULATED_DISTANCES),
             "no_api_calls": True,
         }
 
