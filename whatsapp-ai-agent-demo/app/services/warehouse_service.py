@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/warehouse_service.py
-# VERSION: 3.3 - IMPROVED CITY MAPPING FOR ALL WAREHOUSES
-# PURPOSE: Warehouse analytics with enhanced city coverage
+# VERSION: 3.4 - IMPROVED WAREHOUSE SEARCH & SUGGESTIONS
+# PURPOSE: Warehouse analytics with enhanced search
 # ============================================================
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ============================================================
 
-VERSION = "3.3"
+VERSION = "3.4"
 
 # ============================================================
 # EXTENDED CITY COORDINATES - COVERS ALL PAKISTAN CITIES
@@ -64,9 +64,11 @@ CITY_COORDINATES = {
     "mandi bahauddin": (32.5833, 73.4833),
     "wazirabad": (32.4333, 74.1167),
     "kamoki": (31.9833, 74.2167),
-    "lahore cantt": (31.5204, 74.3587),
+    "jhang": (31.2667, 72.3167),
+    "shahkot": (31.5833, 73.5000),
+    "jaranwala": (31.3333, 73.4167),
     "rajanpur": (29.1040, 70.3240),
-    "rahm yar khan": (28.4200, 70.3000),
+    "rahim yar khan": (28.4200, 70.3000),
     "mianwali": (32.5833, 71.5500),
     "bhawalnagar": (29.9833, 72.5333),
     "veerowal": (30.9000, 72.5000),
@@ -76,7 +78,6 @@ CITY_COORDINATES = {
     "renala khurd": (30.8833, 73.6000),
     "chichawatni": (30.5333, 72.7000),
     "burewala": (30.1667, 72.6667),
-    "jaranwala": (31.3333, 73.4167),
     "samanabad": (31.5500, 74.2833),
     
     # ========== SINDH CITIES ==========
@@ -113,12 +114,13 @@ CITY_COORDINATES = {
     "hangu": (33.5333, 71.0667),
     "lakki marwat": (32.6000, 70.9167),
     "tank": (32.2167, 70.3833),
+    "swabi": (34.1200, 72.4700),
     "batkhela": (34.6167, 71.9667),
     "kalam": (35.5000, 72.5833),
+    "noshera cantt": (34.0167, 72.0000),
     
     # ========== BALOCHISTAN CITIES ==========
     "gwadar": (25.1260, 62.3250),
-    "gwadar.": (25.1260, 62.3250),
     "turbat": (26.0010, 63.0480),
     "khuzdar": (27.8000, 66.6167),
     "sibi": (29.5500, 67.8833),
@@ -151,12 +153,6 @@ CITY_COORDINATES = {
     "koti": (33.5500, 73.8500),
     "mirpur": (33.1500, 73.7500),
     "bhimber": (32.9833, 74.0667),
-    
-    # ========== CITY VARIATIONS ==========
-    "islamabad capital territory": (33.6844, 73.0479),
-    "rawalpindi cantt": (33.5651, 73.0169),
-    "peshawar cantt": (34.0151, 71.5249),
-    "lahore cantt": (31.5204, 74.3587),
 }
 
 # ============================================================
@@ -166,6 +162,7 @@ CITY_COORDINATES = {
 _warehouse_cache = {}
 _distance_cache = {}
 _warehouse_cities_cache = {}
+_all_warehouses_cache = None
 
 # ============================================================
 # UTILITY FUNCTIONS - FAST, NO API CALLS
@@ -203,11 +200,8 @@ def _normalize_city(city: str) -> str:
     """Normalize city name for lookup"""
     if not city:
         return ""
-    # Remove extra spaces, convert to lowercase
     normalized = city.lower().strip()
-    # Remove special characters
     normalized = re.sub(r'[^\w\s]', '', normalized)
-    # Remove extra spaces
     normalized = re.sub(r'\s+', ' ', normalized)
     return normalized
 
@@ -216,23 +210,18 @@ def _get_coordinates(city: str) -> Optional[Tuple[float, float]]:
     if not city:
         return None
     
-    # Try exact match
     city_lower = city.lower().strip()
     if city_lower in CITY_COORDINATES:
         return CITY_COORDINATES[city_lower]
     
-    # Try normalized match
     normalized = _normalize_city(city)
     if normalized in CITY_COORDINATES:
         return CITY_COORDINATES[normalized]
     
-    # Try partial match (for variations like "Gwadar." -> "gwadar")
     for key in CITY_COORDINATES:
         if key in city_lower or city_lower in key:
-            logger.info(f"📍 Found partial match: '{city}' -> '{key}'")
             return CITY_COORDINATES[key]
     
-    # Try matching without spaces
     no_spaces = city_lower.replace(' ', '')
     for key in CITY_COORDINATES:
         if key.replace(' ', '') == no_spaces:
@@ -267,7 +256,6 @@ def _get_road_distance(city1: str, city2: str) -> Tuple[float, str]:
     
     cache_key = f"{city1_lower}|{city2_lower}"
     
-    # Check in-memory cache
     if cache_key in _distance_cache:
         return _distance_cache[cache_key]
     
@@ -275,12 +263,10 @@ def _get_road_distance(city1: str, city2: str) -> Tuple[float, str]:
     coords2 = _get_coordinates(city2)
     
     if not coords1 or not coords2:
-        logger.warning(f"Could not get coordinates for: {city1} or {city2}")
         return (0, "Not Available")
     
     distance_km = _haversine_distance(coords1, coords2)
     
-    # Estimate travel time (assuming avg speed 50 km/h)
     hours = distance_km / 50
     if hours < 1:
         minutes = int(hours * 60)
@@ -295,7 +281,7 @@ def _get_road_distance(city1: str, city2: str) -> Tuple[float, str]:
     return result
 
 # ============================================================
-# WAREHOUSE ANALYTICS SERVICE - SUB-1 SECOND RESPONSE
+# WAREHOUSE ANALYTICS SERVICE
 # ============================================================
 
 class WarehouseAnalyticsService:
@@ -304,6 +290,7 @@ class WarehouseAnalyticsService:
         logger.info(f"✅ WarehouseAnalyticsService v{self._version} initialized")
         logger.info(f"   📍 {len(CITY_COORDINATES)} cities in coordinate database")
         logger.info("   ⚡ SUB-1 SECOND RESPONSE TIME - No API calls")
+        logger.info("   🔍 Enhanced warehouse search with suggestions")
     
     def handle_message(self, message: str, sender: str) -> str:
         """Main entry point - SUB-1 SECOND RESPONSE"""
@@ -329,6 +316,9 @@ class WarehouseAnalyticsService:
             # Get suggestions
             suggestions = self._get_suggestions(message_clean)
             if suggestions:
+                # Check if the search term is a known city but not a warehouse
+                if message_clean.lower() in CITY_COORDINATES:
+                    return self._format_city_not_warehouse(message_clean, suggestions)
                 return self._format_suggestions(message_clean, suggestions)
             
             # No results
@@ -339,10 +329,10 @@ class WarehouseAnalyticsService:
 • Try a partial name
 • Check for spelling errors
 
-Examples:
-• Lahore
-• Karachi
-• Sialkot
+Available Warehouses:
+• Lahore • Karachi • Faisalabad • Gujranwala
+• Multan • Peshawar • Rawalpindi • Sialkot
+• Quetta • Hyderabad • Gujrat • Jhelum
 
 Type **99** for help menu anytime!
 
@@ -365,11 +355,9 @@ Welcome to the Warehouse Intelligence Platform!
 🔍 **How to use:**
 • Type any warehouse name to get their dashboard
 • Examples:
-  - Lahore
-  - Karachi
-  - Sialkot
-  - Peshawar
-  - Quetta
+  - Lahore, Karachi, Faisalabad
+  - Peshawar, Quetta, Rawalpindi
+  - Sialkot, Gujranwala, Multan
 
 📊 **What you'll see:**
 • Market coverage metrics
@@ -399,12 +387,10 @@ This is a warehouse search system.
 🔍 **To search:**
 Simply type the warehouse name.
 
-📊 **Examples:**
-• Lahore
-• Karachi
-• Sialkot
-• Peshawar
-• Quetta
+📊 **Available Warehouses:**
+• Lahore • Karachi • Faisalabad • Gujranwala
+• Multan • Peshawar • Rawalpindi • Sialkot
+• Quetta • Hyderabad • Gujrat • Jhelum
 
 🔄 **Tips:**
 • You can type partial names
@@ -418,18 +404,36 @@ Simply type the warehouse name.
 Type a warehouse name to get started!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
     
+    def _format_city_not_warehouse(self, city: str, suggestions: List[str]) -> str:
+        """Format response when user searches for a city that exists but is not a warehouse"""
+        return f"""🔍 '{city}' is a city, not a warehouse
+
+💡 Please search for a warehouse name instead.
+
+Available Warehouses:
+• Lahore • Karachi • Faisalabad • Gujranwala
+• Multan • Peshawar • Rawalpindi • Sialkot
+• Quetta • Hyderabad • Gujrat • Jhelum
+
+If you meant to search for a city, try:
+{suggestions[0] if suggestions else ''}
+
+Type **99** for help menu anytime!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Type a warehouse name to search
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+    
     def _resolve_warehouse_name(self, name: str) -> Optional[str]:
         """Resolve warehouse name from database - FAST"""
         if not name or not name.strip():
             return None
         
-        # Skip if it's a number (menu command)
         if name.strip().isdigit():
             return None
         
         name_normalized = name.strip().lower()
         
-        # Check cache first
         if name_normalized in _warehouse_cache:
             return _warehouse_cache[name_normalized]
         
@@ -481,7 +485,6 @@ Type a warehouse name to get started!
         if not query:
             return []
         
-        # Skip if it's a number
         if query.strip().isdigit():
             return []
         
@@ -507,7 +510,7 @@ Type a warehouse name to get started!
     def _format_suggestions(self, query: str, suggestions: List[str]) -> str:
         """Format suggestions for display"""
         lines = [
-            f"🔍 No exact match for '{query}'",
+            f"🔍 No warehouse found matching '{query}'",
             "",
             "💡 Did you mean:",
             ""
@@ -787,7 +790,6 @@ Type a warehouse name to get started!
                 ).fetchall()
                 cities = [r[0] for r in results if r[0]]
                 _warehouse_cities_cache[cache_key] = cities
-                logger.info(f"[Service] Found {len(cities)} cities served by {warehouse_name}")
                 return cities
         except Exception as e:
             logger.error(f"Error getting served cities: {e}")
@@ -799,7 +801,6 @@ Type a warehouse name to get started!
             if not cities:
                 return ("N/A", "N/A", "N/A")
             
-            # Calculate distances to each city this warehouse serves
             distances = []
             total_distance = 0
             count = 0
@@ -812,18 +813,14 @@ Type a warehouse name to get started!
                     count += 1
             
             if count == 0:
-                logger.warning(f"[Service] No distance data available for {warehouse_name}")
                 return ("N/A", "N/A", "N/A")
             
-            # Calculate average
             avg = total_distance / count
             avg_display = f"{avg:.1f} KM"
             
-            # Find farthest city among served cities
             farthest_city, farthest_dist = max(distances, key=lambda x: x[1]) if distances else ("N/A", 0)
             farthest_display = f"{farthest_dist:.1f} KM"
             
-            logger.info(f"[Service] Distance stats for {warehouse_name}: Avg={avg_display}, Farthest={farthest_city} ({farthest_display}) from {count} cities")
             return (avg_display, farthest_city, farthest_display)
                 
         except Exception as e:
