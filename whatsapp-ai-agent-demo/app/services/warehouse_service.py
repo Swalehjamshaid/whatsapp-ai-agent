@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/warehouse_service.py
-# VERSION: 2.1 - FAULT TOLERANT WITH ORS ERROR HANDLING
+# VERSION: 2.2 - FIXED GEOCODING TIMEOUTS
 # PURPOSE: Warehouse analytics with road distance calculation
 # ============================================================
 
@@ -28,12 +28,13 @@ logger = logging.getLogger(__name__)
 
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
-VERSION = "2.1"
+VERSION = "2.2"
 
 # Try to import geocoding libraries
 try:
     from geopy.geocoders import Nominatim
     from geopy.extra.rate_limiter import RateLimiter
+    from geopy.exc import GeocoderTimedOut, GeocoderUnavailable, GeocoderQuotaExceeded
     GEOCODE_AVAILABLE = True
     logger.info("✅ Geopy imported successfully")
 except ImportError:
@@ -90,7 +91,7 @@ else:
     _distance_cache = {}
 
 # ============================================================
-# UTILITY FUNCTIONS (SAME AS DEALER SERVICE)
+# UTILITY FUNCTIONS
 # ============================================================
 
 def _text(value: Any, default: str = "Unknown") -> str:
@@ -137,7 +138,7 @@ def _set_redis_cache(key: str, value: str, ttl: int = 2592000) -> None:
             pass
 
 def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
-    """Geocode a city name using geopy with Redis caching - FAULT TOLERANT"""
+    """Geocode a city name - FAULT TOLERANT with multiple fallbacks"""
     if not city:
         return None
     
@@ -160,25 +161,51 @@ def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
     
     coords = None
     
-    # Try geopy
+    # Try geopy with proper timeout handling
     if GEOCODE_AVAILABLE:
         try:
-            geolocator = Nominatim(user_agent="warehouse_intelligence", timeout=10)
-            geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
-            location = geocode(f"{city_clean}, Pakistan")
-            if location:
-                coords = (location.latitude, location.longitude)
-                _geocode_cache[cache_key] = coords
-                _set_redis_cache(redis_key, f"{coords[0]},{coords[1]}", 604800)
-                return coords
+            # Create geolocator with timeout
+            geolocator = Nominatim(
+                user_agent="warehouse_intelligence",
+                timeout=10  # 10 second timeout
+            )
+            
+            # Use geocode directly without RateLimiter (to avoid its timeout issues)
+            try:
+                location = geolocator.geocode(f"{city_clean}, Pakistan", timeout=10)
+                if location:
+                    coords = (location.latitude, location.longitude)
+                    _geocode_cache[cache_key] = coords
+                    _set_redis_cache(redis_key, f"{coords[0]},{coords[1]}", 604800)
+                    logger.info(f"✅ Geocoded '{city_clean}' with Geopy: {coords}")
+                    return coords
+            except GeocoderTimedOut:
+                logger.warning(f"Geopy timeout for '{city_clean}', trying again...")
+                # Try one more time with longer timeout
+                try:
+                    location = geolocator.geocode(f"{city_clean}, Pakistan", timeout=15)
+                    if location:
+                        coords = (location.latitude, location.longitude)
+                        _geocode_cache[cache_key] = coords
+                        _set_redis_cache(redis_key, f"{coords[0]},{coords[1]}", 604800)
+                        logger.info(f"✅ Geocoded '{city_clean}' with Geopy (retry): {coords}")
+                        return coords
+                except Exception:
+                    pass
+            except GeocoderUnavailable:
+                logger.warning(f"Geopy service unavailable for '{city_clean}'")
+            except GeocoderQuotaExceeded:
+                logger.warning(f"Geopy quota exceeded for '{city_clean}'")
+            except Exception as e:
+                logger.warning(f"Geopy geocoding failed for '{city_clean}': {type(e).__name__}: {e}")
+                
         except Exception as e:
-            logger.warning(f"Geopy geocoding failed for '{city_clean}': {e}")
+            logger.warning(f"Geopy initialization failed: {e}")
     
     # Try OpenRouteService - with timeout protection
     if ORS_AVAILABLE and ORS_API_KEY and coords is None:
         try:
             import requests
-            import json
             
             # Use ORS API directly with timeout
             url = "https://api.openrouteservice.org/geocode/search"
@@ -191,7 +218,9 @@ def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
                 "size": 1
             }
             
+            logger.info(f"Trying ORS geocoding for '{city_clean}'...")
             response = requests.get(url, headers=headers, params=params, timeout=10)
+            
             if response.status_code == 200:
                 data = response.json()
                 if data and 'features' in data and data['features']:
@@ -200,7 +229,11 @@ def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
                         coords = (coords_data[1], coords_data[0])
                         _geocode_cache[cache_key] = coords
                         _set_redis_cache(redis_key, f"{coords[0]},{coords[1]}", 604800)
+                        logger.info(f"✅ ORS geocoded '{city_clean}': {coords}")
                         return coords
+            else:
+                logger.warning(f"ORS geocoding returned {response.status_code} for '{city_clean}'")
+                
         except requests.exceptions.Timeout:
             logger.warning(f"ORS geocoding timeout for '{city_clean}'")
         except requests.exceptions.RequestException as e:
@@ -213,6 +246,7 @@ def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
     if fallback_coords:
         _geocode_cache[cache_key] = fallback_coords
         _set_redis_cache(redis_key, f"{fallback_coords[0]},{fallback_coords[1]}", 604800)
+        logger.info(f"📌 Using fallback coordinates for '{city_clean}': {fallback_coords}")
         return fallback_coords
     
     logger.warning(f"❌ Could not geocode '{city_clean}'")
@@ -288,7 +322,6 @@ def _get_road_distance_between_cities(city1: str, city2: str) -> Tuple[float, st
     if ORS_AVAILABLE and ORS_API_KEY:
         try:
             import requests
-            import json
             
             # Use ORS directions API directly with timeout
             url = "https://api.openrouteservice.org/v2/directions/driving-car"
@@ -394,7 +427,7 @@ class WarehouseAnalyticsService:
         logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
         logger.info(f"   Redis: {'✅' if _redis_client else '❌'}")
         logger.info(f"   Cachetools: {'✅' if CACHETOOLS_AVAILABLE else '❌'}")
-        logger.info("   ⚠️ ORS errors are handled gracefully with fallback to Haversine")
+        logger.info("   ⚠️ All geocoding errors are handled gracefully with fallback")
     
     def handle_message(self, message: str, sender: str) -> str:
         """Main entry point - searches for warehouse and returns dashboard"""
