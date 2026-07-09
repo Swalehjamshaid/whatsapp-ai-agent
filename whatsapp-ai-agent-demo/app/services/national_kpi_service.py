@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/national_kpi_service.py
-# VERSION: 6.3 - FINAL WITH 99 OPTION
-# PURPOSE: National KPI dashboard with 99 return option
+# VERSION: 6.6 - FINAL STRICT ALIGNMENT
+# PURPOSE: National KPI dashboard with perfect alignment
 # ============================================================
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 CACHE_TTL = max(60, int(os.getenv("NATIONAL_KPI_CACHE_TTL", "300")))
-VERSION = "6.3"
+VERSION = "6.6"
 
 # ============================================================
 # BLOCK 2: UTILITY FUNCTIONS
@@ -269,7 +269,7 @@ Type a command to get started!
                 # Get national averages
                 national_avg = self._get_national_averages()
                 
-                # Build the dashboard
+                # Build the dashboard with strict alignment
                 lines = [
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
                     "🏬 WAREHOUSE KPI PERFORMANCE",
@@ -294,6 +294,10 @@ Type a command to get started!
                     avg_pod = float(row[5] or 0)
                     avg_cycle = float(row[6] or 0)
                     
+                    # Only include warehouses with at least 1 DN
+                    if total_dn < 1:
+                        continue
+                    
                     pod_pct = _percent(pod_completed, total_dn)
                     pgi_pct = _percent(pgi_completed, total_dn)
                     
@@ -308,7 +312,7 @@ Type a command to get started!
                 # Sort by POD percentage (highest first)
                 warehouse_data.sort(key=lambda x: x['pod_pct'], reverse=True)
                 
-                # Render each warehouse
+                # Render each warehouse with fixed-width columns
                 for data in warehouse_data:
                     warehouse = data['warehouse']
                     pod_pct = data['pod_pct']
@@ -316,8 +320,15 @@ Type a command to get started!
                     delivery_days = data['delivery_days']
                     cycle_days = data['cycle_days']
                     
-                    # Format the row with proper spacing
-                    lines.append(f"🏬 {warehouse:<14} {pod_pct:>5.1f}% {pgi_pct:>5.1f}% {delivery_days:>5.1f}D {cycle_days:>6.1f}D")
+                    # STRICT ALIGNMENT:
+                    # Warehouse: 14 chars, left-aligned
+                    # POD: 5 chars (e.g., "100.0") + "%" (total 6)
+                    # PGI: 5 chars + "%" (total 6)
+                    # Delivery: 5 chars + " D" (total 7, with space before D)
+                    # Cycle: 6 chars + " D" (total 8, with space before D)
+                    lines.append(
+                        f"🏬 {warehouse:<14} {pod_pct:>5.1f}% {pgi_pct:>5.1f}% {delivery_days:>5.1f} D {cycle_days:>6.1f} D"
+                    )
                 
                 lines.extend([
                     "",
@@ -342,7 +353,7 @@ Type a command to get started!
                     lines.append(insight)
                 
                 # ============================================================
-                # ADD 99 OPTION AT THE BOTTOM
+                # FOOTER WITH 99 OPTION
                 # ============================================================
                 lines.extend([
                     "",
@@ -429,8 +440,8 @@ Type a command to get started!
         else:
             insights.append(f"⚡ PGI at {national_avg['pgi']:.1f}% - {'Meets' if national_avg['pgi'] >= 95 else 'Below'} target.")
         
-        # Identify warehouses needing improvement
-        low_performers = [w for w in warehouse_data if w['pod_pct'] < 85]
+        # Identify warehouses needing improvement (POD < 95%)
+        low_performers = [w for w in warehouse_data if w['pod_pct'] < 95]
         if low_performers:
             warehouses = [w['warehouse'] for w in low_performers[:7]]
             if len(warehouses) > 1:
@@ -441,7 +452,7 @@ Type a command to get started!
             insights.append("✅ All warehouses are meeting POD targets.")
         
         # Additional insights
-        if national_avg['delivery'] > 2.5:
+        if national_avg['delivery'] > 2.0:
             insights.append(f"🚚 Average delivery time of {national_avg['delivery']:.1f} days - consider optimization.")
         
         return insights
