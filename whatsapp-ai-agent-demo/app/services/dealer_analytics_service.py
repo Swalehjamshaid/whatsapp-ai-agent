@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/dealer_analytics_service.py
-# VERSION: 12.11 - IMPROVED DISTANCE CALCULATION
+# VERSION: 12.11 - ROAD DISTANCE WITH CACHING
 # ============================================================
 
 from __future__ import annotations
@@ -9,8 +9,9 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Optional, Dict, List, Tuple
+from functools import lru_cache
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -46,9 +47,49 @@ except ImportError:
     ORS_AVAILABLE = False
     logger.warning("⚠️ OpenRouteService not available")
 
-# Cache for geocoding results
-_GEOCODE_CACHE: Dict[str, Tuple[float, float]] = {}
-_DISTANCE_CACHE: Dict[str, Tuple[float, str]] = {}
+# Try to import caching libraries
+try:
+    from cachetools import TTLCache
+    CACHETOOLS_AVAILABLE = True
+    logger.info("✅ Cachetools imported successfully")
+except ImportError:
+    CACHETOOLS_AVAILABLE = False
+    logger.warning("⚠️ Cachetools not available")
+
+try:
+    import redis
+    REDIS_AVAILABLE = True
+    logger.info("✅ Redis imported successfully")
+except ImportError:
+    REDIS_AVAILABLE = False
+    logger.warning("⚠️ Redis not available")
+
+# ============================================================
+# CACHE CONFIGURATION
+# ============================================================
+
+# Redis connection
+_redis_client = None
+if REDIS_AVAILABLE:
+    try:
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        _redis_client = redis.from_url(redis_url, decode_responses=True)
+        _redis_client.ping()
+        logger.info("✅ Redis connected successfully")
+    except Exception as e:
+        logger.warning(f"⚠️ Redis connection failed: {e}")
+        _redis_client = None
+
+# In-memory caches with TTL
+if CACHETOOLS_AVAILABLE:
+    # Cache for geocoding results (7 days TTL)
+    _geocode_cache = TTLCache(maxsize=1000, ttl=604800)
+    # Cache for road distance calculations (30 days TTL)
+    _distance_cache = TTLCache(maxsize=1000, ttl=2592000)
+else:
+    # Fallback to simple dict caches
+    _geocode_cache = {}
+    _distance_cache = {}
 
 # ============================================================
 # UTILITY FUNCTIONS
@@ -82,17 +123,47 @@ def _format_currency(amount: float) -> str:
 def _format_number(num: int) -> str:
     return f"{num:,}"
 
+def _get_redis_cache(key: str) -> Optional[str]:
+    """Get from Redis cache"""
+    if _redis_client:
+        try:
+            return _redis_client.get(key)
+        except Exception as e:
+            logger.warning(f"Redis get failed: {e}")
+    return None
+
+def _set_redis_cache(key: str, value: str, ttl: int = 2592000) -> None:
+    """Set Redis cache with TTL (default 30 days for distances)"""
+    if _redis_client:
+        try:
+            _redis_client.setex(key, ttl, value)
+        except Exception as e:
+            logger.warning(f"Redis set failed: {e}")
+
 def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
-    """Geocode a city name to get coordinates using geopy"""
+    """Geocode a city name to get coordinates using geopy with Redis caching"""
     if not city:
         return None
     
     city_clean = city.strip()
     cache_key = city_clean.lower()
     
-    # Check cache first
-    if cache_key in _GEOCODE_CACHE:
-        return _GEOCODE_CACHE[cache_key]
+    # Check Redis cache first
+    redis_key = f"geocode:{cache_key}"
+    redis_result = _get_redis_cache(redis_key)
+    if redis_result:
+        try:
+            lat, lon = redis_result.split(',')
+            coords = (float(lat), float(lon))
+            logger.info(f"✅ Redis cache hit for '{city_clean}'")
+            return coords
+        except Exception as e:
+            logger.warning(f"Redis cache parse failed: {e}")
+    
+    # Check in-memory cache
+    if cache_key in _geocode_cache:
+        logger.info(f"✅ Memory cache hit for '{city_clean}'")
+        return _geocode_cache[cache_key]
     
     # Try geopy first
     if GEOCODE_AVAILABLE:
@@ -104,7 +175,9 @@ def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
             location = geocode(f"{city_clean}, Pakistan")
             if location:
                 coords = (location.latitude, location.longitude)
-                _GEOCODE_CACHE[cache_key] = coords
+                # Store in caches
+                _geocode_cache[cache_key] = coords
+                _set_redis_cache(redis_key, f"{coords[0]},{coords[1]}", 604800)
                 logger.info(f"✅ Geocoded '{city_clean}' → {coords}")
                 return coords
         except Exception as e:
@@ -119,7 +192,9 @@ def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
                 coords = response['features'][0]['geometry']['coordinates']
                 # ORS returns [lng, lat], we need [lat, lng]
                 coords_tuple = (coords[1], coords[0])
-                _GEOCODE_CACHE[cache_key] = coords_tuple
+                # Store in caches
+                _geocode_cache[cache_key] = coords_tuple
+                _set_redis_cache(redis_key, f"{coords_tuple[0]},{coords_tuple[1]}", 604800)
                 logger.info(f"✅ ORS geocoded '{city_clean}' → {coords_tuple}")
                 return coords_tuple
         except Exception as e:
@@ -128,7 +203,8 @@ def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
     # Fallback: Try to find in hardcoded city list
     fallback_coords = _get_fallback_coordinates(city_clean)
     if fallback_coords:
-        _GEOCODE_CACHE[cache_key] = fallback_coords
+        _geocode_cache[cache_key] = fallback_coords
+        _set_redis_cache(redis_key, f"{fallback_coords[0]},{fallback_coords[1]}", 604800)
         return fallback_coords
     
     logger.warning(f"❌ Could not geocode '{city_clean}'")
@@ -152,7 +228,7 @@ def _get_fallback_coordinates(city: str) -> Optional[Tuple[float, float]]:
         "faisalabad": (31.4504, 73.1350),
         "sialkot": (32.4945, 74.5229),
         "gujranwala": (32.1617, 74.1883),
-        "hafizabad": (32.0667, 73.6833),  # Added Hafizabad
+        "hafizabad": (32.0667, 73.6833),
         "ajk": (34.3700, 73.4711),
         "azad kashmir": (34.3700, 73.4711),
         "muzaffarabad": (34.3700, 73.4711),
@@ -178,15 +254,33 @@ def _get_fallback_coordinates(city: str) -> Optional[Tuple[float, float]]:
     
     return fallback_coords.get(city_lower)
 
-def _get_distance_between_cities(city1: str, city2: str) -> Tuple[float, str]:
-    """Get distance between two cities using OpenRouteService"""
+def _get_road_distance_between_cities(city1: str, city2: str) -> Tuple[float, str]:
+    """
+    Get ROAD distance between two cities using OpenRouteService
+    This uses actual road networks, not straight-line distance
+    """
     
     if not city1 or not city2:
         return (0, "Unknown")
     
     cache_key = f"{city1.lower()}|{city2.lower()}"
-    if cache_key in _DISTANCE_CACHE:
-        return _DISTANCE_CACHE[cache_key]
+    
+    # Check Redis cache first
+    redis_key = f"road_distance:{cache_key}"
+    redis_result = _get_redis_cache(redis_key)
+    if redis_result:
+        try:
+            distance_str, time_str = redis_result.split('||')
+            result = (float(distance_str), time_str)
+            logger.info(f"✅ Redis cache hit for road distance: {city1} → {city2}")
+            return result
+        except Exception as e:
+            logger.warning(f"Redis cache parse failed: {e}")
+    
+    # Check in-memory cache
+    if cache_key in _distance_cache:
+        logger.info(f"✅ Memory cache hit for road distance: {city1} → {city2}")
+        return _distance_cache[cache_key]
     
     # Get coordinates for both cities
     coords1 = _geocode_city(city1)
@@ -196,7 +290,7 @@ def _get_distance_between_cities(city1: str, city2: str) -> Tuple[float, str]:
         logger.warning(f"Could not get coordinates for {city1} or {city2}")
         return (0, "Not Available")
     
-    # Try OpenRouteService for route distance
+    # Try OpenRouteService for ROAD distance (this is the primary method)
     if ORS_AVAILABLE and ORS_API_KEY:
         try:
             client = openrouteservice.Client(key=ORS_API_KEY)
@@ -207,11 +301,15 @@ def _get_distance_between_cities(city1: str, city2: str) -> Tuple[float, str]:
                 [coords2[1], coords2[0]]
             ]
             
+            logger.info(f"Calculating ROAD distance from {city1} to {city2} using ORS...")
+            
             routes = client.directions(
                 coordinates=coordinates,
-                profile=ORS_PROFILE,
+                profile=ORS_PROFILE,  # 'driving-car' for road routes
                 format='json',
-                validate=False
+                validate=False,
+                alternatives=False,
+                geometry=False  # Don't return geometry to save bandwidth
             )
             
             if routes and 'routes' in routes and routes['routes']:
@@ -231,14 +329,19 @@ def _get_distance_between_cities(city1: str, city2: str) -> Tuple[float, str]:
                     time_str = f"{minutes} mins"
                 
                 result = (round(distance_km, 1), time_str)
-                _DISTANCE_CACHE[cache_key] = result
-                logger.info(f"✅ ORS distance: {city1} → {city2}: {distance_km:.1f} KM, {time_str}")
+                
+                # Store in caches
+                _distance_cache[cache_key] = result
+                _set_redis_cache(redis_key, f"{distance_km}||{time_str}", 2592000)
+                
+                logger.info(f"✅ ROAD distance (ORS): {city1} → {city2}: {distance_km:.1f} KM, {time_str}")
                 return result
                 
         except Exception as e:
-            logger.error(f"ORS distance calculation failed: {e}")
+            logger.error(f"ORS road distance calculation failed: {e}")
     
-    # Fallback: Calculate straight-line distance using Haversine
+    # Fallback: If ORS fails, use Haversine as last resort
+    logger.warning(f"ORS failed, using Haversine fallback for {city1} → {city2}")
     distance_km = _haversine_distance(coords1, coords2)
     
     # Estimate travel time (assuming avg speed 50 km/h for highways)
@@ -252,12 +355,12 @@ def _get_distance_between_cities(city1: str, city2: str) -> Tuple[float, str]:
         time_str = f"{h}h {m}m" if m > 0 else f"{h}h"
     
     result = (round(distance_km, 1), time_str)
-    _DISTANCE_CACHE[cache_key] = result
-    logger.info(f"⚠️ Fallback distance: {city1} → {city2}: {distance_km:.1f} KM, {time_str}")
+    _distance_cache[cache_key] = result
+    logger.info(f"⚠️ Fallback (Haversine) distance: {city1} → {city2}: {distance_km:.1f} KM, {time_str}")
     return result
 
 def _haversine_distance(coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:
-    """Calculate straight-line distance using Haversine formula"""
+    """Calculate straight-line distance using Haversine formula (fallback only)"""
     from math import radians, sin, cos, sqrt, atan2
     
     lat1, lon1 = coord1
@@ -439,25 +542,25 @@ class DealerRepository:
         data['pgi_achievement'] = _percent(data.get('pgi_completed', 0), dn_count)
         data['pending_pct'] = _percent(data.get('pending_dn', 0), dn_count)
         
-        # Get distance using improved geocoding
+        # Get ROAD distance using improved geocoding
         city = data.get('city', '')
         warehouse = data.get('warehouse', '')
         
-        logger.info(f"[Repository] Calculating distance: Warehouse='{warehouse}', City='{city}'")
+        logger.info(f"[Repository] Calculating ROAD distance: Warehouse='{warehouse}', City='{city}'")
         
         if city and warehouse and city != 'Unknown' and warehouse != 'Unknown':
             try:
-                # Use improved distance calculation
-                distance_km, time_str = _get_distance_between_cities(warehouse, city)
+                # Use ROAD distance calculation
+                distance_km, time_str = _get_road_distance_between_cities(warehouse, city)
                 data['distance_km'] = distance_km
                 data['distance_time'] = time_str
-                logger.info(f"[Repository] Distance calculated: {distance_km} KM, {time_str}")
+                logger.info(f"[Repository] ROAD distance calculated: {distance_km} KM, {time_str}")
             except Exception as e:
-                logger.error(f"[Repository] Error calculating distance: {e}")
+                logger.error(f"[Repository] Error calculating road distance: {e}")
                 data['distance_km'] = None
                 data['distance_time'] = "Not Available"
         else:
-            logger.warning(f"[Repository] Cannot calculate distance: city='{city}', warehouse='{warehouse}'")
+            logger.warning(f"[Repository] Cannot calculate road distance: city='{city}', warehouse='{warehouse}'")
             data['distance_km'] = None
             data['distance_time'] = "Not Available"
         
@@ -481,9 +584,11 @@ class DealerAnalyticsService:
         logger.info(f"✅ DealerAnalyticsService v{self._version} initialized")
         logger.info(f"   Geopy: {'✅' if GEOCODE_AVAILABLE else '❌'}")
         logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
+        logger.info(f"   Redis: {'✅' if _redis_client else '❌'}")
+        logger.info(f"   Cachetools: {'✅' if CACHETOOLS_AVAILABLE else '❌'}")
         
         if ORS_AVAILABLE and ORS_API_KEY:
-            logger.info("   Using OpenRouteService for distance calculations")
+            logger.info("   Using OpenRouteService for ROAD distance calculations")
         elif GEOCODE_AVAILABLE:
             logger.info("   Using Geopy for geocoding with fallback")
         else:
@@ -494,8 +599,8 @@ class DealerAnalyticsService:
         try:
             message_clean = message.strip()
             
-            # Check if it's a numeric command (1-9)
-            if message_clean.isdigit() and len(message_clean) == 1:
+            # Check if it's a numeric command (1-9 or 99)
+            if message_clean in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '99']:
                 logger.info("[Service] Numeric input detected, showing help")
                 return self._get_help_message()
             
@@ -517,6 +622,7 @@ class DealerAnalyticsService:
         """Get welcome message"""
         ors_status = "✅ Active" if ORS_AVAILABLE and ORS_API_KEY else "⚠️ Fallback Mode"
         geopy_status = "✅ Active" if GEOCODE_AVAILABLE else "❌"
+        redis_status = "✅ Connected" if _redis_client else "❌ Not Connected"
         
         return f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🏢 HAIER DEALER INTELLIGENCE CENTER
@@ -536,14 +642,16 @@ Welcome to the Dealer Intelligence Platform!
 • Sales performance metrics
 • Delivery statistics
 • AI-powered insights
-• Distance from warehouse
+• ROAD distance from warehouse
 
 🗺️ **Distance Services:**
-• OpenRouteService: {ors_status}
+• OpenRouteService (Road): {ors_status}
 • Geopy (Geocoding): {geopy_status}
+• Redis Cache: {redis_status}
 
 💡 **Pro tip:** 
 Type partial names and we'll suggest matches!
+Type **99** for quick help anytime!
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Type a dealer name to get started!
@@ -569,6 +677,7 @@ Simply type the dealer name.
 • You can type partial names
 • We'll show suggestions if no exact match
 • All data is real-time from the database
+• Type **99** for this help menu anytime
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Type a dealer name to get started!
@@ -754,7 +863,7 @@ Type a dealer name to search again
         pgi_achievement = data.get('pgi_achievement', 0)
         rating = data.get('rating', 'C')
         
-        # Get top models
+        # Get top customer models from database
         top_models = self._get_top_models(customer_name)
         
         # Get best month
@@ -770,7 +879,7 @@ Type a dealer name to search again
         
         # Format distance
         if distance_km is not None and distance_km > 0:
-            distance_str = f"{distance_km} KM (Estimated {distance_time})"
+            distance_str = f"{distance_km} KM (Road, {distance_time})"
         else:
             distance_str = "Not Available"
         
@@ -799,16 +908,22 @@ Type a dealer name to search again
             "",
         ]
         
-        # Add top models
-        for i, (model, count) in enumerate(top_models):
-            if i == 0:
-                lines.append(f"🥇 {model}             {count} Units")
-            elif i == 1:
-                lines.append(f"🥈 {model}             {count} Units")
-            elif i == 2:
-                lines.append(f"🥉 {model}               {count} Unit")
-            else:
-                lines.append(f"• {model}             {count} Unit")
+        # Add top customer models with proper formatting
+        if top_models:
+            for i, (model, count) in enumerate(top_models):
+                # Format model name - clean up if needed
+                model_display = model.strip() if model else "N/A"
+                
+                if i == 0:
+                    lines.append(f"🥇 {model_display}             {count} Units")
+                elif i == 1:
+                    lines.append(f"🥈 {model_display}             {count} Units")
+                elif i == 2:
+                    lines.append(f"🥉 {model_display}               {count} Unit")
+                else:
+                    lines.append(f"• {model_display}             {count} Unit")
+        else:
+            lines.append("No models found")
         
         lines.extend([
             "",
@@ -858,15 +973,17 @@ Type a dealer name to search again
         return "\n".join(lines)
     
     def _get_top_models(self, customer_name: str, limit: int = 7) -> List[Tuple[str, int]]:
-        """Get top selling models for the dealer"""
+        """Get top customer models for the dealer from PostgreSQL"""
         try:
             with engine.connect() as conn:
                 results = conn.execute(
                     text("""
-                        SELECT material_no, COUNT(dn_no) as count
+                        SELECT customer_model, COUNT(dn_no) as count
                         FROM delivery_reports 
                         WHERE LOWER(TRIM(customer_name)) = LOWER(TRIM(:name))
-                        GROUP BY material_no
+                        AND customer_model IS NOT NULL 
+                        AND TRIM(customer_model) != ''
+                        GROUP BY customer_model
                         ORDER BY count DESC
                         LIMIT :limit
                     """),
