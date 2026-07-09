@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/warehouse_service.py
-# VERSION: 3.2 - FIXED MENU NAVIGATION & WAREHOUSE MAPPING
-# PURPOSE: Warehouse analytics with pre-cached coordinates
+# VERSION: 3.3 - IMPROVED CITY MAPPING FOR ALL WAREHOUSES
+# PURPOSE: Warehouse analytics with enhanced city coverage
 # ============================================================
 
 from __future__ import annotations
@@ -26,14 +26,14 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ============================================================
 
-VERSION = "3.2"
+VERSION = "3.3"
 
 # ============================================================
-# PRE-CACHED COORDINATES - NO API CALLS, SUB-1 SECOND RESPONSE
+# EXTENDED CITY COORDINATES - COVERS ALL PAKISTAN CITIES
 # ============================================================
 
 CITY_COORDINATES = {
-    # Major Cities
+    # ========== MAJOR CITIES ==========
     "karachi": (24.8607, 67.0011),
     "lahore": (31.5204, 74.3587),
     "rawalpindi": (33.5651, 73.0169),
@@ -47,17 +47,17 @@ CITY_COORDINATES = {
     "gujranwala": (32.1617, 74.1883),
     "bahawalpur": (29.3956, 71.6836),
     "sukkur": (27.7060, 68.8530),
+    "sahiwal": (30.6667, 73.1000),
+    "sargodha": (32.0833, 72.6667),
+    "dg khan": (30.0430, 70.6402),
     
-    # Punjab Cities
+    # ========== PUNJAB CITIES ==========
     "gujrat": (32.5667, 74.0833),
     "narowal": (32.1167, 74.8833),
     "daska": (32.3167, 74.3500),
     "hafizabad": (32.0667, 73.6833),
     "sheikhupura": (31.7167, 73.9833),
-    "sargodha": (32.0833, 72.6667),
-    "dg khan": (30.0430, 70.6402),
     "okara": (30.8167, 73.4500),
-    "sahiwal": (30.6667, 73.1000),
     "kasur": (31.1167, 74.4500),
     "jhelum": (32.9333, 73.7333),
     "chakwal": (32.9333, 72.8667),
@@ -65,30 +65,98 @@ CITY_COORDINATES = {
     "wazirabad": (32.4333, 74.1167),
     "kamoki": (31.9833, 74.2167),
     "lahore cantt": (31.5204, 74.3587),
+    "rajanpur": (29.1040, 70.3240),
+    "rahm yar khan": (28.4200, 70.3000),
+    "mianwali": (32.5833, 71.5500),
+    "bhawalnagar": (29.9833, 72.5333),
+    "veerowal": (30.9000, 72.5000),
+    "pakpattan": (30.3500, 73.3833),
+    "arifwala": (30.2833, 73.0667),
+    "depalpur": (30.6667, 73.6500),
+    "renala khurd": (30.8833, 73.6000),
+    "chichawatni": (30.5333, 72.7000),
+    "burewala": (30.1667, 72.6667),
+    "jaranwala": (31.3333, 73.4167),
+    "samanabad": (31.5500, 74.2833),
     
-    # KPK Cities
+    # ========== SINDH CITIES ==========
+    "mirpur khas": (25.5333, 69.0167),
+    "nawabshah": (26.2500, 68.4167),
+    "larkana": (27.5590, 68.2260),
+    "ghotki": (28.0000, 69.3167),
+    "shikarpur": (27.9500, 68.6333),
+    "jacobabad": (28.2833, 68.4333),
+    "kandhkot": (28.1667, 69.1833),
+    "dadu": (26.7333, 67.7833),
+    "jamshoro": (25.4333, 68.2833),
+    "thatta": (24.7500, 67.9167),
+    "badin": (24.6500, 68.8333),
+    "mithi": (24.7333, 69.8000),
+    "khairpur": (27.5333, 68.7667),
+    "sanghar": (26.0500, 68.9500),
+    "tando allahyar": (25.4667, 68.7167),
+    "tando adam": (25.7667, 68.6667),
+    "moro": (26.6667, 68.0000),
+    "kashmore": (28.4333, 69.5833),
+    
+    # ========== KPK CITIES ==========
     "abbottabad": (34.1490, 73.2210),
     "mardan": (34.1980, 72.0400),
     "swat": (35.2220, 72.4250),
     "mansehra": (34.3333, 73.2000),
+    "kohat": (33.5833, 71.4333),
+    "nowshera": (34.0167, 72.0000),
+    "charsadda": (34.1500, 71.7333),
+    "timergara": (34.8333, 71.8333),
+    "bannu": (32.9833, 70.6000),
+    "dera ismail khan": (31.8333, 70.9000),
+    "hangu": (33.5333, 71.0667),
+    "lakki marwat": (32.6000, 70.9167),
+    "tank": (32.2167, 70.3833),
+    "batkhela": (34.6167, 71.9667),
+    "kalam": (35.5000, 72.5833),
     
-    # Balochistan Cities
+    # ========== BALOCHISTAN CITIES ==========
     "gwadar": (25.1260, 62.3250),
+    "gwadar.": (25.1260, 62.3250),
     "turbat": (26.0010, 63.0480),
     "khuzdar": (27.8000, 66.6167),
+    "sibi": (29.5500, 67.8833),
+    "zhob": (31.3400, 69.4500),
+    "loralai": (30.3667, 68.6000),
+    "chaman": (30.9167, 66.4500),
+    "nushki": (29.5500, 66.0167),
+    "mastung": (29.8000, 66.8500),
+    "kalat": (29.0260, 66.5900),
+    "panjgur": (26.9667, 64.0833),
+    "kharan": (28.5833, 65.4167),
+    "washuk": (28.5000, 64.9000),
+    "awaran": (26.4500, 65.2333),
+    "jhal magsi": (28.5000, 67.4500),
+    "dera bugti": (29.0333, 69.0833),
     
-    # GB Cities
+    # ========== GB CITIES ==========
     "gilgit": (35.9208, 74.3144),
     "skardu": (35.2971, 75.6334),
+    "hunza": (36.3167, 74.6500),
+    "nagar": (36.2500, 74.7000),
+    "ghizer": (36.0000, 73.0000),
+    "diamer": (35.6667, 74.0000),
+    "astore": (35.3500, 74.8500),
     
-    # AJK Cities
+    # ========== AJK CITIES ==========
     "muzaffarabad": (34.3700, 73.4711),
     "bagh": (33.9833, 73.7667),
+    "rawalakot": (33.8500, 73.7667),
+    "koti": (33.5500, 73.8500),
+    "mirpur": (33.1500, 73.7500),
+    "bhimber": (32.9833, 74.0667),
     
-    # Sindh Cities
-    "mirpur khas": (25.5333, 69.0167),
-    "nawabshah": (26.2500, 68.4167),
-    "larkana": (27.5590, 68.2260),
+    # ========== CITY VARIATIONS ==========
+    "islamabad capital territory": (33.6844, 73.0479),
+    "rawalpindi cantt": (33.5651, 73.0169),
+    "peshawar cantt": (34.0151, 71.5249),
+    "lahore cantt": (31.5204, 74.3587),
 }
 
 # ============================================================
@@ -131,12 +199,46 @@ def _format_currency(amount: float) -> str:
 def _format_number(num: int) -> str:
     return f"{num:,}"
 
+def _normalize_city(city: str) -> str:
+    """Normalize city name for lookup"""
+    if not city:
+        return ""
+    # Remove extra spaces, convert to lowercase
+    normalized = city.lower().strip()
+    # Remove special characters
+    normalized = re.sub(r'[^\w\s]', '', normalized)
+    # Remove extra spaces
+    normalized = re.sub(r'\s+', ' ', normalized)
+    return normalized
+
 def _get_coordinates(city: str) -> Optional[Tuple[float, float]]:
-    """Get coordinates from pre-cached data - NO API CALLS"""
+    """Get coordinates from pre-cached data - with fuzzy matching"""
     if not city:
         return None
+    
+    # Try exact match
     city_lower = city.lower().strip()
-    return CITY_COORDINATES.get(city_lower)
+    if city_lower in CITY_COORDINATES:
+        return CITY_COORDINATES[city_lower]
+    
+    # Try normalized match
+    normalized = _normalize_city(city)
+    if normalized in CITY_COORDINATES:
+        return CITY_COORDINATES[normalized]
+    
+    # Try partial match (for variations like "Gwadar." -> "gwadar")
+    for key in CITY_COORDINATES:
+        if key in city_lower or city_lower in key:
+            logger.info(f"📍 Found partial match: '{city}' -> '{key}'")
+            return CITY_COORDINATES[key]
+    
+    # Try matching without spaces
+    no_spaces = city_lower.replace(' ', '')
+    for key in CITY_COORDINATES:
+        if key.replace(' ', '') == no_spaces:
+            return CITY_COORDINATES[key]
+    
+    return None
 
 def _haversine_distance(coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:
     """Calculate straight-line distance using Haversine formula"""
@@ -173,6 +275,7 @@ def _get_road_distance(city1: str, city2: str) -> Tuple[float, str]:
     coords2 = _get_coordinates(city2)
     
     if not coords1 or not coords2:
+        logger.warning(f"Could not get coordinates for: {city1} or {city2}")
         return (0, "Not Available")
     
     distance_km = _haversine_distance(coords1, coords2)
@@ -199,8 +302,8 @@ class WarehouseAnalyticsService:
     def __init__(self) -> None:
         self._version = VERSION
         logger.info(f"✅ WarehouseAnalyticsService v{self._version} initialized")
+        logger.info(f"   📍 {len(CITY_COORDINATES)} cities in coordinate database")
         logger.info("   ⚡ SUB-1 SECOND RESPONSE TIME - No API calls")
-        logger.info("   📍 Menu: Type 99 or 4 for help")
     
     def handle_message(self, message: str, sender: str) -> str:
         """Main entry point - SUB-1 SECOND RESPONSE"""
@@ -265,6 +368,8 @@ Welcome to the Warehouse Intelligence Platform!
   - Lahore
   - Karachi
   - Sialkot
+  - Peshawar
+  - Quetta
 
 📊 **What you'll see:**
 • Market coverage metrics
@@ -298,6 +403,8 @@ Simply type the warehouse name.
 • Lahore
 • Karachi
 • Sialkot
+• Peshawar
+• Quetta
 
 🔄 **Tips:**
 • You can type partial names
@@ -680,6 +787,7 @@ Type a warehouse name to get started!
                 ).fetchall()
                 cities = [r[0] for r in results if r[0]]
                 _warehouse_cities_cache[cache_key] = cities
+                logger.info(f"[Service] Found {len(cities)} cities served by {warehouse_name}")
                 return cities
         except Exception as e:
             logger.error(f"Error getting served cities: {e}")
@@ -704,6 +812,7 @@ Type a warehouse name to get started!
                     count += 1
             
             if count == 0:
+                logger.warning(f"[Service] No distance data available for {warehouse_name}")
                 return ("N/A", "N/A", "N/A")
             
             # Calculate average
