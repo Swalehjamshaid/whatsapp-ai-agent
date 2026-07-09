@@ -324,7 +324,7 @@ class WarehouseAnalyticsService:
                 return self._get_help_message()
             
             # Check if it's a greeting or empty
-            if not message_clean or message_clean.lower() in ['hi', 'hello', 'hey', 'start', 'menu']:
+            if not message_clean or message_clean.lower() in ['hi', 'hello', 'hey', 'start', 'menu', 'warehouse']:
                 return self._get_welcome_message()
             
             logger.info(f"[Service] Searching for warehouse: '{message_clean}' from {sender}")
@@ -442,6 +442,8 @@ Type a warehouse name to get started!
                         SELECT DISTINCT TRIM(warehouse) as warehouse
                         FROM delivery_reports 
                         WHERE LOWER(TRIM(warehouse)) = LOWER(:name)
+                        AND warehouse IS NOT NULL
+                        AND TRIM(warehouse) != ''
                         LIMIT 1
                     """),
                     {"name": name_normalized}
@@ -457,6 +459,8 @@ Type a warehouse name to get started!
                         SELECT DISTINCT TRIM(warehouse) as warehouse
                         FROM delivery_reports 
                         WHERE TRIM(warehouse) ILIKE :pattern
+                        AND warehouse IS NOT NULL
+                        AND TRIM(warehouse) != ''
                         LIMIT 1
                     """),
                     {"pattern": f"%{name}%"}
@@ -486,6 +490,7 @@ Type a warehouse name to get started!
                         FROM delivery_reports 
                         WHERE LOWER(TRIM(warehouse)) LIKE LOWER(:pattern)
                         AND warehouse IS NOT NULL
+                        AND TRIM(warehouse) != ''
                         ORDER BY warehouse
                         LIMIT :limit
                     """),
@@ -524,6 +529,8 @@ Type a warehouse name to get started!
     def get_warehouse_dashboard(self, warehouse_name: str) -> str:
         """Get warehouse dashboard with road distance"""
         try:
+            logger.info(f"[Service] Generating dashboard for warehouse: {warehouse_name}")
+            
             with engine.connect() as conn:
                 # Get warehouse data
                 result = conn.execute(
@@ -537,8 +544,8 @@ Type a warehouse name to get started!
                             COUNT(DISTINCT ship_to_city) as total_cities,
                             COUNT(DISTINCT delivery_location) as delivery_locations,
                             COUNT(DISTINCT dn_no) as total_dn,
-                            SUM(dn_qty) as total_units,
-                            SUM(dn_amount) as total_revenue,
+                            COALESCE(SUM(dn_qty), 0) as total_units,
+                            COALESCE(SUM(dn_amount), 0) as total_revenue,
                             COUNT(DISTINCT CASE WHEN pod_date IS NULL THEN dn_no END) as pending_dn,
                             COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) as delivered_dn,
                             AVG(CASE WHEN good_issue_date IS NOT NULL THEN good_issue_date - dn_create_date END) as avg_delivery_days,
@@ -546,6 +553,8 @@ Type a warehouse name to get started!
                             COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) as pod_completed
                         FROM delivery_reports 
                         WHERE LOWER(TRIM(warehouse)) = LOWER(TRIM(:name))
+                        AND warehouse IS NOT NULL
+                        AND TRIM(warehouse) != ''
                         GROUP BY warehouse, warehouse_code
                     """),
                     {"name": warehouse_name}
@@ -574,7 +583,6 @@ Type a warehouse name to get started!
                 # Calculate metrics
                 pgi_achievement = _percent(pgi_completed, total_dn)
                 pod_achievement = _percent(pod_completed, total_dn)
-                delivery_success = _percent(delivered_dn, total_dn)
                 
                 # Get top 5 dealers
                 dealers = self._get_top_dealers(warehouse_name)
@@ -707,6 +715,7 @@ Type a warehouse name to get started!
                         FROM delivery_reports 
                         WHERE LOWER(TRIM(warehouse)) = LOWER(TRIM(:name))
                         AND customer_name IS NOT NULL
+                        AND TRIM(customer_name) != ''
                         GROUP BY customer_name
                         ORDER BY dn_count DESC
                         LIMIT :limit
@@ -729,6 +738,7 @@ Type a warehouse name to get started!
                         FROM delivery_reports 
                         WHERE LOWER(TRIM(warehouse)) = LOWER(TRIM(:name))
                         AND ship_to_city IS NOT NULL
+                        AND TRIM(ship_to_city) != ''
                         GROUP BY ship_to_city
                         ORDER BY dn_count DESC
                         LIMIT :limit
@@ -857,6 +867,19 @@ Type a warehouse name to get started!
         insights.append("📈 Strengthen transporter performance to reduce delivery lead time.")
         
         return insights
+
+    def health_check(self) -> Dict[str, Any]:
+        """Health check for the warehouse service"""
+        return {
+            "healthy": True,
+            "service": "warehouse_analytics",
+            "version": self._version,
+            "database": "connected" if engine else "disconnected",
+            "ors_available": ORS_AVAILABLE and bool(ORS_API_KEY),
+            "geocode_available": GEOCODE_AVAILABLE,
+            "redis_available": _redis_client is not None,
+            "cache_available": CACHETOOLS_AVAILABLE,
+        }
 
 # ============================================================
 # SINGLETON
