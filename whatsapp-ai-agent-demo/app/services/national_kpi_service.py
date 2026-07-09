@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/national_kpi_service.py
-# VERSION: 6.1 - INTEGRATED WITH AI PROVIDER
+# VERSION: 6.2 - FIXED POSTGRESQL DATE DIFFERENCE
 # PURPOSE: National executive dashboard and logistics intelligence
 # ============================================================
 
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 CACHE_TTL = max(60, int(os.getenv("NATIONAL_KPI_CACHE_TTL", "300")))
-VERSION = "6.1"
+VERSION = "6.2"
 
 # ============================================================
 # BLOCK 2: UTILITY FUNCTIONS
@@ -231,20 +231,23 @@ Type a command to get started!
                 return self._cache[cache_key]
             
             with engine.connect() as conn:
-                # Base query for warehouse KPI data
+                # ============================================================
+                # FIXED: Using EXTRACT(EPOCH FROM (timestamp - timestamp))
+                # PostgreSQL requires: EXTRACT(EPOCH FROM (timestamp1 - timestamp2))
+                # ============================================================
                 query = """
                     SELECT 
                         TRIM(warehouse) as warehouse,
                         COUNT(DISTINCT dn_no) as total_dn,
                         COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) as pod_completed,
                         COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) as pgi_completed,
-                        AVG(CASE WHEN good_issue_date IS NOT NULL 
+                        AVG(CASE WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL
                             THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400 
                             ELSE NULL END) as avg_delivery_days,
                         AVG(CASE WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
                             THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400 
                             ELSE NULL END) as avg_pod_days,
-                        AVG(CASE WHEN pod_date IS NOT NULL 
+                        AVG(CASE WHEN pod_date IS NOT NULL AND dn_create_date IS NOT NULL 
                             THEN EXTRACT(EPOCH FROM (pod_date - dn_create_date)) / 86400 
                             ELSE NULL END) as avg_cycle_days
                     FROM delivery_reports 
@@ -369,13 +372,13 @@ Type a command to get started!
                             COUNT(DISTINCT dn_no) as total_dn,
                             COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) as pod_completed,
                             COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) as pgi_completed,
-                            AVG(CASE WHEN good_issue_date IS NOT NULL 
+                            AVG(CASE WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL
                                 THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400 
                                 ELSE NULL END) as avg_delivery,
                             AVG(CASE WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
                                 THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400 
                                 ELSE NULL END) as avg_pod,
-                            AVG(CASE WHEN pod_date IS NOT NULL 
+                            AVG(CASE WHEN pod_date IS NOT NULL AND dn_create_date IS NOT NULL 
                                 THEN EXTRACT(EPOCH FROM (pod_date - dn_create_date)) / 86400 
                                 ELSE NULL END) as avg_cycle
                         FROM delivery_reports 
@@ -482,9 +485,6 @@ def get_national_kpi_service() -> NationalKPIService:
         logger.info("✅ NationalKPIService instance created successfully")
     return _national_service
 
-# ============================================================
-# 🆕 ALIAS FOR BACKWARD COMPATIBILITY WITH AI PROVIDER
-# ============================================================
 def get_kpi_service() -> NationalKPIService:
     """
     Alias for get_national_kpi_service().
@@ -501,7 +501,7 @@ def get_national_kpi_dashboard() -> str:
 __all__ = [
     "NationalKPIService",
     "get_national_kpi_service",
-    "get_kpi_service",  # ✅ Required for ai_provider_service.py
+    "get_kpi_service",
     "get_national_kpi_dashboard",
     "VERSION",
 ]
