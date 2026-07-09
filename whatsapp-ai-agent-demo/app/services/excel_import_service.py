@@ -1,7 +1,7 @@
 # =====================================================================================================
 # FILE: whatsapp-ai-agent-demo/app/services/excel_import_service.py
-# VERSION: v3.0 - HIGH PERFORMANCE
-# PURPOSE: High-performance enterprise-grade Excel import for Haier Pakistan WhatsApp AI Agent
+# VERSION: v3.1 - FIXED WAREHOUSE MAPPING
+# PURPOSE: High-performance enterprise-grade Excel import with proper warehouse mapping
 # =====================================================================================================
 
 # =====================================================================================================
@@ -38,9 +38,9 @@ from app.models import DeliveryReport
 logger = logging.getLogger(__name__)
 
 HEADER_SCAN_ROWS = 25
-DEFAULT_BATCH_SIZE = 20000  # INCREASED for better throughput
+DEFAULT_BATCH_SIZE = 20000
 EXCEL_EPOCH = "1899-12-30"
-PROGRESS_LOG_INTERVAL = 10000  # INCREASED for less log noise
+PROGRESS_LOG_INTERVAL = 10000
 MAX_WORKERS = multiprocessing.cpu_count() * 2
 USE_POLARS = True
 
@@ -52,7 +52,100 @@ except ImportError:
     logger.warning("Polars not available, falling back to pandas")
 
 # =====================================================================================================
-# BLOCK 3: CUSTOM EXCEPTIONS
+# BLOCK 3: WAREHOUSE MAPPING - FIXED
+# =====================================================================================================
+
+# Map city names to warehouse names (for Gujrat and other cities)
+CITY_TO_WAREHOUSE_MAP = {
+    # Punjab
+    "gujrat": "Gujrat",
+    "gujrat office": "Gujrat",
+    "gujrat warehouse": "Gujrat",
+    "lahore": "Lahore",
+    "lahore office": "Lahore",
+    "lahore warehouse": "Lahore",
+    "faisalabad": "Faisalabad",
+    "faisalabad office": "Faisalabad",
+    "faisalabad warehouse": "Faisalabad",
+    "multan": "Multan",
+    "multan office": "Multan",
+    "multan warehouse": "Multan",
+    "rawalpindi": "Rawalpindi",
+    "rawalpindi office": "Rawalpindi",
+    "rawalpindi warehouse": "Rawalpindi",
+    "islamabad": "Islamabad",
+    "islamabad office": "Islamabad",
+    "islamabad warehouse": "Islamabad",
+    "sialkot": "Sialkot",
+    "sialkot office": "Sialkot",
+    "sialkot warehouse": "Sialkot",
+    "gujranwala": "Gujranwala",
+    "gujranwala office": "Gujranwala",
+    "gujranwala warehouse": "Gujranwala",
+    "sargodha": "Sargodha",
+    "sargodha office": "Sargodha",
+    "sargodha warehouse": "Sargodha",
+    "sahiwal": "Sahiwal",
+    "sahiwal office": "Sahiwal",
+    "sahiwal warehouse": "Sahiwal",
+    "bahawalpur": "Bahawalpur",
+    "bahawalpur office": "Bahawalpur",
+    "bahawalpur warehouse": "Bahawalpur",
+    
+    # Sindh
+    "karachi": "Karachi",
+    "karachi office": "Karachi",
+    "karachi warehouse": "Karachi",
+    "hyderabad": "Hyderabad",
+    "hyderabad office": "Hyderabad",
+    "hyderabad warehouse": "Hyderabad",
+    "sukkur": "Sukkur",
+    "sukkur office": "Sukkur",
+    "sukkur warehouse": "Sukkur",
+    
+    # KPK
+    "peshawar": "Peshawar",
+    "peshawar office": "Peshawar",
+    "peshawar warehouse": "Peshawar",
+    "abbottabad": "Abbottabad",
+    "abbottabad office": "Abbottabad",
+    "abbottabad warehouse": "Abbottabad",
+    
+    # Balochistan
+    "quetta": "Quetta",
+    "quetta office": "Quetta",
+    "quetta warehouse": "Quetta",
+    
+    # AJK
+    "muzaffarabad": "Muzaffarabad",
+    "muzaffarabad office": "Muzaffarabad",
+    "muzaffarabad warehouse": "Muzaffarabad",
+}
+
+# Warehouse code mapping
+WAREHOUSE_CODE_MAP = {
+    "lahore": "LHE",
+    "karachi": "KHI",
+    "rawalpindi": "RWP",
+    "islamabad": "ISB",
+    "multan": "MUX",
+    "peshawar": "PEW",
+    "quetta": "QTA",
+    "hyderabad": "HYD",
+    "faisalabad": "FSD",
+    "sialkot": "SKT",
+    "gujranwala": "GJW",
+    "gujrat": "GJT",
+    "bahawalpur": "BWP",
+    "sukkur": "SKR",
+    "sahiwal": "SWL",
+    "sargodha": "SGD",
+    "abbottabad": "ABT",
+    "muzaffarabad": "MZD",
+}
+
+# =====================================================================================================
+# BLOCK 4: CUSTOM EXCEPTIONS
 # =====================================================================================================
 
 class ExcelImportServiceError(Exception):
@@ -76,7 +169,7 @@ class ValidationError(ExcelImportServiceError):
     pass
 
 # =====================================================================================================
-# BLOCK 4: NORMALIZATION HELPERS (OPTIMIZED)
+# BLOCK 5: NORMALIZATION HELPERS (OPTIMIZED)
 # =====================================================================================================
 
 # Pre-compile regex patterns for performance
@@ -133,10 +226,50 @@ def normalize_city(value: Any) -> Optional[str]:
         "lhr": "Lahore", "isb": "Islamabad", "rwp": "Rawalpindi",
         "khi": "Karachi", "fsd": "Faisalabad", "mux": "Multan",
         "pew": "Peshawar", "qta": "Quetta", "gjw": "Gujranwala",
-        "skt": "Sialkot", "wah": "Wah Cantt", "skd": "Skardu",
-        "hrp": "Haripur", "shk": "Shinkiari",
+        "skt": "Sialkot", "gjt": "Gujrat", "wah": "Wah Cantt",
+        "skd": "Skardu", "hrp": "Haripur", "shk": "Shinkiari",
+        "bwp": "Bahawalpur", "skr": "Sukkur", "swl": "Sahiwal",
+        "sgd": "Sargodha", "hyd": "Hyderabad", "abt": "Abbottabad",
+        "mzd": "Muzaffarabad",
     }
     return city_map.get(city.lower().strip(), city)
+
+def map_city_to_warehouse(city: Optional[str]) -> Optional[str]:
+    """Map a city name to a warehouse name."""
+    if not city:
+        return None
+    
+    city_lower = city.lower().strip()
+    
+    # Check exact match first
+    if city_lower in CITY_TO_WAREHOUSE_MAP:
+        return CITY_TO_WAREHOUSE_MAP[city_lower]
+    
+    # Check partial match
+    for key, warehouse in CITY_TO_WAREHOUSE_MAP.items():
+        if key in city_lower or city_lower in key:
+            logger.info(f"📍 Mapped city '{city}' to warehouse '{warehouse}'")
+            return warehouse
+    
+    return None
+
+def get_warehouse_code(warehouse: Optional[str]) -> Optional[str]:
+    """Get warehouse code from warehouse name."""
+    if not warehouse:
+        return None
+    
+    warehouse_lower = warehouse.lower().strip()
+    
+    # Check exact match
+    if warehouse_lower in WAREHOUSE_CODE_MAP:
+        return WAREHOUSE_CODE_MAP[warehouse_lower]
+    
+    # Check partial match
+    for key, code in WAREHOUSE_CODE_MAP.items():
+        if key in warehouse_lower or warehouse_lower in key:
+            return code
+    
+    return None
 
 def derive_customer_code(customer_name: Optional[str]) -> Optional[str]:
     """Create a simple customer code from customer name."""
@@ -152,21 +285,6 @@ def derive_dealer_code(customer_name: Optional[str]) -> Optional[str]:
     code = _REMOVE_SPECIAL.sub("_", customer_name[:15].upper()).strip("_")
     return f"DEAL_{code}" if code else None
 
-def get_warehouse_code(warehouse: Optional[str]) -> Optional[str]:
-    """Map warehouse/city name to a warehouse code."""
-    if not warehouse:
-        return None
-
-    warehouse_map = {
-        "rawalpindi": "RWP", "islamabad": "ISB", "lahore": "LHE",
-        "karachi": "KHI", "faisalabad": "FSD", "multan": "MUX",
-        "peshawar": "PEW", "quetta": "QTA", "gujranwala": "GJW",
-        "sialkot": "SKT", "wah": "WAH", "wah cantt": "WAH",
-        "rwp": "RWP", "isb": "ISB", "lhr": "LHE",
-        "skd": "SKD", "hrp": "HRP", "shk": "SHK",
-    }
-    return warehouse_map.get(warehouse.lower().strip())
-
 def get_delivery_location(ship_to_city: Optional[str]) -> Optional[str]:
     """Return normalized delivery location."""
     return normalize_city(ship_to_city)
@@ -176,7 +294,7 @@ def generate_batch_id() -> str:
     return f"BATCH_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
 # =====================================================================================================
-# BLOCK 5: PARSING HELPERS (OPTIMIZED)
+# BLOCK 6: PARSING HELPERS (OPTIMIZED)
 # =====================================================================================================
 
 def parse_amount(value: Any) -> Optional[Decimal]:
@@ -270,7 +388,6 @@ def parse_date(value: Any) -> Optional[date]:
         if not raw:
             return None
 
-        # Extended date formats
         formats = (
             "%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y",
             "%d-%m-%Y", "%m-%d-%Y", "%d-%b-%Y", "%b %d %Y",
@@ -295,7 +412,7 @@ def parse_date(value: Any) -> Optional[date]:
     return None
 
 # =====================================================================================================
-# BLOCK 6: BUSINESS VALIDATION (OPTIMIZED)
+# BLOCK 7: BUSINESS VALIDATION (OPTIMIZED)
 # =====================================================================================================
 
 class BusinessValidator:
@@ -304,8 +421,9 @@ class BusinessValidator:
     VALID_WAREHOUSES = {
         "rawalpindi", "islamabad", "lahore", "karachi", "faisalabad",
         "multan", "peshawar", "quetta", "gujranwala", "sialkot",
-        "wah", "wah cantt", "rwp", "isb", "lhr", "khi", "fsd",
-        "mux", "pew", "qta", "gjw", "skt", "skd", "hrp", "shk"
+        "gujrat", "bahawalpur", "sukkur", "sahiwal", "sargodha",
+        "hyderabad", "abbottabad", "muzaffarabad",
+        "wah", "wah cantt",
     }
 
     @classmethod
@@ -344,7 +462,7 @@ class BusinessValidator:
         return errors
 
 # =====================================================================================================
-# BLOCK 7: ENHANCED COLUMN MAP
+# BLOCK 8: ENHANCED COLUMN MAP
 # =====================================================================================================
 
 class ColumnMap:
@@ -423,7 +541,7 @@ class ColumnMap:
         return mapping
 
 # =====================================================================================================
-# BLOCK 8: WORKSHEET DETECTION
+# BLOCK 9: WORKSHEET DETECTION
 # =====================================================================================================
 
 def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tuple[int, int]:
@@ -458,16 +576,11 @@ def detect_worksheet_fast(file_path: str) -> Tuple[str, int]:
     """Fast worksheet detection using Polars or pandas."""
     if HAS_POLARS:
         try:
-            # Use Polars for faster sheet detection
-            excel = pl.read_excel(file_path, engine='calamine', sheet_id=0, infer_schema_length=0)
-            sheet_names = pl.read_excel(file_path, engine='calamine', sheet_id=0)
-            # Get all sheet names
             import openpyxl
             wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
             sheet_names = wb.sheetnames
             wb.close()
 
-            # Check each sheet
             for sheet_name in sheet_names:
                 if sheet_name.startswith(("_", "$")):
                     continue
@@ -488,7 +601,6 @@ def detect_worksheet_fast(file_path: str) -> Tuple[str, int]:
         except:
             pass
 
-    # Fallback to pandas
     return detect_worksheet(file_path)
 
 def detect_worksheet(file_path: str) -> Tuple[str, int]:
@@ -549,7 +661,7 @@ def read_excel_fast(file_path: str, sheet_name: str, header_row: int) -> pd.Data
     return df
 
 # =====================================================================================================
-# BLOCK 9: ENHANCED STATUS DERIVATION
+# BLOCK 10: ENHANCED STATUS DERIVATION
 # =====================================================================================================
 
 def derive_status(good_issue_date: Optional[date], pod_date: Optional[date],
@@ -606,31 +718,25 @@ def derive_status(good_issue_date: Optional[date], pod_date: Optional[date],
     }
 
 # =====================================================================================================
-# BLOCK 10: DATABASE CONSTRAINT CHECKER
+# BLOCK 11: DATABASE CONSTRAINT CHECKER
 # =====================================================================================================
 
 def check_unique_constraint_exists(db: Session, table_name: str, columns: List[str]) -> bool:
     """Check if a unique constraint exists on the specified columns."""
     try:
-        query = text("""
-            SELECT 1 FROM pg_constraint c
-            JOIN pg_class t ON t.oid = c.conrelid
-            JOIN pg_namespace n ON n.oid = t.relnamespace
-            WHERE t.relname = :table_name
-            AND n.nspname = 'public'
-            AND c.contype = 'u'
-            AND c.conkey = (
-                SELECT array_agg(attnum)
-                FROM pg_attribute a
-                WHERE a.attrelid = t.oid
-                AND a.attname IN :columns
-                ORDER BY a.attnum
-            )
-            LIMIT 1
-        """)
-
-        result = db.execute(query, {"table_name": table_name, "columns": tuple(columns)})
-        return result.fetchone() is not None
+        # Use information_schema for reliable checking
+        result = db.execute(
+            text("""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.table_constraints
+                    WHERE table_name = :table_name
+                    AND constraint_type = 'UNIQUE'
+                )
+            """),
+            {"table_name": table_name}
+        )
+        return result.scalar() or False
     except Exception as e:
         logger.warning(f"Could not check for unique constraint: {e}")
         return False
@@ -638,35 +744,46 @@ def check_unique_constraint_exists(db: Session, table_name: str, columns: List[s
 def create_unique_constraint_if_missing(db: Session, table_name: str, columns: List[str]) -> bool:
     """Create unique constraint if it doesn't exist."""
     try:
-        if check_unique_constraint_exists(db, table_name, columns):
-            logger.info(f"Unique constraint on ({', '.join(columns)}) already exists")
+        # Check if constraint exists using information_schema
+        exists = db.execute(
+            text("""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.table_constraints
+                    WHERE table_name = :table_name
+                    AND constraint_type = 'UNIQUE'
+                )
+            """),
+            {"table_name": table_name}
+        ).scalar()
+
+        if exists:
+            logger.info(f"✅ Unique constraint already exists on {table_name}")
             return True
 
         constraint_name = f"uq_{table_name}_{'_'.join(columns)}"
         columns_str = ", ".join(columns)
 
-        index_check = db.execute(
-            text("SELECT 1 FROM pg_indexes WHERE indexname = :idx_name"),
-            {"idx_name": constraint_name}
-        )
-        if index_check.fetchone():
-            logger.info(f"Index {constraint_name} already exists")
+        try:
+            db.execute(text(f"""
+                ALTER TABLE {table_name}
+                ADD CONSTRAINT {constraint_name} UNIQUE ({columns_str})
+            """))
+            db.commit()
+            logger.info(f"✅ Created unique constraint {constraint_name} on ({columns_str})")
             return True
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to create unique constraint: {e}")
+            return False
 
-        db.execute(text(f"""
-            ALTER TABLE {table_name}
-            ADD CONSTRAINT {constraint_name} UNIQUE ({columns_str})
-        """))
-        db.commit()
-        logger.info(f"✅ Created unique constraint {constraint_name} on ({columns_str})")
-        return True
     except Exception as e:
         logger.error(f"Failed to create unique constraint: {e}")
         db.rollback()
         return False
 
 # =====================================================================================================
-# BLOCK 11: MAIN SERVICE - HIGH PERFORMANCE
+# BLOCK 12: MAIN SERVICE - HIGH PERFORMANCE
 # =====================================================================================================
 
 class ExcelImportService:
@@ -693,11 +810,9 @@ class ExcelImportService:
         self.table_columns = set(self.table.columns.keys())
         self._unique_constraint_exists = None
 
-        # Pre-compute column mappings for speed
         self._field_column_cache = {}
         self._column_names = [c.name for c in self.table.columns]
 
-        # Metrics
         self.metrics = {
             "import_start": None,
             "import_end": None,
@@ -782,7 +897,7 @@ class ExcelImportService:
         # Step 4: Ensure unique constraint
         self._ensure_unique_constraint()
 
-        # Step 5: Process rows with vectorization or row-by-row
+        # Step 5: Process rows with vectorization
         parse_start = time.time()
 
         if self.use_vectorization:
@@ -869,6 +984,13 @@ class ExcelImportService:
                 customer_name = normalize_string(row.get(col_customer_name))
                 ship_to_city = normalize_city(row.get(col_ship_to_city))
                 warehouse = normalize_string(row.get(col_warehouse))
+                
+                # FIX: If warehouse is empty, map it from ship_to_city
+                if not warehouse and ship_to_city:
+                    warehouse = map_city_to_warehouse(ship_to_city)
+                    if warehouse:
+                        logger.debug(f"📍 Mapped warehouse from city '{ship_to_city}' to '{warehouse}'")
+                
                 amount_decimal = parse_amount(row.get(col_dn_amount))
                 dn_work = normalize_string(row.get(col_dn_work))
 
@@ -1041,6 +1163,13 @@ class ExcelImportService:
         customer_name = normalize_string(row.get(mapping.get("customer_name")))
         ship_to_city = normalize_city(row.get(mapping.get("ship_to_city")))
         warehouse = normalize_string(row.get(mapping.get("warehouse")))
+        
+        # FIX: If warehouse is empty, map it from ship_to_city
+        if not warehouse and ship_to_city:
+            warehouse = map_city_to_warehouse(ship_to_city)
+            if warehouse:
+                logger.debug(f"📍 Mapped warehouse from city '{ship_to_city}' to '{warehouse}'")
+        
         amount_decimal = parse_amount(row.get(mapping.get("dn_amount")))
         dn_work = normalize_string(row.get(mapping.get("dn_work")))
 
@@ -1209,7 +1338,7 @@ class ExcelImportService:
         }
 
 # =====================================================================================================
-# BLOCK 12: PUBLIC ENTRY POINT
+# BLOCK 13: PUBLIC ENTRY POINT
 # =====================================================================================================
 
 def import_delivery_excel(
@@ -1259,7 +1388,76 @@ def import_delivery_excel(
     )
 
 # =====================================================================================================
-# BLOCK 13: EXPORTED SYMBOLS
+# BLOCK 14: FIX MISSING WAREHOUSE DATA
+# =====================================================================================================
+
+def fix_missing_warehouse_data(db: Session) -> Dict[str, Any]:
+    """
+    Fix missing warehouse data by mapping from ship_to_city.
+    This is a one-time fix for existing data.
+    """
+    try:
+        # Find records with NULL or empty warehouse
+        result = db.execute(
+            text("""
+                SELECT id, dn_no, ship_to_city, warehouse
+                FROM delivery_reports
+                WHERE (warehouse IS NULL OR TRIM(warehouse) = '')
+                AND ship_to_city IS NOT NULL
+                AND TRIM(ship_to_city) != ''
+            """)
+        ).fetchall()
+
+        if not result:
+            return {
+                "success": True,
+                "message": "No records with missing warehouse found",
+                "updated_count": 0
+            }
+
+        updated_count = 0
+        for row in result:
+            record_id, dn_no, ship_to_city, warehouse = row
+            mapped_warehouse = map_city_to_warehouse(ship_to_city)
+            
+            if mapped_warehouse:
+                db.execute(
+                    text("""
+                        UPDATE delivery_reports
+                        SET warehouse = :warehouse,
+                            warehouse_code = :warehouse_code,
+                            updated_at = :updated_at
+                        WHERE id = :id
+                    """),
+                    {
+                        "id": record_id,
+                        "warehouse": mapped_warehouse,
+                        "warehouse_code": get_warehouse_code(mapped_warehouse),
+                        "updated_at": datetime.utcnow()
+                    }
+                )
+                updated_count += 1
+                logger.info(f"✅ Updated record {record_id} (DN: {dn_no}) with warehouse '{mapped_warehouse}' from city '{ship_to_city}'")
+
+        db.commit()
+        logger.info(f"✅ Fixed {updated_count} records with missing warehouse data")
+        return {
+            "success": True,
+            "message": f"Fixed {updated_count} records with missing warehouse data",
+            "updated_count": updated_count
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Failed to fix missing warehouse data: {e}")
+        return {
+            "success": False,
+            "message": str(e),
+            "updated_count": 0
+        }
+
+# =====================================================================================================
+# BLOCK 15: EXPORTED SYMBOLS
 # =====================================================================================================
 
 __all__ = [
@@ -1270,9 +1468,12 @@ __all__ = [
     "VerificationError",
     "ValidationError",
     "import_delivery_excel",
+    "fix_missing_warehouse_data",
     "check_unique_constraint_exists",
     "create_unique_constraint_if_missing",
     "BusinessValidator",
+    "map_city_to_warehouse",
+    "CITY_TO_WAREHOUSE_MAP",
 ]
 
 # =====================================================================================================
@@ -1280,7 +1481,7 @@ __all__ = [
 # =====================================================================================================
 
 logger.info("=" * 60)
-logger.info("📊 EXCEL IMPORT SERVICE v3.0 - HIGH PERFORMANCE")
+logger.info("📊 EXCEL IMPORT SERVICE v3.1 - FIXED WAREHOUSE MAPPING")
 logger.info("=" * 60)
 logger.info(f"  ✅ Batch Size: {DEFAULT_BATCH_SIZE:,} rows")
 logger.info(f"  ✅ Workers: {MAX_WORKERS}")
@@ -1288,6 +1489,7 @@ logger.info(f"  ✅ Polars Engine: {'Enabled' if HAS_POLARS else 'Disabled'}")
 logger.info("  ✅ Vectorized Processing: Enabled")
 logger.info("  ✅ Optimized Regex Patterns")
 logger.info("  ✅ Bulk Delete-Insert Strategy")
+logger.info(f"  ✅ City-to-Warehouse Mapping: {len(CITY_TO_WAREHOUSE_MAP)} mappings")
 logger.info("=" * 60)
 
 # =====================================================================================================
