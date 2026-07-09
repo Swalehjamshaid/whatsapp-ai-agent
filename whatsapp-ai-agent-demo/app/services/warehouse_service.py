@@ -887,7 +887,14 @@ Type a warehouse name to get started!
 
 _warehouse_service: Optional[WarehouseAnalyticsService] = None
 
-def get_warehouse_service() -> WarehouseAnalyticsService:
+# CRITICAL: This function name MUST match what ai_provider_service.py expects
+def get_warehouse_analytics_service() -> WarehouseAnalyticsService:
+    """
+    Get singleton instance of WarehouseAnalyticsService.
+    
+    This function name is REQUIRED by ai_provider_service.py.
+    DO NOT CHANGE - it will break the service integration.
+    """
     global _warehouse_service
     if _warehouse_service is None:
         logger.info("🔧 Creating WarehouseAnalyticsService instance...")
@@ -895,7 +902,13 @@ def get_warehouse_service() -> WarehouseAnalyticsService:
         logger.info("✅ WarehouseAnalyticsService instance created successfully")
     return _warehouse_service
 
+# Also provide the shorter alias for backward compatibility
+def get_warehouse_service() -> WarehouseAnalyticsService:
+    """Alias for get_warehouse_analytics_service()"""
+    return get_warehouse_analytics_service()
+
 __all__ = [
     "WarehouseAnalyticsService",
+    "get_warehouse_analytics_service",
     "get_warehouse_service",
 ]
