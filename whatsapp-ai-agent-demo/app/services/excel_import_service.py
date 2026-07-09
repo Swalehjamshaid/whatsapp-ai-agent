@@ -1,7 +1,7 @@
 # =====================================================================================================
 # FILE: whatsapp-ai-agent-demo/app/services/excel_import_service.py
-# VERSION: v3.1 - FIXED WAREHOUSE MAPPING
-# PURPOSE: High-performance enterprise-grade Excel import with proper warehouse mapping
+# VERSION: v3.2 - SAFE BATCH MECHANISM
+# PURPOSE: High-performance enterprise-grade Excel import with safe batch processing
 # =====================================================================================================
 
 # =====================================================================================================
@@ -38,9 +38,11 @@ from app.models import DeliveryReport
 logger = logging.getLogger(__name__)
 
 HEADER_SCAN_ROWS = 25
-DEFAULT_BATCH_SIZE = 20000
+DEFAULT_BATCH_SIZE = 5000  # SAFE: Prevents SQL truncation
+SAFE_INSERT_BATCH_SIZE = 5000  # Maximum rows per INSERT statement
+SAFE_DELETE_CHUNK_SIZE = 1000  # Maximum rows per DELETE statement
 EXCEL_EPOCH = "1899-12-30"
-PROGRESS_LOG_INTERVAL = 10000
+PROGRESS_LOG_INTERVAL = 5000  # Log progress every 5,000 rows
 MAX_WORKERS = multiprocessing.cpu_count() * 2
 USE_POLARS = True
 
@@ -52,15 +54,15 @@ except ImportError:
     logger.warning("Polars not available, falling back to pandas")
 
 # =====================================================================================================
-# BLOCK 3: WAREHOUSE MAPPING - FIXED
+# BLOCK 3: WAREHOUSE MAPPING
 # =====================================================================================================
 
-# Map city names to warehouse names (for Gujrat and other cities)
 CITY_TO_WAREHOUSE_MAP = {
     # Punjab
     "gujrat": "Gujrat",
     "gujrat office": "Gujrat",
     "gujrat warehouse": "Gujrat",
+    "kharian": "Gujrat",
     "lahore": "Lahore",
     "lahore office": "Lahore",
     "lahore warehouse": "Lahore",
@@ -122,7 +124,6 @@ CITY_TO_WAREHOUSE_MAP = {
     "muzaffarabad warehouse": "Muzaffarabad",
 }
 
-# Warehouse code mapping
 WAREHOUSE_CODE_MAP = {
     "lahore": "LHE",
     "karachi": "KHI",
@@ -169,10 +170,9 @@ class ValidationError(ExcelImportServiceError):
     pass
 
 # =====================================================================================================
-# BLOCK 5: NORMALIZATION HELPERS (OPTIMIZED)
+# BLOCK 5: NORMALIZATION HELPERS
 # =====================================================================================================
 
-# Pre-compile regex patterns for performance
 _REMOVE_NON_DIGIT = re.compile(r"[^0-9]")
 _REMOVE_SPECIAL = re.compile(r"[^a-zA-Z0-9]")
 _REMOVE_AMOUNT_SPECIAL = re.compile(r"[^\d.\-()]")
@@ -260,11 +260,9 @@ def get_warehouse_code(warehouse: Optional[str]) -> Optional[str]:
     
     warehouse_lower = warehouse.lower().strip()
     
-    # Check exact match
     if warehouse_lower in WAREHOUSE_CODE_MAP:
         return WAREHOUSE_CODE_MAP[warehouse_lower]
     
-    # Check partial match
     for key, code in WAREHOUSE_CODE_MAP.items():
         if key in warehouse_lower or warehouse_lower in key:
             return code
@@ -294,7 +292,7 @@ def generate_batch_id() -> str:
     return f"BATCH_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
 # =====================================================================================================
-# BLOCK 6: PARSING HELPERS (OPTIMIZED)
+# BLOCK 6: PARSING HELPERS
 # =====================================================================================================
 
 def parse_amount(value: Any) -> Optional[Decimal]:
@@ -412,7 +410,7 @@ def parse_date(value: Any) -> Optional[date]:
     return None
 
 # =====================================================================================================
-# BLOCK 7: BUSINESS VALIDATION (OPTIMIZED)
+# BLOCK 7: BUSINESS VALIDATION
 # =====================================================================================================
 
 class BusinessValidator:
@@ -462,7 +460,7 @@ class BusinessValidator:
         return errors
 
 # =====================================================================================================
-# BLOCK 8: ENHANCED COLUMN MAP
+# BLOCK 8: COLUMN MAP
 # =====================================================================================================
 
 class ColumnMap:
@@ -661,7 +659,7 @@ def read_excel_fast(file_path: str, sheet_name: str, header_row: int) -> pd.Data
     return df
 
 # =====================================================================================================
-# BLOCK 10: ENHANCED STATUS DERIVATION
+# BLOCK 10: STATUS DERIVATION
 # =====================================================================================================
 
 def derive_status(good_issue_date: Optional[date], pod_date: Optional[date],
@@ -724,7 +722,6 @@ def derive_status(good_issue_date: Optional[date], pod_date: Optional[date],
 def check_unique_constraint_exists(db: Session, table_name: str, columns: List[str]) -> bool:
     """Check if a unique constraint exists on the specified columns."""
     try:
-        # Use information_schema for reliable checking
         result = db.execute(
             text("""
                 SELECT EXISTS (
@@ -744,7 +741,6 @@ def check_unique_constraint_exists(db: Session, table_name: str, columns: List[s
 def create_unique_constraint_if_missing(db: Session, table_name: str, columns: List[str]) -> bool:
     """Create unique constraint if it doesn't exist."""
     try:
-        # Check if constraint exists using information_schema
         exists = db.execute(
             text("""
                 SELECT EXISTS (
@@ -783,7 +779,7 @@ def create_unique_constraint_if_missing(db: Session, table_name: str, columns: L
         return False
 
 # =====================================================================================================
-# BLOCK 12: MAIN SERVICE - HIGH PERFORMANCE
+# BLOCK 12: MAIN SERVICE - WITH SAFE BATCH MECHANISM
 # =====================================================================================================
 
 class ExcelImportService:
@@ -800,7 +796,7 @@ class ExcelImportService:
         parallel_processing: bool = True,
     ):
         self.db = db
-        self.batch_size = batch_size
+        self.batch_size = min(batch_size, SAFE_INSERT_BATCH_SIZE)  # SAFE: Cap at 5000
         self.auto_create_constraint = auto_create_constraint
         self.validate_business_rules = validate_business_rules
         self.conflict_strategy = conflict_strategy
@@ -828,6 +824,7 @@ class ExcelImportService:
             "invalid_amounts": 0,
             "validation_errors": [],
             "duplicate_rows": [],
+            "batch_count": 0,
         }
 
     def _ensure_unique_constraint(self) -> bool:
@@ -907,11 +904,12 @@ class ExcelImportService:
 
         self.metrics["parse_time"] = time.time() - parse_start
 
-        # Step 6: Upsert records
+        # Step 6: Upsert records with SAFE BATCH MECHANISM
         database_start = time.time()
-        rows_upserted = self._upsert_records_optimized(records)
+        rows_upserted, batch_count = self._upsert_records_with_safe_batches(records)
         self.metrics["database_time"] = time.time() - database_start
         self.metrics["rows_upserted"] = rows_upserted
+        self.metrics["batch_count"] = batch_count
 
         self.metrics["rows_read"] = int(len(df))
         self.metrics["rows_valid"] = len(records)
@@ -919,6 +917,8 @@ class ExcelImportService:
         self.metrics["duplicate_rows"] = duplicates[:50]
         self.metrics["validation_errors"] = errors[:50]
         self.metrics["import_end"] = datetime.utcnow().isoformat()
+
+        logger.info(f"✅ Import completed: {rows_upserted} rows upserted in {batch_count} batches")
 
         return self._build_response(
             sheet_name=sheet_name,
@@ -1219,21 +1219,30 @@ class ExcelImportService:
 
         return {key: value for key, value in record.items() if key in self.table_columns}
 
-    def _upsert_records_optimized(self, records: List[Dict[str, Any]]) -> int:
-        """Optimized bulk upsert with larger batch sizes."""
+    def _upsert_records_with_safe_batches(self, records: List[Dict[str, Any]]) -> Tuple[int, int]:
+        """
+        Upsert records using SAFE batch mechanism.
+        Returns: (total_upserted, batch_count)
+        """
         if not records:
-            return 0
+            return 0, 0
 
         total = 0
+        batch_count = 0
         protected_fields = {"id", "created_at"}
         has_constraint = self._unique_constraint_exists
 
-        # Use even larger batch size for final flush
-        batch_size = max(self.batch_size, 10000)
+        # SAFE BATCH SIZE - Prevents SQL truncation
+        safe_batch_size = min(self.batch_size, SAFE_INSERT_BATCH_SIZE)
+        
+        logger.info(f"📊 Starting upsert with safe batch size: {safe_batch_size} rows per batch")
 
         try:
-            for start in range(0, len(records), batch_size):
-                batch = records[start:start + batch_size]
+            for start in range(0, len(records), safe_batch_size):
+                batch = records[start:start + safe_batch_size]
+                batch_count += 1
+                
+                logger.info(f"📦 Batch {batch_count}: Processing rows {start+1} to {min(start+safe_batch_size, len(records))} ({len(batch)} rows)")
 
                 if has_constraint and self.conflict_strategy == "upsert":
                     stmt = insert(self.table).values(batch)
@@ -1257,47 +1266,52 @@ class ExcelImportService:
                     total += result.rowcount or 0
 
                 else:
-                    # Use delete-and-insert strategy (bulk)
+                    # Use delete-and-insert strategy with safe chunking
                     dn_material_pairs = [(r["dn_no"], r["material_no"]) for r in batch]
                     if dn_material_pairs and self.conflict_strategy == "delete_insert":
-                        # Bulk delete
-                        delete_placeholders = []
-                        delete_params = {}
-                        for i, (dn, mat) in enumerate(dn_material_pairs):
-                            delete_placeholders.append(f"(:dn_{i}, :mat_{i})")
-                            delete_params[f"dn_{i}"] = dn
-                            delete_params[f"mat_{i}"] = mat
+                        # Delete in safe chunks
+                        for i in range(0, len(dn_material_pairs), SAFE_DELETE_CHUNK_SIZE):
+                            chunk = dn_material_pairs[i:i+SAFE_DELETE_CHUNK_SIZE]
+                            delete_placeholders = []
+                            delete_params = {}
+                            for idx, (dn, mat) in enumerate(chunk):
+                                delete_placeholders.append(f"(:dn_{idx}, :mat_{idx})")
+                                delete_params[f"dn_{idx}"] = dn
+                                delete_params[f"mat_{idx}"] = mat
 
-                        if delete_placeholders:
-                            delete_sql = f"""
-                                DELETE FROM delivery_reports
-                                WHERE (dn_no, material_no) IN ({', '.join(delete_placeholders)})
-                            """
-                            self.db.execute(text(delete_sql), delete_params)
+                            if delete_placeholders:
+                                delete_sql = f"""
+                                    DELETE FROM delivery_reports
+                                    WHERE (dn_no, material_no) IN ({', '.join(delete_placeholders)})
+                                """
+                                self.db.execute(text(delete_sql), delete_params)
 
-                    # Bulk insert
+                    # Bulk insert the batch
                     self.db.execute(insert(self.table).values(batch))
                     total += len(batch)
 
                 # Commit each batch
                 self.db.commit()
+                logger.info(f"✅ Batch {batch_count} committed: {len(batch)} rows")
 
-                # Log progress
+                # Progress log
                 if total > 0 and total % PROGRESS_LOG_INTERVAL == 0:
-                    logger.info(f"📊 Import progress: {total:,} rows upserted")
+                    logger.info(f"📊 Total progress: {total:,} rows upserted")
 
-            return total
+            logger.info(f"✅ All batches completed: {total} rows upserted in {batch_count} batches")
+            return total, batch_count
 
         except SQLAlchemyError as exc:
             self.db.rollback()
             message = str(exc)
+            logger.error(f"❌ Database error in batch {batch_count}: {message[:200]}")
 
             if "no unique or exclusion constraint matching the ON CONFLICT specification" in message:
                 logger.warning("ON CONFLICT failed, falling back to delete-insert strategy")
                 self._unique_constraint_exists = False
-                return self._upsert_records_optimized(records)
+                return self._upsert_records_with_safe_batches(records)
 
-            raise ExcelImportServiceError(f"Database upsert failed: {message}") from exc
+            raise ExcelImportServiceError(f"Database upsert failed at batch {batch_count}: {message[:200]}") from exc
 
     def _build_response(
         self,
@@ -1332,6 +1346,8 @@ class ExcelImportService:
                 "rows_per_second": round(
                     self.metrics["rows_read"] / import_duration if import_duration > 0 else 0, 2
                 ),
+                "batch_count": self.metrics["batch_count"],
+                "batch_size": self.batch_size,
             },
             "validation_errors": errors or [],
             "duplicate_rows": self.metrics["duplicate_rows"][:50],
@@ -1356,19 +1372,6 @@ def import_delivery_excel(
 ) -> Dict[str, Any]:
     """
     High-performance Excel import with vectorization and optimized bulk operations.
-
-    Args:
-        db: SQLAlchemy session
-        file_path: Path to Excel file
-        source_filename: Original filename for tracking
-        sheet_name: Specific sheet name (auto-detected if None)
-        batch_size: Number of records per batch (default 20,000)
-        upload_batch_id: Batch ID for tracking
-        auto_create_constraint: Create unique constraint if missing
-        validate_business_rules: Enable business validation
-        conflict_strategy: How to handle conflicts ('upsert', 'delete_insert', 'skip')
-        use_vectorization: Use vectorized pandas operations
-        parallel_processing: Use parallel processing (reserved for future)
     """
     service = ExcelImportService(
         db=db,
@@ -1394,10 +1397,8 @@ def import_delivery_excel(
 def fix_missing_warehouse_data(db: Session) -> Dict[str, Any]:
     """
     Fix missing warehouse data by mapping from ship_to_city.
-    This is a one-time fix for existing data.
     """
     try:
-        # Find records with NULL or empty warehouse
         result = db.execute(
             text("""
                 SELECT id, dn_no, ship_to_city, warehouse
@@ -1474,6 +1475,8 @@ __all__ = [
     "BusinessValidator",
     "map_city_to_warehouse",
     "CITY_TO_WAREHOUSE_MAP",
+    "DEFAULT_BATCH_SIZE",
+    "SAFE_INSERT_BATCH_SIZE",
 ]
 
 # =====================================================================================================
@@ -1481,14 +1484,14 @@ __all__ = [
 # =====================================================================================================
 
 logger.info("=" * 60)
-logger.info("📊 EXCEL IMPORT SERVICE v3.1 - FIXED WAREHOUSE MAPPING")
+logger.info("📊 EXCEL IMPORT SERVICE v3.2 - SAFE BATCH MECHANISM")
 logger.info("=" * 60)
-logger.info(f"  ✅ Batch Size: {DEFAULT_BATCH_SIZE:,} rows")
+logger.info(f"  ✅ Insert Batch Size: {SAFE_INSERT_BATCH_SIZE:,} rows")
+logger.info(f"  ✅ Delete Chunk Size: {SAFE_DELETE_CHUNK_SIZE:,} rows")
 logger.info(f"  ✅ Workers: {MAX_WORKERS}")
 logger.info(f"  ✅ Polars Engine: {'Enabled' if HAS_POLARS else 'Disabled'}")
 logger.info("  ✅ Vectorized Processing: Enabled")
-logger.info("  ✅ Optimized Regex Patterns")
-logger.info("  ✅ Bulk Delete-Insert Strategy")
+logger.info("  ✅ Safe Batch Mechanism: Enabled")
 logger.info(f"  ✅ City-to-Warehouse Mapping: {len(CITY_TO_WAREHOUSE_MAP)} mappings")
 logger.info("=" * 60)
 
