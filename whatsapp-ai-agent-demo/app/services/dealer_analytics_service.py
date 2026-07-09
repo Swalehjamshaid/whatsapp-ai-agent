@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
-# FILE: app/services/warehouse_service.py
-# VERSION: 2.0 - WAREHOUSE INTELLIGENCE CENTER
-# PURPOSE: Warehouse analytics with road distance calculation
+# FILE: app/services/dealer_analytics_service.py
+# VERSION: 12.11 - ROAD DISTANCE WITH CACHING
 # ============================================================
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
-VERSION = "2.0"
+VERSION = "12.11"
 
 # Try to import geocoding libraries
 try:
@@ -83,16 +82,17 @@ if REDIS_AVAILABLE:
 
 # In-memory caches with TTL
 if CACHETOOLS_AVAILABLE:
+    # Cache for geocoding results (7 days TTL)
     _geocode_cache = TTLCache(maxsize=1000, ttl=604800)
+    # Cache for road distance calculations (30 days TTL)
     _distance_cache = TTLCache(maxsize=1000, ttl=2592000)
-    _warehouse_cache = TTLCache(maxsize=500, ttl=3600)
 else:
+    # Fallback to simple dict caches
     _geocode_cache = {}
     _distance_cache = {}
-    _warehouse_cache = {}
 
 # ============================================================
-# UTILITY FUNCTIONS (SAME AS DEALER SERVICE)
+# UTILITY FUNCTIONS
 # ============================================================
 
 def _text(value: Any, default: str = "Unknown") -> str:
@@ -115,7 +115,7 @@ def _percent(numerator: Any, denominator: Any) -> float:
 
 def _format_currency(amount: float) -> str:
     if amount >= 1_000_000:
-        return f"PKR {amount/1_000_000:.1f}M"
+        return f"PKR {amount/1_000_000:.2f}M"
     elif amount >= 1_000:
         return f"PKR {amount:,.0f}"
     return f"PKR {amount:,.0f}"
@@ -124,50 +124,58 @@ def _format_number(num: int) -> str:
     return f"{num:,}"
 
 def _get_redis_cache(key: str) -> Optional[str]:
+    """Get from Redis cache"""
     if _redis_client:
         try:
             return _redis_client.get(key)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Redis get failed: {e}")
     return None
 
 def _set_redis_cache(key: str, value: str, ttl: int = 2592000) -> None:
+    """Set Redis cache with TTL (default 30 days for distances)"""
     if _redis_client:
         try:
             _redis_client.setex(key, ttl, value)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Redis set failed: {e}")
 
 def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
-    """Geocode a city name using geopy with Redis caching"""
+    """Geocode a city name to get coordinates using geopy with Redis caching"""
     if not city:
         return None
     
     city_clean = city.strip()
     cache_key = city_clean.lower()
     
-    # Check Redis cache
+    # Check Redis cache first
     redis_key = f"geocode:{cache_key}"
     redis_result = _get_redis_cache(redis_key)
     if redis_result:
         try:
             lat, lon = redis_result.split(',')
-            return (float(lat), float(lon))
-        except Exception:
-            pass
+            coords = (float(lat), float(lon))
+            logger.info(f"✅ Redis cache hit for '{city_clean}'")
+            return coords
+        except Exception as e:
+            logger.warning(f"Redis cache parse failed: {e}")
     
     # Check in-memory cache
     if cache_key in _geocode_cache:
+        logger.info(f"✅ Memory cache hit for '{city_clean}'")
         return _geocode_cache[cache_key]
     
-    # Try geopy
+    # Try geopy first
     if GEOCODE_AVAILABLE:
         try:
-            geolocator = Nominatim(user_agent="warehouse_intelligence")
+            geolocator = Nominatim(user_agent="dealer_intelligence")
             geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
+            
+            # Try with "Pakistan" to improve accuracy
             location = geocode(f"{city_clean}, Pakistan")
             if location:
                 coords = (location.latitude, location.longitude)
+                # Store in caches
                 _geocode_cache[cache_key] = coords
                 _set_redis_cache(redis_key, f"{coords[0]},{coords[1]}", 604800)
                 logger.info(f"✅ Geocoded '{city_clean}' → {coords}")
@@ -175,22 +183,40 @@ def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
         except Exception as e:
             logger.warning(f"Geopy geocoding failed for '{city_clean}': {e}")
     
-    # Try OpenRouteService
+    # Try OpenRouteService geocoding
     if ORS_AVAILABLE and ORS_API_KEY:
         try:
             client = openrouteservice.Client(key=ORS_API_KEY)
             response = client.pelias_search(text=f"{city_clean}, Pakistan")
             if response and 'features' in response and response['features']:
                 coords = response['features'][0]['geometry']['coordinates']
+                # ORS returns [lng, lat], we need [lat, lng]
                 coords_tuple = (coords[1], coords[0])
+                # Store in caches
                 _geocode_cache[cache_key] = coords_tuple
                 _set_redis_cache(redis_key, f"{coords_tuple[0]},{coords_tuple[1]}", 604800)
+                logger.info(f"✅ ORS geocoded '{city_clean}' → {coords_tuple}")
                 return coords_tuple
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"ORS geocoding failed for '{city_clean}': {e}")
     
-    # Fallback coordinates
+    # Fallback: Try to find in hardcoded city list
+    fallback_coords = _get_fallback_coordinates(city_clean)
+    if fallback_coords:
+        _geocode_cache[cache_key] = fallback_coords
+        _set_redis_cache(redis_key, f"{fallback_coords[0]},{fallback_coords[1]}", 604800)
+        return fallback_coords
+    
+    logger.warning(f"❌ Could not geocode '{city_clean}'")
+    return None
+
+def _get_fallback_coordinates(city: str) -> Optional[Tuple[float, float]]:
+    """Get fallback coordinates from hardcoded list"""
+    city_lower = city.lower()
+    
+    # Extended city coordinates for Pakistan
     fallback_coords = {
+        # Major cities
         "karachi": (24.8607, 67.0011),
         "lahore": (31.5204, 74.3587),
         "rawalpindi": (33.5651, 73.0169),
@@ -202,56 +228,88 @@ def _geocode_city(city: str) -> Optional[Tuple[float, float]]:
         "faisalabad": (31.4504, 73.1350),
         "sialkot": (32.4945, 74.5229),
         "gujranwala": (32.1617, 74.1883),
+        "hafizabad": (32.0667, 73.6833),
+        "ajk": (34.3700, 73.4711),
+        "azad kashmir": (34.3700, 73.4711),
+        "muzaffarabad": (34.3700, 73.4711),
+        "bagh": (33.9833, 73.7667),
+        "sahiwal": (30.6667, 73.1000),
+        "okara": (30.8167, 73.4500),
+        "sheikhupura": (31.7167, 73.9833),
+        "gujrat": (32.5667, 74.0833),
+        "jhelum": (32.9333, 73.7333),
+        "sargodha": (32.0833, 72.6667),
         "bahawalpur": (29.3956, 71.6836),
         "sukkur": (27.7060, 68.8530),
-        "gujrat": (32.5667, 74.0833),
+        "dg khan": (30.0430, 70.6402),
+        "abbottabad": (34.1490, 73.2210),
+        "gwadar": (25.1260, 62.3250),
+        "gilgit": (35.9208, 74.3144),
         "narowal": (32.1167, 74.8833),
-        "daska": (32.3167, 74.3500),
+        "chakwal": (32.9333, 72.8667),
+        "mandi bahauddin": (32.5833, 73.4833),
+        "jehlum": (32.9333, 73.7333),
+        "kasur": (31.1167, 74.4500),
     }
     
-    return fallback_coords.get(cache_key)
+    return fallback_coords.get(city_lower)
 
 def _get_road_distance_between_cities(city1: str, city2: str) -> Tuple[float, str]:
-    """Get ROAD distance between two cities using OpenRouteService"""
+    """
+    Get ROAD distance between two cities using OpenRouteService
+    This uses actual road networks, not straight-line distance
+    """
+    
     if not city1 or not city2:
         return (0, "Unknown")
     
     cache_key = f"{city1.lower()}|{city2.lower()}"
     
-    # Check Redis cache
+    # Check Redis cache first
     redis_key = f"road_distance:{cache_key}"
     redis_result = _get_redis_cache(redis_key)
     if redis_result:
         try:
             distance_str, time_str = redis_result.split('||')
-            return (float(distance_str), time_str)
-        except Exception:
-            pass
+            result = (float(distance_str), time_str)
+            logger.info(f"✅ Redis cache hit for road distance: {city1} → {city2}")
+            return result
+        except Exception as e:
+            logger.warning(f"Redis cache parse failed: {e}")
     
     # Check in-memory cache
     if cache_key in _distance_cache:
+        logger.info(f"✅ Memory cache hit for road distance: {city1} → {city2}")
         return _distance_cache[cache_key]
     
-    # Get coordinates
+    # Get coordinates for both cities
     coords1 = _geocode_city(city1)
     coords2 = _geocode_city(city2)
     
     if not coords1 or not coords2:
+        logger.warning(f"Could not get coordinates for {city1} or {city2}")
         return (0, "Not Available")
     
-    # Try OpenRouteService
+    # Try OpenRouteService for ROAD distance (this is the primary method)
     if ORS_AVAILABLE and ORS_API_KEY:
         try:
             client = openrouteservice.Client(key=ORS_API_KEY)
-            coordinates = [[coords1[1], coords1[0]], [coords2[1], coords2[0]]]
+            
+            # ORS expects [lng, lat]
+            coordinates = [
+                [coords1[1], coords1[0]],
+                [coords2[1], coords2[0]]
+            ]
+            
+            logger.info(f"Calculating ROAD distance from {city1} to {city2} using ORS...")
             
             routes = client.directions(
                 coordinates=coordinates,
-                profile=ORS_PROFILE,
+                profile=ORS_PROFILE,  # 'driving-car' for road routes
                 format='json',
                 validate=False,
                 alternatives=False,
-                geometry=False
+                geometry=False  # Don't return geometry to save bandwidth
             )
             
             if routes and 'routes' in routes and routes['routes']:
@@ -259,6 +317,7 @@ def _get_road_distance_between_cities(city1: str, city2: str) -> Tuple[float, st
                 distance_km = summary.get('distance', 0) / 1000
                 duration_sec = summary.get('duration', 0)
                 
+                # Format duration
                 hours = int(duration_sec // 3600)
                 minutes = int((duration_sec % 3600) // 60)
                 
@@ -270,27 +329,26 @@ def _get_road_distance_between_cities(city1: str, city2: str) -> Tuple[float, st
                     time_str = f"{minutes} mins"
                 
                 result = (round(distance_km, 1), time_str)
+                
+                # Store in caches
                 _distance_cache[cache_key] = result
                 _set_redis_cache(redis_key, f"{distance_km}||{time_str}", 2592000)
+                
+                logger.info(f"✅ ROAD distance (ORS): {city1} → {city2}: {distance_km:.1f} KM, {time_str}")
                 return result
+                
         except Exception as e:
-            logger.error(f"ORS road distance failed: {e}")
+            logger.error(f"ORS road distance calculation failed: {e}")
     
-    # Fallback: Haversine
-    from math import radians, sin, cos, sqrt, atan2
-    lat1, lon1 = coords1
-    lat2, lon2 = coords2
-    R = 6371
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-    c = 2 * atan2(sqrt(a), sqrt(1-a))
-    distance_km = R * c
+    # Fallback: If ORS fails, use Haversine as last resort
+    logger.warning(f"ORS failed, using Haversine fallback for {city1} → {city2}")
+    distance_km = _haversine_distance(coords1, coords2)
     
+    # Estimate travel time (assuming avg speed 50 km/h for highways)
     hours = distance_km / 50
     if hours < 1:
-        time_str = f"{int(hours * 60)} mins"
+        minutes = int(hours * 60)
+        time_str = f"{minutes} mins"
     else:
         h = int(hours)
         m = int((hours - h) * 60)
@@ -298,394 +356,322 @@ def _get_road_distance_between_cities(city1: str, city2: str) -> Tuple[float, st
     
     result = (round(distance_km, 1), time_str)
     _distance_cache[cache_key] = result
+    logger.info(f"⚠️ Fallback (Haversine) distance: {city1} → {city2}: {distance_km:.1f} KM, {time_str}")
     return result
 
+def _haversine_distance(coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:
+    """Calculate straight-line distance using Haversine formula (fallback only)"""
+    from math import radians, sin, cos, sqrt, atan2
+    
+    lat1, lon1 = coord1
+    lat2, lon2 = coord2
+    
+    R = 6371  # Earth's radius in km
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    
+    return R * c
+
+def _get_dealer_rating(delivery_rate: float, revenue: float, pending_dn: int = 0, dn_count: int = 0) -> str:
+    """Calculate dealer rating based on performance"""
+    score = 0
+    
+    # Delivery performance (40% weight)
+    if delivery_rate >= 95:
+        score += 40
+    elif delivery_rate >= 85:
+        score += 30
+    elif delivery_rate >= 70:
+        score += 20
+    else:
+        score += 10
+    
+    # Revenue performance (30% weight)
+    if revenue >= 100_000_000:
+        score += 30
+    elif revenue >= 50_000_000:
+        score += 22
+    elif revenue >= 10_000_000:
+        score += 15
+    elif revenue >= 1_000_000:
+        score += 10
+    else:
+        score += 5
+    
+    # Volume performance (20% weight based on DN count)
+    if dn_count > 100:
+        score += 20
+    elif dn_count > 50:
+        score += 15
+    elif dn_count > 20:
+        score += 10
+    elif dn_count > 10:
+        score += 8
+    else:
+        score += 5
+    
+    # Pending DNs penalty (10% weight)
+    if pending_dn == 0:
+        score += 10
+    elif pending_dn <= 2:
+        score += 8
+    elif pending_dn <= 5:
+        score += 5
+    elif pending_dn <= 10:
+        score += 3
+    else:
+        score += 0
+    
+    if score >= 85:
+        return "A+"
+    elif score >= 75:
+        return "A"
+    elif score >= 65:
+        return "B+"
+    elif score >= 55:
+        return "B"
+    elif score >= 45:
+        return "C+"
+    else:
+        return "C"
+
 # ============================================================
-# WAREHOUSE ANALYTICS SERVICE
+# DEALER REPOSITORY
 # ============================================================
 
-class WarehouseAnalyticsService:
-    def __init__(self) -> None:
-        self._version = VERSION
-        logger.info(f"✅ WarehouseAnalyticsService v{self._version} initialized")
+class DealerRepository:
+    def __init__(self, session: Session):
+        self.session = session
     
-    def get_warehouse_dashboard(self, warehouse_name: str) -> str:
-        """Get warehouse dashboard with road distance"""
+    def get_dealer_by_name(self, dealer_identifier: str) -> Optional[Dict[str, Any]]:
+        """Get dealer data using direct PostgreSQL connection."""
+        from app.database import engine
+        
+        if not dealer_identifier:
+            logger.warning("[Repository] Empty dealer identifier provided")
+            return None
+        
+        dealer_clean = dealer_identifier.strip()
+        dealer_normalized = " ".join(dealer_clean.lower().split())
+        
+        logger.info(f"[Repository] Searching for: '{dealer_normalized}'")
+        
         try:
             with engine.connect() as conn:
-                # Get warehouse data
+                # Query to get dealer data
                 result = conn.execute(
                     text("""
                         SELECT 
-                            TRIM(warehouse) as warehouse,
-                            TRIM(warehouse_code) as warehouse_code,
+                            TRIM(customer_name) as customer_name,
+                            TRIM(dealer_code) as dealer_code,
+                            TRIM(customer_code) as customer_code,
+                            TRIM(MAX(ship_to_city)) as ship_to_city,
+                            TRIM(MAX(warehouse)) as warehouse,
                             TRIM(MAX(sales_office)) as sales_office,
+                            TRIM(MAX(sales_manager)) as sales_manager,
                             TRIM(MAX(division)) as division,
-                            COUNT(DISTINCT customer_name) as total_dealers,
-                            COUNT(DISTINCT ship_to_city) as total_cities,
-                            COUNT(DISTINCT delivery_location) as delivery_locations,
-                            COUNT(DISTINCT dn_no) as total_dn,
+                            COUNT(DISTINCT dn_no) as dn_count,
                             SUM(dn_qty) as total_units,
                             SUM(dn_amount) as total_revenue,
+                            MIN(dn_create_date) as first_sale,
+                            MAX(dn_create_date) as last_sale,
+                            AVG(dn_amount) as avg_dn_value,
                             COUNT(DISTINCT CASE WHEN pod_date IS NULL THEN dn_no END) as pending_dn,
-                            COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) as delivered_dn,
-                            AVG(CASE WHEN good_issue_date IS NOT NULL THEN good_issue_date - dn_create_date END) as avg_delivery_days,
+                            COUNT(DISTINCT CASE WHEN good_issue_date IS NULL THEN dn_no END) as pgi_pending_dn,
+                            COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN dn_no END) as pod_pending_dn,
+                            COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) as pod_completed,
                             COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) as pgi_completed,
-                            COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) as pod_completed
+                            AVG(CASE WHEN good_issue_date IS NOT NULL THEN good_issue_date - dn_create_date END) as avg_delivery_days,
+                            AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN pod_date - good_issue_date END) as avg_pod_days
                         FROM delivery_reports 
-                        WHERE LOWER(TRIM(warehouse)) = LOWER(TRIM(:name))
-                        GROUP BY warehouse, warehouse_code
+                        WHERE LOWER(TRIM(customer_name)) = LOWER(TRIM(:name))
+                        GROUP BY customer_name, dealer_code, customer_code
                     """),
-                    {"name": warehouse_name}
+                    {"name": dealer_normalized}
                 ).first()
                 
-                if not result:
-                    return f"⚠️ Warehouse '{warehouse_name}' not found."
+                if result:
+                    logger.info(f"[Repository] ✅ Found dealer: {result[0]}")
+                    return self._build_dealer_data(result)
                 
-                warehouse = _text(result[0])
-                warehouse_code = _text(result[1])
-                sales_office = _text(result[2])
-                division = _text(result[3])
-                total_dealers = int(result[4] or 0)
-                total_cities = int(result[5] or 0)
-                delivery_locations = int(result[6] or 0)
-                total_dn = int(result[7] or 0)
-                total_units = int(result[8] or 0)
-                total_revenue = float(result[9] or 0.0)
-                pending_dn = int(result[10] or 0)
-                delivered_dn = int(result[11] or 0)
-                avg_delivery_days = float(result[12] or 0.0)
-                pgi_completed = int(result[13] or 0)
-                pod_completed = int(result[14] or 0)
-                
-                # Calculate metrics
-                pgi_achievement = _percent(pgi_completed, total_dn)
-                pod_achievement = _percent(pod_completed, total_dn)
-                delivery_success = _percent(delivered_dn, total_dn)
-                
-                # Get top 5 dealers
-                dealers = self._get_top_dealers(warehouse_name)
-                
-                # Get top 5 cities
-                cities = self._get_top_cities(warehouse_name)
-                
-                # Get top 5 customer models
-                models = self._get_top_models(warehouse_name)
-                
-                # Get distance statistics
-                avg_distance, farthest_city, farthest_distance = self._get_distance_stats(warehouse_name)
-                
-                # Build the dashboard
-                lines = [
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-                    "🏬 WAREHOUSE INTELLIGENCE CENTER",
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-                    "",
-                    f"🏬 Warehouse",
-                    f"{warehouse} Warehouse",
-                    "",
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    "📊 MARKET COVERAGE",
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    "",
-                    f"🏪 Dealers Covered      {_format_number(total_dealers)}",
-                    f"👥 Active Dealers       {_format_number(total_dealers)}",
-                    f"🏙️ Cities Covered       {_format_number(total_cities)}",
-                    f"📍 Delivery Locations   {_format_number(delivery_locations)}",
-                    f"📏 Avg Road Distance    {avg_distance}",
-                    f"📌 Farthest City        {farthest_city} ({farthest_distance})",
-                    "",
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    "💼 BUSINESS OVERVIEW",
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    "",
-                    f"💰 Revenue             {_format_currency(total_revenue)}",
-                    f"📦 Units Sold          {_format_number(total_units)}",
-                    f"🚚 Total DNs           {_format_number(total_dn)}",
-                    f"⏳ Pending DNs         {_format_number(pending_dn)}",
-                    "",
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    "🚛 OPERATIONAL KPIs",
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    "",
-                    f"📅 Avg Delivery Days   {avg_delivery_days:.1f}",
-                    f"⚡ PGI Achievement     {pgi_achievement:.1f}%",
-                    f"📄 POD Achievement     {pod_achievement:.1f}%",
-                    f"📦 Stock Accuracy      99.99%",
-                    f"📈 Warehouse Utilization 87%",
-                    "",
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    "🏆 TOP 5 DEALERS",
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    "",
-                ]
-                
-                # Add top dealers
-                medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-                for i, dealer in enumerate(dealers[:5]):
-                    if i < len(medals):
-                        lines.append(f"{medals[i]} {dealer}")
-                
-                lines.extend([
-                    "",
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    "🏙️ TOP 5 CITIES",
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    "",
-                ])
-                
-                # Add top cities
-                for i, city in enumerate(cities[:5]):
-                    if i < len(medals):
-                        lines.append(f"{medals[i]} {city}")
-                
-                lines.extend([
-                    "",
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    "📦 TOP 5 CUSTOMER MODELS",
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    "",
-                ])
-                
-                # Add top models
-                for i, model in enumerate(models[:5]):
-                    if i < len(medals):
-                        lines.append(f"{medals[i]} {model}")
-                
-                lines.extend([
-                    "",
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    "🤖 AI INSIGHTS",
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    "",
-                ])
-                
-                # Add AI insights
-                insights = self._generate_insights(
-                    pgi_achievement, pod_achievement, pending_dn,
-                    total_dn, total_dealers, total_cities,
-                    farthest_city, farthest_distance
-                )
-                for insight in insights:
-                    lines.append(f"✅ {insight}")
-                
-                lines.extend([
-                    "",
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-                    "Type a warehouse name to search",
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-                ])
-                
-                return "\n".join(lines)
+                logger.warning(f"[Repository] ❌ No data found for: '{dealer_identifier}'")
+                return None
                 
         except Exception as e:
-            logger.exception(f"Error getting warehouse dashboard: {e}")
-            return f"⚠️ Error loading warehouse data: {str(e)}"
+            logger.exception(f"[Repository] ❌ Failed to get dealer: {dealer_identifier}")
+            return None
     
-    def _get_top_dealers(self, warehouse_name: str, limit: int = 5) -> List[str]:
-        """Get top dealers for warehouse"""
-        try:
-            with engine.connect() as conn:
-                results = conn.execute(
-                    text("""
-                        SELECT TRIM(customer_name) as customer_name, 
-                               COUNT(dn_no) as dn_count
-                        FROM delivery_reports 
-                        WHERE LOWER(TRIM(warehouse)) = LOWER(TRIM(:name))
-                        AND customer_name IS NOT NULL
-                        GROUP BY customer_name
-                        ORDER BY dn_count DESC
-                        LIMIT :limit
-                    """),
-                    {"name": warehouse_name, "limit": limit}
-                ).fetchall()
-                return [r[0] for r in results if r[0]]
-        except Exception:
-            return []
+    def _build_dealer_data(self, row) -> Dict[str, Any]:
+        """Build dealer data dictionary from query result"""
+        dn_count = int(row[8] or 0)
+        total_revenue = float(row[10] or 0.0)
+        total_units = int(row[9] or 0)
+        pending_dn = int(row[14] or 0)
+        
+        data = {
+            'customer_name': _text(row[0]),
+            'dealer_code': _text(row[1]),
+            'customer_code': _text(row[2]),
+            'city': _text(row[3]),
+            'warehouse': _text(row[4]),
+            'sales_office': _text(row[5]),
+            'sales_manager': _text(row[6]),
+            'division': _text(row[7]),
+            'dn_count': dn_count,
+            'total_units': total_units,
+            'total_revenue': total_revenue,
+            'first_sale': _text(row[11]),
+            'last_sale': _text(row[12]),
+            'avg_dn_value': float(row[13] or 0.0),
+            'pending_dn': pending_dn,
+            'pgi_pending_dn': int(row[15] or 0),
+            'pod_pending_dn': int(row[16] or 0),
+            'pod_completed': int(row[17] or 0),
+            'pgi_completed': int(row[18] or 0),
+            'avg_delivery_days': float(row[19] or 0.0),
+            'avg_pod_days': float(row[20] or 0.0),
+        }
+        
+        # Calculate rates
+        data['delivery_rate'] = _percent(data.get('pod_completed', 0), dn_count)
+        data['pod_achievement'] = _percent(data.get('pod_completed', 0), dn_count)
+        data['pgi_achievement'] = _percent(data.get('pgi_completed', 0), dn_count)
+        data['pending_pct'] = _percent(data.get('pending_dn', 0), dn_count)
+        
+        # Get ROAD distance using improved geocoding
+        city = data.get('city', '')
+        warehouse = data.get('warehouse', '')
+        
+        logger.info(f"[Repository] Calculating ROAD distance: Warehouse='{warehouse}', City='{city}'")
+        
+        if city and warehouse and city != 'Unknown' and warehouse != 'Unknown':
+            try:
+                # Use ROAD distance calculation
+                distance_km, time_str = _get_road_distance_between_cities(warehouse, city)
+                data['distance_km'] = distance_km
+                data['distance_time'] = time_str
+                logger.info(f"[Repository] ROAD distance calculated: {distance_km} KM, {time_str}")
+            except Exception as e:
+                logger.error(f"[Repository] Error calculating road distance: {e}")
+                data['distance_km'] = None
+                data['distance_time'] = "Not Available"
+        else:
+            logger.warning(f"[Repository] Cannot calculate road distance: city='{city}', warehouse='{warehouse}'")
+            data['distance_km'] = None
+            data['distance_time'] = "Not Available"
+        
+        # Get rating with more factors
+        data['rating'] = _get_dealer_rating(
+            data['delivery_rate'], 
+            total_revenue, 
+            pending_dn,
+            dn_count
+        )
+        
+        return data
+
+# ============================================================
+# MAIN SERVICE
+# ============================================================
+
+class DealerAnalyticsService:
+    def __init__(self) -> None:
+        self._version = VERSION
+        logger.info(f"✅ DealerAnalyticsService v{self._version} initialized")
+        logger.info(f"   Geopy: {'✅' if GEOCODE_AVAILABLE else '❌'}")
+        logger.info(f"   OpenRouteService: {'✅' if ORS_AVAILABLE and ORS_API_KEY else '❌'}")
+        logger.info(f"   Redis: {'✅' if _redis_client else '❌'}")
+        logger.info(f"   Cachetools: {'✅' if CACHETOOLS_AVAILABLE else '❌'}")
+        
+        if ORS_AVAILABLE and ORS_API_KEY:
+            logger.info("   Using OpenRouteService for ROAD distance calculations")
+        elif GEOCODE_AVAILABLE:
+            logger.info("   Using Geopy for geocoding with fallback")
+        else:
+            logger.info("   Using fallback distance calculation")
     
-    def _get_top_cities(self, warehouse_name: str, limit: int = 5) -> List[str]:
-        """Get top cities for warehouse"""
+    def handle_message(self, message: str, sender: str) -> str:
+        """Main entry point - searches for dealer and returns dashboard"""
         try:
-            with engine.connect() as conn:
-                results = conn.execute(
-                    text("""
-                        SELECT TRIM(ship_to_city) as city, 
-                               COUNT(dn_no) as dn_count
-                        FROM delivery_reports 
-                        WHERE LOWER(TRIM(warehouse)) = LOWER(TRIM(:name))
-                        AND ship_to_city IS NOT NULL
-                        GROUP BY ship_to_city
-                        ORDER BY dn_count DESC
-                        LIMIT :limit
-                    """),
-                    {"name": warehouse_name, "limit": limit}
-                ).fetchall()
-                return [r[0] for r in results if r[0]]
-        except Exception:
-            return []
-    
-    def _get_top_models(self, warehouse_name: str, limit: int = 5) -> List[str]:
-        """Get top customer models for warehouse"""
-        try:
-            with engine.connect() as conn:
-                results = conn.execute(
-                    text("""
-                        SELECT TRIM(customer_model) as model, 
-                               COUNT(dn_no) as dn_count
-                        FROM delivery_reports 
-                        WHERE LOWER(TRIM(warehouse)) = LOWER(TRIM(:name))
-                        AND customer_model IS NOT NULL 
-                        AND TRIM(customer_model) != ''
-                        GROUP BY customer_model
-                        ORDER BY dn_count DESC
-                        LIMIT :limit
-                    """),
-                    {"name": warehouse_name, "limit": limit}
-                ).fetchall()
-                return [r[0] for r in results if r[0]]
-        except Exception:
-            return []
-    
-    def _get_distance_stats(self, warehouse_name: str) -> Tuple[str, str, str]:
-        """Get average and farthest distance statistics"""
-        try:
-            with engine.connect() as conn:
-                # Get unique cities served by this warehouse
-                results = conn.execute(
-                    text("""
-                        SELECT DISTINCT TRIM(ship_to_city) as city
-                        FROM delivery_reports 
-                        WHERE LOWER(TRIM(warehouse)) = LOWER(TRIM(:name))
-                        AND ship_to_city IS NOT NULL
-                        AND TRIM(ship_to_city) != ''
-                        LIMIT 50
-                    """),
-                    {"name": warehouse_name}
-                ).fetchall()
-                
-                cities = [r[0] for r in results if r[0]]
-                if not cities:
-                    return ("N/A", "N/A", "N/A")
-                
-                # Calculate distances to each city
-                distances = []
-                total_distance = 0
-                count = 0
-                
-                for city in cities:
-                    distance_km, _ = _get_road_distance_between_cities(warehouse_name, city)
-                    if distance_km > 0:
-                        distances.append((city, distance_km))
-                        total_distance += distance_km
-                        count += 1
-                
-                if count == 0:
-                    return ("N/A", "N/A", "N/A")
-                
-                # Calculate average
-                avg = total_distance / count
-                avg_display = f"{avg:.1f} KM"
-                
-                # Find farthest city
-                farthest_city, farthest_dist = max(distances, key=lambda x: x[1]) if distances else ("N/A", 0)
-                farthest_display = f"{farthest_dist:.1f} KM"
-                
-                return (avg_display, farthest_city, farthest_display)
-                
+            message_clean = message.strip()
+            
+            # Check if it's a numeric command (1-9 or 99)
+            if message_clean in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '99']:
+                logger.info("[Service] Numeric input detected, showing help")
+                return self._get_help_message()
+            
+            # Check if it's a greeting or empty
+            if not message_clean or message_clean.lower() in ['hi', 'hello', 'hey', 'start']:
+                return self._get_welcome_message()
+            
+            logger.info("[Service] Searching for: '%s' from %s", message_clean, sender)
+            
+            # Search for the dealer
+            result = self._search_dealer(message_clean)
+            return result
+            
         except Exception as e:
-            logger.error(f"Error calculating distance stats: {e}")
-            return ("N/A", "N/A", "N/A")
+            logger.exception("[Service] Error in handle_message")
+            return f"⚠️ Error: {str(e)}\n\nPlease try again with a different dealer name."
     
-    def _generate_insights(self, pgi: float, pod: float, pending: int, 
-                          total_dn: int, dealers: int, cities: int,
-                          farthest_city: str, farthest_distance: str) -> List[str]:
-        """Generate AI insights"""
-        insights = []
+    def _get_welcome_message(self) -> str:
+        """Get welcome message"""
+        ors_status = "✅ Active" if ORS_AVAILABLE and ORS_API_KEY else "⚠️ Fallback Mode"
+        geopy_status = "✅ Active" if GEOCODE_AVAILABLE else "❌"
+        redis_status = "✅ Connected" if _redis_client else "❌ Not Connected"
         
-        # PGI performance
-        if pgi >= 99:
-            insights.append(f"Warehouse operating efficiently with {pgi:.1f}% PGI.")
-        elif pgi >= 95:
-            insights.append(f"Good PGI performance at {pgi:.1f}%.")
-        else:
-            insights.append(f"PGI performance at {pgi:.1f}% needs improvement.")
-        
-        # Pending DNs
-        if pending > 0:
-            insights.append(f"⚠️ {pending} DNs require immediate dispatch.")
-        else:
-            insights.append("No pending DNs. Excellent efficiency!")
-        
-        # POD performance
-        if pod >= 95:
-            insights.append("Excellent POD compliance above 95%.")
-        elif pod >= 85:
-            insights.append(f"Good POD performance at {pod:.1f}%. Target 95%.")
-        else:
-            insights.append(f"📄 Improve POD compliance from {pod:.1f}% to exceed 95%.")
-        
-        # Farthest city insight
-        if farthest_city != "N/A":
-            insights.append(f"📍 Longest delivery route: {farthest_city} ({farthest_distance}). Consider optimizing.")
-        
-        # Inventory
-        insights.append("📦 Maintain stock of fast-moving models.")
-        
-        # City coverage
-        if cities > 5:
-            insights.append("🚛 Focus deliveries in low-performing cities.")
-        
-        # Transporter
-        insights.append("📈 Strengthen transporter performance to reduce delivery lead time.")
-        
-        return insights
-    
-    def get_main_menu(self) -> str:
-        """Get main warehouse menu"""
-        return """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏬 WAREHOUSE INTELLIGENCE CENTER
+        return f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏢 HAIER DEALER INTELLIGENCE CENTER
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Welcome to the Warehouse Intelligence Platform!
+Welcome to the Dealer Intelligence Platform!
 
 🔍 **How to use:**
-• Type any warehouse name to get their dashboard
+• Type any dealer name to get their dashboard
 • Examples:
-  - Lahore
-  - Karachi
-  - Sialkot
+  - Arshad Electronics-Khi
+  - Mega Digital
+  - Japan Electronics
 
 📊 **What you'll see:**
-• Market coverage metrics
-• Business overview
-• Operational KPIs
-• Top dealers, cities, and models
-• Road distance statistics (avg & farthest)
+• Dealer profile and location
+• Sales performance metrics
+• Delivery statistics
 • AI-powered insights
+• ROAD distance from warehouse
+
+🗺️ **Distance Services:**
+• OpenRouteService (Road): {ors_status}
+• Geopy (Geocoding): {geopy_status}
+• Redis Cache: {redis_status}
 
 💡 **Pro tip:** 
-Type partial warehouse names and we'll suggest matches!
+Type partial names and we'll suggest matches!
 Type **99** for quick help anytime!
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Type a warehouse name to get started!
+Type a dealer name to get started!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
     
-    def get_help_message(self) -> str:
-        """Get help message"""
+    def _get_help_message(self) -> str:
+        """Get help message for numeric commands"""
         return """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📋 QUICK HELP
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-This is a warehouse search system.
+This is a dealer search system.
 
 🔍 **To search:**
-Simply type the warehouse name.
+Simply type the dealer name.
 
 📊 **Examples:**
-• Lahore
-• Karachi
-• Sialkot
+• Arshad Electronics-Khi
+• Mega Digital
+• Japan Electronics
 
 🔄 **Tips:**
 • You can type partial names
@@ -694,121 +680,147 @@ Simply type the warehouse name.
 • Type **99** for this help menu anytime
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Type a warehouse name to get started!
+Type a dealer name to get started!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
     
-    def handle_message(self, message: str, sender: str) -> str:
-        """Main entry point - searches for warehouse and returns dashboard"""
-        try:
-            message_clean = message.strip()
-            
-            # Check if it's 99
-            if message_clean == '99':
-                return self.get_help_message()
-            
-            # Check if it's a greeting or empty
-            if not message_clean or message_clean.lower() in ['hi', 'hello', 'hey', 'start', 'menu']:
-                return self.get_main_menu()
-            
-            logger.info(f"[Service] Searching for warehouse: '{message_clean}'")
-            
-            # Search for the warehouse
-            warehouse = self._resolve_warehouse_name(message_clean)
-            if warehouse:
-                return self.get_warehouse_dashboard(warehouse)
-            
-            # Get suggestions
-            suggestions = self._get_suggestions(message_clean)
-            if suggestions:
-                return self._format_suggestions(message_clean, suggestions)
-            
-            return f"""🔍 No warehouse found matching '{message_clean}'
+    def _search_dealer(self, dealer_name: str) -> str:
+        """Search for dealer and return dashboard or suggestions"""
+        
+        # Try to find the dealer
+        dealer = self._resolve_dealer_name(dealer_name)
+        if dealer:
+            return self._show_dashboard(dealer)
+        
+        # Get suggestions
+        suggestions = self._get_suggestions(dealer_name)
+        if suggestions:
+            return self._format_suggestions(dealer_name, suggestions)
+        
+        # No results
+        return f"""🔍 No dealer found matching '{dealer_name}'
 
 💡 Suggestions:
-• Try the full warehouse name
+• Try the full dealer name
 • Try a partial name
 • Check for spelling errors
 
 Examples:
-• Lahore
-• Karachi
-• Sialkot
+• Arshad Electronics-Khi
+• Mega Digital
+• Japan Electronics
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Type a warehouse name to search again
+Type a dealer name to search again
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
-            
-        except Exception as e:
-            logger.exception(f"Error in handle_message: {e}")
-            return f"⚠️ Error: {str(e)}\n\nPlease try again with a different warehouse name."
     
-    def _resolve_warehouse_name(self, name: str) -> Optional[str]:
-        """Resolve warehouse name from database"""
+    def _resolve_dealer_name(self, name: str) -> Optional[str]:
+        """Resolve dealer name using direct database connection."""
+        from app.database import engine
+        
         if not name or not name.strip():
             return None
         
-        name_normalized = name.strip().lower()
+        name_normalized = self._normalize_name(name)
+        logger.info("[Service] Searching for: '%s'", name_normalized)
         
         try:
             with engine.connect() as conn:
                 # Exact match
                 result = conn.execute(
                     text("""
-                        SELECT DISTINCT TRIM(warehouse) as warehouse
+                        SELECT TRIM(customer_name) as customer_name
                         FROM delivery_reports 
-                        WHERE LOWER(TRIM(warehouse)) = LOWER(:name)
+                        WHERE LOWER(TRIM(customer_name)) = LOWER(TRIM(:name))
                         LIMIT 1
                     """),
                     {"name": name_normalized}
                 ).first()
                 
                 if result:
+                    logger.info("[Service] ✅ Found: '%s'", result[0])
                     return result[0]
                 
                 # ILIKE match
                 result = conn.execute(
                     text("""
-                        SELECT DISTINCT TRIM(warehouse) as warehouse
+                        SELECT TRIM(customer_name) as customer_name
                         FROM delivery_reports 
-                        WHERE TRIM(warehouse) ILIKE :pattern
+                        WHERE TRIM(customer_name) ILIKE TRIM(:name)
                         LIMIT 1
                     """),
-                    {"pattern": f"%{name}%"}
+                    {"name": f"%{name}%"}
                 ).first()
                 
                 if result:
+                    logger.info("[Service] ✅ Found (ILIKE): '%s'", result[0])
                     return result[0]
                 
+                logger.info("[Service] ❌ No match found for: '%s'", name_normalized)
+                
         except Exception as e:
-            logger.exception(f"Error resolving warehouse name: {e}")
+            logger.exception("[Service] Error resolving dealer name: %s", name_normalized)
         
         return None
     
     def _get_suggestions(self, query: str, limit: int = 5) -> List[str]:
-        """Get warehouse name suggestions"""
+        """Get dealer name suggestions based on query."""
         if not query:
             return []
+        
+        query_normalized = self._normalize_name(query)
         
         try:
             with engine.connect() as conn:
                 results = conn.execute(
                     text("""
-                        SELECT DISTINCT TRIM(warehouse) as warehouse
+                        SELECT DISTINCT TRIM(customer_name) as customer_name
                         FROM delivery_reports 
-                        WHERE LOWER(TRIM(warehouse)) LIKE LOWER(:pattern)
-                        AND warehouse IS NOT NULL
-                        ORDER BY warehouse
+                        WHERE LOWER(TRIM(customer_name)) LIKE LOWER(TRIM(:pattern))
+                        ORDER BY customer_name
                         LIMIT :limit
                     """),
-                    {"pattern": f"%{query}%", "limit": limit}
+                    {"pattern": f"%{query_normalized}%", "limit": limit}
                 ).fetchall()
                 
-                return [r[0] for r in results if r[0]]
-        except Exception:
+                suggestions = [r[0] for r in results if r[0]]
+                logger.info("[Service] Found %d suggestions for: '%s'", len(suggestions), query)
+                return suggestions
+                
+        except Exception as e:
+            logger.exception("[Service] Error getting suggestions for: %s", query)
             return []
+    
+    def _show_dashboard(self, dealer_name: str) -> str:
+        """Show dealer dashboard"""
+        logger.info("[Service] Dashboard for: '%s'", dealer_name)
+        
+        try:
+            with self._session() as session:
+                repo = DealerRepository(session)
+                data = repo.get_dealer_by_name(dealer_name)
+                
+                if data:
+                    logger.info("[Service] ✅ Dashboard data found for: '%s'", dealer_name)
+                    return self._render_dashboard(data)
+                else:
+                    logger.warning("[Service] ❌ No data for: '%s'", dealer_name)
+                    return f"⚠️ No data found for: {dealer_name}"
+                    
+        except Exception as e:
+            logger.exception("[Service] Error building dashboard for: %s", dealer_name)
+            return f"⚠️ Error loading dashboard: {str(e)}"
+    
+    def _normalize_name(self, name: str) -> str:
+        """Normalize dealer name consistently."""
+        if not name:
+            return ""
+        return " ".join(name.strip().lower().split())
     
     def _format_suggestions(self, query: str, suggestions: List[str]) -> str:
         """Format suggestions for display"""
+        if not suggestions:
+            return f"🔍 No dealers found matching '{query}'"
+        
         lines = [
             f"🔍 No exact match for '{query}'",
             "",
@@ -824,24 +836,313 @@ Type a warehouse name to search again
             f"Type the exact name or try: {query}",
             "",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "Type a warehouse name to search"
+            "Type a dealer name to search"
         ])
         
         return "\n".join(lines)
+    
+    def _render_dashboard(self, data: Dict[str, Any]) -> str:
+        """Render the dashboard in the exact format requested"""
+        
+        # Extract data
+        customer_name = data.get('customer_name', 'Unknown')
+        dealer_code = data.get('dealer_code', 'N/A')
+        city = data.get('city', 'N/A')
+        warehouse = data.get('warehouse', 'N/A')
+        distance_km = data.get('distance_km')
+        distance_time = data.get('distance_time', 'Not Available')
+        division = data.get('division', 'N/A')
+        
+        revenue = data.get('total_revenue', 0)
+        dn_count = data.get('dn_count', 0)
+        total_units = data.get('total_units', 0)
+        delivered = data.get('pod_completed', 0)
+        pending_dn = data.get('pending_dn', 0)
+        avg_delivery_days = data.get('avg_delivery_days', 0)
+        pod_achievement = data.get('pod_achievement', 0)
+        pgi_achievement = data.get('pgi_achievement', 0)
+        rating = data.get('rating', 'C')
+        
+        # Get top customer models from database
+        top_models = self._get_top_models(customer_name)
+        
+        # Get best month
+        best_month = self._get_highest_sales_month(customer_name)
+        
+        # Get revenue trend
+        revenue_trend = self._get_revenue_trend(customer_name)
+        
+        # Clean dealer name - remove phone numbers and C/O
+        clean_name = re.sub(r'0[0-9]{2,4}[-.\s]?[0-9]{7,8}', '', customer_name)
+        clean_name = re.sub(r'C/O\s*', '', clean_name, flags=re.IGNORECASE)
+        clean_name = re.sub(r'\s+', ' ', clean_name).strip()
+        
+        # Format road distance
+        if distance_km is not None and distance_km > 0:
+            distance_display = f"{distance_km} KM ({distance_time})"
+        else:
+            distance_display = "Not Available"
+        
+        lines = [
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🏢 HAIER DEALER INTELLIGENCE CENTER",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"👤 {clean_name}",
+            f"📍 {city}",
+            f"🏬 Dispatch WH : {warehouse}",
+            f"📏 Road Distance : {distance_display}",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "💼 BUSINESS SUMMARY",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"💰 Revenue            {_format_currency(revenue)}",
+            f"📦 Units Sold         {_format_number(total_units)}",
+            f"🚚 Delivery Notes     {_format_number(dn_count)}",
+            f"🏷️ Division           {division}",
+            f"⭐ Dealer Rating       {rating}",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "🏆 TOP CUSTOMER MODELS",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+        ]
+        
+        # Add top customer models with clean formatting
+        if top_models:
+            for i, (model, count) in enumerate(top_models):
+                # Clean up model name - remove extra spaces
+                model_display = model.strip() if model else "N/A"
+                
+                # Format count with proper pluralization
+                count_display = f"{count} Unit{'s' if count > 1 else ''}"
+                
+                # Calculate spacing for alignment
+                model_len = len(model_display)
+                if model_len <= 10:
+                    padding = " " * 18
+                elif model_len <= 15:
+                    padding = " " * 15
+                elif model_len <= 20:
+                    padding = " " * 12
+                else:
+                    padding = " " * 8
+                
+                if i == 0:
+                    lines.append(f"🥇 {model_display}{padding}{count_display}")
+                elif i == 1:
+                    lines.append(f"🥈 {model_display}{padding}{count_display}")
+                elif i == 2:
+                    lines.append(f"🥉 {model_display}{padding}{count_display}")
+                else:
+                    lines.append(f"•  {model_display}{padding}{count_display}")
+        else:
+            lines.append("   No models found")
+        
+        lines.extend([
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "🚛 DELIVERY PERFORMANCE",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"✅ Delivered DNs      {_format_number(delivered)} ({pod_achievement:.1f}%)",
+            f"⏳ Pending DNs        {_format_number(pending_dn)}",
+            f"📅 Avg Delivery       {avg_delivery_days:.1f} Days",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "📊 SERVICE KPIs",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"⚡ PGI Achievement    {pgi_achievement:.1f}%",
+            f"📄 POD Achievement    {pod_achievement:.1f}%",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "📈 SALES INSIGHTS",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"📅 Best Month         {best_month}",
+            f"🏬 Primary Warehouse  {warehouse}",
+            f"📦 Best Seller        {top_models[0][0] if top_models else 'N/A'}",
+            f"📊 Revenue Trend      {revenue_trend}",
+            f"🚛 Delivery Status    {self._get_delivery_performance(pod_achievement)}",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "🤖 AI RECOMMENDATIONS",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+        ])
+        
+        # Add AI recommendations
+        recommendations = self._get_ai_recommendations(data, top_models)
+        for rec in recommendations:
+            lines.append(f"✅ {rec}")
+        
+        lines.extend([
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "Type a dealer name to search",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ])
+        
+        return "\n".join(lines)
+    
+    def _get_top_models(self, customer_name: str, limit: int = 7) -> List[Tuple[str, int]]:
+        """Get top customer models for the dealer from PostgreSQL"""
+        try:
+            with engine.connect() as conn:
+                results = conn.execute(
+                    text("""
+                        SELECT customer_model, COUNT(dn_no) as count
+                        FROM delivery_reports 
+                        WHERE LOWER(TRIM(customer_name)) = LOWER(TRIM(:name))
+                        AND customer_model IS NOT NULL 
+                        AND TRIM(customer_model) != ''
+                        GROUP BY customer_model
+                        ORDER BY count DESC
+                        LIMIT :limit
+                    """),
+                    {"name": customer_name, "limit": limit}
+                ).fetchall()
+                return [(r[0], int(r[1])) for r in results if r[0]]
+        except Exception as e:
+            logger.error(f"Error getting top models: {e}")
+            return []
+    
+    def _get_highest_sales_month(self, customer_name: str) -> str:
+        """Get highest sales month"""
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(
+                    text("""
+                        SELECT TO_CHAR(dn_create_date, 'Month') as month, 
+                               SUM(dn_amount) as revenue
+                        FROM delivery_reports 
+                        WHERE LOWER(TRIM(customer_name)) = LOWER(TRIM(:name))
+                        GROUP BY TO_CHAR(dn_create_date, 'Month'), 
+                                 EXTRACT(MONTH FROM dn_create_date)
+                        ORDER BY revenue DESC
+                        LIMIT 1
+                    """),
+                    {"name": customer_name}
+                ).first()
+                return result[0].strip() if result else "N/A"
+        except Exception as e:
+            logger.error(f"Error getting best month: {e}")
+            return "N/A"
+    
+    def _get_revenue_trend(self, customer_name: str) -> str:
+        """Get revenue trend (growth or decline)"""
+        try:
+            with engine.connect() as conn:
+                # Get last two months revenue
+                result = conn.execute(
+                    text("""
+                        SELECT 
+                            SUM(dn_amount) as revenue
+                        FROM delivery_reports 
+                        WHERE LOWER(TRIM(customer_name)) = LOWER(TRIM(:name))
+                        AND dn_create_date >= CURRENT_DATE - INTERVAL '3 months'
+                        GROUP BY EXTRACT(MONTH FROM dn_create_date)
+                        ORDER BY EXTRACT(MONTH FROM dn_create_date) DESC
+                        LIMIT 2
+                    """),
+                    {"name": customer_name}
+                ).fetchall()
+                
+                if len(result) >= 2:
+                    current = float(result[0][0] or 0)
+                    previous = float(result[1][0] or 0)
+                    if previous > 0:
+                        growth = ((current - previous) / previous) * 100
+                        if growth > 10:
+                            return "High Growth ↑"
+                        elif growth > 0:
+                            return "Growing ↑"
+                        elif growth > -10:
+                            return "Stable →"
+                        else:
+                            return "Declining ↓"
+                return "Stable →"
+        except Exception as e:
+            logger.error(f"Error getting revenue trend: {e}")
+            return "Stable →"
+    
+    def _get_delivery_performance(self, delivery_rate: float) -> str:
+        """Get delivery performance rating"""
+        if delivery_rate >= 95:
+            return "Excellent"
+        elif delivery_rate >= 85:
+            return "Good"
+        elif delivery_rate >= 70:
+            return "Average"
+        else:
+            return "Needs Improvement"
+    
+    def _get_ai_recommendations(self, data: Dict[str, Any], top_models: List[Tuple[str, int]]) -> List[str]:
+        """Generate AI recommendations"""
+        recommendations = []
+        
+        # Best selling model recommendation
+        if top_models:
+            model = top_models[0][0]
+            recommendations.append(f"Maintain stock of {model}.")
+        
+        # Pending deliveries
+        pending = data.get('pending_dn', 0)
+        if pending > 0:
+            recommendations.append(f"🚚 Prioritize dispatch of {pending} pending DNs.")
+        else:
+            recommendations.append("All deliveries completed. Excellent efficiency!")
+        
+        # POD compliance
+        pod_achievement = data.get('pod_achievement', 0)
+        if pod_achievement < 90:
+            recommendations.append("📄 Improve POD compliance through timely document submission.")
+        
+        # Rating improvement
+        rating = data.get('rating', 'C')
+        if rating in ['C+', 'C']:
+            recommendations.append("⚡ Improve PGI & POD to achieve an 'A' dealer rating.")
+        
+        # Diversification suggestion
+        if len(top_models) > 1:
+            recommendations.append("📈 Increase focus on AC and Refrigerator models to diversify sales.")
+        
+        # Warehouse recommendation
+        warehouse = data.get('warehouse', '')
+        if warehouse and warehouse != 'Unknown':
+            recommendations.append(f"🎯 Continue dispatches from {warehouse} for faster deliveries.")
+        
+        return recommendations[:6]  # Limit to 6 recommendations
+    
+    @staticmethod
+    def _session() -> Session:
+        return SessionLocal()
 
 # ============================================================
-# SINGLETON
+# SINGLETON & EXPORTS
 # ============================================================
 
-_warehouse_service: Optional[WarehouseAnalyticsService] = None
+_dealer_service: Optional[DealerAnalyticsService] = None
 
-def get_warehouse_service() -> WarehouseAnalyticsService:
-    global _warehouse_service
-    if _warehouse_service is None:
-        _warehouse_service = WarehouseAnalyticsService()
-    return _warehouse_service
+def get_dealer_service() -> DealerAnalyticsService:
+    global _dealer_service
+    try:
+        if _dealer_service is None:
+            logger.info("🔧 Creating DealerAnalyticsService instance...")
+            _dealer_service = DealerAnalyticsService()
+            logger.info("✅ DealerAnalyticsService instance created successfully")
+        return _dealer_service
+    except Exception as e:
+        logger.error(f"❌ Failed to create DealerAnalyticsService: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        _dealer_service = DealerAnalyticsService()
+        return _dealer_service
 
 __all__ = [
-    "WarehouseAnalyticsService",
-    "get_warehouse_service",
+    "DealerAnalyticsService",
+    "get_dealer_service",
+    "VERSION"
 ]
