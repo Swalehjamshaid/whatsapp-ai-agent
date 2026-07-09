@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/national_kpi_service.py
-# VERSION: 6.0 - WAREHOUSE KPI PERFORMANCE DASHBOARD
+# VERSION: 6.1 - INTEGRATED WITH AI PROVIDER
 # PURPOSE: National executive dashboard and logistics intelligence
 # ============================================================
 
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 CACHE_TTL = max(60, int(os.getenv("NATIONAL_KPI_CACHE_TTL", "300")))
-VERSION = "6.0"
+VERSION = "6.1"
 
 # ============================================================
 # BLOCK 2: UTILITY FUNCTIONS
@@ -482,6 +482,17 @@ def get_national_kpi_service() -> NationalKPIService:
         logger.info("✅ NationalKPIService instance created successfully")
     return _national_service
 
+# ============================================================
+# 🆕 ALIAS FOR BACKWARD COMPATIBILITY WITH AI PROVIDER
+# ============================================================
+def get_kpi_service() -> NationalKPIService:
+    """
+    Alias for get_national_kpi_service().
+    This is used by ai_provider_service.py for backward compatibility.
+    DO NOT REMOVE - Required for ai_provider_service.py integration.
+    """
+    return get_national_kpi_service()
+
 def get_national_kpi_dashboard() -> str:
     """Get the national KPI dashboard"""
     service = get_national_kpi_service()
@@ -490,6 +501,7 @@ def get_national_kpi_dashboard() -> str:
 __all__ = [
     "NationalKPIService",
     "get_national_kpi_service",
+    "get_kpi_service",  # ✅ Required for ai_provider_service.py
     "get_national_kpi_dashboard",
     "VERSION",
 ]
