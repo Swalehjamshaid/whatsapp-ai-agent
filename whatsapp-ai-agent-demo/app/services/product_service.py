@@ -1,6 +1,6 @@
 """
 File: app/services/product_service.py
-Version: 6.0 - ENTERPRISE PRODUCT SEARCH ENGINE
+Version: 6.1 - ENTERPRISE PRODUCT SEARCH ENGINE (Flexible Matching)
 Purpose: Single‑entry search for Product Models or Divisions
          PostgreSQL is the ONLY source of truth.
          No menus – just search and display.
@@ -14,7 +14,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import func, distinct, or_, and_
+from sqlalchemy import func, distinct, or_, and_, desc
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ============================================================
 
-VERSION = "6.0"
+VERSION = "6.1"
 
 # ============================================================
 # UTILITY FUNCTIONS
@@ -68,148 +68,156 @@ def _format_number(num: int) -> str:
 # ============================================================
 
 class ProductSearchRepository:
-    """Data access for product model and division searches"""
+    """Data access for product model and division searches (flexible matching)"""
 
     def __init__(self, session: Session):
         self.session = session
 
     def get_model_data(self, model: str) -> Optional[Dict[str, Any]]:
-        """Get aggregated data for a specific product model (customer_model)"""
+        """
+        Find a product model (customer_model or material_no) that contains the input.
+        Returns the model with the highest revenue if multiple matches.
+        """
         model_clean = model.strip()
         if not model_clean:
             return None
 
-        # Query aggregates for this exact model (case‑insensitive)
-        try:
-            result = self.session.query(
-                func.coalesce(DeliveryReport.customer_model, DeliveryReport.material_no).label('model'),
-                func.coalesce(DeliveryReport.division, 'Unknown').label('division'),
-                func.sum(DeliveryReport.dn_amount).label('total_revenue'),
-                func.sum(DeliveryReport.dn_qty).label('total_units'),
-                func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
-                func.count(distinct(DeliveryReport.warehouse)).label('warehouse_count'),
-                func.count(distinct(DeliveryReport.ship_to_city)).label('city_count'),
-                func.count(distinct(DeliveryReport.customer_name)).label('dealer_count'),
-                func.count(distinct(
-                    and_(DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)
-                )).label('delivered_dn'),
-                func.count(distinct(
-                    and_(DeliveryReport.pod_date.is_(None), DeliveryReport.dn_no)
-                )).label('pending_dn'),
-                func.avg(
-                    func.date_part('day', DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
-                ).label('avg_delivery_days')
-            ).filter(
-                func.lower(DeliveryReport.customer_model) == func.lower(model_clean)
-            ).group_by(
-                DeliveryReport.customer_model,
-                DeliveryReport.division,
-                DeliveryReport.material_no
-            ).first()
+        # Search in both customer_model and material_no (case‑insensitive, partial)
+        filter_condition = or_(
+            func.lower(DeliveryReport.customer_model).ilike(f"%{model_clean.lower()}%"),
+            func.lower(DeliveryReport.material_no).ilike(f"%{model_clean.lower()}%")
+        )
 
-            if not result or result.total_revenue is None:
-                return None
+        # Get the top model by revenue
+        result = self.session.query(
+            func.coalesce(DeliveryReport.customer_model, DeliveryReport.material_no).label('model'),
+            func.coalesce(DeliveryReport.division, 'Unknown').label('division'),
+            func.sum(DeliveryReport.dn_amount).label('total_revenue'),
+            func.sum(DeliveryReport.dn_qty).label('total_units'),
+            func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
+            func.count(distinct(DeliveryReport.warehouse)).label('warehouse_count'),
+            func.count(distinct(DeliveryReport.ship_to_city)).label('city_count'),
+            func.count(distinct(DeliveryReport.customer_name)).label('dealer_count'),
+            func.count(distinct(
+                and_(DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)
+            )).label('delivered_dn'),
+            func.count(distinct(
+                and_(DeliveryReport.pod_date.is_(None), DeliveryReport.dn_no)
+            )).label('pending_dn'),
+            func.avg(
+                func.date_part('day', DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
+            ).label('avg_delivery_days')
+        ).filter(
+            filter_condition
+        ).group_by(
+            DeliveryReport.customer_model,
+            DeliveryReport.division,
+            DeliveryReport.material_no
+        ).order_by(
+            func.sum(DeliveryReport.dn_amount).desc()
+        ).first()
 
-            data = {
-                'model': _text(result.model),
-                'division': _text(result.division),
-                'total_revenue': _number(result.total_revenue),
-                'total_units': _int(result.total_units),
-                'dn_count': _int(result.dn_count),
-                'warehouse_count': _int(result.warehouse_count),
-                'city_count': _int(result.city_count),
-                'dealer_count': _int(result.dealer_count),
-                'delivered_dn': _int(result.delivered_dn),
-                'pending_dn': _int(result.pending_dn),
-                'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
-            }
-
-            # Top 5 cities for this model
-            top_cities = self.session.query(
-                DeliveryReport.ship_to_city,
-                func.sum(DeliveryReport.dn_amount).label('revenue')
-            ).filter(
-                func.lower(DeliveryReport.customer_model) == func.lower(model_clean)
-            ).group_by(
-                DeliveryReport.ship_to_city
-            ).order_by(
-                func.sum(DeliveryReport.dn_amount).desc()
-            ).limit(5).all()
-
-            data['top_cities'] = [
-                _text(city.ship_to_city) for city in top_cities if city.ship_to_city
-            ]
-
-            return data
-
-        except Exception as e:
-            logger.error(f"Error fetching model data for '{model_clean}': {e}")
+        if not result or result.total_revenue is None:
             return None
 
+        data = {
+            'model': _text(result.model),
+            'division': _text(result.division),
+            'total_revenue': _number(result.total_revenue),
+            'total_units': _int(result.total_units),
+            'dn_count': _int(result.dn_count),
+            'warehouse_count': _int(result.warehouse_count),
+            'city_count': _int(result.city_count),
+            'dealer_count': _int(result.dealer_count),
+            'delivered_dn': _int(result.delivered_dn),
+            'pending_dn': _int(result.pending_dn),
+            'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
+        }
+
+        # Top 5 cities for this model
+        top_cities = self.session.query(
+            DeliveryReport.ship_to_city,
+            func.sum(DeliveryReport.dn_amount).label('revenue')
+        ).filter(
+            filter_condition
+        ).group_by(
+            DeliveryReport.ship_to_city
+        ).order_by(
+            func.sum(DeliveryReport.dn_amount).desc()
+        ).limit(5).all()
+
+        data['top_cities'] = [
+            _text(city.ship_to_city) for city in top_cities if city.ship_to_city
+        ]
+
+        logger.info(f"Found model: {data['model']} (revenue: {data['total_revenue']})")
+        return data
+
     def get_division_data(self, division: str) -> Optional[Dict[str, Any]]:
-        """Get aggregated data for a product division"""
+        """
+        Find a division that contains the input (case‑insensitive, partial).
+        Aggregates all products in that division.
+        """
         division_clean = division.strip()
         if not division_clean:
             return None
 
-        try:
-            result = self.session.query(
-                func.sum(DeliveryReport.dn_amount).label('total_revenue'),
-                func.sum(DeliveryReport.dn_qty).label('total_units'),
-                func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
-                func.count(distinct(DeliveryReport.warehouse)).label('warehouse_count'),
-                func.count(distinct(DeliveryReport.ship_to_city)).label('city_count'),
-                func.count(distinct(DeliveryReport.customer_name)).label('dealer_count'),
-                func.count(distinct(
-                    and_(DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)
-                )).label('delivered_dn'),
-                func.count(distinct(
-                    and_(DeliveryReport.pod_date.is_(None), DeliveryReport.dn_no)
-                )).label('pending_dn'),
-                func.avg(
-                    func.date_part('day', DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
-                ).label('avg_delivery_days')
-            ).filter(
-                func.lower(DeliveryReport.division) == func.lower(division_clean)
-            ).first()
+        filter_condition = func.lower(DeliveryReport.division).ilike(f"%{division_clean.lower()}%")
 
-            if not result or result.total_revenue is None:
-                return None
+        result = self.session.query(
+            func.sum(DeliveryReport.dn_amount).label('total_revenue'),
+            func.sum(DeliveryReport.dn_qty).label('total_units'),
+            func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
+            func.count(distinct(DeliveryReport.warehouse)).label('warehouse_count'),
+            func.count(distinct(DeliveryReport.ship_to_city)).label('city_count'),
+            func.count(distinct(DeliveryReport.customer_name)).label('dealer_count'),
+            func.count(distinct(
+                and_(DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)
+            )).label('delivered_dn'),
+            func.count(distinct(
+                and_(DeliveryReport.pod_date.is_(None), DeliveryReport.dn_no)
+            )).label('pending_dn'),
+            func.avg(
+                func.date_part('day', DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
+            ).label('avg_delivery_days')
+        ).filter(
+            filter_condition
+        ).first()
 
-            data = {
-                'division': division_clean,
-                'total_revenue': _number(result.total_revenue),
-                'total_units': _int(result.total_units),
-                'dn_count': _int(result.dn_count),
-                'warehouse_count': _int(result.warehouse_count),
-                'city_count': _int(result.city_count),
-                'dealer_count': _int(result.dealer_count),
-                'delivered_dn': _int(result.delivered_dn),
-                'pending_dn': _int(result.pending_dn),
-                'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
-            }
-
-            # Top 5 product models for this division
-            top_products = self.session.query(
-                func.coalesce(DeliveryReport.customer_model, DeliveryReport.material_no).label('product'),
-                func.sum(DeliveryReport.dn_amount).label('revenue')
-            ).filter(
-                func.lower(DeliveryReport.division) == func.lower(division_clean)
-            ).group_by(
-                'product'
-            ).order_by(
-                func.sum(DeliveryReport.dn_amount).desc()
-            ).limit(5).all()
-
-            data['top_products'] = [
-                _text(p.product) for p in top_products if p.product
-            ]
-
-            return data
-
-        except Exception as e:
-            logger.error(f"Error fetching division data for '{division_clean}': {e}")
+        if not result or result.total_revenue is None:
             return None
+
+        data = {
+            'division': division_clean,  # store the input, but we could get the actual division if needed
+            'total_revenue': _number(result.total_revenue),
+            'total_units': _int(result.total_units),
+            'dn_count': _int(result.dn_count),
+            'warehouse_count': _int(result.warehouse_count),
+            'city_count': _int(result.city_count),
+            'dealer_count': _int(result.dealer_count),
+            'delivered_dn': _int(result.delivered_dn),
+            'pending_dn': _int(result.pending_dn),
+            'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
+        }
+
+        # Top 5 product models in this division
+        top_products = self.session.query(
+            func.coalesce(DeliveryReport.customer_model, DeliveryReport.material_no).label('product'),
+            func.sum(DeliveryReport.dn_amount).label('revenue')
+        ).filter(
+            filter_condition
+        ).group_by(
+            'product'
+        ).order_by(
+            func.sum(DeliveryReport.dn_amount).desc()
+        ).limit(5).all()
+
+        data['top_products'] = [
+            _text(p.product) for p in top_products if p.product
+        ]
+
+        logger.info(f"Found division: {division_clean} (revenue: {data['total_revenue']})")
+        return data
 
 # ============================================================
 # FORMATTERS
@@ -393,12 +401,13 @@ class ProductAnalyticsService:
     Enterprise Product Search Engine.
     Users enter a Product Model OR a Division.
     Returns a formatted dashboard with KPIs, coverage, top items, etc.
+    Flexible matching using ilike on customer_model, material_no, and division.
     """
 
     def __init__(self) -> None:
         self._version = VERSION
         self._formatter = ProductDashboardFormatter()
-        logger.info(f"✅ ProductAnalyticsService v{self._version} initialized (Search‑only mode)")
+        logger.info(f"✅ ProductAnalyticsService v{self._version} initialized (Flexible Search)")
 
     @staticmethod
     def _session() -> Session:
@@ -424,20 +433,17 @@ class ProductAnalyticsService:
 
         logger.info(f"Searching for: '{msg}' from {sender}")
 
-        # Try to resolve as Model or Division
         with self._session() as session:
             repo = ProductSearchRepository(session)
 
-            # 1. Try exact model match (case‑insensitive)
+            # 1. Try model (customer_model or material_no)
             model_data = repo.get_model_data(msg)
             if model_data:
-                logger.info(f"Found model: {model_data.get('model')}")
                 return self._formatter.model_dashboard(model_data)
 
-            # 2. Try exact division match (case‑insensitive)
+            # 2. Try division
             division_data = repo.get_division_data(msg)
             if division_data:
-                logger.info(f"Found division: {division_data.get('division')}")
                 return self._formatter.division_dashboard(division_data)
 
         # No match
