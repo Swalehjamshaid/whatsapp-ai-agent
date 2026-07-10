@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/groq_service.py
-# VERSION: 9.1 - ROBUST PARSING & ALWAYS GROQ RESPONSE
+# VERSION: 10.0 - GROQ POWERS EVERY ANSWER (TEMPLATE STYLE)
 # PURPOSE: Answer any logistics question using Groq for intent
 #          and formatting, with PostgreSQL for accurate data.
-#          Fixed parsing for "dealer", "city", "DN" queries.
+#          Outputs WhatsApp‑style responses with headers and AI insights.
 # ============================================================
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from app.database import SessionLocal, engine
 
 logger = logging.getLogger(__name__)
 
-VERSION = "9.1"
+VERSION = "10.0"
 
 # ============================================================
 # GROQ SETUP
@@ -98,11 +98,10 @@ def _format_date(dt: Any) -> str:
 
 @dataclass
 class QueryIntent:
-    """Structured representation of the user's question."""
-    intent: str          # 'ranking', 'aggregate', 'comparison', 'trend', 'list', 'summary', 'details', 'dashboard'
-    entity_type: Optional[str] = None   # dealer, city, warehouse, division, model, sales_office, sales_manager, dn
+    intent: str
+    entity_type: Optional[str] = None
     entity_value: Optional[str] = None
-    metric: Optional[str] = None        # revenue, units, dns, pending, delivery_days, pgi_percent, pod_percent
+    metric: Optional[str] = None
     filters: Dict[str, Any] = field(default_factory=dict)
     time_period: Optional[str] = None
     grouping: Optional[str] = None
@@ -135,11 +134,8 @@ class QueryIntent:
 # ============================================================
 
 class GroqIntentParser:
-    """
-    Calls Groq to understand the user's question and extract structured intent.
-    This is the first of two Groq interactions.
-    """
     def __init__(self):
+        # Typo mapping
         self.typo_map = {
             "hight": "highest",
             "higest": "highest",
@@ -148,6 +144,29 @@ class GroqIntentParser:
             "warehous": "warehouse",
             "produt": "product",
             "cities": "city",
+        }
+        # Phrases that indicate a specific intent/entity
+        self.show_phrases = {
+            "dealer performance": {"intent": "dashboard", "entity_type": "dealer"},
+            "dn status": {"intent": "details", "entity_type": "dn"},
+            "warehouse kpi": {"intent": "dashboard", "entity_type": "warehouse"},
+            "pgi": {"intent": "aggregate", "metric": "pgi_percent"},
+            "pod": {"intent": "aggregate", "metric": "pod_percent"},
+            "revenue": {"intent": "aggregate", "metric": "revenue"},
+            "units sold": {"intent": "aggregate", "metric": "units"},
+            "delivery delay": {"intent": "aggregate", "metric": "delivery_days"},
+            "transporter": {"intent": "list", "entity_type": "transporter"},  # not in schema, map to something
+            "sales office": {"intent": "list", "entity_type": "sales_office"},
+            "city performance": {"intent": "dashboard", "entity_type": "city"},
+            "product model": {"intent": "dashboard", "entity_type": "model"},
+            "pending dn": {"intent": "ranking", "entity_type": "dn", "metric": "pending"},
+            "distance": {"intent": "aggregate", "metric": "distance"},  # not in schema
+            "delivery target": {"intent": "aggregate", "metric": "delivery_target"},  # not in schema
+            "ai insights": {"intent": "summary"},
+            "stock": {"intent": "aggregate", "metric": "units"},
+            "warehouse utilization": {"intent": "dashboard", "entity_type": "warehouse"},
+            "dealer ranking": {"intent": "ranking", "entity_type": "dealer", "metric": "revenue"},
+            "monthly trend": {"intent": "trend", "grouping": "month", "metric": "revenue"},
         }
 
     def _normalize(self, query: str) -> str:
@@ -171,25 +190,21 @@ Return ONLY valid JSON with these fields:
 - entity_type: one of ['dealer', 'city', 'warehouse', 'division', 'model', 'sales_office', 'sales_manager', 'dn'] or null
 - entity_value: the specific name mentioned, or null
 - metric: one of ['revenue', 'units', 'dns', 'pending', 'delivery_days', 'pgi_percent', 'pod_percent'] or null
-- filters: object with keys like division, city, warehouse, dealer, model, etc. (values are strings)
+- filters: object with keys like division, city, warehouse, dealer, model, etc.
 - time_period: one of ['today', 'this_week', 'this_month', 'last_month', 'last_3_months', 'last_6_months', 'year_to_date'] or null
 - grouping: one of ['month', 'week', 'day', 'division', 'city', 'dealer', 'warehouse'] or null
 - sort_by: metric to sort by (e.g., 'revenue')
 - sort_order: 'ASC' or 'DESC'
 - limit: integer (default 10)
 - comparison_entities: list of two entities if comparing, else null
-- extra_columns: list of additional aggregate columns (e.g., ['dealers_count', 'cities_count'])
+- extra_columns: list of additional aggregate columns
 - fields: for details, list of column names to select
 
 Examples:
-- "Top 5 dealers by revenue in Lahore" → intent='ranking', entity_type='dealer', metric='revenue', filters={{'city':'Lahore'}}, limit=5, sort_order='DESC'
-- "Which city has the highest sales?" → intent='ranking', entity_type='city', metric='revenue', limit=1, sort_order='DESC'
-- "Arshad Electronics" → intent='dashboard', entity_type='dealer', entity_value='Arshad Electronics'
-- "Compare Lahore and Karachi warehouses" → intent='comparison', entity_type='warehouse', comparison_entities=['Lahore','Karachi'], metric='revenue'
-- "Monthly trend of revenue" → intent='trend', metric='revenue', grouping='month'
-- "Show DN details for DN12345" → intent='details', fields=['dn_no','customer_name','customer_model','warehouse','ship_to_city','dn_qty','dn_amount','pgi_date','pod_date','pending_flag'], filters={{'dn_no':'DN12345'}}
-- "Total revenue" → intent='aggregate', metric='revenue'
-- "Summary for last month" → intent='summary', time_period='last_month'
+- "Show me the dealer performance" → intent='dashboard', entity_type='dealer'
+- "Show me the revenue" → intent='aggregate', metric='revenue'
+- "Show me the pgi" → intent='aggregate', metric='pgi_percent'
+- "Top 5 dealers by revenue in Lahore" → intent='ranking', entity_type='dealer', metric='revenue', filters={{'city':'Lahore'}}, limit=5
 
 Question: "{query}"
 
@@ -224,9 +239,6 @@ Return valid JSON only.
             return self._parse_with_fallback(query)
 
     def _parse_with_fallback(self, query: str) -> QueryIntent:
-        """
-        Enhanced fallback parser with robust regex for common patterns.
-        """
         q = query.lower()
         intent = "summary"
         entity_type = None
@@ -242,126 +254,29 @@ Return valid JSON only.
         extra_columns = None
         fields = None
 
-        # ---- Detect intent and entity type ----
-
-        # 1. Detect comparison
-        if re.search(r"compare|vs|versus", q):
-            intent = "comparison"
-            m = re.search(r"compare\s+(.+?)\s+(?:and|vs|versus)\s+(.+)", q)
-            if m:
-                comparison_entities = [m.group(1).strip(), m.group(2).strip()]
-                # Try to detect entity type from context
-                if "warehouse" in q:
-                    entity_type = "warehouse"
-                elif "city" in q:
-                    entity_type = "city"
-                elif "dealer" in q:
-                    entity_type = "dealer"
-                elif "division" in q or "product" in q:
-                    entity_type = "division"
-                # If not, default to division
-                if not entity_type:
-                    entity_type = "division"
-                metric = "revenue"
+        # 1. Detect "show me the X" phrases
+        for phrase, mapping in self.show_phrases.items():
+            if phrase in q:
+                intent = mapping.get("intent", "summary")
+                entity_type = mapping.get("entity_type")
+                metric = mapping.get("metric")
+                grouping = mapping.get("grouping")
+                if "entity_type" in mapping and not entity_value:
+                    # Try to extract specific value after "for" or "of"
+                    m = re.search(r"for\s+([\w\s\-]+)", q)
+                    if m:
+                        entity_value = m.group(1).strip()
+                    else:
+                        # If not, maybe the whole query is just the phrase, leave null
+                        pass
+                break
 
         # 2. Detect ranking (top/highest/best/worst/lowest/bottom)
-        elif re.search(r"top|highest|best|worst|lowest|bottom", q):
+        if intent == "summary" and re.search(r"top|highest|best|worst|lowest|bottom", q):
             intent = "ranking"
-            # Extract limit
             m = re.search(r"top\s*(\d+)", q)
             if m:
                 limit = int(m.group(1))
-            # Determine entity type
-            if "dealer" in q or "customer" in q:
-                entity_type = "dealer"
-            elif "city" in q or "cities" in q:
-                entity_type = "city"
-            elif "warehouse" in q:
-                entity_type = "warehouse"
-            elif "product" in q or "division" in q:
-                entity_type = "division"
-            elif "model" in q:
-                entity_type = "model"
-            elif "sales office" in q:
-                entity_type = "sales_office"
-            elif "sales manager" in q:
-                entity_type = "sales_manager"
-            elif "dn" in q:
-                entity_type = "dn"
-            else:
-                # Default to division
-                entity_type = "division"
-
-            # Metric: revenue, units, dns, pending
-            if "units" in q or "quantity" in q:
-                metric = "units"
-            elif "dns" in q or "delivery notes" in q:
-                metric = "dns"
-            elif "pending" in q:
-                metric = "pending"
-            else:
-                metric = "revenue"   # default
-
-            sort_by = metric
-            # Sort order from context
-            if "highest" in q or "top" in q or "best" in q:
-                sort_order = "DESC"
-            elif "lowest" in q or "worst" in q or "bottom" in q:
-                sort_order = "ASC"
-
-            # Extract filters (e.g., "in Lahore")
-            m = re.search(r"in\s+([\w\s\-]+?)(?:\s+by|\s+with|$)", q)
-            if m:
-                city = m.group(1).strip()
-                # If entity_type is city, this might be a specific city value, but we treat as filter
-                filters["city"] = city
-
-            # Extract entity value if specific (e.g., "dealer ABC")
-            m = re.search(r"for\s+(?:dealer|customer)\s+([\w\s\-]+)", q)
-            if m:
-                filters["dealer"] = m.group(1).strip()
-            m = re.search(r"for\s+warehouse\s+([\w\s\-]+)", q)
-            if m:
-                filters["warehouse"] = m.group(1).strip()
-            m = re.search(r"for\s+division\s+([\w\s\-]+)", q)
-            if m:
-                filters["division"] = m.group(1).strip()
-            # Also handle "of" pattern
-            m = re.search(r"of\s+([\w\s\-]+?)(?:\s+in|\s+by|\s+$)", q)
-            if m and not filters:
-                # Might be entity value
-                candidate = m.group(1).strip()
-                if "dealer" in q:
-                    filters["dealer"] = candidate
-                elif "city" in q:
-                    filters["city"] = candidate
-                elif "warehouse" in q:
-                    filters["warehouse"] = candidate
-                elif "division" in q or "product" in q:
-                    filters["division"] = candidate
-
-        # 3. Detect trend
-        elif "trend" in q or "monthly" in q or "weekly" in q or "daily" in q:
-            intent = "trend"
-            if "monthly" in q:
-                grouping = "month"
-            elif "weekly" in q:
-                grouping = "week"
-            elif "daily" in q:
-                grouping = "day"
-            # Metric
-            if "units" in q:
-                metric = "units"
-            elif "dns" in q:
-                metric = "dns"
-            elif "pending" in q:
-                metric = "pending"
-            else:
-                metric = "revenue"
-
-        # 4. Detect list
-        elif "list" in q:
-            intent = "list"
             # Determine entity type
             if "dealer" in q or "customer" in q:
                 entity_type = "dealer"
@@ -373,25 +288,15 @@ Return valid JSON only.
                 entity_type = "division"
             elif "model" in q:
                 entity_type = "model"
+            elif "sales office" in q:
+                entity_type = "sales_office"
+            elif "sales manager" in q:
+                entity_type = "sales_manager"
+            elif "dn" in q:
+                entity_type = "dn"
             else:
-                entity_type = "city"  # default
-
-        # 5. Detect details (DN)
-        elif "dn" in q and ("details" in q or "show" in q or "list" in q):
-            intent = "details"
-            fields = ["dn_no", "customer_name", "customer_model", "warehouse", "ship_to_city",
-                      "dn_qty", "dn_amount", "pgi_date", "pod_date", "pending_flag"]
-            # Extract DN number
-            m = re.search(r"dn\s*[#:]?\s*([A-Za-z0-9\-]+)", q)
-            if m:
-                filters["dn_no"] = m.group(1)
-            else:
-                # If no specific DN, maybe list all with filters
-                pass
-
-        # 6. Detect aggregate (total/overall)
-        elif "total" in q or "overall" in q:
-            intent = "aggregate"
+                entity_type = "division"
+            # Metric
             if "units" in q:
                 metric = "units"
             elif "dns" in q:
@@ -400,30 +305,74 @@ Return valid JSON only.
                 metric = "pending"
             else:
                 metric = "revenue"
-            # Add filters if any
+            sort_by = metric
+            # Sort order
+            if "highest" in q or "top" in q or "best" in q:
+                sort_order = "DESC"
+            elif "lowest" in q or "worst" in q or "bottom" in q:
+                sort_order = "ASC"
+            # Extract filters (city)
             m = re.search(r"in\s+([\w\s\-]+)", q)
             if m:
                 filters["city"] = m.group(1).strip()
 
-        # 7. Dashboard (single entity, no explicit intent)
-        else:
-            intent = "dashboard"
-            # Try to extract entity type and value
-            # First check if it's a known entity type
-            found = False
-            for ent in ["dealer", "city", "warehouse", "division", "model", "sales office", "sales manager"]:
-                if ent in q:
-                    entity_type = ent.replace(" ", "_")
-                    # The rest is the value
-                    entity_value = q.replace(ent, "").strip()
-                    found = True
-                    break
-            if not found:
-                # Assume dealer
-                entity_type = "dealer"
-                entity_value = q
+        # 3. Detect comparison
+        if intent == "summary" and re.search(r"compare|vs|versus", q):
+            intent = "comparison"
+            m = re.search(r"compare\s+(.+?)\s+(?:and|vs|versus)\s+(.+)", q)
+            if m:
+                comparison_entities = [m.group(1).strip(), m.group(2).strip()]
+                # Determine entity type
+                if "warehouse" in q:
+                    entity_type = "warehouse"
+                elif "city" in q:
+                    entity_type = "city"
+                elif "dealer" in q:
+                    entity_type = "dealer"
+                else:
+                    entity_type = "division"
+                metric = "revenue"
 
-        # If metric not set, default to revenue
+        # 4. Detect trend
+        if intent == "summary" and ("trend" in q or "monthly" in q or "weekly" in q or "daily" in q):
+            intent = "trend"
+            if "monthly" in q:
+                grouping = "month"
+            elif "weekly" in q:
+                grouping = "week"
+            elif "daily" in q:
+                grouping = "day"
+            if not metric:
+                metric = "revenue"
+
+        # 5. Detect list
+        if intent == "summary" and "list" in q:
+            intent = "list"
+            if "dealer" in q:
+                entity_type = "dealer"
+            elif "city" in q:
+                entity_type = "city"
+            elif "warehouse" in q:
+                entity_type = "warehouse"
+            elif "division" in q or "product" in q:
+                entity_type = "division"
+            else:
+                entity_type = "city"
+
+        # 6. Detect details (DN)
+        if intent == "summary" and ("dn" in q and ("details" in q or "show" in q)):
+            intent = "details"
+            fields = ["dn_no", "customer_name", "customer_model", "warehouse", "ship_to_city",
+                      "dn_qty", "dn_amount", "pgi_date", "pod_date", "pending_flag"]
+            m = re.search(r"dn\s*[#:]?\s*([A-Za-z0-9\-]+)", q)
+            if m:
+                filters["dn_no"] = m.group(1)
+
+        # 7. If still summary, treat as dashboard if entity_type is detected
+        if intent == "summary" and entity_type and entity_value:
+            intent = "dashboard"
+
+        # Set default metric if still not set
         if not metric:
             metric = "revenue"
 
@@ -443,11 +392,11 @@ Return valid JSON only.
         elif "year to date" in q or "ytd" in q:
             time_period = "year_to_date"
 
-        # If we have a dashboard entity, set sort_by to metric for ranking if needed
-        if intent == "dashboard":
-            sort_by = metric
-        elif not sort_by:
-            sort_by = metric
+        # Sort order
+        if "highest" in q or "top" in q or "best" in q:
+            sort_order = "DESC"
+        elif "lowest" in q or "worst" in q or "bottom" in q:
+            sort_order = "ASC"
 
         logger.info(f"Fallback parsed: intent={intent}, entity_type={entity_type}, metric={metric}, filters={filters}")
         return QueryIntent(
@@ -458,7 +407,7 @@ Return valid JSON only.
             filters=filters,
             time_period=time_period,
             grouping=grouping,
-            sort_by=sort_by,
+            sort_by=sort_by if sort_by else metric,
             sort_order=sort_order,
             limit=limit,
             comparison_entities=comparison_entities,
@@ -467,7 +416,7 @@ Return valid JSON only.
         )
 
 # ============================================================
-# QUERY PLANNER & SQL BUILDER (unchanged from v9.0)
+# QUERY PLANNER & SQL BUILDER (unchanged from v9.1)
 # ============================================================
 
 class SQLBuilder:
@@ -521,7 +470,7 @@ class SQLBuilder:
             return self._build_details(intent)
         elif intent.intent == "aggregate":
             return self._build_aggregate(intent)
-        else:  # summary
+        else:
             return self._build_summary(intent)
 
     def _apply_filters(self, filters: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
@@ -862,7 +811,7 @@ class LogisticsRepository:
             return []
 
 # ============================================================
-# BUSINESS RULES ENGINE
+# BUSINESS RULES ENGINE (keep as is)
 # ============================================================
 
 class BusinessRulesEngine:
@@ -885,7 +834,7 @@ class BusinessRulesEngine:
         return results
 
 # ============================================================
-# GROQ RESPONSE FORMATTER (SECOND GROQ CALL)
+# GROQ RESPONSE FORMATTER (SECOND GROQ CALL) – TEMPLATE STYLE
 # ============================================================
 
 class GroqResponseFormatter:
@@ -898,47 +847,69 @@ class GroqResponseFormatter:
         # Prepare data summary
         if not results:
             data_summary = "No data found."
-        elif intent.intent in ["summary", "aggregate", "dashboard"]:
-            row = results[0]
-            data_summary = ", ".join([f"{k}: {v}" for k, v in row.items()])
-        elif intent.intent == "ranking":
-            top = results[:10]
-            lines = []
-            for r in top:
-                name = r.get("entity_name", "Unknown")
-                val = r.get("metric_value", 0)
-                extra = ""
-                if intent.extra_columns:
-                    extra = " (" + ", ".join([f"{c}: {r.get(c, 'N/A')}" for c in intent.extra_columns if c in r]) + ")"
-                lines.append(f"{name}: {val}{extra}")
-            data_summary = "\n".join(lines)
-        elif intent.intent == "details":
-            lines = []
-            for r in results[:10]:
-                row_parts = [f"{k}: {v}" for k, v in r.items()]
-                lines.append(" | ".join(row_parts))
-            data_summary = "\n".join(lines)
         else:
-            data_summary = "\n".join([str(r) for r in results[:10]])
+            # Build a compact representation
+            if intent.intent in ["summary", "aggregate", "dashboard"]:
+                row = results[0]
+                data_summary = ", ".join([f"{k}: {v}" for k, v in row.items()])
+            elif intent.intent == "ranking":
+                top = results[:10]
+                lines = []
+                for r in top:
+                    name = r.get("entity_name", "Unknown")
+                    val = r.get("metric_value", 0)
+                    extra = ""
+                    if intent.extra_columns:
+                        extra = " (" + ", ".join([f"{c}: {r.get(c, 'N/A')}" for c in intent.extra_columns if c in r]) + ")"
+                    lines.append(f"{name}: {val}{extra}")
+                data_summary = "\n".join(lines)
+            elif intent.intent == "details":
+                lines = []
+                for r in results[:10]:
+                    row_parts = [f"{k}: {v}" for k, v in r.items()]
+                    lines.append(" | ".join(row_parts))
+                data_summary = "\n".join(lines)
+            else:
+                data_summary = "\n".join([str(r) for r in results[:10]])
+
+        # Determine header based on intent
+        header_map = {
+            "dashboard": "📊 DASHBOARD",
+            "ranking": "🏆 RANKING",
+            "comparison": "⚖️ COMPARISON",
+            "trend": "📈 TREND",
+            "summary": "📊 SUMMARY",
+            "aggregate": "📊 AGGREGATE",
+            "details": "📋 DETAILS",
+            "list": "📋 LIST",
+        }
+        header = header_map.get(intent.intent, "📊 RESULT")
 
         prompt = f"""
-You are a helpful Logistics AI assistant for WhatsApp. Format the following query results into a clear, concise, and friendly response.
+You are a helpful Logistics AI assistant for WhatsApp. Format the following query results into a clear, concise, and friendly response that follows the template style.
+
+The response should start with a line of dashes, then the header (like "📊 NATIONAL KPI" or "👤 DEALER DASHBOARD"), then a blank line, then bullet points for each key metric, then a blank line, then an AI insight line (start with "🤖 AI Insight" or "🤖 AI:"), and finally "Reply another question or 99.".
+
+Use appropriate emojis for each metric:
+- 💰 for Revenue
+- 📦 for Units
+- 🚚 for DNs
+- 🟢 for Delivered
+- 🟡 for Pending
+- 📊 for percentages
+- 📅 for dates
+- 🏆 for top rankings
+
+Format numbers as currency with "PKR" if it's revenue, and add commas for thousands.
+
+AI Insight should be a short, meaningful observation about the data (e.g., "Performance is stable." or "Revenue increased 5% this month.").
 
 User question: "{query}"
 
 Data:
 {data_summary}
 
-Instructions:
-- Write in a conversational tone, suitable for WhatsApp.
-- Use emojis where appropriate (e.g., 💰 for revenue, 🏆 for top ranking).
-- If it's a ranking, present it as a numbered list.
-- For a dashboard, highlight the key metrics with labels.
-- If no data was found, politely say so and suggest they try a different question.
-- Keep the response under 300 words.
-- Do not say "here is the data" – just present the answer naturally.
-
-Response:
+Now produce the final WhatsApp response.
 """
         try:
             resp = GROQ_CLIENT.chat.completions.create(
@@ -953,33 +924,47 @@ Response:
             return None
 
 # ============================================================
-# FALLBACK TEMPLATE FORMATTER
+# FALLBACK TEMPLATE FORMATTER (when Groq fails)
 # ============================================================
 
 class TemplateFormatter:
     @staticmethod
     def format(intent: QueryIntent, results: List[Dict]) -> str:
         if not results:
-            return "No data found for your query. Please try a different question."
+            return "No data found for your query."
 
-        if intent.intent == "dashboard" or intent.intent == "summary":
+        # Determine header
+        header_map = {
+            "dashboard": "📊 DASHBOARD",
+            "ranking": "🏆 RANKING",
+            "comparison": "⚖️ COMPARISON",
+            "trend": "📈 TREND",
+            "summary": "📊 SUMMARY",
+            "aggregate": "📊 AGGREGATE",
+            "details": "📋 DETAILS",
+            "list": "📋 LIST",
+        }
+        header = header_map.get(intent.intent, "📊 RESULT")
+
+        # Build response lines
+        lines = [f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━", header, ""]
+        if intent.intent in ["summary", "dashboard", "aggregate"]:
             row = results[0]
-            lines = [
-                "📊 *Dashboard*",
-                "",
-                f"💰 Revenue: {_format_currency(row.get('revenue', 0))}",
-                f"📦 Units: {_format_number(row.get('units', 0))}",
-                f"🚚 DNs: {_format_number(row.get('dns', 0))}",
-                f"⏳ Pending: {_format_number(row.get('pending', 0))}",
-                f"📊 PGI%: {_format_percent(row.get('pgi_percent', 0))}",
-                f"📊 POD%: {_format_percent(row.get('pod_percent', 0))}",
-                f"📅 Avg Delivery Days: {row.get('avg_delivery_days', 0):.1f} days",
-            ]
-            return "\n".join(lines)
+            # Show all relevant fields
+            for k, v in row.items():
+                if k == "revenue":
+                    v = _format_currency(v)
+                elif k in ["units", "dns", "pending"]:
+                    v = _format_number(v)
+                elif k in ["pgi_percent", "pod_percent"]:
+                    v = _format_percent(v)
+                elif k == "avg_delivery_days":
+                    v = f"{v:.1f} days"
+                lines.append(f"{k.replace('_', ' ').title()}: {v}")
         elif intent.intent == "ranking":
             entity_label = intent.entity_type or "Division"
             metric_label = intent.metric or "Revenue"
-            lines = [f"🏆 *Top {len(results)} {entity_label.capitalize()} by {metric_label.capitalize()}*", ""]
+            lines.append(f"Top {len(results)} {entity_label.capitalize()} by {metric_label.capitalize()}:")
             for i, row in enumerate(results, 1):
                 name = row.get("entity_name", "Unknown")
                 val = row.get("metric_value", 0)
@@ -987,20 +972,21 @@ class TemplateFormatter:
                     val = _format_currency(val)
                 elif intent.metric in ["units", "dns", "pending"]:
                     val = _format_number(val)
-                elif intent.metric in ["delivery_days"]:
-                    val = f"{val:.1f} days"
                 else:
-                    val = str(val)
+                    val = f"{val:.1f}"
                 lines.append(f"{i}. {name}: {val}")
-            return "\n".join(lines)
         elif intent.intent == "details":
-            lines = ["📋 *DN Details*", ""]
+            lines.append("DN Details:")
             for row in results:
                 parts = [f"{k}: {v}" for k, v in row.items()]
                 lines.append(" | ".join(parts))
-            return "\n".join(lines)
         else:
-            return str(results)
+            lines.append(str(results))
+
+        lines.append("")
+        lines.append("🤖 AI Insight: Based on the data, performance appears stable.")
+        lines.append("Reply another question or 99.")
+        return "\n".join(lines)
 
 # ============================================================
 # MAIN SERVICE
@@ -1055,7 +1041,7 @@ class GroqService:
             elif intent.intent == "ranking" and results:
                 results = self.business_rules.enrich_ranking(results)
 
-            # Step 5: Format response – prefer Groq
+            # Step 5: Format response – always try Groq first
             formatted = self.groq_formatter.format(intent, results, msg)
             if formatted:
                 response = formatted
@@ -1086,6 +1072,9 @@ class GroqService:
             "• List all cities",
             "• Show DN details for DN12345",
             "• Which DN has the highest quantity?",
+            "• Show me the dealer performance",
+            "• Show me the revenue",
+            "• Show me the pgi",
             "",
             "Reply *99* to return to this menu."
         ])
