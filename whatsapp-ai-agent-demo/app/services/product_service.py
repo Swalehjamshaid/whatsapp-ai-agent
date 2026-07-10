@@ -1,10 +1,8 @@
 """
 File: app/services/product_service.py
-Version: 8.0 - FINAL PRODUCTION READY
-Purpose: Product search by Model or Division using raw SQL.
-         Works with the gateway (5 to enter, 99 to exit).
-         Uses exact columns: division, customer_model, material_no.
-         Includes DEBUG command to show sample values.
+Version: 8.1 - FULL DIAGNOSTIC VERSION
+Purpose: Search product models or divisions. Includes COUNT and DEBUG commands.
+         No intent detection needed – pure search.
 """
 
 from __future__ import annotations
@@ -17,9 +15,10 @@ from app.database import engine
 
 logger = logging.getLogger(__name__)
 
-VERSION = "8.0"
+VERSION = "8.1"
 SERVICE_OPTION = "5"
 DEBUG_COMMAND = "DEBUG"
+COUNT_COMMAND = "COUNT"
 
 # ============================================================
 # UTILITY FUNCTIONS
@@ -57,10 +56,33 @@ def _format_number(num: int) -> str:
     return f"{num:,}"
 
 # ============================================================
-# REPOSITORY – ALL RAW SQL
+# REPOSITORY – RAW SQL WITH DIAGNOSTICS
 # ============================================================
 
 class ProductSearchRepository:
+    @staticmethod
+    def get_table_info() -> Dict[str, Any]:
+        """Get total row count and sample of divisions/models."""
+        try:
+            with engine.connect() as conn:
+                count = conn.execute(
+                    text("SELECT COUNT(*) FROM delivery_reports")
+                ).scalar()
+                divisions = conn.execute(
+                    text("SELECT DISTINCT division FROM delivery_reports LIMIT 10")
+                ).fetchall()
+                models = conn.execute(
+                    text("SELECT DISTINCT customer_model FROM delivery_reports WHERE customer_model IS NOT NULL LIMIT 10")
+                ).fetchall()
+                return {
+                    "total_rows": count,
+                    "sample_divisions": [r[0] for r in divisions if r[0]],
+                    "sample_models": [r[0] for r in models if r[0]],
+                }
+        except Exception as e:
+            logger.error(f"Error in get_table_info: {e}")
+            return {"error": str(e)}
+
     @staticmethod
     def get_sample_values() -> Dict[str, list]:
         """Return up to 5 distinct values from each key column."""
@@ -101,14 +123,13 @@ class ProductSearchRepository:
 
     @staticmethod
     def get_model_data(model: str) -> Optional[Dict[str, Any]]:
-        """Get data for a specific product model (case‑insensitive partial match)."""
         model_clean = model.strip()
         if not model_clean:
             return None
 
         try:
             with engine.connect() as conn:
-                # Main aggregates – use ILIKE for case‑insensitive partial match
+                logger.info(f"Searching model: '{model_clean}'")
                 result = conn.execute(
                     text("""
                         SELECT
@@ -134,7 +155,10 @@ class ProductSearchRepository:
                 ).first()
 
                 if not result or result.total_revenue == 0:
+                    logger.info(f"No model data found for '{model_clean}'")
                     return None
+
+                logger.info(f"Found model: {result.model} with revenue {result.total_revenue}")
 
                 data = {
                     'model': _text(result.model),
@@ -150,7 +174,6 @@ class ProductSearchRepository:
                     'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
                 }
 
-                # Top cities for this model
                 cities = conn.execute(
                     text("""
                         SELECT ship_to_city, SUM(dn_amount) AS revenue
@@ -168,18 +191,18 @@ class ProductSearchRepository:
                 return data
 
         except Exception as e:
-            logger.error(f"Error in get_model_data for '{model_clean}': {e}")
+            logger.error(f"Error in get_model_data: {e}")
             return None
 
     @staticmethod
     def get_division_data(division: str) -> Optional[Dict[str, Any]]:
-        """Get aggregated data for a product division (case‑insensitive partial match)."""
         division_clean = division.strip()
         if not division_clean:
             return None
 
         try:
             with engine.connect() as conn:
+                logger.info(f"Searching division: '{division_clean}'")
                 result = conn.execute(
                     text("""
                         SELECT
@@ -199,7 +222,10 @@ class ProductSearchRepository:
                 ).first()
 
                 if not result or result.total_revenue == 0:
+                    logger.info(f"No division data found for '{division_clean}'")
                     return None
+
+                logger.info(f"Found division: '{division_clean}' with revenue {result.total_revenue}")
 
                 data = {
                     'division': division_clean,
@@ -214,7 +240,6 @@ class ProductSearchRepository:
                     'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
                 }
 
-                # Top 5 models in this division
                 products = conn.execute(
                     text("""
                         SELECT COALESCE(customer_model, material_no, 'Unknown') AS product,
@@ -232,11 +257,11 @@ class ProductSearchRepository:
                 return data
 
         except Exception as e:
-            logger.error(f"Error in get_division_data for '{division_clean}': {e}")
+            logger.error(f"Error in get_division_data: {e}")
             return None
 
 # ============================================================
-# FORMATTERS – WHATSAPP FRIENDLY
+# FORMATTERS – FULL DASHBOARDS
 # ============================================================
 
 class ProductDashboardFormatter:
@@ -304,10 +329,37 @@ class ProductDashboardFormatter:
         lines.extend([
             "",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "💡 Compare your search with these values.",
-            "If you see your product here, search should work.",
+            "💡 If you see your values above, search should work.",
+            "If the list is empty, check the database connection.",
             "",
             "Type another search or 99 to exit.",
+        ])
+        return "\n".join(lines)
+
+    @staticmethod
+    def table_info(info: Dict[str, Any]) -> str:
+        lines = [
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "📊 TABLE INFO",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"Total rows in delivery_reports: {info.get('total_rows', 'N/A')}",
+            "",
+            "Sample divisions (first 10):"
+        ]
+        for d in info.get("sample_divisions", []):
+            lines.append(f"  • {d}")
+        lines.append("")
+        lines.append("Sample models (first 10):")
+        for m in info.get("sample_models", []):
+            lines.append(f"  • {m}")
+        if "error" in info:
+            lines.append("")
+            lines.append(f"⚠️ Error: {info['error']}")
+        lines.extend([
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "Type DEBUG for more detailed samples.",
         ])
         return "\n".join(lines)
 
@@ -500,7 +552,7 @@ class ProductAnalyticsService:
     def __init__(self) -> None:
         self._version = VERSION
         self._formatter = ProductDashboardFormatter()
-        logger.info(f"✅ ProductAnalyticsService v{self._version} (raw SQL, final)")
+        logger.info(f"✅ ProductAnalyticsService v{self._version} (diagnostic)")
 
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
         try:
@@ -521,14 +573,16 @@ class ProductAnalyticsService:
                 samples = ProductSearchRepository.get_sample_values()
                 return self._formatter.debug_info(samples)
 
+            if msg == COUNT_COMMAND:
+                info = ProductSearchRepository.get_table_info()
+                return self._formatter.table_info(info)
+
             logger.info(f"Searching for: '{msg}' from {sender}")
 
-            # Try model first
             model_data = ProductSearchRepository.get_model_data(msg)
             if model_data:
                 return self._formatter.model_dashboard(model_data)
 
-            # Try division
             division_data = ProductSearchRepository.get_division_data(msg)
             if division_data:
                 return self._formatter.division_dashboard(division_data)
