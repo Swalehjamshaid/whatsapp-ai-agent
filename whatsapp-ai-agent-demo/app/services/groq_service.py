@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/groq_service.py
-# VERSION: 15.3 - PROPER ENV LOADING + EXPOSE GROQ_AVAILABLE
+# VERSION: 15.4 - PARSER FIXES (PGI pending, warehouse priority)
 # PURPOSE: AI Orchestrator – uses Groq for understanding and responses,
 #          PostgreSQL for facts.
 # ============================================================
@@ -72,7 +72,7 @@ else:
 
 # If not available, the service will return the "unavailable" message.
 
-VERSION = "15.3"
+VERSION = "15.4"
 
 # -------------------- UTILITY FUNCTIONS --------------------
 def _format_currency(amount: float) -> str:
