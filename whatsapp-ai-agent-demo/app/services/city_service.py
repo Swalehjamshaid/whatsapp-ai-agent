@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/city_service.py
-# VERSION: 6.2 - ADDED ATTOCK TO CITY LIST
+# VERSION: 6.3 - DYNAMIC CITY RESOLUTION FROM DATABASE
 # ============================================================
 
 """
@@ -9,6 +9,7 @@ City Analytics Service – Full-featured city intelligence with enhanced dashboa
 - Entry prompt when selected from main menu.
 - Rich dashboard with: Business Overview, Delivery Performance, KPI, Top 5 Dealers, Top 5 Products, Exceptions, AI Insight.
 - PostgreSQL as the only source of truth.
+- Dynamically resolves city names from actual ship_to_city values in the database.
 """
 
 from __future__ import annotations
@@ -41,19 +42,20 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 SERVICE_ID = "6"                     # This service's number in the main menu
-VERSION = "6.2"
+VERSION = "6.3"
 CACHE_TTL = max(60, int(os.getenv("CITY_ANALYTICS_CACHE_TTL", "300")))
 DN_DELAY_THRESHOLD_DAYS = int(os.getenv("DN_DELAY_THRESHOLD_DAYS", "7"))
 
 # ============================================================
-# CONSTANTS - UPDATED WITH ATTOCK
+# STATIC CITY LIST (FALLBACK + COMMON ONES)
 # ============================================================
 
 CITY_NAMES: List[str] = [
     "abbottabad", "lahore", "karachi", "rawalpindi", "quetta",
     "multan", "peshawar", "gilgit", "hyderabad", "islamabad",
     "sialkot", "gujranwala", "faisalabad", "bahawalpur", "sukkur",
-    "dg khan", "rahim yar khan", "gwadar", "attock"      # <--- ADDED
+    "dg khan", "rahim yar khan", "gwadar", "attock", "havelian",    # <-- added havelian
+    "gujrat", "kharian", "mandibahudin", "mongowal", "jehlum",
 ]
 
 CITY_ALIASES: Dict[str, str] = {
@@ -71,13 +73,35 @@ CITY_EMOJIS: Dict[str, str] = {
     "multan": "🌅", "peshawar": "🏔️", "quetta": "🏜️", "faisalabad": "🏭",
     "hyderabad": "🌊", "sialkot": "⚽", "gujranwala": "🏭", "bahawalpur": "🌴",
     "sukkur": "🌊", "dg khan": "🏔️", "rahim yar khan": "🌾", "abbottabad": "🏔️",
-    "gwadar": "🌊", "gilgit": "🏔️", "attock": "🏔️"     # <--- ADDED
+    "gwadar": "🌊", "gilgit": "🏔️", "attock": "🏔️", "havelian": "🏔️",
+    "gujrat": "🏭", "kharian": "🌾", "mandibahudin": "🌾", "mongowal": "🌾",
 }
 
-WAREHOUSE_EMOJIS: Dict[str, str] = {
-    "lahore": "🏭", "karachi": "⚓", "rawalpindi": "🏔️", "gujranwala": "🏭",
-    "multan": "🌅", "peshawar": "🏔️", "quetta": "🏜️", "faisalabad": "🏭",
-    "hyderabad": "🌊", "sialkot": "⚽", "islamabad": "🏛️"
+# Base coordinates for distance (fallback)
+BASE_COORDINATES = {
+    "lahore": (31.5204, 74.3587),
+    "karachi": (24.8607, 67.0011),
+    "rawalpindi": (33.5651, 73.0169),
+    "multan": (30.1575, 71.5249),
+    "peshawar": (34.0151, 71.5249),
+    "quetta": (30.1798, 66.9750),
+    "hyderabad": (25.3960, 68.3578),
+    "faisalabad": (31.4504, 73.1350),
+    "sialkot": (32.4945, 74.5229),
+    "gujranwala": (32.1617, 74.1883),
+    "islamabad": (33.6844, 73.0479),
+    "abbottabad": (34.1490, 73.2210),
+    "dg khan": (30.0430, 70.6402),
+    "sukkur": (27.7060, 68.8530),
+    "rahim yar khan": (28.4200, 70.3030),
+    "gwadar": (25.1260, 62.3250),
+    "gilgit": (35.9208, 74.3144),
+    "attock": (33.7667, 72.3667),
+    "havelian": (34.0500, 73.1500),   # approximate
+    "gujrat": (32.5667, 74.0833),
+    "kharian": (32.8167, 73.8667),
+    "mandibahudin": (32.5833, 73.4833),
+    "mongowal": (31.2500, 72.0833),   # approximate, may not be exact
 }
 
 # ============================================================
@@ -131,7 +155,8 @@ def get_city_emoji(city_name: str) -> str:
     return CITY_EMOJIS.get(city_name.lower(), "📍")
 
 def get_warehouse_emoji(warehouse_name: str) -> str:
-    return WAREHOUSE_EMOJIS.get(warehouse_name.lower(), "🏭")
+    # Not used in dashboard directly but kept for consistency
+    return "🏭"
 
 # ============================================================
 # CITY CONTEXT
@@ -251,28 +276,8 @@ class CityDashboardBuilder:
 
     def _calculate_distance(self, warehouse: str, city: str) -> float:
         """Approximate distance using Haversine with hardcoded coords."""
-        coords = {
-            "lahore": (31.5204, 74.3587),
-            "karachi": (24.8607, 67.0011),
-            "rawalpindi": (33.5651, 73.0169),
-            "multan": (30.1575, 71.5249),
-            "peshawar": (34.0151, 71.5249),
-            "quetta": (30.1798, 66.9750),
-            "hyderabad": (25.3960, 68.3578),
-            "faisalabad": (31.4504, 73.1350),
-            "sialkot": (32.4945, 74.5229),
-            "gujranwala": (32.1617, 74.1883),
-            "islamabad": (33.6844, 73.0479),
-            "abbottabad": (34.1490, 73.2210),
-            "dg khan": (30.0430, 70.6402),
-            "sukkur": (27.7060, 68.8530),
-            "rahim yar khan": (28.4200, 70.3030),
-            "gwadar": (25.1260, 62.3250),
-            "gilgit": (35.9208, 74.3144),
-            "attock": (33.7667, 72.3667),      # <--- ADDED
-        }
-        wc = coords.get(warehouse.lower())
-        cc = coords.get(city.lower())
+        wc = BASE_COORDINATES.get(warehouse.lower())
+        cc = BASE_COORDINATES.get(city.lower())
         if not wc or not cc:
             return 0.0
         lat1, lon1 = wc
@@ -392,6 +397,10 @@ class CityAnalyticsService:
         self._version = VERSION
         self._contexts: Dict[str, CityContext] = {}
         self._lock = threading.RLock()
+        # Cache for all distinct city names from DB
+        self._all_cities_cache: List[str] = []
+        self._all_cities_cache_time: Optional[datetime] = None
+        self._all_cities_cache_ttl = timedelta(minutes=10)
         logger.info(f"✅ CityAnalyticsService v{self._version} initialized")
 
     @staticmethod
@@ -408,6 +417,71 @@ class CityAnalyticsService:
         with self._lock:
             if session_id in self._contexts:
                 del self._contexts[session_id]
+
+    # ------------------------------------------------------------
+    # DYNAMIC CITY LIST FROM DATABASE
+    # ------------------------------------------------------------
+    def _get_all_city_names(self) -> List[str]:
+        """Get list of all distinct ship_to_city values from the database (cached)."""
+        now = datetime.now()
+        if (self._all_cities_cache and 
+            self._all_cities_cache_time and 
+            (now - self._all_cities_cache_time) < self._all_cities_cache_ttl):
+            return self._all_cities_cache
+
+        try:
+            with self._session() as session:
+                results = session.query(
+                    distinct(DeliveryReport.ship_to_city)
+                ).filter(
+                    DeliveryReport.ship_to_city.isnot(None)
+                ).all()
+                cities = [_text(r[0]) for r in results if r[0]]
+                # Lowercase for matching
+                cities_lower = [c.lower() for c in cities]
+                self._all_cities_cache = cities_lower
+                self._all_cities_cache_time = now
+                logger.info(f"🔄 Loaded {len(cities_lower)} distinct cities from DB")
+                return cities_lower
+        except Exception as e:
+            logger.error(f"Error loading cities from DB: {e}")
+            return []
+
+    # ------------------------------------------------------------
+    # CITY NAME RESOLUTION (DYNAMIC)
+    # ------------------------------------------------------------
+    def _resolve_city_name(self, input_text: str) -> Optional[str]:
+        """Resolve city name using static list + dynamic DB list + aliases + partial matching."""
+        if not input_text:
+            return None
+
+        input_clean = input_text.strip().lower()
+
+        # 1. Exact match in static list
+        if input_clean in CITY_NAMES:
+            return input_clean
+
+        # 2. Alias match
+        if input_clean in CITY_ALIASES:
+            return CITY_ALIASES[input_clean]
+
+        # 3. Exact match in dynamic DB list
+        db_cities = self._get_all_city_names()
+        if input_clean in db_cities:
+            return input_clean
+
+        # 4. Partial match: check if input is a substring of any city, or vice versa
+        #    Also check if input is contained in any city name.
+        for city in set(CITY_NAMES + db_cities):
+            if city in input_clean or input_clean in city:
+                return city
+
+        # 5. If input contains a known city name (e.g., "HAVELLION" -> "havelian")
+        for city in set(CITY_NAMES + db_cities):
+            if city in input_clean:
+                return city
+
+        return None
 
     # ------------------------------------------------------------
     # ENTRY PROMPT
@@ -431,7 +505,7 @@ class CityAnalyticsService:
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "📋 Commands",
             "",
-            "🔎 Enter any City Name.",
+            "🔎 Enter any City Name that exists in our system.",
             "",
             "🏠 Reply *99* to return to the Previous Menu.",
             "",
@@ -617,20 +691,25 @@ class CityAnalyticsService:
                     else:
                         context.awaiting_city = True
                         return "\n".join([
-                            f"⚠️ City '{msg}' not found.",
+                            f"⚠️ No data found for '{msg}'.",
                             "",
-                            "Please try again or enter a valid city name.",
+                            "Please try another city name.",
                             "",
                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
                             "🤖 Awaiting City Name...",
                         ])
             else:
+                # Suggest possible cities from DB
+                db_cities = self._get_all_city_names()
+                suggestions = [c.title() for c in db_cities if msg.lower() in c][:5]
+                suggestion_text = ""
+                if suggestions:
+                    suggestion_text = "\n💡 Did you mean:\n" + "\n".join(f"• {s}" for s in suggestions)
                 return "\n".join([
                     f"⚠️ Could not resolve city name '{msg}'.",
                     "",
-                    "Please try again with a valid city name.",
-                    "",
-                    "Examples: Lahore, Karachi, Islamabad, Attock",
+                    "Please try again with a valid city name from our system.",
+                    suggestion_text,
                     "",
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
                     "🤖 Awaiting City Name...",
@@ -646,7 +725,7 @@ class CityAnalyticsService:
                 if dashboard:
                     return self._render_full_dashboard(city_resolved, dashboard)
                 else:
-                    return f"⚠️ City '{msg}' not found.\n\nPlease try again."
+                    return f"⚠️ No data found for '{msg}'.\n\nPlease try again."
 
         # If user sends "menu" or "help"
         if msg.lower() in ["menu", "help", "options"]:
@@ -660,22 +739,6 @@ class CityAnalyticsService:
             "",
             self._get_entry_prompt()
         ])
-
-    # ------------------------------------------------------------
-    # CITY NAME RESOLUTION
-    # ------------------------------------------------------------
-    def _resolve_city_name(self, input_text: str) -> Optional[str]:
-        """Resolve city name from input (case-insensitive, aliases, partial)."""
-        input_lower = input_text.lower().strip()
-        if input_lower in CITY_NAMES:
-            return input_lower
-        if input_lower in CITY_ALIASES:
-            return CITY_ALIASES[input_lower]
-        # partial match
-        for city in CITY_NAMES:
-            if city in input_lower or input_lower in city:
-                return city
-        return None
 
     # ------------------------------------------------------------
     # LEGACY / COMPATIBILITY METHODS
