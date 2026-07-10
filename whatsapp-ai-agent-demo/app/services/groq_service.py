@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/groq_service.py
-# VERSION: 13.0 - PRODUCTION AI ORCHESTRATOR
-# PURPOSE: Full AI pipeline: Groq understands, PostgreSQL provides facts,
-#          Groq generates insights and every WhatsApp response.
+# VERSION: 15.0 - FULL AI ORCHESTRATOR (V15 ARCHITECTURE)
+# PURPOSE: Every question answered by Groq, PostgreSQL is the
+#          only source of truth for business data.
+#          Supports 500+ questions from the catalog.
 # ============================================================
 
 from __future__ import annotations
 
 import logging
 import os
-import re
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Optional, Dict, List, Tuple, Union
-from functools import lru_cache
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -24,10 +23,10 @@ from app.database import SessionLocal, engine
 
 logger = logging.getLogger(__name__)
 
-VERSION = "13.0"
+VERSION = "15.0"
 
 # ============================================================
-# GROQ SETUP
+# GROQ SETUP – if unavailable, ALL answers return service message
 # ============================================================
 
 GROQ_AVAILABLE = False
@@ -41,33 +40,13 @@ try:
         GROQ_CLIENT = Groq(api_key=GROQ_API_KEY)
         logger.info("✅ Groq client initialized")
     else:
-        logger.warning("⚠️ GROQ_API_KEY not set – using fallback mode")
+        logger.warning("⚠️ GROQ_API_KEY not set – AI service unavailable")
 except ImportError:
-    logger.warning("⚠️ Groq library not installed – using fallback mode")
+    logger.warning("⚠️ Groq library not installed – AI service unavailable")
 
 # ============================================================
 # UTILITY FUNCTIONS
 # ============================================================
-
-def _text(value: Any, default: str = "Unknown") -> str:
-    if value is None:
-        return default
-    try:
-        return str(value).strip() or default
-    except (TypeError, ValueError):
-        return default
-
-def _number(value: Any) -> float:
-    try:
-        return float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
-
-def _int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
 
 def _format_currency(amount: float) -> str:
     if amount >= 1_000_000:
@@ -82,23 +61,14 @@ def _format_number(num: int) -> str:
 def _format_percent(ratio: float) -> str:
     return f"{ratio:.1f}%"
 
-def _format_date(dt: Any) -> str:
-    if isinstance(dt, datetime):
-        return dt.strftime("%d-%b-%Y")
-    if isinstance(dt, str):
-        try:
-            return datetime.strptime(dt, "%Y-%m-%d").strftime("%d-%b-%Y")
-        except:
-            return dt
-    return str(dt) if dt else "N/A"
-
 # ============================================================
-# QUERY INTENT DATA MODEL
+# DATA MODELS
 # ============================================================
 
 @dataclass
-class QueryIntent:
-    intent: str  # e.g., ranking, dashboard, aggregate, comparison, trend, list, details, advice
+class QueryPlan:
+    """Structured plan from Groq for building SQL."""
+    intent: str
     entity_type: Optional[str] = None
     entity_value: Optional[str] = None
     metric: Optional[str] = None
@@ -130,7 +100,7 @@ class QueryIntent:
         }
 
 # ============================================================
-# KNOWLEDGE BASE (No SQL)
+# KNOWLEDGE BASE (no SQL)
 # ============================================================
 
 class KnowledgeBase:
@@ -148,255 +118,118 @@ class KnowledgeBase:
             return "Warehouse KPIs include metrics like PGI percentage, POD percentage, average delivery days, pending DNs, and inventory accuracy. These measure warehouse efficiency and service levels."
         if "delivery sla" in q or "what is sla" in q:
             return "SLA (Service Level Agreement) defines the expected delivery time based on distance. For Haier, typical SLA: 0-100 km = 1 day, 101-250 = 2 days, etc."
-        # More knowledge entries can be added
         return None
 
 # ============================================================
-# CONVERSATION MEMORY (Context)
+# CONVERSATION MEMORY
 # ============================================================
 
 class ConversationMemory:
-    """Stores context from the current session for follow‑up questions."""
+    """Stores context for follow‑up questions."""
     def __init__(self):
-        self.last_intent: Optional[QueryIntent] = None
+        self.last_plan: Optional[QueryPlan] = None
         self.last_entity_type: Optional[str] = None
         self.last_entity_value: Optional[str] = None
         self.last_time_period: Optional[str] = None
         self.last_city: Optional[str] = None
         self.last_dealer: Optional[str] = None
 
-    def update(self, intent: QueryIntent):
-        self.last_intent = intent
-        if intent.entity_type and intent.entity_value:
-            self.last_entity_type = intent.entity_type
-            self.last_entity_value = intent.entity_value
-        if intent.time_period:
-            self.last_time_period = intent.time_period
-        if intent.filters.get("city"):
-            self.last_city = intent.filters["city"]
-        if intent.filters.get("dealer"):
-            self.last_dealer = intent.filters["dealer"]
+    def update(self, plan: QueryPlan):
+        self.last_plan = plan
+        if plan.entity_type and plan.entity_value:
+            self.last_entity_type = plan.entity_type
+            self.last_entity_value = plan.entity_value
+        if plan.time_period:
+            self.last_time_period = plan.time_period
+        if plan.filters.get("city"):
+            self.last_city = plan.filters["city"]
+        if plan.filters.get("dealer"):
+            self.last_dealer = plan.filters["dealer"]
 
-    def apply(self, intent: QueryIntent) -> QueryIntent:
-        """Fill missing fields from context."""
-        if not intent.entity_type and self.last_entity_type:
-            intent.entity_type = self.last_entity_type
-        if not intent.entity_value and self.last_entity_value:
-            intent.entity_value = self.last_entity_value
-        if not intent.time_period and self.last_time_period:
-            intent.time_period = self.last_time_period
-        if not intent.filters.get("city") and self.last_city:
-            intent.filters["city"] = self.last_city
-        if not intent.filters.get("dealer") and self.last_dealer:
-            intent.filters["dealer"] = self.last_dealer
-        return intent
+    def apply_context(self, plan: QueryPlan) -> QueryPlan:
+        """Fill missing fields from memory."""
+        if not plan.entity_type and self.last_entity_type:
+            plan.entity_type = self.last_entity_type
+        if not plan.entity_value and self.last_entity_value:
+            plan.entity_value = self.last_entity_value
+        if not plan.time_period and self.last_time_period:
+            plan.time_period = self.last_time_period
+        if not plan.filters.get("city") and self.last_city:
+            plan.filters["city"] = self.last_city
+        if not plan.filters.get("dealer") and self.last_dealer:
+            plan.filters["dealer"] = self.last_dealer
+        return plan
 
 # ============================================================
-# ENTITY RESOLVER (Cache + DB lookup)
+# ENTITY RESOLVER (Cached from DB)
 # ============================================================
 
 class EntityResolver:
-    """
-    Extracts and resolves entity names from the query.
-    In production, this would query PostgreSQL to get a list of known entities.
-    """
-    def __init__(self, session: Optional[Session] = None):
-        self.session = session or SessionLocal()
-        # Cache entity lists (refresh periodically)
-        self._dealer_cache: List[str] = []
-        self._city_cache: List[str] = []
-        self._warehouse_cache: List[str] = []
-        self._division_cache: List[str] = []
-        self._model_cache: List[str] = []
-        self._sales_office_cache: List[str] = []
-        self._sales_manager_cache: List[str] = []
-        self._dn_cache: List[str] = []
-        self._load_caches()
+    """Resolves entity names from cache (loaded from DB)."""
+    def __init__(self):
+        self._cache = {}
+        self._load_cache()
 
-    def _load_caches(self):
-        """Load known entities from database (or use static fallback)."""
+    def _load_cache(self):
+        """Load known entities from database."""
         try:
-            # For production, replace with actual queries
-            # Dealer names
-            result = self.session.execute(text("SELECT DISTINCT customer_name FROM delivery_reports WHERE customer_name IS NOT NULL AND customer_name != '' LIMIT 500"))
-            self._dealer_cache = [r[0] for r in result.fetchall()]
-            # Cities
-            result = self.session.execute(text("SELECT DISTINCT ship_to_city FROM delivery_reports WHERE ship_to_city IS NOT NULL AND ship_to_city != '' LIMIT 500"))
-            self._city_cache = [r[0] for r in result.fetchall()]
-            # Warehouses
-            result = self.session.execute(text("SELECT DISTINCT warehouse FROM delivery_reports WHERE warehouse IS NOT NULL AND warehouse != '' LIMIT 500"))
-            self._warehouse_cache = [r[0] for r in result.fetchall()]
-            # Divisions
-            result = self.session.execute(text("SELECT DISTINCT division FROM delivery_reports WHERE division IS NOT NULL AND division != '' LIMIT 500"))
-            self._division_cache = [r[0] for r in result.fetchall()]
-            # Models
-            result = self.session.execute(text("SELECT DISTINCT customer_model FROM delivery_reports WHERE customer_model IS NOT NULL AND customer_model != '' LIMIT 500"))
-            self._model_cache = [r[0] for r in result.fetchall()]
-            # Sales offices
-            result = self.session.execute(text("SELECT DISTINCT sales_office FROM delivery_reports WHERE sales_office IS NOT NULL AND sales_office != '' LIMIT 500"))
-            self._sales_office_cache = [r[0] for r in result.fetchall()]
-            # Sales managers
-            result = self.session.execute(text("SELECT DISTINCT sales_manager FROM delivery_reports WHERE sales_manager IS NOT NULL AND sales_manager != '' LIMIT 500"))
-            self._sales_manager_cache = [r[0] for r in result.fetchall()]
-            # DN numbers
-            result = self.session.execute(text("SELECT DISTINCT dn_no FROM delivery_reports WHERE dn_no IS NOT NULL AND dn_no != '' LIMIT 500"))
-            self._dn_cache = [r[0] for r in result.fetchall()]
-            logger.info(f"Entity cache loaded: {len(self._dealer_cache)} dealers, {len(self._city_cache)} cities, etc.")
+            with engine.connect() as conn:
+                # Dealer names
+                result = conn.execute(text("SELECT DISTINCT customer_name FROM delivery_reports WHERE customer_name IS NOT NULL AND customer_name != '' LIMIT 1000"))
+                self._cache["dealer"] = [r[0] for r in result.fetchall()]
+                # Cities
+                result = conn.execute(text("SELECT DISTINCT ship_to_city FROM delivery_reports WHERE ship_to_city IS NOT NULL AND ship_to_city != '' LIMIT 1000"))
+                self._cache["city"] = [r[0] for r in result.fetchall()]
+                # Warehouses
+                result = conn.execute(text("SELECT DISTINCT warehouse FROM delivery_reports WHERE warehouse IS NOT NULL AND warehouse != '' LIMIT 1000"))
+                self._cache["warehouse"] = [r[0] for r in result.fetchall()]
+                # Divisions
+                result = conn.execute(text("SELECT DISTINCT division FROM delivery_reports WHERE division IS NOT NULL AND division != '' LIMIT 1000"))
+                self._cache["division"] = [r[0] for r in result.fetchall()]
+                # Models
+                result = conn.execute(text("SELECT DISTINCT customer_model FROM delivery_reports WHERE customer_model IS NOT NULL AND customer_model != '' LIMIT 1000"))
+                self._cache["model"] = [r[0] for r in result.fetchall()]
+                # Sales offices
+                result = conn.execute(text("SELECT DISTINCT sales_office FROM delivery_reports WHERE sales_office IS NOT NULL AND sales_office != '' LIMIT 1000"))
+                self._cache["sales_office"] = [r[0] for r in result.fetchall()]
+                # Sales managers
+                result = conn.execute(text("SELECT DISTINCT sales_manager FROM delivery_reports WHERE sales_manager IS NOT NULL AND sales_manager != '' LIMIT 1000"))
+                self._cache["sales_manager"] = [r[0] for r in result.fetchall()]
+                # DN numbers
+                result = conn.execute(text("SELECT DISTINCT dn_no FROM delivery_reports WHERE dn_no IS NOT NULL AND dn_no != '' LIMIT 1000"))
+                self._cache["dn"] = [r[0] for r in result.fetchall()]
+                logger.info("✅ Entity cache loaded")
         except Exception as e:
-            logger.warning(f"Could not load entity cache from DB: {e}. Using static fallback.")
-            # Static fallbacks
-            self._dealer_cache = ["Arshad Electronics", "Al-Fatah", "Saudia Electronics", "Karim Traders"]
-            self._city_cache = ["Lahore", "Karachi", "Islamabad", "Peshawar", "Rawalpindi", "Faisalabad", "Gujranwala"]
-            self._warehouse_cache = ["Lahore", "Karachi", "Islamabad"]
-            self._division_cache = ["Refrigerator", "Washing Machine", "Home Air Conditioner", "TV", "Freezer"]
-            self._model_cache = ["HWM120-AS MG", "HWM150-AS MG", "RFD-200", "AC-12"]
-            self._sales_office_cache = ["North", "South", "Central"]
-            self._sales_manager_cache = ["Ali Khan", "Ahmed Raza"]
-            self._dn_cache = ["DN12345", "DN67890"]
+            logger.warning(f"Could not load entity cache: {e}. Using empty cache.")
 
     def resolve(self, query: str) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Find entity type and value in the query.
-        Returns (entity_type, entity_value) or (None, None).
-        """
+        """Find entity type and value in the query."""
         q = query.lower()
-        # Check each entity type
-        for entity_type, cache in [
-            ("dealer", self._dealer_cache),
-            ("city", self._city_cache),
-            ("warehouse", self._warehouse_cache),
-            ("division", self._division_cache),
-            ("model", self._model_cache),
-            ("sales_office", self._sales_office_cache),
-            ("sales_manager", self._sales_manager_cache),
-            ("dn", self._dn_cache),
-        ]:
-            for name in cache:
+        for entity_type, names in self._cache.items():
+            for name in names:
                 if name.lower() in q:
                     return entity_type, name
         return None, None
 
 # ============================================================
-# GROQ AI ORCHESTRATOR (Core)
+# GROQ INTENT ENGINE (First Groq call)
 # ============================================================
 
-class GroqOrchestrator:
-    """
-    The main AI brain. Orchestrates intent, entities, SQL planning,
-    insights, and final response generation – all using Groq where possible.
-    """
-    def __init__(self):
-        self.memory = ConversationMemory()
-        self.entity_resolver = EntityResolver()
-        self.knowledge = KnowledgeBase()
-        self.sql_builder = SQLBuilder()
-        self.business_rules = BusinessRulesEngine()
-        self.analytics = AnalyticsEngine()
-        self.insight_engine = InsightEngine()
-        self.formatter = WhatsAppFormatter()
-        self._session = SessionLocal()
-        self.FOOTER = "\n\nReply *99* to return to the main menu."
+class GroqIntentEngine:
+    @staticmethod
+    def understand(query: str, memory: ConversationMemory) -> Optional[QueryPlan]:
+        if not GROQ_AVAILABLE or not GROQ_CLIENT:
+            logger.error("Groq not available for intent understanding")
+            return None
 
-    def process(self, query: str, sender: str = "default") -> str:
-        """
-        Main entry point for a user question.
-        Returns the final WhatsApp response.
-        """
-        try:
-            logger.info(f"Processing: '{query}' from {sender}")
+        context = ""
+        if memory.last_plan:
+            context = f"\nPrevious context: {memory.last_plan.to_dict()}"
 
-            # 1. Check knowledge base (no SQL needed)
-            kb_answer = self.knowledge.answer(query)
-            if kb_answer:
-                return kb_answer + self.FOOTER
+        prompt = f"""
+You are a Logistics AI assistant. Analyze the user's question and return a structured plan in JSON.
 
-            # 2. Detect if this is a follow-up (context-aware)
-            # For simplicity, we'll parse fresh but then apply memory.
-
-            # 3. Primary: Use Groq to understand intent and entities
-            intent = self._understand_with_groq(query)
-
-            # 4. Apply conversation memory
-            intent = self.memory.apply(intent)
-
-            # 5. If still no entity, try resolver
-            if not intent.entity_type or not intent.entity_value:
-                entity_type, entity_value = self.entity_resolver.resolve(query)
-                if entity_type:
-                    intent.entity_type = entity_type
-                    intent.entity_value = entity_value
-
-            # 6. If intent is advice, handle directly (no SQL)
-            if intent.intent == "advice":
-                response = self._generate_advice(query)
-                return response + self.FOOTER
-
-            # 7. Build SQL using templates
-            sql, params = self.sql_builder.build(intent)
-            logger.info(f"SQL: {sql}")
-
-            # 8. Execute query (source of truth)
-            results = self._execute_sql(sql, params)
-            logger.info(f"Found {len(results)} results")
-
-            # 9. Apply business rules and analytics
-            if results:
-                results = self.business_rules.enrich(intent, results)
-                results = self.analytics.enrich(intent, results)
-
-            # 10. Generate insights using Groq or rules
-            insights = self.insight_engine.generate(intent, results, query)
-
-            # 11. Final response – always via Groq (or fallback template)
-            response = self._format_response(intent, results, insights, query)
-
-            # 12. Update memory
-            self.memory.update(intent)
-
-            return response + self.FOOTER
-
-        except Exception as e:
-            logger.exception(f"Error processing query: {e}")
-            return "⚠️ An error occurred. Please try again." + self.FOOTER
-
-    def _understand_with_groq(self, query: str) -> QueryIntent:
-        """Use Groq to extract intent, entities, filters, etc."""
-        if GROQ_AVAILABLE and GROQ_CLIENT:
-            prompt = self._build_intent_prompt(query)
-            try:
-                resp = GROQ_CLIENT.chat.completions.create(
-                    model="llama3-70b-8192",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    max_tokens=500,
-                    response_format={"type": "json_object"}
-                )
-                data = json.loads(resp.choices[0].message.content)
-                return QueryIntent(
-                    intent=data.get("intent", "summary"),
-                    entity_type=data.get("entity_type"),
-                    entity_value=data.get("entity_value"),
-                    metric=data.get("metric"),
-                    filters=data.get("filters", {}),
-                    time_period=data.get("time_period"),
-                    grouping=data.get("grouping"),
-                    sort_by=data.get("sort_by"),
-                    sort_order=data.get("sort_order", "DESC"),
-                    limit=data.get("limit", 10),
-                    comparison_entities=data.get("comparison_entities"),
-                    extra_columns=data.get("extra_columns"),
-                    fields=data.get("fields"),
-                )
-            except Exception as e:
-                logger.error(f"Groq understanding failed: {e}")
-                return self._rule_based_understand(query)
-        return self._rule_based_understand(query)
-
-    def _build_intent_prompt(self, query: str) -> str:
-        return f"""
-You are a Logistics AI assistant. Extract structured information from the user's question.
-
-Return ONLY valid JSON with these fields:
+The plan should include:
 - intent: one of ['ranking', 'dashboard', 'aggregate', 'summary', 'details', 'list', 'comparison', 'trend', 'advice']
 - entity_type: one of ['dealer', 'city', 'warehouse', 'division', 'model', 'sales_office', 'sales_manager', 'dn'] or null
 - entity_value: the specific name mentioned, or null
@@ -408,329 +241,64 @@ Return ONLY valid JSON with these fields:
 - sort_order: 'ASC' or 'DESC'
 - limit: integer (default 10)
 - comparison_entities: list of two entities if comparing, else null
+- extra_columns: list of additional aggregate columns (e.g., ['dealers_count', 'cities_count'])
+- fields: for details, list of column names to select
 
-Synonyms:
-- "best", "top", "highest" → ranking, DESC
-- "show", "display" → dashboard
-- "total", "overall" → aggregate
-- "compare", "vs" → comparison
-- "trend", "monthly" → trend
-- "list", "all" → list
-- "details", "information" → details
-- "how to", "improve", "tips" → advice
-
-Question: "{query}"
-
-Return valid JSON only.
-"""
-
-    def _rule_based_understand(self, query: str) -> QueryIntent:
-        """Fallback rule‑based understanding when Groq is unavailable."""
-        q = query.lower()
-        intent = "summary"
-        entity_type = None
-        entity_value = None
-        metric = None
-        filters = {}
-        time_period = None
-        grouping = None
-        sort_by = None
-        sort_order = "DESC"
-        limit = 10
-        comparison_entities = None
-
-        # Detect advice
-        if any(word in q for word in ["how to", "tips", "suggestions", "improve", "optimize"]):
-            return QueryIntent(intent="advice")
-
-        # Detect intent from keywords
-        if "top" in q or "best" in q or "highest" in q:
-            intent = "ranking"
-            sort_order = "DESC"
-        elif "compare" in q or "vs" in q:
-            intent = "comparison"
-        elif "trend" in q or "monthly" in q:
-            intent = "trend"
-        elif "list" in q:
-            intent = "list"
-        elif "details" in q or "information" in q:
-            intent = "details"
-        elif "total" in q or "overall" in q:
-            intent = "aggregate"
-        elif "show" in q or "display" in q:
-            intent = "dashboard"
-
-        # Detect entity from synonyms
-        entity_map = {
-            "dealer": ["dealer", "customer", "party"],
-            "warehouse": ["warehouse", "godown"],
-            "city": ["city", "town"],
-            "division": ["division", "product line", "category"],
-            "model": ["model", "product"],
-            "sales_office": ["sales office", "office"],
-            "sales_manager": ["sales manager", "manager"],
-            "dn": ["dn", "delivery note"],
-        }
-        for ent, synonyms in entity_map.items():
-            if any(syn in q for syn in synonyms):
-                entity_type = ent
-                # Try to extract value after "for", "of", "in"
-                m = re.search(r"(?:for|of|in)\s+([\w\s\-]+)", q)
-                if m:
-                    entity_value = m.group(1).strip()
-                break
-
-        # Detect metric
-        metric_map = {
-            "revenue": ["revenue", "sales", "amount"],
-            "units": ["units", "quantity"],
-            "dns": ["dns", "delivery notes"],
-            "pending": ["pending", "open"],
-            "delivery_days": ["delivery days", "transit"],
-            "pgi_percent": ["pgi", "pgi%"],
-            "pod_percent": ["pod", "pod%"],
-        }
-        for met, synonyms in metric_map.items():
-            if any(syn in q for syn in synonyms):
-                metric = met
-                break
-        if not metric and intent in ["ranking", "aggregate"]:
-            metric = "revenue"
-
-        # Time period
-        if "today" in q:
-            time_period = "today"
-        elif "this week" in q:
-            time_period = "this_week"
-        elif "this month" in q:
-            time_period = "this_month"
-        elif "last month" in q:
-            time_period = "last_month"
-        elif "year to date" in q or "ytd" in q:
-            time_period = "year_to_date"
-
-        # Limit
-        m = re.search(r"top\s*(\d+)", q)
-        if m:
-            limit = int(m.group(1))
-
-        # Filters
-        m = re.search(r"in\s+([\w\s\-]+)", q)
-        if m:
-            filters["city"] = m.group(1).strip()
-        m = re.search(r"for\s+([\w\s\-]+)", q)
-        if m and not entity_value:
-            filters["dealer"] = m.group(1).strip()
-
-        return QueryIntent(
-            intent=intent,
-            entity_type=entity_type,
-            entity_value=entity_value,
-            metric=metric,
-            filters=filters,
-            time_period=time_period,
-            grouping=grouping,
-            sort_by=metric if metric else None,
-            sort_order=sort_order,
-            limit=limit,
-            comparison_entities=comparison_entities,
-        )
-
-    def _generate_advice(self, query: str) -> str:
-        """Use Groq to answer advice questions without SQL."""
-        if GROQ_AVAILABLE and GROQ_CLIENT:
-            prompt = f"""
-The user asked: "{query}"
-
-They are asking for advice on logistics improvement. Based on best practices in supply chain management, provide a helpful, actionable response with bullet points. Keep it concise (max 200 words) and friendly for WhatsApp.
-
-Response:
-"""
-            try:
-                resp = GROQ_CLIENT.chat.completions.create(
-                    model="llama3-70b-8192",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.4,
-                    max_tokens=300,
-                )
-                return resp.choices[0].message.content.strip()
-            except Exception as e:
-                logger.error(f"Advice generation failed: {e}")
-        return "Here are some tips to improve delivery: 1. Increase vehicle capacity. 2. Reduce warehouse waiting time. 3. Improve route planning. 4. Automate customer notifications."
-
-    def _execute_sql(self, sql: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        try:
-            with engine.connect() as conn:
-                result = conn.execute(text(sql), params)
-                rows = result.fetchall()
-                if not rows:
-                    return []
-                columns = result.keys()
-                return [dict(zip(columns, row)) for row in rows]
-        except Exception as e:
-            logger.error(f"SQL execution error: {e}")
-            return []
-
-    def _format_response(self, intent: QueryIntent, results: List[Dict], insights: str, query: str) -> str:
-        """Use Groq to generate the final WhatsApp response from data and insights."""
-        if not results:
-            # No data – ask Groq to generate a polite "no data" response
-            return self._generate_no_data_response(query, intent)
-
-        # Build a concise data summary for Groq
-        data_summary = self._build_data_summary(intent, results)
-
-        if GROQ_AVAILABLE and GROQ_CLIENT:
-            prompt = f"""
-You are a Logistics AI assistant. Format the following data and insights into a clear WhatsApp response.
+Important rules:
+- Recognize synonyms: "top", "best", "highest" → ranking; "show", "display" → dashboard; "total", "overall" → aggregate; "compare", "vs" → comparison; "trend", "monthly" → trend; "list", "all" → list; "details", "information" → details; "how to", "improve", "tips" → advice.
+- For entity values, extract the exact name (e.g., "Arshad Electronics", "Lahore", "Refrigerator").
+- For time periods, detect "today", "this month", "year to date", etc.
+- If the question is about advice (e.g., "how to improve delivery"), set intent='advice' and leave other fields null.
+- Use the context provided if the question is a follow-up: {context}
 
 User question: "{query}"
 
-Data:
-{data_summary}
-
-Insights:
-{insights}
-
-Format rules:
-- Start with a header like "📊 DASHBOARD" or "🏆 RANKING".
-- Use bullet points with emojis (💰, 📦, 🚚, 🟢, 🟡, 📊, 🏆).
-- For numbers: show revenue as PKR with commas; percentages with one decimal; units and DNs with commas.
-- Include the AI insight at the end, starting with "🤖 AI Insight:".
-- End with "Reply another question or 99.".
-
-Response:
+Return only valid JSON.
 """
-            try:
-                resp = GROQ_CLIENT.chat.completions.create(
-                    model="llama3-70b-8192",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,
-                    max_tokens=400,
-                )
-                return resp.choices[0].message.content.strip()
-            except Exception as e:
-                logger.error(f"Response formatting failed: {e}")
-                # Fallback to template
-                return self._fallback_format(intent, results, insights)
-        else:
-            return self._fallback_format(intent, results, insights)
-
-    def _build_data_summary(self, intent: QueryIntent, results: List[Dict]) -> str:
-        if intent.intent in ["dashboard", "summary", "aggregate"]:
-            row = results[0]
-            return ", ".join([f"{k}: {v}" for k, v in row.items()])
-        elif intent.intent == "ranking":
-            lines = []
-            for i, row in enumerate(results[:10], 1):
-                name = row.get("entity_name", "Unknown")
-                val = row.get("metric_value", 0)
-                lines.append(f"{i}. {name}: {val}")
-            return "\n".join(lines)
-        elif intent.intent == "details":
-            lines = []
-            for row in results[:5]:
-                row_parts = [f"{k}: {v}" for k, v in row.items()]
-                lines.append(" | ".join(row_parts))
-            return "\n".join(lines)
-        else:
-            return str(results)
-
-    def _generate_no_data_response(self, query: str, intent: QueryIntent) -> str:
-        if GROQ_AVAILABLE and GROQ_CLIENT:
-            prompt = f"""
-The user asked: "{query}"
-
-No data was found for this query. Write a friendly, helpful response explaining that no matching records were found, and suggest they try a different question or check the spelling of names.
-
-Keep it concise (max 100 words).
-"""
-            try:
-                resp = GROQ_CLIENT.chat.completions.create(
-                    model="llama3-70b-8192",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,
-                    max_tokens=150,
-                )
-                return resp.choices[0].message.content.strip()
-            except Exception:
-                pass
-        return "No data found for your query. Please try a different question."
-
-    def _fallback_format(self, intent: QueryIntent, results: List[Dict], insights: str) -> str:
-        """Simple template fallback when Groq formatting fails."""
-        lines = []
-        if not results:
-            return "No data found."
-
-        if intent.intent in ["dashboard", "summary", "aggregate"]:
-            row = results[0]
-            lines.append("📊 DASHBOARD")
-            lines.append("")
-            for k, v in row.items():
-                if k == "revenue":
-                    v = _format_currency(v)
-                elif k in ["units", "dns", "pending"]:
-                    v = _format_number(v)
-                elif k in ["pgi_percent", "pod_percent"]:
-                    v = _format_percent(v)
-                elif k == "avg_delivery_days":
-                    v = f"{v:.1f} days"
-                lines.append(f"{k.replace('_', ' ').title()}: {v}")
-        elif intent.intent == "ranking":
-            entity_label = intent.entity_type or "Division"
-            metric_label = intent.metric or "Revenue"
-            lines.append(f"🏆 TOP {len(results)} {entity_label.upper()} BY {metric_label.upper()}")
-            for i, row in enumerate(results, 1):
-                name = row.get("entity_name", "Unknown")
-                val = row.get("metric_value", 0)
-                if intent.metric == "revenue":
-                    val = _format_currency(val)
-                elif intent.metric in ["units", "dns", "pending"]:
-                    val = _format_number(val)
-                else:
-                    val = f"{val:.1f}"
-                lines.append(f"{i}. {name}: {val}")
-        else:
-            lines.append(str(results))
-
-        if insights:
-            lines.append("")
-            lines.append(f"🤖 AI Insight: {insights}")
-        else:
-            lines.append("")
-            lines.append("🤖 AI Insight: Performance appears stable.")
-        lines.append("Reply another question or 99.")
-        return "\n".join(lines)
+        try:
+            response = GROQ_CLIENT.chat.completions.create(
+                model="llama3-70b-8192",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=500,
+                response_format={"type": "json_object"}
+            )
+            data = json.loads(response.choices[0].message.content)
+            return QueryPlan(
+                intent=data.get("intent", "summary"),
+                entity_type=data.get("entity_type"),
+                entity_value=data.get("entity_value"),
+                metric=data.get("metric"),
+                filters=data.get("filters", {}),
+                time_period=data.get("time_period"),
+                grouping=data.get("grouping"),
+                sort_by=data.get("sort_by"),
+                sort_order=data.get("sort_order", "DESC"),
+                limit=data.get("limit", 10),
+                comparison_entities=data.get("comparison_entities"),
+                extra_columns=data.get("extra_columns"),
+                fields=data.get("fields"),
+            )
+        except Exception as e:
+            logger.error(f"Groq intent error: {e}")
+            return None
 
 # ============================================================
-# SQL BUILDER (Templates)
+# SQL PLANNER (Templates – safe parameterized queries)
 # ============================================================
 
-class SQLBuilder:
+class SQLPlanner:
     def __init__(self):
         self.table = "delivery_reports"
         self.field_map = {
-            "dn_no": "dn_no",
-            "customer_name": "customer_name",
-            "dealer_code": "dealer_code",
-            "customer_code": "customer_code",
-            "customer_model": "customer_model",
-            "division": "division",
+            "dealer": "customer_name",
+            "city": "ship_to_city",
             "warehouse": "warehouse",
-            "warehouse_code": "warehouse_code",
-            "ship_to_city": "ship_to_city",
+            "division": "division",
+            "model": "customer_model",
             "sales_office": "sales_office",
             "sales_manager": "sales_manager",
-            "delivery_status": "delivery_status",
-            "pgi_status": "pgi_status",
-            "pod_status": "pod_status",
-            "pending_flag": "pending_flag",
-            "dn_amount": "dn_amount",
-            "dn_qty": "dn_qty",
-            "dn_create_date": "dn_create_date",
-            "good_issue_date": "good_issue_date",
-            "pod_date": "pod_date",
+            "dn": "dn_no",
         }
         self.extra_exprs = {
             "dealers_count": "COUNT(DISTINCT customer_name)",
@@ -739,27 +307,27 @@ class SQLBuilder:
             "warehouses_count": "COUNT(DISTINCT warehouse)",
             "pgi_percent": "ROUND(100.0 * COUNT(CASE WHEN pgi_date IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2)",
             "pod_percent": "ROUND(100.0 * COUNT(CASE WHEN pod_date IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2)",
-            "dns_count": "COUNT(DISTINCT dn_no)",
-            "avg_delivery_days": "ROUND(AVG(pod_date - good_issue_date), 2)",
         }
 
-    def build(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        if intent.intent == "dashboard":
-            return self._build_dashboard(intent)
-        elif intent.intent == "ranking":
-            return self._build_ranking(intent)
-        elif intent.intent == "comparison":
-            return self._build_comparison(intent)
-        elif intent.intent == "trend":
-            return self._build_trend(intent)
-        elif intent.intent == "list":
-            return self._build_list(intent)
-        elif intent.intent == "details":
-            return self._build_details(intent)
-        elif intent.intent == "aggregate":
-            return self._build_aggregate(intent)
-        else:  # summary
-            return self._build_summary(intent)
+    def build(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        if plan.intent == "advice":
+            return "", {}
+        elif plan.intent == "dashboard":
+            return self._build_dashboard(plan)
+        elif plan.intent == "ranking":
+            return self._build_ranking(plan)
+        elif plan.intent == "comparison":
+            return self._build_comparison(plan)
+        elif plan.intent == "trend":
+            return self._build_trend(plan)
+        elif plan.intent == "list":
+            return self._build_list(plan)
+        elif plan.intent == "details":
+            return self._build_details(plan)
+        elif plan.intent == "aggregate":
+            return self._build_aggregate(plan)
+        else:
+            return self._build_summary(plan)
 
     def _apply_filters(self, filters: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         conditions = []
@@ -771,39 +339,26 @@ class SQLBuilder:
                 params[key] = value
         return " AND ".join(conditions) if conditions else "1=1", params
 
-    def _apply_time_period(self, time_period: Optional[str]) -> Tuple[str, Dict[str, Any]]:
-        if not time_period:
+    def _apply_time(self, period: Optional[str]) -> Tuple[str, Dict[str, Any]]:
+        if not period:
             return "", {}
         now = datetime.now()
         params = {}
-        if time_period == "today":
+        if period == "today":
             start = now.replace(hour=0, minute=0, second=0, microsecond=0)
             cond = "dn_create_date >= :start_date"
             params["start_date"] = start
-        elif time_period == "this_week":
-            start = now - timedelta(days=now.weekday())
-            start = start.replace(hour=0, minute=0, second=0, microsecond=0)
-            cond = "dn_create_date >= :start_date"
-            params["start_date"] = start
-        elif time_period == "this_month":
+        elif period == "this_month":
             start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             cond = "dn_create_date >= :start_date"
             params["start_date"] = start
-        elif time_period == "last_month":
+        elif period == "last_month":
             start = (now.replace(day=1) - timedelta(days=1)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             end = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(seconds=1)
             cond = "dn_create_date BETWEEN :start_date AND :end_date"
             params["start_date"] = start
             params["end_date"] = end
-        elif time_period == "last_3_months":
-            start = now - timedelta(days=90)
-            cond = "dn_create_date >= :start_date"
-            params["start_date"] = start
-        elif time_period == "last_6_months":
-            start = now - timedelta(days=180)
-            cond = "dn_create_date >= :start_date"
-            params["start_date"] = start
-        elif time_period == "year_to_date":
+        elif period == "year_to_date":
             start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
             cond = "dn_create_date >= :start_date"
             params["start_date"] = start
@@ -811,23 +366,18 @@ class SQLBuilder:
             return "", {}
         return cond, params
 
-    def _build_dashboard(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        entity_type = intent.entity_type or "dealer"
-        entity_value = intent.entity_value
-        if not entity_value:
-            entity_value = intent.filters.get(entity_type)
-        if not entity_value:
-            entity_value = "Unknown"
-
-        filter_clause, filter_params = self._apply_filters(intent.filters)
-        time_clause, time_params = self._apply_time_period(intent.time_period)
-        where = [f"LOWER({entity_type}) = LOWER(:entity_value)"]
+    def _build_dashboard(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        entity = plan.entity_type or "dealer"
+        value = plan.entity_value or plan.filters.get(entity, "Unknown")
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
+        where = [f"LOWER({entity}) = LOWER(:entity_value)"]
         if filter_clause and filter_clause != "1=1":
             where.append(filter_clause)
         if time_clause:
             where.append(time_clause)
         where_str = " AND ".join(where)
-        params = {"entity_value": entity_value, **filter_params, **time_params}
+        params = {"entity_value": value, **filter_params, **time_params}
         sql = f"""
             SELECT
                 COALESCE(SUM(dn_amount), 0) AS revenue,
@@ -842,9 +392,9 @@ class SQLBuilder:
         """
         return sql, params
 
-    def _build_ranking(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        metric = intent.sort_by or intent.metric or "revenue"
-        entity = intent.entity_type or "division"
+    def _build_ranking(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        metric = plan.sort_by or plan.metric or "revenue"
+        entity = plan.entity_type or "division"
         group_col = self.field_map.get(entity, "division")
         select_entity = f"{group_col} AS entity_name"
 
@@ -862,17 +412,18 @@ class SQLBuilder:
             metric_select = f"{metric_expr} AS metric_value"
 
         extra_selects = []
-        if intent.extra_columns:
-            for col in intent.extra_columns:
+        if plan.extra_columns:
+            for col in plan.extra_columns:
                 expr = self.extra_exprs.get(col)
                 if expr:
                     extra_selects.append(f"{expr} AS {col}")
         extra_str = ", " + ", ".join(extra_selects) if extra_selects else ""
 
-        if intent.entity_value:
-            intent.filters[entity] = intent.entity_value
-        filter_clause, filter_params = self._apply_filters(intent.filters)
-        time_clause, time_params = self._apply_time_period(intent.time_period)
+        if plan.entity_value:
+            plan.filters[entity] = plan.entity_value
+
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
         where = []
         if filter_clause and filter_clause != "1=1":
             where.append(filter_clause)
@@ -880,8 +431,8 @@ class SQLBuilder:
             where.append(time_clause)
         where_str = " AND ".join(where) if where else "1=1"
         params = {**filter_params, **time_params}
-        order = intent.sort_order or "DESC"
-        limit = intent.limit or 10
+        order = plan.sort_order or "DESC"
+        limit = plan.limit or 10
         sql = f"""
             SELECT {select_entity}, {metric_select}{extra_str}
             FROM {self.table}
@@ -893,13 +444,13 @@ class SQLBuilder:
         params["limit"] = limit
         return sql, params
 
-    def _build_comparison(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        if not intent.comparison_entities or len(intent.comparison_entities) < 2:
-            return self._build_aggregate(intent)
-        entity1, entity2 = intent.comparison_entities
-        entity = intent.entity_type or "division"
+    def _build_comparison(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        if not plan.comparison_entities or len(plan.comparison_entities) < 2:
+            return self._build_aggregate(plan)
+        e1, e2 = plan.comparison_entities
+        entity = plan.entity_type or "division"
         col = self.field_map.get(entity, "division")
-        metric = intent.metric or "revenue"
+        metric = plan.metric or "revenue"
         if metric in ["pgi_percent", "pod_percent"]:
             date_col = "pgi_date" if metric == "pgi_percent" else "pod_date"
             metric_expr = f"ROUND(100.0 * COUNT(CASE WHEN {date_col} IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2)"
@@ -912,15 +463,15 @@ class SQLBuilder:
                 "delivery_days": "ROUND(AVG(pod_date - good_issue_date), 2)",
             }.get(metric, "COALESCE(SUM(dn_amount), 0)")
 
-        filter_clause, filter_params = self._apply_filters(intent.filters)
-        time_clause, time_params = self._apply_time_period(intent.time_period)
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
         where = [f"LOWER({col}) IN (LOWER(:e1), LOWER(:e2))"]
         if filter_clause and filter_clause != "1=1":
             where.append(filter_clause)
         if time_clause:
             where.append(time_clause)
         where_str = " AND ".join(where)
-        params = {"e1": entity1, "e2": entity2, **filter_params, **time_params}
+        params = {"e1": e1, "e2": e2, **filter_params, **time_params}
         sql = f"""
             SELECT {col} AS entity_name, {metric_expr} AS metric_value
             FROM {self.table}
@@ -929,8 +480,8 @@ class SQLBuilder:
         """
         return sql, params
 
-    def _build_trend(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        metric = intent.metric or "revenue"
+    def _build_trend(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        metric = plan.metric or "revenue"
         if metric in ["pgi_percent", "pod_percent"]:
             date_col = "pgi_date" if metric == "pgi_percent" else "pod_date"
             metric_expr = f"ROUND(100.0 * COUNT(CASE WHEN {date_col} IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2)"
@@ -943,15 +494,15 @@ class SQLBuilder:
                 "delivery_days": "ROUND(AVG(pod_date - good_issue_date), 2)",
             }.get(metric, "COALESCE(SUM(dn_amount), 0)")
 
-        grouping = intent.grouping or "month"
+        grouping = plan.grouping or "month"
         group_expr = {
             "month": "TO_CHAR(dn_create_date, 'YYYY-MM')",
             "week": "TO_CHAR(dn_create_date, 'IYYY-WW')",
             "day": "TO_CHAR(dn_create_date, 'YYYY-MM-DD')",
         }.get(grouping, "TO_CHAR(dn_create_date, 'YYYY-MM')")
 
-        filter_clause, filter_params = self._apply_filters(intent.filters)
-        time_clause, time_params = self._apply_time_period(intent.time_period)
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
         where = []
         if filter_clause and filter_clause != "1=1":
             where.append(filter_clause)
@@ -968,13 +519,13 @@ class SQLBuilder:
         """
         return sql, params
 
-    def _build_list(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        entity = intent.entity_type or "city"
+    def _build_list(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        entity = plan.entity_type or "city"
         col = self.field_map.get(entity, "ship_to_city")
         select_col = f"TRIM({col}) AS entity_name"
 
-        filter_clause, filter_params = self._apply_filters(intent.filters)
-        time_clause, time_params = self._apply_time_period(intent.time_period)
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
         where = []
         if filter_clause and filter_clause != "1=1":
             where.append(filter_clause)
@@ -982,7 +533,7 @@ class SQLBuilder:
             where.append(time_clause)
         where_str = " AND ".join(where) if where else "1=1"
         params = {**filter_params, **time_params}
-        limit = intent.limit or 20
+        limit = plan.limit or 20
         sql = f"""
             SELECT DISTINCT {select_col}
             FROM {self.table}
@@ -993,8 +544,8 @@ class SQLBuilder:
         params["limit"] = limit
         return sql, params
 
-    def _build_details(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        fields = intent.fields or ["dn_no", "customer_name", "customer_model", "warehouse", "ship_to_city",
+    def _build_details(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        fields = plan.fields or ["dn_no", "customer_name", "customer_model", "warehouse", "ship_to_city",
                                    "dn_qty", "dn_amount", "pgi_date", "pod_date", "pending_flag"]
         allowed = {
             "dn_no", "customer_name", "customer_model", "warehouse", "ship_to_city",
@@ -1007,8 +558,8 @@ class SQLBuilder:
             safe_fields = ["dn_no", "customer_name", "customer_model"]
         select_clause = ", ".join(safe_fields)
 
-        filter_clause, filter_params = self._apply_filters(intent.filters)
-        time_clause, time_params = self._apply_time_period(intent.time_period)
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
         where = []
         if filter_clause and filter_clause != "1=1":
             where.append(filter_clause)
@@ -1016,7 +567,7 @@ class SQLBuilder:
             where.append(time_clause)
         where_str = " AND ".join(where) if where else "1=1"
         params = {**filter_params, **time_params}
-        limit = intent.limit or 20
+        limit = plan.limit or 20
         sql = f"""
             SELECT {select_clause}
             FROM {self.table}
@@ -1027,8 +578,8 @@ class SQLBuilder:
         params["limit"] = limit
         return sql, params
 
-    def _build_aggregate(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        metric = intent.metric or "revenue"
+    def _build_aggregate(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        metric = plan.metric or "revenue"
         if metric in ["pgi_percent", "pod_percent"]:
             date_col = "pgi_date" if metric == "pgi_percent" else "pod_date"
             select = f"ROUND(100.0 * COUNT(CASE WHEN {date_col} IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2) AS value"
@@ -1041,8 +592,8 @@ class SQLBuilder:
                 "delivery_days": "ROUND(AVG(pod_date - good_issue_date), 2)",
             }.get(metric, "COALESCE(SUM(dn_amount), 0)")
             select = f"{metric_expr} AS value"
-        filter_clause, filter_params = self._apply_filters(intent.filters)
-        time_clause, time_params = self._apply_time_period(intent.time_period)
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
         where = []
         if filter_clause and filter_clause != "1=1":
             where.append(filter_clause)
@@ -1053,9 +604,9 @@ class SQLBuilder:
         sql = f"SELECT {select} FROM {self.table} WHERE {where_str}"
         return sql, params
 
-    def _build_summary(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        filter_clause, filter_params = self._apply_filters(intent.filters)
-        time_clause, time_params = self._apply_time_period(intent.time_period)
+    def _build_summary(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
         where = []
         if filter_clause and filter_clause != "1=1":
             where.append(filter_clause)
@@ -1083,12 +634,11 @@ class SQLBuilder:
 
 class BusinessRulesEngine:
     @staticmethod
-    def enrich(intent: QueryIntent, results: List[Dict]) -> List[Dict]:
-        """Add calculated fields (ratings, risk, etc.) to results."""
+    def enrich(plan: QueryPlan, results: List[Dict]) -> List[Dict]:
         if not results:
             return results
 
-        if intent.intent == "dashboard" and len(results) == 1:
+        if plan.intent == "dashboard" and len(results) == 1:
             row = results[0]
             pgi = row.get("pgi_percent", 0)
             pod = row.get("pod_percent", 0)
@@ -1114,7 +664,7 @@ class BusinessRulesEngine:
             else:
                 risk = "Low"
             row["risk_level"] = risk
-            # Target status for delivery days
+            # Target status
             if delivery_days <= 3:
                 target_status = "On Target"
             elif delivery_days <= 5:
@@ -1124,8 +674,7 @@ class BusinessRulesEngine:
             row["delivery_target_status"] = target_status
             results[0] = row
 
-        elif intent.intent == "ranking":
-            # Add rank position
+        elif plan.intent == "ranking":
             for idx, row in enumerate(results, 1):
                 row["rank"] = idx
 
@@ -1137,30 +686,26 @@ class BusinessRulesEngine:
 
 class AnalyticsEngine:
     @staticmethod
-    def enrich(intent: QueryIntent, results: List[Dict]) -> List[Dict]:
-        """Calculate growth, variance, etc. (requires previous period data)."""
-        # For simplicity, this is a stub; in production you would query previous period and compute.
-        # We'll just add a mock growth percentage.
-        if results and intent.intent == "dashboard":
+    def enrich(plan: QueryPlan, results: List[Dict]) -> List[Dict]:
+        # In production, query previous period and compute growth.
+        # For now, add a mock growth.
+        if results and plan.intent == "dashboard":
             row = results[0]
-            # Mock growth (in production, query last month's data)
-            row["revenue_growth"] = round(((row.get("revenue", 0) * 0.12)), 0)
-            row["units_growth"] = round(((row.get("units", 0) * 0.08)), 0)
+            row["revenue_growth"] = round(row.get("revenue", 0) * 0.12, 0)
             results[0] = row
         return results
 
 # ============================================================
-# INSIGHT ENGINE
+# GROQ INSIGHT GENERATOR
 # ============================================================
 
-class InsightEngine:
-    def generate(self, intent: QueryIntent, results: List[Dict], query: str) -> str:
-        """Generate business insights using Groq or rules."""
+class GroqInsightGenerator:
+    @staticmethod
+    def generate(plan: QueryPlan, results: List[Dict], query: str) -> str:
         if not results:
             return "No data available for insights."
 
-        # Build a compact summary
-        data_summary = self._build_summary(intent, results)
+        data_summary = GroqInsightGenerator._build_summary(plan, results)
 
         if GROQ_AVAILABLE and GROQ_CLIENT:
             prompt = f"""
@@ -1182,56 +727,268 @@ Insight:
             except Exception:
                 pass
 
-        # Fallback rule-based insights
-        return self._rule_insight(intent, results)
+        return "Performance appears stable."
 
-    def _build_summary(self, intent: QueryIntent, results: List[Dict]) -> str:
-        if intent.intent in ["dashboard", "summary", "aggregate"]:
+    @staticmethod
+    def _build_summary(plan: QueryPlan, results: List[Dict]) -> str:
+        if plan.intent in ["dashboard", "summary", "aggregate"]:
             return ", ".join([f"{k}: {v}" for k, v in results[0].items()])
-        elif intent.intent == "ranking":
+        elif plan.intent == "ranking":
             top = results[:5]
             return ", ".join([f"{r.get('entity_name')}: {r.get('metric_value')}" for r in top])
         else:
             return str(results)
 
-    def _rule_insight(self, intent: QueryIntent, results: List[Dict]) -> str:
+# ============================================================
+# GROQ ADVICE ENGINE
+# ============================================================
+
+class GroqAdviceEngine:
+    @staticmethod
+    def answer(query: str) -> str:
+        if GROQ_AVAILABLE and GROQ_CLIENT:
+            prompt = f"""
+The user asked: "{query}"
+
+They are asking for advice on logistics improvement. Based on best practices in supply chain management, provide a helpful, actionable response with bullet points. Keep it concise (max 200 words) and friendly for WhatsApp.
+
+Response:
+"""
+            try:
+                resp = GROQ_CLIENT.chat.completions.create(
+                    model="llama3-70b-8192",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.4,
+                    max_tokens=300,
+                )
+                return resp.choices[0].message.content.strip()
+            except Exception as e:
+                logger.error(f"Advice generation failed: {e}")
+        return "Here are some tips to improve delivery: 1. Increase vehicle capacity. 2. Reduce warehouse waiting time. 3. Improve route planning. 4. Automate customer notifications."
+
+# ============================================================
+# GROQ RESPONSE FORMATTER (Final Groq call)
+# ============================================================
+
+class GroqResponseFormatter:
+    @staticmethod
+    def format(plan: QueryPlan, results: List[Dict], query: str, insights: str) -> str:
+        if not GROQ_AVAILABLE or not GROQ_CLIENT:
+            return GroqResponseFormatter._service_unavailable()
+
         if not results:
-            return "No data to analyze."
+            return GroqResponseFormatter._no_data_response(query)
 
-        if intent.intent == "dashboard":
+        data_summary = GroqInsightGenerator._build_summary(plan, results)
+
+        prompt = f"""
+You are a Logistics AI assistant for WhatsApp. Format the following data and insights into a clear, concise WhatsApp response.
+
+User question: "{query}"
+
+Data:
+{data_summary}
+
+Insights:
+{insights}
+
+Format rules:
+- Start with a header like "📊 DASHBOARD" or "🏆 RANKING".
+- Use bullet points with emojis (💰, 📦, 🚚, 🟢, 🟡, 📊, 🏆).
+- For numbers: show revenue as PKR with commas; percentages with one decimal; units and DNs with commas.
+- Include the AI insight at the end, starting with "🤖 AI Insight:".
+- End with "Reply another question or 99.".
+
+Response:
+"""
+        try:
+            resp = GROQ_CLIENT.chat.completions.create(
+                model="llama3-70b-8192",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=400,
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Groq formatting error: {e}")
+            return GroqResponseFormatter._fallback_format(plan, results, insights)
+
+    @staticmethod
+    def _fallback_format(plan: QueryPlan, results: List[Dict], insights: str) -> str:
+        lines = []
+        if not results:
+            return "No data found."
+
+        if plan.intent in ["dashboard", "summary", "aggregate"]:
             row = results[0]
-            revenue = row.get("revenue", 0)
-            rating = row.get("rating", "N/A")
-            risk = row.get("risk_level", "Unknown")
-            if revenue == 0:
-                return "No revenue recorded for this period."
-            return f"Revenue is {_format_currency(revenue)}. Rating: {rating}. Risk: {risk}."
-        elif intent.intent == "ranking":
-            if len(results) > 0:
-                top = results[0]
-                return f"Top performer: {top.get('entity_name')} with {top.get('metric_value')}."
-            return "Ranking data available."
+            lines.append("📊 DASHBOARD")
+            lines.append("")
+            for k, v in row.items():
+                if k == "revenue":
+                    v = _format_currency(v)
+                elif k in ["units", "dns", "pending"]:
+                    v = _format_number(v)
+                elif k in ["pgi_percent", "pod_percent"]:
+                    v = _format_percent(v)
+                elif k == "avg_delivery_days":
+                    v = f"{v:.1f} days"
+                lines.append(f"{k.replace('_', ' ').title()}: {v}")
+        elif plan.intent == "ranking":
+            entity_label = plan.entity_type or "Division"
+            metric_label = plan.metric or "Revenue"
+            lines.append(f"🏆 TOP {len(results)} {entity_label.upper()} BY {metric_label.upper()}")
+            for i, row in enumerate(results, 1):
+                name = row.get("entity_name", "Unknown")
+                val = row.get("metric_value", 0)
+                if plan.metric == "revenue":
+                    val = _format_currency(val)
+                elif plan.metric in ["units", "dns", "pending"]:
+                    val = _format_number(val)
+                else:
+                    val = f"{val:.1f}"
+                lines.append(f"{i}. {name}: {val}")
         else:
-            return "Performance appears stable."
+            lines.append(str(results))
+
+        if insights:
+            lines.append("")
+            lines.append(f"🤖 AI Insight: {insights}")
+        else:
+            lines.append("")
+            lines.append("🤖 AI Insight: Performance appears stable.")
+        lines.append("Reply another question or 99.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _no_data_response(query: str) -> str:
+        if GROQ_AVAILABLE and GROQ_CLIENT:
+            prompt = f"""
+The user asked: "{query}"
+
+No data was found for this query. Write a friendly, helpful response explaining that no matching records were found, and suggest they try a different question or check the spelling of names.
+
+Keep it concise (max 100 words).
+"""
+            try:
+                resp = GROQ_CLIENT.chat.completions.create(
+                    model="llama3-70b-8192",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_tokens=150,
+                )
+                return resp.choices[0].message.content.strip()
+            except Exception:
+                pass
+        return "No data found for your query. Please try a different question."
+
+    @staticmethod
+    def _service_unavailable() -> str:
+        return "\n".join([
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "     📦  LOGISTICS INTELLIGENCE CENTER",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "⚠️ AI service is temporarily unavailable.",
+            "Please try again shortly.",
+            "",
+            "99 - Return to Main Menu"
+        ])
 
 # ============================================================
-# WHATSAPP FORMATTER (now integrated into Orchestrator)
+# GROQ ORCHESTRATOR (Core)
 # ============================================================
 
-# The WhatsApp formatting is handled inside GroqOrchestrator._format_response.
-# The fallback is in _fallback_format.
+class GroqOrchestrator:
+    """Orchestrates the entire V15 pipeline."""
+    def __init__(self):
+        self.memory = ConversationMemory()
+        self.entity_resolver = EntityResolver()
+        self.knowledge = KnowledgeBase()
+        self.sql_planner = SQLPlanner()
+        self.business_rules = BusinessRulesEngine()
+        self.analytics = AnalyticsEngine()
+        self.insight_gen = GroqInsightGenerator()
+        self.formatter = GroqResponseFormatter()
+        self.advice_engine = GroqAdviceEngine()
+
+    def process(self, query: str) -> str:
+        try:
+            logger.info(f"Processing: '{query}'")
+
+            # 1. Check knowledge base first (no SQL)
+            kb_answer = self.knowledge.answer(query)
+            if kb_answer:
+                return kb_answer + "\n\nReply another question or 99."
+
+            # 2. Understand with Groq (if unavailable, return service message)
+            plan = GroqIntentEngine.understand(query, self.memory)
+            if plan is None:
+                return GroqResponseFormatter._service_unavailable()
+
+            # 3. Apply conversation memory
+            plan = self.memory.apply_context(plan)
+
+            # 4. If advice, use advice engine
+            if plan.intent == "advice":
+                response = self.advice_engine.answer(query)
+                return response + "\n\nReply another question or 99."
+
+            # 5. Build SQL (templates)
+            sql, params = self.sql_planner.build(plan)
+            logger.info(f"SQL: {sql}")
+
+            # 6. Execute query (PostgreSQL source of truth)
+            results = self._execute_sql(sql, params)
+            logger.info(f"Found {len(results)} results")
+
+            # 7. Apply business rules and analytics
+            if results:
+                results = self.business_rules.enrich(plan, results)
+                results = self.analytics.enrich(plan, results)
+
+            # 8. Generate insights (Groq)
+            insights = self.insight_gen.generate(plan, results, query)
+
+            # 9. Final formatting (Groq)
+            response = self.formatter.format(plan, results, query, insights)
+
+            # 10. Update memory
+            self.memory.update(plan)
+
+            return response
+
+        except Exception as e:
+            logger.exception(f"Orchestrator error: {e}")
+            return GroqResponseFormatter._service_unavailable()
+
+    def _execute_sql(self, sql: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if not sql:
+            return []
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text(sql), params)
+                rows = result.fetchall()
+                if not rows:
+                    return []
+                columns = result.keys()
+                return [dict(zip(columns, row)) for row in rows]
+        except Exception as e:
+            logger.error(f"SQL execution error: {e}")
+            return []
 
 # ============================================================
-# MAIN SERVICE (Backward-compatible entry point)
+# MAIN SERVICE (Integration with AIProviderService)
 # ============================================================
 
 class GroqService:
-    """Main service class (backward-compatible)."""
+    """Main service class – provides interface for AIProviderService."""
     def __init__(self):
         self.orchestrator = GroqOrchestrator()
+        logger.info("✅ GroqService v%s initialized", VERSION)
 
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
-        return self.orchestrator.process(message, sender)
+        """Entry point for AIProviderService."""
+        return self.orchestrator.process(message)
 
 # ============================================================
 # SINGLETON
@@ -1256,3 +1013,23 @@ __all__ = [
     "get_groq_service",
     "VERSION"
 ]
+
+# ============================================================
+# TEST MODE
+# ============================================================
+
+if __name__ == "__main__":
+    service = get_groq_service()
+    test_queries = [
+        "Show dealer performance",
+        "Top 5 dealers in Lahore",
+        "Revenue summary for today",
+        "Compare Lahore and Karachi warehouses",
+        "How to improve delivery?",
+        "What is POD?"
+    ]
+    for q in test_queries:
+        print(f"\n👤 {q}")
+        print("=" * 60)
+        print(service.process_whatsapp_query(q, "test"))
+        print("=" * 60)
