@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/groq_service.py
-# VERSION: 15.2 - FIXED ENV LOADING & MODEL CONFIG
+# VERSION: 15.3 - PROPER ENV LOADING + EXPOSE GROQ_AVAILABLE
 # PURPOSE: AI Orchestrator – uses Groq for understanding and responses,
-#          PostgreSQL for facts. Fully compatible with Railway env.
+#          PostgreSQL for facts.
 # ============================================================
 
 from __future__ import annotations
@@ -17,12 +17,13 @@ from datetime import datetime, timedelta
 from typing import Any, Optional, Dict, List, Tuple, Union
 
 # -------------------- ENVIRONMENT LOADING --------------------
-# Load .env file if it exists (for local development)
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
+
+logger = logging.getLogger(__name__)
 
 # -------------------- GROQ SETUP --------------------
 GROQ_AVAILABLE = False
@@ -30,22 +31,23 @@ GROQ_CLIENT = None
 GROQ_MODEL = None
 GROQ_ERROR = None
 
-# 1. Check if library is installed
+# 1. Check library
 try:
     from groq import Groq
     LIB_AVAILABLE = True
 except ImportError as e:
     LIB_AVAILABLE = False
     GROQ_ERROR = f"Groq library not installed: {e}"
+    logger.warning(GROQ_ERROR)
 
-# 2. Read API key and model from environment
+# 2. Read API key and model
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # use the one from your env
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 if LIB_AVAILABLE and GROQ_API_KEY:
     try:
         GROQ_CLIENT = Groq(api_key=GROQ_API_KEY)
-        # Test the connection with a minimal call
+        # Test connection with a minimal call
         test_response = GROQ_CLIENT.chat.completions.create(
             model=GROQ_MODEL,
             messages=[{"role": "user", "content": "Hi"}],
@@ -57,6 +59,7 @@ if LIB_AVAILABLE and GROQ_API_KEY:
             logger.info(f"✅ Groq client initialized successfully (model: {GROQ_MODEL})")
         else:
             GROQ_ERROR = "Test call returned no response"
+            logger.error(GROQ_ERROR)
     except Exception as e:
         GROQ_ERROR = f"Groq init error: {e}"
         logger.error(GROQ_ERROR)
@@ -69,9 +72,7 @@ else:
 
 # If not available, the service will return the "unavailable" message.
 
-logger = logging.getLogger(__name__)
-
-VERSION = "15.2"
+VERSION = "15.3"
 
 # -------------------- UTILITY FUNCTIONS --------------------
 def _format_currency(amount: float) -> str:
@@ -173,7 +174,7 @@ class ConversationMemory:
             plan.filters["dealer"] = self.last_dealer
         return plan
 
-# -------------------- DATABASE HELPERS (if available) --------------------
+# -------------------- DATABASE HELPERS --------------------
 try:
     from sqlalchemy import text
     from app.database import SessionLocal, engine
@@ -292,7 +293,7 @@ Return only valid JSON.
             logger.error(f"Groq intent error: {e}")
             return None
 
-# -------------------- SQL PLANNER (Templates) --------------------
+# -------------------- SQL PLANNER (same as before) --------------------
 class SQLPlanner:
     def __init__(self):
         self.table = "delivery_reports"
@@ -997,8 +998,10 @@ def get_groq_service() -> GroqService:
             _service_instance = DummyGroqService()
     return _service_instance
 
+# EXPOSE GROQ_AVAILABLE for ai_provider_service
 __all__ = [
     "GroqService",
     "get_groq_service",
-    "VERSION"
+    "VERSION",
+    "GROQ_AVAILABLE"
 ]
