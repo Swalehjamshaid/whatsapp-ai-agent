@@ -1,6 +1,17 @@
+#!/usr/bin/env python3
+# ============================================================
+# FILE: app/services/dn_analysis.py
+# VERSION: 35.0 - RICH DN DASHBOARD & PRODUCTS
+# ============================================================
+
 """
-File: app/services/dn_analysis.py
-Version: 34.0 - INDEPENDENT STATEFUL MODULE
+DN Analysis Service – Independent Stateful Module.
+
+Provides:
+- DN lookup by number
+- Rich dashboard with products, timeline, status, AI insights
+- Intent detection, conversation management, and session handling
+- Integration with the AI Provider Gateway
 """
 
 from __future__ import annotations
@@ -11,7 +22,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 from typing import Any, Optional, Dict, List, Tuple, Union
 from enum import Enum
 
@@ -96,12 +107,14 @@ except ImportError:
 try:
     from sqlalchemy import func, or_, desc, and_, text
     from sqlalchemy.orm import Session, Query
-    from app.database import SessionLocal
+    from app.database import SessionLocal, engine
     from app.models import DeliveryReport
     DB_AVAILABLE = True
+    logger = logging.getLogger(__name__)
     logger.info("✅ Database imports successful")
 except ImportError as e:
     DB_AVAILABLE = False
+    logger = logging.getLogger(__name__)
     logger.error(f"❌ Database import error: {e}")
 
 # ============================================================
@@ -152,13 +165,56 @@ def _format_currency(amount: float) -> str:
     """Format currency amount."""
     if amount is None:
         return "PKR 0.00"
-    return f"PKR {amount:,.2f}"
+    if amount >= 1_000_000:
+        return f"PKR {amount/1_000_000:.2f}M"
+    elif amount >= 1_000:
+        return f"PKR {amount:,.0f}"
+    return f"PKR {amount:,.0f}"
 
 def _format_number(num: Union[int, float]) -> str:
     """Format number with commas."""
     if num is None:
         return "0"
     return f"{num:,}"
+
+def _format_date(date_val: Any) -> str:
+    """Format date to 'dd-MMM-yyyy' (e.g., 23-Jun-2026)"""
+    if not date_val:
+        return "N/A"
+    try:
+        if isinstance(date_val, str):
+            # Try common formats
+            for fmt in ['%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f']:
+                try:
+                    dt = datetime.strptime(date_val, fmt)
+                    break
+                except ValueError:
+                    continue
+            else:
+                return date_val
+        elif isinstance(date_val, datetime):
+            dt = date_val
+        elif isinstance(date_val, date):
+            dt = datetime.combine(date_val, datetime.min.time())
+        else:
+            return str(date_val)
+        return dt.strftime("%d-%b-%Y")
+    except Exception:
+        return str(date_val)
+
+def _format_status(status: str) -> str:
+    """Format status with emoji and color indicator."""
+    if not status:
+        return "Unknown"
+    s = status.lower()
+    if s in ['delivered', 'completed', 'pod received']:
+        return "🟢 Delivered"
+    elif s in ['pending', 'in transit', 'processing']:
+        return "🟡 Pending"
+    elif s in ['cancelled', 'rejected']:
+        return "🔴 Cancelled"
+    else:
+        return f"🟣 {status}"
 
 # ============================================================
 # ENUMS AND TYPES
@@ -255,7 +311,7 @@ class QueryResult:
     error: Optional[str] = None
 
 # ============================================================
-# RESPONSE TEMPLATES
+# RESPONSE TEMPLATES - Enhanced for Rich Output
 # ============================================================
 
 class DNResponseTemplates:
@@ -717,7 +773,7 @@ class DNIntentEngine:
         )
 
 # ============================================================
-# DN RENDERER
+# DN RENDERER - Enhanced Rich Dashboard
 # ============================================================
 
 class DNRenderer:
@@ -727,28 +783,164 @@ class DNRenderer:
         self.templates = DNResponseTemplates()
     
     def render_dashboard(self, data: Dict[str, Any]) -> str:
-        """Render DN dashboard."""
+        """Render the rich DN dashboard with all sections."""
         dn_no = data.get('dn_no', 'N/A')
+        dealer = data.get('dealer', 'N/A')
+        city = data.get('ship_to_city', 'N/A')
+        warehouse = data.get('warehouse', 'N/A')
+        division = data.get('division', 'N/A')
         
-        fields = {
-            "Division": data.get('division'),
-            "Order Type": data.get('order_type'),
-            "Customer": data.get('customer_name'),
-            "Customer Code": data.get('customer_code'),
-            "Dealer": data.get('dealer'),
-            "DN Work": data.get('dn_work'),
-            "Status": data.get('delivery_status', 'Pending'),
-            "Created": data.get('dn_create_date'),
-            "Amount": _format_currency(data.get('dn_amount', 0)),
-            "Quantity": _format_number(data.get('dn_qty', 0))
-        }
+        # Summary
+        products_count = len(data.get('products', []))
+        total_units = data.get('dn_qty', 0)
+        revenue = data.get('dn_amount', 0)
         
-        lines = [self.templates.format_header(f"DN Dashboard - {dn_no}"), ""]
-        for key, value in fields.items():
-            if value and value != "N/A" and value != 0:
-                lines.append(f"• {key}: {value}")
-        lines.extend(["", self.templates.format_footer()])
+        # Timeline
+        created = _format_date(data.get('dn_create_date'))
+        pgi_date = _format_date(data.get('good_issue_date'))
+        pod_date = _format_date(data.get('pod_date'))
+        transit_days = data.get('transit_days', 0)
+        
+        # Status
+        delivery_status = data.get('delivery_status', 'Pending')
+        pgi_status = data.get('pgi_status', 'Pending')
+        pod_status = data.get('pod_status', 'Pending')
+        pending_flag = data.get('pending_flag', False)
+        
+        # Products list
+        products = data.get('products', [])
+        
+        # AI Insight
+        insight = self._generate_ai_insight(data)
+        
+        # Build output
+        lines = []
+        SEP = "━━━━━━━━━━━━━━━━━━━━━━"
+        
+        # Header
+        lines.append(SEP)
+        lines.append("📦 DELIVERY NOTE INTELLIGENCE CENTER")
+        lines.append(SEP)
+        lines.append("")
+        lines.append(f"🆔 DN")
+        lines.append(f"{dn_no}")
+        lines.append("")
+        lines.append(f"👤 Dealer")
+        lines.append(f"{dealer}")
+        lines.append("")
+        lines.append(f"🏙 Destination")
+        lines.append(f"{city}")
+        lines.append("")
+        lines.append(f"🏭 Warehouse")
+        lines.append(f"{warehouse}")
+        lines.append("")
+        lines.append(f"📦 Division")
+        lines.append(f"{division}")
+        lines.append("")
+        
+        # Summary
+        lines.append(SEP)
+        lines.append("📊 DELIVERY SUMMARY")
+        lines.append(SEP)
+        lines.append("")
+        lines.append(f"📦 Products : {products_count}")
+        lines.append(f"📦 Units    : {_format_number(total_units)}")
+        lines.append(f"💰 Revenue  : {_format_currency(revenue)}")
+        lines.append("")
+        
+        # Timeline
+        lines.append(SEP)
+        lines.append("🚚 DELIVERY TIMELINE")
+        lines.append(SEP)
+        lines.append("")
+        lines.append(f"📅 DN Created : {created}")
+        lines.append(f"🚛 PGI Date   : {pgi_date}")
+        lines.append(f"📦 POD Date   : {pod_date}")
+        transit_display = f"{transit_days} Days" if transit_days > 0 else "N/A"
+        lines.append(f"⏱ Transit    : {transit_display}")
+        lines.append("")
+        
+        # Current Status
+        lines.append(SEP)
+        lines.append("✅ CURRENT STATUS")
+        lines.append(SEP)
+        lines.append("")
+        lines.append(f"🟢 Delivery : {_format_status(delivery_status)}")
+        lines.append(f"🟢 PGI      : {_format_status(pgi_status)}")
+        lines.append(f"🟢 POD      : {_format_status(pod_status)}")
+        pending_text = "Yes" if pending_flag else "No"
+        lines.append(f"🟢 Pending  : {pending_text}")
+        lines.append("")
+        
+        # Products
+        if products:
+            lines.append(SEP)
+            lines.append("📦 PRODUCTS")
+            lines.append(SEP)
+            lines.append("")
+            for item in products[:10]:  # Limit to 10 products
+                model = item.get('model', 'N/A')
+                qty = item.get('qty', 0)
+                lines.append(f"• {model} × {qty}")
+            if len(products) > 10:
+                lines.append(f"... and {len(products)-10} more")
+            lines.append("")
+        
+        # AI Insight
+        lines.append(SEP)
+        lines.append("🤖 AI INSIGHT")
+        lines.append(SEP)
+        lines.append("")
+        lines.extend(insight)
+        lines.append("")
+        
+        # Next Action
+        lines.append(SEP)
+        lines.append("🔄 NEXT ACTION")
+        lines.append(SEP)
+        lines.append("")
+        lines.append("📝 Enter another Delivery Note to search again.")
+        lines.append("")
+        lines.append("🏠 Reply *99* to return to the Main Menu.")
+        lines.append(SEP)
+        
         return "\n".join(lines)
+    
+    def _generate_ai_insight(self, data: Dict[str, Any]) -> List[str]:
+        """Generate AI insights based on data."""
+        insights = []
+        status = data.get('delivery_status', '').lower()
+        transit_days = data.get('transit_days', 0)
+        delay_days = data.get('delay_days', 0)
+        threshold = DN_DELAY_THRESHOLD_DAYS
+        
+        # Delivery status
+        if status in ['delivered', 'completed']:
+            insights.append("✅ Delivered before SLA.")
+            if transit_days <= 3:
+                insights.append("🚚 Fast transit time. Excellent logistics.")
+            else:
+                insights.append("⏳ Transit time could be improved.")
+        else:
+            if delay_days > threshold:
+                insights.append(f"⚠️ DELAYED by {delay_days} days. Investigate cause.")
+            else:
+                insights.append("⏳ In transit. Expected delivery soon.")
+        
+        # Check for issues
+        if data.get('pending_flag', False):
+            insights.append("⏳ Pending action required. Follow up with logistics.")
+        
+        # Revenue insight
+        revenue = data.get('dn_amount', 0)
+        if revenue > 1_000_000:
+            insights.append("💰 High value delivery. Ensure proper documentation.")
+        
+        # If everything is fine
+        if not insights:
+            insights.append("✅ No operational issues detected.")
+        
+        return insights
     
     def render_pending(self, items: List[Dict[str, Any]]) -> str:
         """Render pending DN list."""
@@ -781,15 +973,15 @@ class DNRenderer:
         return self.templates.format_list(f"Search Results for '{query}'", formatted_items)
     
     def render_status(self, data: Dict[str, Any]) -> str:
-        """Render DN status."""
+        """Render DN status (simple version)."""
         dn_no = data.get('dn_no', 'N/A')
         fields = {
             "Status": data.get('delivery_status', 'Pending'),
             "PGI Status": data.get('pgi_status', 'Pending'),
             "POD Status": data.get('pod_status', 'Pending'),
-            "Created": data.get('dn_create_date'),
-            "PGI Date": data.get('good_issue_date'),
-            "POD Date": data.get('pod_date')
+            "Created": _format_date(data.get('dn_create_date')),
+            "PGI Date": _format_date(data.get('good_issue_date')),
+            "POD Date": _format_date(data.get('pod_date'))
         }
         
         lines = [self.templates.format_header(f"Status - DN {dn_no}"), ""]
@@ -866,7 +1058,7 @@ class DNRenderer:
         dn_no = data.get('dn_no', 'N/A')
         fields = {
             "PGI Status": data.get('pgi_status', 'Pending'),
-            "PGI Date": data.get('good_issue_date'),
+            "PGI Date": _format_date(data.get('good_issue_date')),
             "Work Order": data.get('dn_work')
         }
         
@@ -882,7 +1074,7 @@ class DNRenderer:
         dn_no = data.get('dn_no', 'N/A')
         fields = {
             "POD Status": data.get('pod_status', 'Pending'),
-            "POD Date": data.get('pod_date'),
+            "POD Date": _format_date(data.get('pod_date')),
             "Delivery Status": data.get('delivery_status', 'Pending')
         }
         
@@ -917,8 +1109,8 @@ class DNRenderer:
         dn_no = data.get('dn_no', 'N/A')
         fields = {
             "Transit Days": data.get('transit_days', 'N/A'),
-            "PGI Date": data.get('good_issue_date'),
-            "POD Date": data.get('pod_date'),
+            "PGI Date": _format_date(data.get('good_issue_date')),
+            "POD Date": _format_date(data.get('pod_date')),
             "Status": data.get('delivery_status', 'Pending')
         }
         
@@ -934,7 +1126,7 @@ class DNRenderer:
         dn_no = data.get('dn_no', 'N/A')
         fields = {
             "Age (Days)": data.get('age_days', 'N/A'),
-            "Created": data.get('dn_create_date'),
+            "Created": _format_date(data.get('dn_create_date')),
             "Status": data.get('delivery_status', 'Pending')
         }
         
@@ -950,12 +1142,16 @@ class DNRenderer:
         dn_no = data.get('dn_no', 'N/A')
         
         events = []
-        if data.get('dn_create_date'):
-            events.append(f"📋 Created: {data['dn_create_date']}")
-        if data.get('good_issue_date'):
-            events.append(f"🚚 PGI: {data['good_issue_date']}")
-        if data.get('pod_date'):
-            events.append(f"✅ POD: {data['pod_date']}")
+        created = _format_date(data.get('dn_create_date'))
+        pgi = _format_date(data.get('good_issue_date'))
+        pod = _format_date(data.get('pod_date'))
+        
+        if created != "N/A":
+            events.append(f"📋 Created: {created}")
+        if pgi != "N/A":
+            events.append(f"🚚 PGI: {pgi}")
+        if pod != "N/A":
+            events.append(f"✅ POD: {pod}")
         
         if not events:
             events = ["No timeline events available"]
@@ -983,7 +1179,7 @@ class DNRenderer:
             "Quantity": _format_number(data.get('dn_qty', 0)),
             "Division": data.get('division'),
             "Order Type": data.get('order_type'),
-            "Created": data.get('dn_create_date'),
+            "Created": _format_date(data.get('dn_create_date')),
             "Warehouse": data.get('warehouse'),
             "City": data.get('ship_to_city')
         }
@@ -1071,7 +1267,7 @@ class DNDatabaseRepository:
                 logger.debug(f"Session close error: {e}")
     
     def get_dn_by_number(self, dn_no: str) -> QueryResult:
-        """Get DN by number."""
+        """Get DN by number, including products list."""
         start_time = time.time()
         session = self._get_session()
         
@@ -1085,6 +1281,7 @@ class DNDatabaseRepository:
             )
         
         try:
+            # First get the main DN record (aggregated)
             result = session.query(
                 DeliveryReport.dn_no,
                 DeliveryReport.division,
@@ -1108,24 +1305,40 @@ class DNDatabaseRepository:
                 DeliveryReport.storage_location,
                 DeliveryReport.ship_to_city,
                 DeliveryReport.remarks,
+                DeliveryReport.pending_flag,
             ).filter(
                 DeliveryReport.dn_no == dn_no
             ).first()
             
-            self._close_session(session)
-            
-            elapsed_ms = (time.time() - start_time) * 1000
-            
             if not result:
+                self._close_session(session)
                 return QueryResult(
                     data=None,
                     row_count=0,
-                    execution_time_ms=elapsed_ms,
+                    execution_time_ms=(time.time() - start_time) * 1000,
                     success=True,
                     error=None
                 )
             
-            # Convert to dict
+            # Get products list (group by customer_model, sum quantities)
+            products_result = session.query(
+                DeliveryReport.customer_model,
+                func.sum(DeliveryReport.dn_qty).label('total_qty')
+            ).filter(
+                DeliveryReport.dn_no == dn_no
+            ).group_by(
+                DeliveryReport.customer_model
+            ).all()
+            
+            products = []
+            for row in products_result:
+                if row.customer_model:
+                    products.append({
+                        'model': _text(row.customer_model),
+                        'qty': int(row.total_qty or 0)
+                    })
+            
+            # Build data dict
             data = {
                 'dn_no': _text(result.dn_no),
                 'division': _text(result.division),
@@ -1149,12 +1362,18 @@ class DNDatabaseRepository:
                 'storage_location': _text(result.storage_location),
                 'ship_to_city': _text(result.ship_to_city),
                 'remarks': _text(result.remarks),
+                'pending_flag': result.pending_flag or False,
+                'products': products,
             }
             
             # Calculate derived fields
             data['age_days'] = self._calculate_age(data.get('dn_create_date'))
             data['delay_days'] = self._calculate_delay(data.get('dn_create_date'), data.get('delivery_status'))
             data['transit_days'] = self._calculate_transit(data.get('good_issue_date'), data.get('pod_date'))
+            
+            self._close_session(session)
+            
+            elapsed_ms = (time.time() - start_time) * 1000
             
             return QueryResult(
                 data=data,
@@ -1583,7 +1802,7 @@ class DNAnalyticsService:
         
         self._initialized = True
         self._service_name = "dn_analytics"
-        self._version = "34.0"
+        self._version = "35.0"
         
         # Initialize components
         self._intent_engine = DNIntentEngine()
@@ -1829,6 +2048,9 @@ def get_dn_analytics_service() -> DNAnalyticsService:
                 _service = DNAnalyticsService()
     return _service
 
+# Alias for ai_provider_service.py
+get_dn_analysis_service = get_dn_analytics_service
+
 def process_dn_menu(session_id: str, user_input: str) -> Dict[str, Any]:
     """
     Process DN menu interaction.
@@ -1924,6 +2146,7 @@ __all__ = [
     # Public API
     "DNAnalyticsService",
     "get_dn_analytics_service",
+    "get_dn_analysis_service",  # For ai_provider_service
     "process_dn_menu",
     "get_dn_main_menu",
     "is_session_locked",
