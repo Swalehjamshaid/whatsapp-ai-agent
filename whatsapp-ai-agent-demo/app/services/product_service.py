@@ -1,20 +1,16 @@
 """
 File: app/services/product_service.py
-Version: 6.1 - ENTERPRISE PRODUCT SEARCH ENGINE (Flexible Matching)
-Purpose: Single‑entry search for Product Models or Divisions
-         PostgreSQL is the ONLY source of truth.
-         No menus – just search and display.
-         Supports "99" to exit to main gateway menu.
+Version: 6.2 - ENTERPRISE PRODUCT SEARCH ENGINE (with menu entry detection)
+Purpose: Single‑entry search for Product Models or Divisions.
+         Automatically shows welcome when user selects option "5".
 """
 
 from __future__ import annotations
 
 import logging
-import re
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
-from sqlalchemy import func, distinct, or_, and_, desc
+from sqlalchemy import func, distinct, or_, and_
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
@@ -22,14 +18,11 @@ from app.models import DeliveryReport
 
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-VERSION = "6.1"
+VERSION = "6.2"
+SERVICE_OPTION = "5"  # This service is mapped to option 5 in the gateway
 
 # ============================================================
-# UTILITY FUNCTIONS
+# UTILITY FUNCTIONS (unchanged)
 # ============================================================
 
 def _text(value: Any, default: str = "N/A") -> str:
@@ -64,31 +57,23 @@ def _format_number(num: int) -> str:
     return f"{num:,}"
 
 # ============================================================
-# REPOSITORY
+# REPOSITORY (flexible matching)
 # ============================================================
 
 class ProductSearchRepository:
-    """Data access for product model and division searches (flexible matching)"""
-
     def __init__(self, session: Session):
         self.session = session
 
     def get_model_data(self, model: str) -> Optional[Dict[str, Any]]:
-        """
-        Find a product model (customer_model or material_no) that contains the input.
-        Returns the model with the highest revenue if multiple matches.
-        """
         model_clean = model.strip()
         if not model_clean:
             return None
 
-        # Search in both customer_model and material_no (case‑insensitive, partial)
-        filter_condition = or_(
+        filter_cond = or_(
             func.lower(DeliveryReport.customer_model).ilike(f"%{model_clean.lower()}%"),
             func.lower(DeliveryReport.material_no).ilike(f"%{model_clean.lower()}%")
         )
 
-        # Get the top model by revenue
         result = self.session.query(
             func.coalesce(DeliveryReport.customer_model, DeliveryReport.material_no).label('model'),
             func.coalesce(DeliveryReport.division, 'Unknown').label('division'),
@@ -107,9 +92,7 @@ class ProductSearchRepository:
             func.avg(
                 func.date_part('day', DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
             ).label('avg_delivery_days')
-        ).filter(
-            filter_condition
-        ).group_by(
+        ).filter(filter_cond).group_by(
             DeliveryReport.customer_model,
             DeliveryReport.division,
             DeliveryReport.material_no
@@ -134,35 +117,24 @@ class ProductSearchRepository:
             'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
         }
 
-        # Top 5 cities for this model
         top_cities = self.session.query(
             DeliveryReport.ship_to_city,
             func.sum(DeliveryReport.dn_amount).label('revenue')
-        ).filter(
-            filter_condition
-        ).group_by(
+        ).filter(filter_cond).group_by(
             DeliveryReport.ship_to_city
         ).order_by(
             func.sum(DeliveryReport.dn_amount).desc()
         ).limit(5).all()
 
-        data['top_cities'] = [
-            _text(city.ship_to_city) for city in top_cities if city.ship_to_city
-        ]
-
-        logger.info(f"Found model: {data['model']} (revenue: {data['total_revenue']})")
+        data['top_cities'] = [_text(city.ship_to_city) for city in top_cities if city.ship_to_city]
         return data
 
     def get_division_data(self, division: str) -> Optional[Dict[str, Any]]:
-        """
-        Find a division that contains the input (case‑insensitive, partial).
-        Aggregates all products in that division.
-        """
         division_clean = division.strip()
         if not division_clean:
             return None
 
-        filter_condition = func.lower(DeliveryReport.division).ilike(f"%{division_clean.lower()}%")
+        filter_cond = func.lower(DeliveryReport.division).ilike(f"%{division_clean.lower()}%")
 
         result = self.session.query(
             func.sum(DeliveryReport.dn_amount).label('total_revenue'),
@@ -180,15 +152,13 @@ class ProductSearchRepository:
             func.avg(
                 func.date_part('day', DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
             ).label('avg_delivery_days')
-        ).filter(
-            filter_condition
-        ).first()
+        ).filter(filter_cond).first()
 
         if not result or result.total_revenue is None:
             return None
 
         data = {
-            'division': division_clean,  # store the input, but we could get the actual division if needed
+            'division': division_clean,
             'total_revenue': _number(result.total_revenue),
             'total_units': _int(result.total_units),
             'dn_count': _int(result.dn_count),
@@ -200,35 +170,60 @@ class ProductSearchRepository:
             'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
         }
 
-        # Top 5 product models in this division
         top_products = self.session.query(
             func.coalesce(DeliveryReport.customer_model, DeliveryReport.material_no).label('product'),
             func.sum(DeliveryReport.dn_amount).label('revenue')
-        ).filter(
-            filter_condition
-        ).group_by(
-            'product'
-        ).order_by(
+        ).filter(filter_cond).group_by('product').order_by(
             func.sum(DeliveryReport.dn_amount).desc()
         ).limit(5).all()
 
-        data['top_products'] = [
-            _text(p.product) for p in top_products if p.product
-        ]
-
-        logger.info(f"Found division: {division_clean} (revenue: {data['total_revenue']})")
+        data['top_products'] = [_text(p.product) for p in top_products if p.product]
         return data
 
 # ============================================================
-# FORMATTERS
+# FORMATTERS (unchanged)
 # ============================================================
 
 class ProductDashboardFormatter:
-    """Render product model and division dashboards in WhatsApp format"""
+    @staticmethod
+    def welcome() -> str:
+        return "\n".join([
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "      📦 PRODUCT INTELLIGENCE CENTER",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "Search by:",
+            "",
+            "✅ Product Model",
+            "✅ Product Division",
+            "",
+            "Examples:",
+            "",
+            "📦 Product Model",
+            "HWM120-AS MG",
+            "",
+            "📂 Product Division",
+            "Washing Machine",
+            "Refrigerator",
+            "Deep Freezer",
+            "LED TV",
+            "Air Conditioner",
+            "Kitchen Appliances",
+            "Small Domestic Appliances",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "📋 Commands",
+            "",
+            "🔎 Enter a Product Model or Product Division.",
+            "",
+            "🏠 Reply *99* to return to the Previous Menu.",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🤖 Awaiting Product Search...",
+        ])
 
     @staticmethod
     def model_dashboard(data: Dict[str, Any]) -> str:
-        """Format model dashboard as per specification"""
         lines = [
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "      📦 PRODUCT INTELLIGENCE CENTER",
@@ -297,12 +292,10 @@ class ProductDashboardFormatter:
             "🏠 Reply *99* to return to the Previous Menu.",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         ])
-
         return "\n".join(lines)
 
     @staticmethod
     def division_dashboard(data: Dict[str, Any]) -> str:
-        """Format division dashboard as per specification"""
         lines = [
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "      📦 PRODUCT DIVISION ANALYTICS",
@@ -367,12 +360,10 @@ class ProductDashboardFormatter:
             "🏠 Reply *99* to return to the Previous Menu.",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         ])
-
         return "\n".join(lines)
 
     @staticmethod
     def not_found(query: str) -> str:
-        """Return not found message"""
         return "\n".join([
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "❌ PRODUCT NOT FOUND",
@@ -397,17 +388,10 @@ class ProductDashboardFormatter:
 # ============================================================
 
 class ProductAnalyticsService:
-    """
-    Enterprise Product Search Engine.
-    Users enter a Product Model OR a Division.
-    Returns a formatted dashboard with KPIs, coverage, top items, etc.
-    Flexible matching using ilike on customer_model, material_no, and division.
-    """
-
     def __init__(self) -> None:
         self._version = VERSION
         self._formatter = ProductDashboardFormatter()
-        logger.info(f"✅ ProductAnalyticsService v{self._version} initialized (Flexible Search)")
+        logger.info(f"✅ ProductAnalyticsService v{self._version} initialized (with menu entry detection)")
 
     @staticmethod
     def _session() -> Session:
@@ -416,20 +400,24 @@ class ProductAnalyticsService:
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
         """
         Main entry point – called by the gateway.
-
-        - If message == "99", return "99" to unlock session and exit to gateway menu.
-        - Otherwise, try to match as Product Model or Division.
-        - Return formatted dashboard or not‑found message.
+        - If message == "99" → return "99" to exit to gateway menu.
+        - If message == "5" (this service's option) → show welcome screen.
+        - Otherwise try to match as Model or Division.
         """
         if not message or not message.strip():
-            return self._get_welcome()
+            return self._formatter.welcome()
 
         msg = message.strip()
 
-        # Exit signal
+        # Exit to gateway
         if msg == "99":
-            logger.info(f"Exit signal received from {sender}")
+            logger.info(f"Exit signal from {sender}")
             return "99"
+
+        # Show welcome when user selects this service from the main menu
+        if msg == SERVICE_OPTION:
+            logger.info(f"Service selected, showing welcome to {sender}")
+            return self._formatter.welcome()
 
         logger.info(f"Searching for: '{msg}' from {sender}")
 
@@ -447,56 +435,13 @@ class ProductAnalyticsService:
                 return self._formatter.division_dashboard(division_data)
 
         # No match
-        logger.info(f"No match for: '{msg}'")
         return self._formatter.not_found(msg)
 
-    def _get_welcome(self) -> str:
-        """Initial welcome message (shown if user sends empty)"""
-        return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "      📦 PRODUCT INTELLIGENCE CENTER",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "",
-            "Search by:",
-            "",
-            "✅ Product Model",
-            "✅ Product Division",
-            "",
-            "Examples:",
-            "",
-            "📦 Product Model",
-            "HWM120-AS MG",
-            "",
-            "📂 Product Division",
-            "Washing Machine",
-            "Refrigerator",
-            "Deep Freezer",
-            "LED TV",
-            "Air Conditioner",
-            "Kitchen Appliances",
-            "Small Domestic Appliances",
-            "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "📋 Commands",
-            "",
-            "🔎 Enter a Product Model or Product Division.",
-            "",
-            "🏠 Reply *99* to return to the Previous Menu.",
-            "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "🤖 Awaiting Product Search...",
-        ])
-
-    # ============================================================
-    # LEGACY METHODS (for backward compatibility, not used)
-    # ============================================================
-
+    # Legacy methods
     def get_main_menu(self) -> str:
-        """Legacy – not used in search‑only mode, but kept for compatibility"""
-        return self._get_welcome()
+        return self._formatter.welcome()
 
     def handle_message(self, message: str, sender: str) -> str:
-        """Legacy alias for process_whatsapp_query"""
         return self.process_whatsapp_query(message, sender)
 
 # ============================================================
