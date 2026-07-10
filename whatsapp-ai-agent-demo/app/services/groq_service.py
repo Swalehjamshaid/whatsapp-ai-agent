@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/groq_service.py
-# VERSION: 7.0 - DYNAMIC QUERY ENGINE (500+ QUESTIONS)
+# VERSION: 8.0 - FULL 500+ QUESTIONS SUPPORT
 # PURPOSE: Answer any logistics question using LLM + dynamic SQL.
-#          Supports 500+ question types via metadata-driven parsing.
+#          Supports 500+ question types via metadata-driven parsing,
+#          including DN details, multi‑column analytics, and AI insights.
 # ============================================================
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from app.database import SessionLocal, engine
 
 logger = logging.getLogger(__name__)
 
-VERSION = "7.0"
+VERSION = "8.0"
 
 # ============================================================
 # GROQ SETUP
@@ -78,6 +79,9 @@ def _format_currency(amount: float) -> str:
 def _format_number(num: int) -> str:
     return f"{num:,}"
 
+def _format_percent(ratio: float) -> str:
+    return f"{ratio:.1f}%"
+
 def _format_date(dt: Any) -> str:
     if isinstance(dt, datetime):
         return dt.strftime("%d-%b-%Y")
@@ -95,10 +99,10 @@ def _format_date(dt: Any) -> str:
 @dataclass
 class QueryIntent:
     """Structured representation of the user's question."""
-    intent: str  # 'ranking', 'aggregate', 'comparison', 'trend', 'list', 'summary'
+    intent: str  # 'ranking', 'aggregate', 'comparison', 'trend', 'list', 'summary', 'details'
     entity_type: Optional[str] = None  # 'dealer', 'model', 'division', 'city', 'warehouse', 'sales_office', 'sales_manager', 'dn'
     entity_value: Optional[str] = None
-    metric: Optional[str] = None  # 'revenue', 'units', 'dns', 'pending', 'delivery_days', 'pod_days', 'pgi_days'
+    metric: Optional[str] = None  # 'revenue', 'units', 'dns', 'pending', 'delivery_days', 'pod_days', 'pgi_days', 'pgi_percent', 'pod_percent'
     filters: Dict[str, Any] = field(default_factory=dict)  # e.g., {'division': 'Washing Machine', 'city': 'Lahore'}
     time_period: Optional[str] = None  # 'today', 'this_week', 'this_month', 'last_month', 'last_3_months', 'last_6_months', 'year_to_date'
     grouping: Optional[str] = None  # 'month', 'week', 'day', 'division', 'city', 'dealer', 'warehouse'
@@ -106,6 +110,8 @@ class QueryIntent:
     sort_order: str = "DESC"
     limit: int = 10
     comparison_entities: Optional[List[str]] = None  # for comparison intent
+    extra_columns: Optional[List[str]] = None  # for multi‑column analytics (e.g., distinct dealers, cities, products)
+    fields: Optional[List[str]] = None  # for details intent: list of columns to select
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -120,6 +126,8 @@ class QueryIntent:
             "sort_order": self.sort_order,
             "limit": self.limit,
             "comparison_entities": self.comparison_entities,
+            "extra_columns": self.extra_columns,
+            "fields": self.fields,
         }
 
 # ============================================================
@@ -143,6 +151,10 @@ class QueryParser:
         "transit days": "delivery_days",
         "pod days": "pod_days",
         "pgi days": "pgi_days",
+        "pgi %": "pgi_percent",
+        "pod %": "pod_percent",
+        "pgi percentage": "pgi_percent",
+        "pod percentage": "pod_percent",
     }
 
     ENTITY_MAP = {
@@ -179,6 +191,8 @@ class QueryParser:
         "overall": "aggregate",
         "summary": "summary",
         "overview": "summary",
+        "details": "details",
+        "detail": "details",
     }
 
     def __init__(self):
@@ -203,6 +217,10 @@ class QueryParser:
                 r"(?:trend|monthly|weekly|daily)\s*(?:revenue|units|dns|pending)",
                 re.I
             ),
+            "details": re.compile(
+                r"(?:list|show|get)\s+(?:dn|delivery note)\s+(?:details|information)",
+                re.I
+            ),
         }
 
     def parse(self, query: str) -> QueryIntent:
@@ -217,10 +235,11 @@ class QueryParser:
 You are a logistics data assistant. Extract the following from the user's question and return ONLY valid JSON.
 
 Fields:
-- intent: one of ['ranking', 'aggregate', 'comparison', 'trend', 'list', 'summary']
+- intent: one of ['ranking', 'aggregate', 'comparison', 'trend', 'list', 'summary', 'details']
+  - Use 'details' when the user asks for detailed information about DNs (e.g., DN No, Dealer, Product, Warehouse, City, Units, Revenue, PGI Date, POD Date, Status).
 - entity_type: one of ['dealer', 'model', 'division', 'city', 'warehouse', 'sales_office', 'sales_manager', 'dn'] or null
 - entity_value: the specific name/value of the entity, or null
-- metric: one of ['revenue', 'units', 'dns', 'pending', 'delivery_days', 'pod_days', 'pgi_days'] or null
+- metric: one of ['revenue', 'units', 'dns', 'pending', 'delivery_days', 'pod_days', 'pgi_days', 'pgi_percent', 'pod_percent'] or null
 - filters: object with keys like division, city, warehouse, dealer, model, etc. (values are strings)
 - time_period: one of ['today', 'this_week', 'this_month', 'last_month', 'last_3_months', 'last_6_months', 'year_to_date'] or null
 - grouping: one of ['month', 'week', 'day', 'division', 'city', 'dealer', 'warehouse'] or null
@@ -228,6 +247,8 @@ Fields:
 - sort_order: 'ASC' or 'DESC'
 - limit: integer (default 10)
 - comparison_entities: list of two strings if intent is 'comparison', else null
+- extra_columns: list of additional aggregate columns to include (e.g., for warehouse analytics: ['dealers_count', 'cities_count', 'products_count', 'pgi_percent', 'pod_percent'])
+- fields: for 'details' intent, list of column names to select, e.g., ['dn_no', 'customer_name', 'customer_model', 'warehouse', 'ship_to_city', 'dn_qty', 'dn_amount', 'pgi_date', 'pod_date', 'pending_flag']
 
 Question: "{query}"
 
@@ -238,7 +259,7 @@ Return valid JSON only.
                 model="llama3-70b-8192",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=400,
+                max_tokens=500,
                 response_format={"type": "json_object"}
             )
             data = json.loads(response.choices[0].message.content)
@@ -254,6 +275,8 @@ Return valid JSON only.
                 sort_order=data.get("sort_order", "DESC"),
                 limit=data.get("limit", 10),
                 comparison_entities=data.get("comparison_entities"),
+                extra_columns=data.get("extra_columns"),
+                fields=data.get("fields"),
             )
         except Exception as e:
             logger.error(f"Groq parse error: {e}")
@@ -273,19 +296,18 @@ Return valid JSON only.
         sort_order = "DESC"
         limit = 10
         comparison_entities = None
+        extra_columns = None
+        fields = None
 
         # Detect intent
         if re.search(r"(?:top|best|highest|worst|lowest|bottom)", q):
             intent = "ranking"
-            # try to extract limit
             m = re.search(r"top\s*(\d+)", q)
             if m:
                 limit = int(m.group(1))
-            # try to extract entity
             for ent in ["dealer", "model", "division", "city", "warehouse", "sales office", "sales manager"]:
                 if ent in q:
                     entity_type = ent.replace(" ", "_")
-                    # try to extract value after 'of' or 'for'
                     m = re.search(r"(?:of|for)\s+(.+?)(?:\s+in|\s+with|\s+and|$)", q)
                     if m:
                         entity_value = m.group(1).strip()
@@ -313,26 +335,30 @@ Return valid JSON only.
                 grouping = "week"
             elif "daily" in q:
                 grouping = "day"
+        elif re.search(r"(?:list|show|get)\s+(?:dn|delivery note)\s+(?:details|information)", q):
+            intent = "details"
+            fields = ["dn_no", "customer_name", "customer_model", "warehouse", "ship_to_city", "dn_qty", "dn_amount", "pgi_date", "pod_date", "pending_flag"]
+            # Try to extract specific DN number
+            m = re.search(r"dn\s*[#:]?\s*(\S+)", q)
+            if m:
+                filters["dn_no"] = m.group(1)
 
-        # Extract entity and metric from specific phrases
-        # e.g., "revenue of Washing Machine" -> metric=revenue, entity_type=division, entity_value=Washing Machine
-        for met in ["revenue", "units", "dns", "pending"]:
+        # Extract metric and entity from specific phrases
+        for met in ["revenue", "units", "dns", "pending", "pgi_percent", "pod_percent"]:
             if met in q:
                 metric = met
-                # try to find entity after "of" or "for"
                 m = re.search(r"(?:of|for)\s+(.+?)(?:\s+in|\s+with|$)", q)
                 if m:
                     entity_value = m.group(1).strip()
-                    # determine entity type by context
                     for ent in ["division", "model", "city", "dealer", "warehouse"]:
                         if ent in q:
                             entity_type = ent
                             break
                     if not entity_type:
-                        entity_type = "division"  # default assumption
+                        entity_type = "division"
                 break
 
-        # Extract filters like "in Lahore", "for dealer ABC"
+        # Extract filters
         m = re.search(r"in\s+([\w\s\-]+)(?:\s+with|\s+and|$)", q)
         if m:
             city = m.group(1).strip()
@@ -365,6 +391,14 @@ Return valid JSON only.
         elif "lowest" in q or "worst" in q or "bottom" in q:
             sort_order = "ASC"
 
+        # Detect extra columns for warehouse/product/city analytics
+        if "warehouse" in q and "analytics" in q:
+            extra_columns = ["dealers_count", "cities_count", "products_count", "pgi_percent", "pod_percent"]
+        elif "product" in q and "analytics" in q:
+            extra_columns = ["dealers_count", "warehouses_count", "cities_count", "pgi_percent", "pod_percent"]
+        elif "city" in q and "analytics" in q:
+            extra_columns = ["dealers_count", "warehouses_count", "dns_count", "pgi_percent", "pod_percent"]
+
         return QueryIntent(
             intent=intent,
             entity_type=entity_type,
@@ -377,6 +411,8 @@ Return valid JSON only.
             sort_order=sort_order,
             limit=limit,
             comparison_entities=comparison_entities,
+            extra_columns=extra_columns,
+            fields=fields,
         )
 
 # ============================================================
@@ -388,6 +424,27 @@ class SQLBuilder:
 
     def __init__(self):
         self.base_table = "delivery_reports"
+        # Standard column mapping
+        self.col_map = {
+            "dealer": "customer_name",
+            "model": "customer_model",
+            "division": "division",
+            "city": "ship_to_city",
+            "warehouse": "warehouse",
+            "sales_office": "sales_office",
+            "sales_manager": "sales_manager",
+            "dn": "dn_no",
+        }
+        # Mapping for extra columns
+        self.extra_col_exprs = {
+            "dealers_count": "COUNT(DISTINCT customer_name)",
+            "cities_count": "COUNT(DISTINCT ship_to_city)",
+            "products_count": "COUNT(DISTINCT customer_model)",
+            "warehouses_count": "COUNT(DISTINCT warehouse)",
+            "pgi_percent": "ROUND(100.0 * COUNT(CASE WHEN pgi_date IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2)",
+            "pod_percent": "ROUND(100.0 * COUNT(CASE WHEN pod_date IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2)",
+            "dns_count": "COUNT(DISTINCT dn_no)",
+        }
 
     def build(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
         """Return (sql, params) for the given intent."""
@@ -401,6 +458,8 @@ class SQLBuilder:
             return self._build_trend(intent)
         elif intent.intent == "list":
             return self._build_list(intent)
+        elif intent.intent == "details":
+            return self._build_details(intent)
         else:  # summary
             return self._build_summary(intent)
 
@@ -410,17 +469,7 @@ class SQLBuilder:
         params = {}
         for key, value in filters.items():
             if value:
-                # Map filter keys to column names
-                col_map = {
-                    "division": "division",
-                    "city": "ship_to_city",
-                    "warehouse": "warehouse",
-                    "dealer": "customer_name",
-                    "model": "customer_model",
-                    "sales_office": "sales_office",
-                    "sales_manager": "sales_manager",
-                }
-                col = col_map.get(key, key)
+                col = self.col_map.get(key, key)
                 conditions.append(f"LOWER({col}) = LOWER(:{key})")
                 params[key] = value
         return " AND ".join(conditions) if conditions else "1=1", params
@@ -467,20 +516,24 @@ class SQLBuilder:
         return cond, params
 
     def _build_aggregate(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        """Build aggregate query (e.g., total revenue)."""
+        """Build aggregate query (e.g., total revenue, or multiple metrics if metric is None)."""
         metric = intent.metric or "revenue"
-        metric_col_map = {
-            "revenue": "COALESCE(SUM(dn_amount), 0) AS value",
-            "units": "COALESCE(SUM(dn_qty), 0) AS value",
-            "dns": "COUNT(DISTINCT dn_no) AS value",
-            "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END) AS value",
-            "delivery_days": "ROUND(AVG(pod_date - good_issue_date), 2) AS value",
-            "pod_days": "ROUND(AVG(pod_date - good_issue_date), 2) AS value",  # alias
-            "pgi_days": "ROUND(AVG(good_issue_date - dn_create_date), 2) AS value",
-        }
-        select = metric_col_map.get(metric, "COALESCE(SUM(dn_amount), 0) AS value")
+        # If metric is 'pgi_percent' or 'pod_percent', we compute them
+        if metric in ["pgi_percent", "pod_percent"]:
+            col = "pgi_date" if metric == "pgi_percent" else "pod_date"
+            select = f"ROUND(100.0 * COUNT(CASE WHEN {col} IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2) AS value"
+        else:
+            metric_col_map = {
+                "revenue": "COALESCE(SUM(dn_amount), 0) AS value",
+                "units": "COALESCE(SUM(dn_qty), 0) AS value",
+                "dns": "COUNT(DISTINCT dn_no) AS value",
+                "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END) AS value",
+                "delivery_days": "ROUND(AVG(pod_date - good_issue_date), 2) AS value",
+                "pod_days": "ROUND(AVG(pod_date - good_issue_date), 2) AS value",
+                "pgi_days": "ROUND(AVG(good_issue_date - dn_create_date), 2) AS value",
+            }
+            select = metric_col_map.get(metric, "COALESCE(SUM(dn_amount), 0) AS value")
 
-        # Build WHERE
         filter_clause, filter_params = self._apply_filters(intent.filters)
         time_clause, time_params = self._apply_time_period(intent.time_period)
         where = []
@@ -499,29 +552,36 @@ class SQLBuilder:
         return sql, params
 
     def _build_ranking(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        """Build ranking query (top N by metric)."""
+        """Build ranking query (top N by metric), including extra columns if requested."""
         metric = intent.sort_by or intent.metric or "revenue"
-        metric_col_map = {
-            "revenue": "COALESCE(SUM(dn_amount), 0) AS metric_value",
-            "units": "COALESCE(SUM(dn_qty), 0) AS metric_value",
-            "dns": "COUNT(DISTINCT dn_no) AS metric_value",
-            "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END) AS metric_value",
-        }
-        select_metric = metric_col_map.get(metric, "COALESCE(SUM(dn_amount), 0) AS metric_value")
+        # Determine if we need to compute percentage metrics
+        if metric in ["pgi_percent", "pod_percent"]:
+            col = "pgi_date" if metric == "pgi_percent" else "pod_date"
+            metric_select = f"ROUND(100.0 * COUNT(CASE WHEN {col} IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2) AS metric_value"
+        else:
+            metric_col_map = {
+                "revenue": "COALESCE(SUM(dn_amount), 0) AS metric_value",
+                "units": "COALESCE(SUM(dn_qty), 0) AS metric_value",
+                "dns": "COUNT(DISTINCT dn_no) AS metric_value",
+                "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END) AS metric_value",
+                "delivery_days": "ROUND(AVG(pod_date - good_issue_date), 2) AS metric_value",
+                "pod_days": "ROUND(AVG(pod_date - good_issue_date), 2) AS metric_value",
+                "pgi_days": "ROUND(AVG(good_issue_date - dn_create_date), 2) AS metric_value",
+            }
+            metric_select = metric_col_map.get(metric, "COALESCE(SUM(dn_amount), 0) AS metric_value")
 
-        # Determine entity to group by
         entity = intent.entity_type or "division"
-        entity_col_map = {
-            "dealer": "customer_name",
-            "model": "customer_model",
-            "division": "division",
-            "city": "ship_to_city",
-            "warehouse": "warehouse",
-            "sales_office": "sales_office",
-            "sales_manager": "sales_manager",
-        }
-        group_col = entity_col_map.get(entity, "division")
+        group_col = self.col_map.get(entity, "division")
         select_entity = f"{group_col} AS entity_name"
+
+        # Extra columns
+        extra_selects = []
+        if intent.extra_columns:
+            for col in intent.extra_columns:
+                expr = self.extra_col_exprs.get(col)
+                if expr:
+                    extra_selects.append(f"{expr} AS {col}")
+        extra_select_str = ", " + ", ".join(extra_selects) if extra_selects else ""
 
         # Build WHERE
         filter_clause, filter_params = self._apply_filters(intent.filters)
@@ -537,7 +597,7 @@ class SQLBuilder:
         order = intent.sort_order or "DESC"
         limit = intent.limit or 10
         sql = f"""
-            SELECT {select_entity}, {select_metric}
+            SELECT {select_entity}, {metric_select}{extra_select_str}
             FROM {self.base_table}
             WHERE {where_str}
             GROUP BY {group_col}
@@ -550,32 +610,27 @@ class SQLBuilder:
     def _build_comparison(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
         """Build comparison query (two entities)."""
         if not intent.comparison_entities or len(intent.comparison_entities) < 2:
-            # fallback to aggregate on two filters
             return self._build_aggregate(intent)
 
         entity1, entity2 = intent.comparison_entities
-        # Determine entity type from intent or default to division
         entity = intent.entity_type or "division"
-        col_map = {
-            "dealer": "customer_name",
-            "model": "customer_model",
-            "division": "division",
-            "city": "ship_to_city",
-            "warehouse": "warehouse",
-            "sales_office": "sales_office",
-            "sales_manager": "sales_manager",
-        }
-        col = col_map.get(entity, "division")
+        col = self.col_map.get(entity, "division")
 
         metric = intent.metric or "revenue"
-        metric_expr = {
-            "revenue": "COALESCE(SUM(dn_amount), 0)",
-            "units": "COALESCE(SUM(dn_qty), 0)",
-            "dns": "COUNT(DISTINCT dn_no)",
-            "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END)",
-        }.get(metric, "COALESCE(SUM(dn_amount), 0)")
+        if metric in ["pgi_percent", "pod_percent"]:
+            date_col = "pgi_date" if metric == "pgi_percent" else "pod_date"
+            metric_expr = f"ROUND(100.0 * COUNT(CASE WHEN {date_col} IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2)"
+        else:
+            metric_expr = {
+                "revenue": "COALESCE(SUM(dn_amount), 0)",
+                "units": "COALESCE(SUM(dn_qty), 0)",
+                "dns": "COUNT(DISTINCT dn_no)",
+                "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END)",
+                "delivery_days": "ROUND(AVG(pod_date - good_issue_date), 2)",
+                "pod_days": "ROUND(AVG(pod_date - good_issue_date), 2)",
+                "pgi_days": "ROUND(AVG(good_issue_date - dn_create_date), 2)",
+            }.get(metric, "COALESCE(SUM(dn_amount), 0)")
 
-        # Build WHERE with two entities
         filter_clause, filter_params = self._apply_filters(intent.filters)
         time_clause, time_params = self._apply_time_period(intent.time_period)
         where = [f"LOWER({col}) IN (LOWER(:e1), LOWER(:e2))"]
@@ -599,12 +654,19 @@ class SQLBuilder:
     def _build_trend(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
         """Build trend query (time series)."""
         metric = intent.metric or "revenue"
-        metric_expr = {
-            "revenue": "COALESCE(SUM(dn_amount), 0)",
-            "units": "COALESCE(SUM(dn_qty), 0)",
-            "dns": "COUNT(DISTINCT dn_no)",
-            "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END)",
-        }.get(metric, "COALESCE(SUM(dn_amount), 0)")
+        if metric in ["pgi_percent", "pod_percent"]:
+            date_col = "pgi_date" if metric == "pgi_percent" else "pod_date"
+            metric_expr = f"ROUND(100.0 * COUNT(CASE WHEN {date_col} IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2)"
+        else:
+            metric_expr = {
+                "revenue": "COALESCE(SUM(dn_amount), 0)",
+                "units": "COALESCE(SUM(dn_qty), 0)",
+                "dns": "COUNT(DISTINCT dn_no)",
+                "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END)",
+                "delivery_days": "ROUND(AVG(pod_date - good_issue_date), 2)",
+                "pod_days": "ROUND(AVG(pod_date - good_issue_date), 2)",
+                "pgi_days": "ROUND(AVG(good_issue_date - dn_create_date), 2)",
+            }.get(metric, "COALESCE(SUM(dn_amount), 0)")
 
         grouping = intent.grouping or "month"
         group_expr = {
@@ -613,7 +675,6 @@ class SQLBuilder:
             "day": "TO_CHAR(dn_create_date, 'YYYY-MM-DD')",
         }.get(grouping, "TO_CHAR(dn_create_date, 'YYYY-MM')")
 
-        # Build WHERE
         filter_clause, filter_params = self._apply_filters(intent.filters)
         time_clause, time_params = self._apply_time_period(intent.time_period)
         where = []
@@ -636,25 +697,12 @@ class SQLBuilder:
         return sql, params
 
     def _build_list(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        """Build list query (list DNs, dealers, etc.)."""
-        # For simplicity, treat as ranking with entity_type = 'dn' or similar
-        # We'll return a simple list of entities
+        """Build list query (list entities, optionally with extra columns)."""
         entity = intent.entity_type or "dn"
-        col_map = {
-            "dealer": "customer_name",
-            "model": "customer_model",
-            "division": "division",
-            "city": "ship_to_city",
-            "warehouse": "warehouse",
-            "sales_office": "sales_office",
-            "sales_manager": "sales_manager",
-            "dn": "dn_no",
-        }
-        col = col_map.get(entity, "dn_no")
+        col = self.col_map.get(entity, "dn_no")
         select_col = f"TRIM({col}) AS entity_name"
         group_col = col
 
-        # Build WHERE
         filter_clause, filter_params = self._apply_filters(intent.filters)
         time_clause, time_params = self._apply_time_period(intent.time_period)
         where = []
@@ -676,9 +724,45 @@ class SQLBuilder:
         params["limit"] = limit
         return sql, params
 
+    def _build_details(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
+        """Build details query (list DNs with full fields)."""
+        # Default fields if not provided
+        fields = intent.fields or ["dn_no", "customer_name", "customer_model", "warehouse", "ship_to_city",
+                                   "dn_qty", "dn_amount", "pgi_date", "pod_date", "pending_flag"]
+        # Sanitize field names (only allowed columns)
+        allowed = {
+            "dn_no", "customer_name", "customer_model", "warehouse", "ship_to_city",
+            "dn_qty", "dn_amount", "pgi_date", "pod_date", "pending_flag",
+            "division", "sales_office", "sales_manager", "good_issue_date", "dn_create_date"
+        }
+        safe_fields = [f for f in fields if f in allowed]
+        if not safe_fields:
+            safe_fields = ["dn_no", "customer_name", "customer_model"]
+        select_clause = ", ".join(safe_fields)
+
+        filter_clause, filter_params = self._apply_filters(intent.filters)
+        time_clause, time_params = self._apply_time_period(intent.time_period)
+        where = []
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where) if where else "1=1"
+        params = {**filter_params, **time_params}
+
+        limit = intent.limit or 20
+        sql = f"""
+            SELECT {select_clause}
+            FROM {self.base_table}
+            WHERE {where_str}
+            ORDER BY dn_no
+            LIMIT :limit
+        """
+        params["limit"] = limit
+        return sql, params
+
     def _build_summary(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        """Build a summary query (multiple aggregates)."""
-        # Return a few key metrics
+        """Build a summary query (multiple aggregates including PGI%, POD%)."""
         filter_clause, filter_params = self._apply_filters(intent.filters)
         time_clause, time_params = self._apply_time_period(intent.time_period)
         where = []
@@ -695,6 +779,8 @@ class SQLBuilder:
                 COALESCE(SUM(dn_qty), 0) AS units,
                 COUNT(DISTINCT dn_no) AS dns,
                 COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END) AS pending,
+                ROUND(100.0 * COUNT(CASE WHEN pgi_date IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2) AS pgi_percent,
+                ROUND(100.0 * COUNT(CASE WHEN pod_date IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2) AS pod_percent,
                 ROUND(AVG(pod_date - good_issue_date), 2) AS avg_delivery_days
             FROM {self.base_table}
             WHERE {where_str}
@@ -717,7 +803,6 @@ class LogisticsRepository:
                 rows = result.fetchall()
                 if not rows:
                     return []
-                # Convert to list of dicts
                 columns = result.keys()
                 return [dict(zip(columns, row)) for row in rows]
         except Exception as e:
@@ -745,6 +830,8 @@ class ResponseFormatter:
             return ResponseFormatter._format_trend(intent, results)
         elif intent.intent == "list":
             return ResponseFormatter._format_list(intent, results)
+        elif intent.intent == "details":
+            return ResponseFormatter._format_details(intent, results)
         else:  # summary
             return ResponseFormatter._format_summary(intent, results)
 
@@ -760,6 +847,8 @@ class ResponseFormatter:
             "delivery_days": "📅 Avg Delivery Days",
             "pod_days": "📅 Avg POD Days",
             "pgi_days": "📅 Avg PGI Days",
+            "pgi_percent": "📊 PGI %",
+            "pod_percent": "📊 POD %",
         }.get(metric, "Value")
         value = row.get("value", "N/A")
         if metric == "revenue":
@@ -768,6 +857,8 @@ class ResponseFormatter:
             value = _format_number(value)
         elif metric in ["delivery_days", "pod_days", "pgi_days"]:
             value = f"{value:.1f} days"
+        elif metric in ["pgi_percent", "pod_percent"]:
+            value = _format_percent(value)
         return f"{label}: {value}"
 
     @staticmethod
@@ -779,6 +870,9 @@ class ResponseFormatter:
             "units": "Units",
             "dns": "DNs",
             "pending": "Pending DNs",
+            "delivery_days": "Avg Delivery Days",
+            "pgi_percent": "PGI %",
+            "pod_percent": "POD %",
         }.get(metric, "Value")
 
         lines = [f"🏆 *Top {len(results)} {entity_label.capitalize()} by {metric_label}*", ""]
@@ -789,9 +883,28 @@ class ResponseFormatter:
                 value = _format_currency(value)
             elif metric in ["units", "dns", "pending"]:
                 value = _format_number(value)
+            elif metric in ["delivery_days", "pod_days", "pgi_days"]:
+                value = f"{value:.1f} days"
+            elif metric in ["pgi_percent", "pod_percent"]:
+                value = _format_percent(value)
             else:
                 value = f"{value:.1f}"
-            lines.append(f"{i}. {name}: {value}")
+            # Append extra columns if present
+            extra_parts = []
+            if intent.extra_columns:
+                for col in intent.extra_columns:
+                    val = row.get(col)
+                    if val is not None:
+                        # Format appropriately
+                        if col in ["pgi_percent", "pod_percent"]:
+                            val = _format_percent(val)
+                        elif col in ["dealers_count", "cities_count", "products_count", "warehouses_count", "dns_count"]:
+                            val = _format_number(val)
+                        else:
+                            val = f"{val:.1f}"
+                        extra_parts.append(f"{col.replace('_',' ').title()}: {val}")
+            extra_str = f" ({', '.join(extra_parts)})" if extra_parts else ""
+            lines.append(f"{i}. {name}: {value}{extra_str}")
         return "\n".join(lines)
 
     @staticmethod
@@ -805,6 +918,9 @@ class ResponseFormatter:
             "units": "Units",
             "dns": "DNs",
             "pending": "Pending DNs",
+            "delivery_days": "Avg Delivery Days",
+            "pgi_percent": "PGI %",
+            "pod_percent": "POD %",
         }.get(metric, "Value")
 
         lines = [f"📊 *Comparison ({metric_label})*", ""]
@@ -815,6 +931,10 @@ class ResponseFormatter:
                 value = _format_currency(value)
             elif metric in ["units", "dns", "pending"]:
                 value = _format_number(value)
+            elif metric in ["delivery_days", "pod_days", "pgi_days"]:
+                value = f"{value:.1f} days"
+            elif metric in ["pgi_percent", "pod_percent"]:
+                value = _format_percent(value)
             else:
                 value = f"{value:.1f}"
             lines.append(f"{name}: {value}")
@@ -823,18 +943,28 @@ class ResponseFormatter:
             v1 = _number(results[0].get("metric_value", 0))
             v2 = _number(results[1].get("metric_value", 0))
             diff = v1 - v2
-            diff_str = _format_currency(diff) if metric == "revenue" else f"{diff:+,.0f}"
+            if metric == "revenue":
+                diff_str = _format_currency(diff)
+            elif metric in ["pgi_percent", "pod_percent"]:
+                diff_str = f"{diff:+.1f}%"
+            elif metric in ["delivery_days", "pod_days", "pgi_days"]:
+                diff_str = f"{diff:+.1f} days"
+            else:
+                diff_str = f"{diff:+,.0f}"
             lines.append(f"\nDifference: {diff_str}")
         return "\n".join(lines)
 
     @staticmethod
-    def _format_trend(intent: Intent, results: List[Dict]) -> str:
+    def _format_trend(intent: QueryIntent, results: List[Dict]) -> str:
         metric = intent.metric or "revenue"
         metric_label = {
             "revenue": "Revenue",
             "units": "Units",
             "dns": "DNs",
             "pending": "Pending DNs",
+            "delivery_days": "Avg Delivery Days",
+            "pgi_percent": "PGI %",
+            "pod_percent": "POD %",
         }.get(metric, "Value")
         lines = [f"📈 *{metric_label} Trend*", ""]
         for row in results:
@@ -844,13 +974,17 @@ class ResponseFormatter:
                 value = _format_currency(value)
             elif metric in ["units", "dns", "pending"]:
                 value = _format_number(value)
+            elif metric in ["delivery_days", "pod_days", "pgi_days"]:
+                value = f"{value:.1f} days"
+            elif metric in ["pgi_percent", "pod_percent"]:
+                value = _format_percent(value)
             else:
                 value = f"{value:.1f}"
             lines.append(f"{period}: {value}")
         return "\n".join(lines)
 
     @staticmethod
-    def _format_list(intent: Intent, results: List[Dict]) -> str:
+    def _format_list(intent: QueryIntent, results: List[Dict]) -> str:
         entity_label = intent.entity_type or "Item"
         lines = [f"📋 *List of {entity_label.capitalize()}*", ""]
         for i, row in enumerate(results, 1):
@@ -859,7 +993,50 @@ class ResponseFormatter:
         return "\n".join(lines)
 
     @staticmethod
-    def _format_summary(intent: Intent, results: List[Dict]) -> str:
+    def _format_details(intent: QueryIntent, results: List[Dict]) -> str:
+        lines = ["📋 *DN Details*", ""]
+        # Determine field labels
+        field_labels = {
+            "dn_no": "DN No",
+            "customer_name": "Dealer",
+            "customer_model": "Product",
+            "warehouse": "Warehouse",
+            "ship_to_city": "City",
+            "dn_qty": "Units",
+            "dn_amount": "Revenue",
+            "pgi_date": "PGI Date",
+            "pod_date": "POD Date",
+            "pending_flag": "Status",
+            "division": "Division",
+            "sales_office": "Sales Office",
+            "sales_manager": "Sales Manager",
+            "good_issue_date": "Good Issue Date",
+            "dn_create_date": "Create Date",
+        }
+        for row in results:
+            parts = []
+            for key, label in field_labels.items():
+                if key in row:
+                    val = row[key]
+                    if key == "dn_amount":
+                        val = _format_currency(val)
+                    elif key == "dn_qty":
+                        val = _format_number(val)
+                    elif key in ["pgi_date", "pod_date", "good_issue_date", "dn_create_date"]:
+                        val = _format_date(val)
+                    elif key == "pending_flag":
+                        val = "Pending" if val else "Delivered"
+                    else:
+                        val = _text(val)
+                    parts.append(f"{label}: {val}")
+            lines.append(" | ".join(parts))
+            lines.append("")
+        if len(results) > 10:
+            lines.append(f"Showing top {len(results)} results.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_summary(intent: QueryIntent, results: List[Dict]) -> str:
         row = results[0]
         lines = [
             "📊 *Summary*",
@@ -868,9 +1045,59 @@ class ResponseFormatter:
             f"📦 Units: {_format_number(row.get('units', 0))}",
             f"🚚 DNs: {_format_number(row.get('dns', 0))}",
             f"⏳ Pending DNs: {_format_number(row.get('pending', 0))}",
+            f"📊 PGI %: {_format_percent(row.get('pgi_percent', 0))}",
+            f"📊 POD %: {_format_percent(row.get('pod_percent', 0))}",
             f"📅 Avg Delivery Days: {row.get('avg_delivery_days', 0):.1f} days",
         ]
         return "\n".join(lines)
+
+# ============================================================
+# AI INSIGHT GENERATOR
+# ============================================================
+
+class AIInsightGenerator:
+    """Generate AI summaries and recommendations from query results."""
+    
+    @staticmethod
+    def generate_insights(intent: QueryIntent, results: List[Dict], original_query: str) -> Optional[str]:
+        """Generate insights using Groq if available."""
+        if not GROQ_AVAILABLE or not GROQ_CLIENT or not results:
+            return None
+        try:
+            # Prepare a compact representation of results
+            if intent.intent == "summary":
+                row = results[0]
+                data_str = f"Revenue: {row.get('revenue',0)}, Units: {row.get('units',0)}, DNs: {row.get('dns',0)}, Pending: {row.get('pending',0)}, PGI%: {row.get('pgi_percent',0)}%, POD%: {row.get('pod_percent',0)}%, Avg Delivery Days: {row.get('avg_delivery_days',0):.1f}"
+            elif intent.intent == "ranking":
+                top = results[:5]
+                data_str = "Top entities: " + ", ".join([f"{r.get('entity_name','Unknown')} ({r.get('metric_value',0)})" for r in top])
+            else:
+                # For other intents, just provide a short summary
+                data_str = f"Found {len(results)} rows. First row: {results[0]}"
+            
+            prompt = f"""
+You are a logistics AI analyst. Based on the following data and the user's question, provide a concise insight with:
+- Key observations
+- Potential risks or issues
+- Suggested actions or recommendations
+
+User question: "{original_query}"
+
+Data: {data_str}
+
+Return a short paragraph (max 150 words) with bullet points for clarity.
+"""
+            response = GROQ_CLIENT.chat.completions.create(
+                model="llama3-70b-8192",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=300,
+            )
+            insight = response.choices[0].message.content.strip()
+            return insight
+        except Exception as e:
+            logger.error(f"AI insight generation error: {e}")
+            return None
 
 # ============================================================
 # MAIN SERVICE
@@ -883,6 +1110,8 @@ class GroqService:
         self.sql_builder = SQLBuilder()
         self.repo = LogisticsRepository(SessionLocal())
         self.formatter = ResponseFormatter()
+        self.insight_gen = AIInsightGenerator()
+        self.FOOTER = "\n\nReply *99* to return to the main menu."
         logger.info(f"✅ GroqService v{self._version} initialized")
         logger.info(f"   Groq: {'✅' if GROQ_AVAILABLE else '❌'}")
 
@@ -890,46 +1119,47 @@ class GroqService:
         try:
             msg = message.strip()
             if not msg:
-                return self._get_welcome()
+                return self._get_welcome() + self.FOOTER
 
             if msg == "99":
                 logger.info("[GroqService] Exit signal")
                 return "99"
 
             if msg.lower() in ["hi", "hello", "hey", "start", "menu", "help"]:
-                return self._get_welcome()
+                return self._get_welcome() + self.FOOTER
 
             logger.info(f"[GroqService] Processing: '{msg}' from {sender}")
 
-            # Parse query
             intent = self.parser.parse(msg)
-
-            # Build SQL
             sql, params = self.sql_builder.build(intent)
-
-            # Execute
             results = self.repo.execute_query(sql, params)
-
-            # Format response
             response = self.formatter.format_results(intent, results)
 
-            return response
+            # Generate AI insights for certain intents (national KPI, dealer analytics, AI intelligence)
+            if intent.intent in ["summary", "ranking"] or "analytics" in msg.lower():
+                insight = self.insight_gen.generate_insights(intent, results, msg)
+                if insight:
+                    response += "\n\n🤖 *AI Insight:*\n" + insight
+
+            return response + self.FOOTER
 
         except Exception as e:
             logger.exception(f"[GroqService] Error: {e}")
-            return "⚠️ An error occurred. Please try again."
+            return "⚠️ An error occurred. Please try again." + self.FOOTER
 
     def _get_welcome(self) -> str:
         return "\n".join([
             "🤖 *AI Logistics Assistant*",
             "",
             "I can answer questions about:",
-            "• Revenue, units, DNs, pending orders",
+            "• Revenue, units, DNs, pending orders, PGI%, POD%",
             "• Rankings (top dealers, models, cities, warehouses)",
             "• Comparisons between any entities",
             "• Trends over time (monthly, weekly, daily)",
             "• Lists of entities",
             "• Summaries with filters",
+            "• DN details (DN No, Dealer, Product, Warehouse, City, Units, Revenue, PGI Date, POD Date, Status)",
+            "• Warehouse/Product/City analytics with multiple KPIs",
             "",
             "Examples:",
             "• What is total revenue?",
@@ -940,8 +1170,8 @@ class GroqService:
             "• Pending DNs for dealer ABC",
             "• List all cities",
             "• Summary for last month",
-            "",
-            "Reply *99* to return to menu."
+            "• Show DN details for DN12345",
+            "• Warehouse analytics with PGI% and POD%",
         ])
 
 # ============================================================
