@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/warehouse_service.py
-# VERSION: 3.4 - IMPROVED WAREHOUSE SEARCH & SUGGESTIONS
+# VERSION: 3.5 - ADDED 99 EXIT OPTION IN DASHBOARD
 # PURPOSE: Warehouse analytics with enhanced search
 # ============================================================
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ============================================================
 
-VERSION = "3.4"
+VERSION = "3.5"
 
 # ============================================================
 # EXTENDED CITY COORDINATES - COVERS ALL PAKISTAN CITIES
@@ -297,8 +297,13 @@ class WarehouseAnalyticsService:
         try:
             message_clean = message.strip()
             
-            # Check if it's 99 or any number (1-9) - Show help menu
-            if message_clean in ['99', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0']:
+            # SPECIAL: 99 exits to main menu
+            if message_clean == "99":
+                logger.info("[Service] Exit command detected, returning 99")
+                return "99"
+            
+            # Numeric commands (1-9,0) show help
+            if message_clean in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']:
                 logger.info("[Service] Menu command detected, showing help")
                 return self._get_help_message()
             
@@ -377,7 +382,7 @@ Type a warehouse name to get started!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
     
     def _get_help_message(self) -> str:
-        """Get help message for 99 or numeric commands - SUB-1 SECOND"""
+        """Get help message for numeric commands - SUB-1 SECOND"""
         return """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📋 QUICK HELP
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -396,7 +401,7 @@ Simply type the warehouse name.
 • You can type partial names
 • We'll show suggestions if no exact match
 • All data is real-time from the database
-• Type **99** for this help menu anytime
+• Type **99** to return to the Main Menu
 
 ⚡ **Response Time:** < 1 second
 
@@ -690,8 +695,10 @@ Type a warehouse name to search
                 for insight in insights:
                     lines.append(f"✅ {insight}")
                 
+                # Footer with 99 exit option
                 lines.extend([
                     "",
+                    "Type 99 to go the Main Menu",
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
                     "Type a warehouse name to search",
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
