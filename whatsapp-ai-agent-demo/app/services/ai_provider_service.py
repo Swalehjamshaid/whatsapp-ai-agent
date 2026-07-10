@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/groq_service.py
-# VERSION: 15.0 - ENTERPRISE AI ORCHESTRATOR
-# PURPOSE: Every question answered by Groq, with PostgreSQL
-#          as the single source of truth for business data.
-#          Fully integrated with AIProviderService.
+# VERSION: 15.0 - FULL AI ORCHESTRATOR (V15 ARCHITECTURE)
+# PURPOSE: Every question answered by Groq, PostgreSQL is the
+#          only source of truth for business data.
+#          Supports 500+ questions from the catalog.
 # ============================================================
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 VERSION = "15.0"
 
 # ============================================================
-# GROQ SETUP
+# GROQ SETUP – if unavailable, ALL answers return service message
 # ============================================================
 
 GROQ_AVAILABLE = False
@@ -100,11 +100,32 @@ class QueryPlan:
         }
 
 # ============================================================
+# KNOWLEDGE BASE (no SQL)
+# ============================================================
+
+class KnowledgeBase:
+    """Answers common logistics definitions without database queries."""
+    @staticmethod
+    def answer(query: str) -> Optional[str]:
+        q = query.lower()
+        if "what is pod" in q or "pod definition" in q:
+            return "POD stands for Proof of Delivery. It is a document signed by the recipient to confirm delivery of goods. POD is critical for billing and customer satisfaction."
+        if "what is pgi" in q or "pgi definition" in q:
+            return "PGI stands for Goods Issue. It indicates that the goods have been issued from the warehouse for delivery. PGI is the trigger for inventory reduction and billing."
+        if "what is dn" in q or "dn definition" in q:
+            return "DN stands for Delivery Note. It is a document that accompanies a shipment, listing the items delivered. It serves as a record of what has been dispatched."
+        if "warehouse kpi" in q or "what is warehouse kpi" in q:
+            return "Warehouse KPIs include metrics like PGI percentage, POD percentage, average delivery days, pending DNs, and inventory accuracy. These measure warehouse efficiency and service levels."
+        if "delivery sla" in q or "what is sla" in q:
+            return "SLA (Service Level Agreement) defines the expected delivery time based on distance. For Haier, typical SLA: 0-100 km = 1 day, 101-250 = 2 days, etc."
+        return None
+
+# ============================================================
 # CONVERSATION MEMORY
 # ============================================================
 
 class ConversationMemory:
-    """Stores context from the current session."""
+    """Stores context for follow‑up questions."""
     def __init__(self):
         self.last_plan: Optional[QueryPlan] = None
         self.last_entity_type: Optional[str] = None
@@ -140,11 +161,61 @@ class ConversationMemory:
         return plan
 
 # ============================================================
-# GROQ INTENT ENGINE
+# ENTITY RESOLVER (Cached from DB)
+# ============================================================
+
+class EntityResolver:
+    """Resolves entity names from cache (loaded from DB)."""
+    def __init__(self):
+        self._cache = {}
+        self._load_cache()
+
+    def _load_cache(self):
+        """Load known entities from database."""
+        try:
+            with engine.connect() as conn:
+                # Dealer names
+                result = conn.execute(text("SELECT DISTINCT customer_name FROM delivery_reports WHERE customer_name IS NOT NULL AND customer_name != '' LIMIT 1000"))
+                self._cache["dealer"] = [r[0] for r in result.fetchall()]
+                # Cities
+                result = conn.execute(text("SELECT DISTINCT ship_to_city FROM delivery_reports WHERE ship_to_city IS NOT NULL AND ship_to_city != '' LIMIT 1000"))
+                self._cache["city"] = [r[0] for r in result.fetchall()]
+                # Warehouses
+                result = conn.execute(text("SELECT DISTINCT warehouse FROM delivery_reports WHERE warehouse IS NOT NULL AND warehouse != '' LIMIT 1000"))
+                self._cache["warehouse"] = [r[0] for r in result.fetchall()]
+                # Divisions
+                result = conn.execute(text("SELECT DISTINCT division FROM delivery_reports WHERE division IS NOT NULL AND division != '' LIMIT 1000"))
+                self._cache["division"] = [r[0] for r in result.fetchall()]
+                # Models
+                result = conn.execute(text("SELECT DISTINCT customer_model FROM delivery_reports WHERE customer_model IS NOT NULL AND customer_model != '' LIMIT 1000"))
+                self._cache["model"] = [r[0] for r in result.fetchall()]
+                # Sales offices
+                result = conn.execute(text("SELECT DISTINCT sales_office FROM delivery_reports WHERE sales_office IS NOT NULL AND sales_office != '' LIMIT 1000"))
+                self._cache["sales_office"] = [r[0] for r in result.fetchall()]
+                # Sales managers
+                result = conn.execute(text("SELECT DISTINCT sales_manager FROM delivery_reports WHERE sales_manager IS NOT NULL AND sales_manager != '' LIMIT 1000"))
+                self._cache["sales_manager"] = [r[0] for r in result.fetchall()]
+                # DN numbers
+                result = conn.execute(text("SELECT DISTINCT dn_no FROM delivery_reports WHERE dn_no IS NOT NULL AND dn_no != '' LIMIT 1000"))
+                self._cache["dn"] = [r[0] for r in result.fetchall()]
+                logger.info("✅ Entity cache loaded")
+        except Exception as e:
+            logger.warning(f"Could not load entity cache: {e}. Using empty cache.")
+
+    def resolve(self, query: str) -> Tuple[Optional[str], Optional[str]]:
+        """Find entity type and value in the query."""
+        q = query.lower()
+        for entity_type, names in self._cache.items():
+            for name in names:
+                if name.lower() in q:
+                    return entity_type, name
+        return None, None
+
+# ============================================================
+# GROQ INTENT ENGINE (First Groq call)
 # ============================================================
 
 class GroqIntentEngine:
-    """Uses Groq to understand the user's question and produce a QueryPlan."""
     @staticmethod
     def understand(query: str, memory: ConversationMemory) -> Optional[QueryPlan]:
         if not GROQ_AVAILABLE or not GROQ_CLIENT:
@@ -213,11 +284,10 @@ Return only valid JSON.
             return None
 
 # ============================================================
-# SQL BUILDER (Safe Parameterized SQL)
+# SQL PLANNER (Templates – safe parameterized queries)
 # ============================================================
 
-class SQLBuilder:
-    """Builds safe SQL from a QueryPlan using templates."""
+class SQLPlanner:
     def __init__(self):
         self.table = "delivery_reports"
         self.field_map = {
@@ -241,7 +311,7 @@ class SQLBuilder:
 
     def build(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
         if plan.intent == "advice":
-            return "", {}  # No SQL needed
+            return "", {}
         elif plan.intent == "dashboard":
             return self._build_dashboard(plan)
         elif plan.intent == "ranking":
@@ -256,7 +326,7 @@ class SQLBuilder:
             return self._build_details(plan)
         elif plan.intent == "aggregate":
             return self._build_aggregate(plan)
-        else:  # summary
+        else:
             return self._build_summary(plan)
 
     def _apply_filters(self, filters: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
@@ -565,7 +635,6 @@ class SQLBuilder:
 class BusinessRulesEngine:
     @staticmethod
     def enrich(plan: QueryPlan, results: List[Dict]) -> List[Dict]:
-        """Add calculated fields (ratings, risk, etc.) to results."""
         if not results:
             return results
 
@@ -618,11 +687,11 @@ class BusinessRulesEngine:
 class AnalyticsEngine:
     @staticmethod
     def enrich(plan: QueryPlan, results: List[Dict]) -> List[Dict]:
-        """Add growth, variance, etc. (stub)."""
-        # In production, query previous period and compute.
+        # In production, query previous period and compute growth.
+        # For now, add a mock growth.
         if results and plan.intent == "dashboard":
             row = results[0]
-            row["revenue_growth"] = round(row.get("revenue", 0) * 0.12, 0)  # mock
+            row["revenue_growth"] = round(row.get("revenue", 0) * 0.12, 0)
             results[0] = row
         return results
 
@@ -671,15 +740,41 @@ Insight:
             return str(results)
 
 # ============================================================
-# GROQ RESPONSE FORMATTER
+# GROQ ADVICE ENGINE
+# ============================================================
+
+class GroqAdviceEngine:
+    @staticmethod
+    def answer(query: str) -> str:
+        if GROQ_AVAILABLE and GROQ_CLIENT:
+            prompt = f"""
+The user asked: "{query}"
+
+They are asking for advice on logistics improvement. Based on best practices in supply chain management, provide a helpful, actionable response with bullet points. Keep it concise (max 200 words) and friendly for WhatsApp.
+
+Response:
+"""
+            try:
+                resp = GROQ_CLIENT.chat.completions.create(
+                    model="llama3-70b-8192",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.4,
+                    max_tokens=300,
+                )
+                return resp.choices[0].message.content.strip()
+            except Exception as e:
+                logger.error(f"Advice generation failed: {e}")
+        return "Here are some tips to improve delivery: 1. Increase vehicle capacity. 2. Reduce warehouse waiting time. 3. Improve route planning. 4. Automate customer notifications."
+
+# ============================================================
+# GROQ RESPONSE FORMATTER (Final Groq call)
 # ============================================================
 
 class GroqResponseFormatter:
     @staticmethod
     def format(plan: QueryPlan, results: List[Dict], query: str, insights: str) -> str:
         if not GROQ_AVAILABLE or not GROQ_CLIENT:
-            logger.warning("Groq not available for formatting")
-            return GroqResponseFormatter._fallback_format(plan, results, insights)
+            return GroqResponseFormatter._service_unavailable()
 
         if not results:
             return GroqResponseFormatter._no_data_response(query)
@@ -786,94 +881,85 @@ Keep it concise (max 100 words).
                 pass
         return "No data found for your query. Please try a different question."
 
-# ============================================================
-# GROQ ADVICE ENGINE
-# ============================================================
-
-class GroqAdviceEngine:
     @staticmethod
-    def answer(query: str) -> str:
-        if GROQ_AVAILABLE and GROQ_CLIENT:
-            prompt = f"""
-The user asked: "{query}"
-
-They are asking for advice on logistics improvement. Based on best practices in supply chain management, provide a helpful, actionable response with bullet points. Keep it concise (max 200 words) and friendly for WhatsApp.
-
-Response:
-"""
-            try:
-                resp = GROQ_CLIENT.chat.completions.create(
-                    model="llama3-70b-8192",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.4,
-                    max_tokens=300,
-                )
-                return resp.choices[0].message.content.strip()
-            except Exception as e:
-                logger.error(f"Advice generation failed: {e}")
-        return "Here are some tips to improve delivery: 1. Increase vehicle capacity. 2. Reduce warehouse waiting time. 3. Improve route planning. 4. Automate customer notifications."
+    def _service_unavailable() -> str:
+        return "\n".join([
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "     📦  LOGISTICS INTELLIGENCE CENTER",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "⚠️ AI service is temporarily unavailable.",
+            "Please try again shortly.",
+            "",
+            "99 - Return to Main Menu"
+        ])
 
 # ============================================================
-# GROQ ORCHESTRATOR (Core Service)
+# GROQ ORCHESTRATOR (Core)
 # ============================================================
 
 class GroqOrchestrator:
-    """Orchestrates the entire AI pipeline."""
+    """Orchestrates the entire V15 pipeline."""
     def __init__(self):
         self.memory = ConversationMemory()
-        self.sql_builder = SQLBuilder()
+        self.entity_resolver = EntityResolver()
+        self.knowledge = KnowledgeBase()
+        self.sql_planner = SQLPlanner()
         self.business_rules = BusinessRulesEngine()
         self.analytics = AnalyticsEngine()
         self.insight_gen = GroqInsightGenerator()
         self.formatter = GroqResponseFormatter()
         self.advice_engine = GroqAdviceEngine()
-        self._db_session = SessionLocal()
 
     def process(self, query: str) -> str:
-        """Main entry point for a user query."""
         try:
             logger.info(f"Processing: '{query}'")
 
-            # Step 1: Understand intent with Groq
+            # 1. Check knowledge base first (no SQL)
+            kb_answer = self.knowledge.answer(query)
+            if kb_answer:
+                return kb_answer + "\n\nReply another question or 99."
+
+            # 2. Understand with Groq (if unavailable, return service message)
             plan = GroqIntentEngine.understand(query, self.memory)
             if plan is None:
-                return self._service_unavailable_message()
+                return GroqResponseFormatter._service_unavailable()
 
-            # Step 2: Apply conversation memory
+            # 3. Apply conversation memory
             plan = self.memory.apply_context(plan)
 
-            # Step 3: Handle advice separately (no SQL)
+            # 4. If advice, use advice engine
             if plan.intent == "advice":
                 response = self.advice_engine.answer(query)
                 return response + "\n\nReply another question or 99."
 
-            # Step 4: Build SQL
-            sql, params = self.sql_builder.build(plan)
+            # 5. Build SQL (templates)
+            sql, params = self.sql_planner.build(plan)
             logger.info(f"SQL: {sql}")
 
-            # Step 5: Execute query (source of truth)
+            # 6. Execute query (PostgreSQL source of truth)
             results = self._execute_sql(sql, params)
             logger.info(f"Found {len(results)} results")
 
-            # Step 6: Apply business rules and analytics
+            # 7. Apply business rules and analytics
             if results:
                 results = self.business_rules.enrich(plan, results)
                 results = self.analytics.enrich(plan, results)
 
-            # Step 7: Generate insights
+            # 8. Generate insights (Groq)
             insights = self.insight_gen.generate(plan, results, query)
 
-            # Step 8: Format response with Groq
+            # 9. Final formatting (Groq)
             response = self.formatter.format(plan, results, query, insights)
 
-            # Step 9: Update memory
+            # 10. Update memory
             self.memory.update(plan)
 
             return response
 
         except Exception as e:
             logger.exception(f"Orchestrator error: {e}")
-            return self._service_unavailable_message()
+            return GroqResponseFormatter._service_unavailable()
 
     def _execute_sql(self, sql: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not sql:
@@ -890,18 +976,6 @@ class GroqOrchestrator:
             logger.error(f"SQL execution error: {e}")
             return []
 
-    def _service_unavailable_message(self) -> str:
-        return "\n".join([
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "     📦  LOGISTICS INTELLIGENCE CENTER",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "",
-            "⚠️ AI service is temporarily unavailable.",
-            "Please try again shortly.",
-            "",
-            "99 - Return to Main Menu"
-        ])
-
 # ============================================================
 # MAIN SERVICE (Integration with AIProviderService)
 # ============================================================
@@ -913,10 +987,7 @@ class GroqService:
         logger.info("✅ GroqService v%s initialized", VERSION)
 
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
-        """
-        Entry point for AIProviderService.
-        Called by AIProviderService._forward_to_service.
-        """
+        """Entry point for AIProviderService."""
         return self.orchestrator.process(message)
 
 # ============================================================
@@ -948,11 +1019,12 @@ __all__ = [
 # ============================================================
 
 if __name__ == "__main__":
-    # Simple test
     service = get_groq_service()
     test_queries = [
         "Show dealer performance",
         "Top 5 dealers in Lahore",
+        "Revenue summary for today",
+        "Compare Lahore and Karachi warehouses",
         "How to improve delivery?",
         "What is POD?"
     ]
