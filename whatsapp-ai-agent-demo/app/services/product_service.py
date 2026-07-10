@@ -1,8 +1,9 @@
 """
 File: app/services/product_service.py
-Version: 6.2 - ENTERPRISE PRODUCT SEARCH ENGINE (with menu entry detection)
+Version: 6.3 - ENTERPRISE PRODUCT SEARCH ENGINE (with robust error handling)
 Purpose: Single‑entry search for Product Models or Divisions.
-         Automatically shows welcome when user selects option "5".
+         Shows welcome on "5", searches on any other input.
+         Catches and logs all errors.
 """
 
 from __future__ import annotations
@@ -12,17 +13,18 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy import func, distinct, or_, and_
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.database import SessionLocal
 from app.models import DeliveryReport
 
 logger = logging.getLogger(__name__)
 
-VERSION = "6.2"
-SERVICE_OPTION = "5"  # This service is mapped to option 5 in the gateway
+VERSION = "6.3"
+SERVICE_OPTION = "5"
 
 # ============================================================
-# UTILITY FUNCTIONS (unchanged)
+# UTILITY FUNCTIONS
 # ============================================================
 
 def _text(value: Any, default: str = "N/A") -> str:
@@ -57,7 +59,7 @@ def _format_number(num: int) -> str:
     return f"{num:,}"
 
 # ============================================================
-# REPOSITORY (flexible matching)
+# REPOSITORY
 # ============================================================
 
 class ProductSearchRepository:
@@ -69,119 +71,136 @@ class ProductSearchRepository:
         if not model_clean:
             return None
 
-        filter_cond = or_(
-            func.lower(DeliveryReport.customer_model).ilike(f"%{model_clean.lower()}%"),
-            func.lower(DeliveryReport.material_no).ilike(f"%{model_clean.lower()}%")
-        )
+        try:
+            filter_cond = or_(
+                func.lower(DeliveryReport.customer_model).ilike(f"%{model_clean.lower()}%"),
+                func.lower(DeliveryReport.material_no).ilike(f"%{model_clean.lower()}%")
+            )
 
-        result = self.session.query(
-            func.coalesce(DeliveryReport.customer_model, DeliveryReport.material_no).label('model'),
-            func.coalesce(DeliveryReport.division, 'Unknown').label('division'),
-            func.sum(DeliveryReport.dn_amount).label('total_revenue'),
-            func.sum(DeliveryReport.dn_qty).label('total_units'),
-            func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
-            func.count(distinct(DeliveryReport.warehouse)).label('warehouse_count'),
-            func.count(distinct(DeliveryReport.ship_to_city)).label('city_count'),
-            func.count(distinct(DeliveryReport.customer_name)).label('dealer_count'),
-            func.count(distinct(
-                and_(DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)
-            )).label('delivered_dn'),
-            func.count(distinct(
-                and_(DeliveryReport.pod_date.is_(None), DeliveryReport.dn_no)
-            )).label('pending_dn'),
-            func.avg(
-                func.date_part('day', DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
-            ).label('avg_delivery_days')
-        ).filter(filter_cond).group_by(
-            DeliveryReport.customer_model,
-            DeliveryReport.division,
-            DeliveryReport.material_no
-        ).order_by(
-            func.sum(DeliveryReport.dn_amount).desc()
-        ).first()
+            result = self.session.query(
+                func.coalesce(DeliveryReport.customer_model, DeliveryReport.material_no).label('model'),
+                func.coalesce(DeliveryReport.division, 'Unknown').label('division'),
+                func.sum(DeliveryReport.dn_amount).label('total_revenue'),
+                func.sum(DeliveryReport.dn_qty).label('total_units'),
+                func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
+                func.count(distinct(DeliveryReport.warehouse)).label('warehouse_count'),
+                func.count(distinct(DeliveryReport.ship_to_city)).label('city_count'),
+                func.count(distinct(DeliveryReport.customer_name)).label('dealer_count'),
+                func.count(distinct(
+                    and_(DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)
+                )).label('delivered_dn'),
+                func.count(distinct(
+                    and_(DeliveryReport.pod_date.is_(None), DeliveryReport.dn_no)
+                )).label('pending_dn'),
+                func.avg(
+                    func.extract('day', DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
+                ).label('avg_delivery_days')
+            ).filter(filter_cond).group_by(
+                DeliveryReport.customer_model,
+                DeliveryReport.division,
+                DeliveryReport.material_no
+            ).order_by(
+                func.sum(DeliveryReport.dn_amount).desc()
+            ).first()
 
-        if not result or result.total_revenue is None:
+            if not result or result.total_revenue is None:
+                return None
+
+            data = {
+                'model': _text(result.model),
+                'division': _text(result.division),
+                'total_revenue': _number(result.total_revenue),
+                'total_units': _int(result.total_units),
+                'dn_count': _int(result.dn_count),
+                'warehouse_count': _int(result.warehouse_count),
+                'city_count': _int(result.city_count),
+                'dealer_count': _int(result.dealer_count),
+                'delivered_dn': _int(result.delivered_dn),
+                'pending_dn': _int(result.pending_dn),
+                'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
+            }
+
+            top_cities = self.session.query(
+                DeliveryReport.ship_to_city,
+                func.sum(DeliveryReport.dn_amount).label('revenue')
+            ).filter(filter_cond).group_by(
+                DeliveryReport.ship_to_city
+            ).order_by(
+                func.sum(DeliveryReport.dn_amount).desc()
+            ).limit(5).all()
+
+            data['top_cities'] = [_text(city.ship_to_city) for city in top_cities if city.ship_to_city]
+            return data
+
+        except SQLAlchemyError as e:
+            logger.error(f"SQL error in get_model_data: {e}")
             return None
-
-        data = {
-            'model': _text(result.model),
-            'division': _text(result.division),
-            'total_revenue': _number(result.total_revenue),
-            'total_units': _int(result.total_units),
-            'dn_count': _int(result.dn_count),
-            'warehouse_count': _int(result.warehouse_count),
-            'city_count': _int(result.city_count),
-            'dealer_count': _int(result.dealer_count),
-            'delivered_dn': _int(result.delivered_dn),
-            'pending_dn': _int(result.pending_dn),
-            'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
-        }
-
-        top_cities = self.session.query(
-            DeliveryReport.ship_to_city,
-            func.sum(DeliveryReport.dn_amount).label('revenue')
-        ).filter(filter_cond).group_by(
-            DeliveryReport.ship_to_city
-        ).order_by(
-            func.sum(DeliveryReport.dn_amount).desc()
-        ).limit(5).all()
-
-        data['top_cities'] = [_text(city.ship_to_city) for city in top_cities if city.ship_to_city]
-        return data
+        except Exception as e:
+            logger.error(f"Unexpected error in get_model_data: {e}")
+            return None
 
     def get_division_data(self, division: str) -> Optional[Dict[str, Any]]:
         division_clean = division.strip()
         if not division_clean:
             return None
 
-        filter_cond = func.lower(DeliveryReport.division).ilike(f"%{division_clean.lower()}%")
+        try:
+            # Try exact division match (case-insensitive)
+            filter_cond = func.lower(DeliveryReport.division).ilike(f"%{division_clean.lower()}%")
 
-        result = self.session.query(
-            func.sum(DeliveryReport.dn_amount).label('total_revenue'),
-            func.sum(DeliveryReport.dn_qty).label('total_units'),
-            func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
-            func.count(distinct(DeliveryReport.warehouse)).label('warehouse_count'),
-            func.count(distinct(DeliveryReport.ship_to_city)).label('city_count'),
-            func.count(distinct(DeliveryReport.customer_name)).label('dealer_count'),
-            func.count(distinct(
-                and_(DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)
-            )).label('delivered_dn'),
-            func.count(distinct(
-                and_(DeliveryReport.pod_date.is_(None), DeliveryReport.dn_no)
-            )).label('pending_dn'),
-            func.avg(
-                func.date_part('day', DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
-            ).label('avg_delivery_days')
-        ).filter(filter_cond).first()
+            result = self.session.query(
+                func.sum(DeliveryReport.dn_amount).label('total_revenue'),
+                func.sum(DeliveryReport.dn_qty).label('total_units'),
+                func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
+                func.count(distinct(DeliveryReport.warehouse)).label('warehouse_count'),
+                func.count(distinct(DeliveryReport.ship_to_city)).label('city_count'),
+                func.count(distinct(DeliveryReport.customer_name)).label('dealer_count'),
+                func.count(distinct(
+                    and_(DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)
+                )).label('delivered_dn'),
+                func.count(distinct(
+                    and_(DeliveryReport.pod_date.is_(None), DeliveryReport.dn_no)
+                )).label('pending_dn'),
+                func.avg(
+                    func.extract('day', DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
+                ).label('avg_delivery_days')
+            ).filter(filter_cond).first()
 
-        if not result or result.total_revenue is None:
+            if not result or result.total_revenue is None:
+                return None
+
+            data = {
+                'division': division_clean,
+                'total_revenue': _number(result.total_revenue),
+                'total_units': _int(result.total_units),
+                'dn_count': _int(result.dn_count),
+                'warehouse_count': _int(result.warehouse_count),
+                'city_count': _int(result.city_count),
+                'dealer_count': _int(result.dealer_count),
+                'delivered_dn': _int(result.delivered_dn),
+                'pending_dn': _int(result.pending_dn),
+                'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
+            }
+
+            top_products = self.session.query(
+                func.coalesce(DeliveryReport.customer_model, DeliveryReport.material_no).label('product'),
+                func.sum(DeliveryReport.dn_amount).label('revenue')
+            ).filter(filter_cond).group_by('product').order_by(
+                func.sum(DeliveryReport.dn_amount).desc()
+            ).limit(5).all()
+
+            data['top_products'] = [_text(p.product) for p in top_products if p.product]
+            return data
+
+        except SQLAlchemyError as e:
+            logger.error(f"SQL error in get_division_data: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error in get_division_data: {e}")
             return None
 
-        data = {
-            'division': division_clean,
-            'total_revenue': _number(result.total_revenue),
-            'total_units': _int(result.total_units),
-            'dn_count': _int(result.dn_count),
-            'warehouse_count': _int(result.warehouse_count),
-            'city_count': _int(result.city_count),
-            'dealer_count': _int(result.dealer_count),
-            'delivered_dn': _int(result.delivered_dn),
-            'pending_dn': _int(result.pending_dn),
-            'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
-        }
-
-        top_products = self.session.query(
-            func.coalesce(DeliveryReport.customer_model, DeliveryReport.material_no).label('product'),
-            func.sum(DeliveryReport.dn_amount).label('revenue')
-        ).filter(filter_cond).group_by('product').order_by(
-            func.sum(DeliveryReport.dn_amount).desc()
-        ).limit(5).all()
-
-        data['top_products'] = [_text(p.product) for p in top_products if p.product]
-        return data
-
 # ============================================================
-# FORMATTERS (unchanged)
+# FORMATTERS
 # ============================================================
 
 class ProductDashboardFormatter:
@@ -383,6 +402,26 @@ class ProductDashboardFormatter:
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         ])
 
+    @staticmethod
+    def error() -> str:
+        return "\n".join([
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "⚠️ SERVICE ERROR",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "An unexpected error occurred while processing your request.",
+            "Please try again later.",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🔄 NEXT ACTION",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "📝 Enter another Product Model or Division.",
+            "",
+            "🏠 Reply *99* to return to the Previous Menu.",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ])
+
 # ============================================================
 # MAIN SERVICE
 # ============================================================
@@ -391,7 +430,7 @@ class ProductAnalyticsService:
     def __init__(self) -> None:
         self._version = VERSION
         self._formatter = ProductDashboardFormatter()
-        logger.info(f"✅ ProductAnalyticsService v{self._version} initialized (with menu entry detection)")
+        logger.info(f"✅ ProductAnalyticsService v{self._version} initialized (with error handling)")
 
     @staticmethod
     def _session() -> Session:
@@ -400,42 +439,44 @@ class ProductAnalyticsService:
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
         """
         Main entry point – called by the gateway.
-        - If message == "99" → return "99" to exit to gateway menu.
-        - If message == "5" (this service's option) → show welcome screen.
-        - Otherwise try to match as Model or Division.
         """
-        if not message or not message.strip():
-            return self._formatter.welcome()
+        try:
+            if not message or not message.strip():
+                return self._formatter.welcome()
 
-        msg = message.strip()
+            msg = message.strip()
 
-        # Exit to gateway
-        if msg == "99":
-            logger.info(f"Exit signal from {sender}")
-            return "99"
+            # Exit to gateway
+            if msg == "99":
+                logger.info(f"Exit signal from {sender}")
+                return "99"
 
-        # Show welcome when user selects this service from the main menu
-        if msg == SERVICE_OPTION:
-            logger.info(f"Service selected, showing welcome to {sender}")
-            return self._formatter.welcome()
+            # Show welcome when user selects this service from the main menu
+            if msg == SERVICE_OPTION:
+                logger.info(f"Service selected, showing welcome to {sender}")
+                return self._formatter.welcome()
 
-        logger.info(f"Searching for: '{msg}' from {sender}")
+            logger.info(f"Searching for: '{msg}' from {sender}")
 
-        with self._session() as session:
-            repo = ProductSearchRepository(session)
+            with self._session() as session:
+                repo = ProductSearchRepository(session)
 
-            # 1. Try model (customer_model or material_no)
-            model_data = repo.get_model_data(msg)
-            if model_data:
-                return self._formatter.model_dashboard(model_data)
+                # 1. Try model (customer_model or material_no)
+                model_data = repo.get_model_data(msg)
+                if model_data:
+                    return self._formatter.model_dashboard(model_data)
 
-            # 2. Try division
-            division_data = repo.get_division_data(msg)
-            if division_data:
-                return self._formatter.division_dashboard(division_data)
+                # 2. Try division
+                division_data = repo.get_division_data(msg)
+                if division_data:
+                    return self._formatter.division_dashboard(division_data)
 
-        # No match
-        return self._formatter.not_found(msg)
+            # No match
+            return self._formatter.not_found(msg)
+
+        except Exception as e:
+            logger.error(f"Unexpected error in process_whatsapp_query: {e}", exc_info=True)
+            return self._formatter.error()
 
     # Legacy methods
     def get_main_menu(self) -> str:
