@@ -1,9 +1,10 @@
-"""
-File: app/services/product_service.py
-Version: 8.2 - DEALER-PATTERN (works like Dealer Analytics)
-Purpose: Search product models or divisions using raw SQL.
-         Mirrors the Dealer service's logic for reliability.
-"""
+#!/usr/bin/env python3
+# ============================================================
+# FILE: app/services/product_service.py
+# VERSION: 8.3 - DEALER-PATTERN FINAL
+# PURPOSE: Search product models or divisions using raw SQL.
+#          Mirrors the dealer_analytics_service.py structure.
+# ============================================================
 
 from __future__ import annotations
 
@@ -12,25 +13,28 @@ import re
 from typing import Any, Optional, Dict, List, Tuple
 
 from sqlalchemy import text
-from app.database import engine
+from sqlalchemy.orm import Session
+
+from app.database import SessionLocal, engine
+from app.models import DeliveryReport
 
 logger = logging.getLogger(__name__)
 
-VERSION = "8.2"
-SERVICE_OPTION = "5"
-DEBUG_COMMAND = "DEBUG"
-TEST_COMMAND = "TEST"
-
 # ============================================================
-# UTILITY FUNCTIONS (same as Dealer)
+# CONFIGURATION
 # ============================================================
 
-def _text(value: Any, default: str = "N/A") -> str:
+VERSION = "8.3"
+
+# ============================================================
+# UTILITY FUNCTIONS (exactly as in dealer_analytics_service)
+# ============================================================
+
+def _text(value: Any, default: str = "Unknown") -> str:
     if value is None:
         return default
     try:
-        s = str(value).strip()
-        return s if s else default
+        return str(value).strip() or default
     except (TypeError, ValueError):
         return default
 
@@ -40,11 +44,9 @@ def _number(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
 
-def _int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
+def _percent(numerator: Any, denominator: Any) -> float:
+    bottom = _number(denominator)
+    return round((_number(numerator) * 100.0 / bottom), 1) if bottom else 0.0
 
 def _format_currency(amount: float) -> str:
     if amount >= 1_000_000:
@@ -57,33 +59,14 @@ def _format_number(num: int) -> str:
     return f"{num:,}"
 
 # ============================================================
-# REPOSITORY – EXACT DEALER PATTERN
+# REPOSITORY – DEALER PATTERN
 # ============================================================
 
-class ProductSearchRepository:
-    @staticmethod
-    def test_connection() -> Dict[str, Any]:
-        """Simple test to verify DB connection and count."""
-        try:
-            with engine.connect() as conn:
-                count = conn.execute(
-                    text("SELECT COUNT(*) FROM delivery_reports")
-                ).scalar()
-                return {
-                    "connected": True,
-                    "row_count": count,
-                    "message": f"✅ Connection OK. Found {count} rows."
-                }
-        except Exception as e:
-            logger.error(f"Connection test failed: {e}")
-            return {
-                "connected": False,
-                "error": str(e),
-                "message": f"❌ Connection failed: {e}"
-            }
+class ProductRepository:
+    def __init__(self, session: Session):
+        self.session = session
 
-    @staticmethod
-    def get_sample_values() -> Dict[str, list]:
+    def get_sample_values(self) -> Dict[str, list]:
         """Return up to 5 distinct values from each key column."""
         try:
             with engine.connect() as conn:
@@ -120,8 +103,7 @@ class ProductSearchRepository:
             logger.error(f"Error in get_sample_values: {e}")
             return {"error": str(e)}
 
-    @staticmethod
-    def resolve_model(model_input: str) -> Optional[str]:
+    def resolve_model(self, model_input: str) -> Optional[str]:
         """Find an exact or partial match for a product model."""
         if not model_input or not model_input.strip():
             return None
@@ -165,8 +147,7 @@ class ProductSearchRepository:
             logger.error(f"Error resolving model '{model_clean}': {e}")
             return None
 
-    @staticmethod
-    def resolve_division(division_input: str) -> Optional[str]:
+    def resolve_division(self, division_input: str) -> Optional[str]:
         """Find an exact or partial match for a division."""
         if not division_input or not division_input.strip():
             return None
@@ -210,8 +191,7 @@ class ProductSearchRepository:
             logger.error(f"Error resolving division '{division_clean}': {e}")
             return None
 
-    @staticmethod
-    def get_model_data(model_name: str) -> Optional[Dict[str, Any]]:
+    def get_model_data(self, model_name: str) -> Optional[Dict[str, Any]]:
         """Get full aggregated data for a resolved model name."""
         model_clean = model_name.strip()
         if not model_clean:
@@ -279,8 +259,7 @@ class ProductSearchRepository:
             logger.error(f"Error getting model data for '{model_clean}': {e}")
             return None
 
-    @staticmethod
-    def get_division_data(division_name: str) -> Optional[Dict[str, Any]]:
+    def get_division_data(self, division_name: str) -> Optional[Dict[str, Any]]:
         """Get full aggregated data for a resolved division name."""
         division_clean = division_name.strip()
         if not division_clean:
@@ -344,12 +323,53 @@ class ProductSearchRepository:
             return None
 
 # ============================================================
-# FORMATTERS
+# MAIN SERVICE – EXACT DEALER STRUCTURE
 # ============================================================
 
-class ProductDashboardFormatter:
-    @staticmethod
-    def welcome() -> str:
+class ProductAnalyticsService:
+    def __init__(self) -> None:
+        self._version = VERSION
+        logger.info(f"✅ ProductAnalyticsService v{self._version} initialized")
+        logger.info("   Using raw SQL with Dealer pattern")
+
+    def handle_message(self, message: str, sender: str) -> str:
+        """Main entry point – mirrors dealer_analytics_service handle_message."""
+        try:
+            message_clean = message.strip()
+
+            # SPECIAL: 99 exits to main menu
+            if message_clean == "99":
+                logger.info("[Service] Exit command detected, returning 99")
+                return "99"
+
+            # Numeric command '5' shows welcome (entry point)
+            if message_clean == "5":
+                logger.info("[Service] Product service selected, showing welcome")
+                return self._get_welcome_message()
+
+            # Diagnostic commands
+            if message_clean.upper() == "DEBUG":
+                return self._get_debug_info()
+
+            if message_clean.upper() == "TEST":
+                return self._test_connection()
+
+            # Check if it's a greeting or empty
+            if not message_clean or message_clean.lower() in ['hi', 'hello', 'hey', 'start']:
+                return self._get_welcome_message()
+
+            logger.info("[Service] Searching for: '%s' from %s", message_clean, sender)
+
+            # Search for product
+            result = self._search_product(message_clean)
+            return result
+
+        except Exception as e:
+            logger.exception("[Service] Error in handle_message")
+            return f"⚠️ Error: {str(e)}\n\nPlease try again with a different product name or division."
+
+    def _get_welcome_message(self) -> str:
+        """Welcome message for the product intelligence center."""
         return "\n".join([
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "      📦 PRODUCT INTELLIGENCE CENTER",
@@ -385,62 +405,103 @@ class ProductDashboardFormatter:
             "🤖 Awaiting Product Search...",
         ])
 
-    @staticmethod
-    def debug_info(samples: Dict[str, list]) -> str:
-        lines = [
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "🔍 DEBUG SAMPLE VALUES",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "",
-            "These are the first 5 distinct values from each column:",
-            "",
-            "📦 customer_model:"
-        ]
-        for val in samples.get("customer_model", []):
-            lines.append(f"  • {val}")
-        lines.append("")
-        lines.append("🔢 material_no:")
-        for val in samples.get("material_no", []):
-            lines.append(f"  • {val}")
-        lines.append("")
-        lines.append("📂 division:")
-        for val in samples.get("division", []):
-            lines.append(f"  • {val}")
-        if "error" in samples:
+    def _get_debug_info(self) -> str:
+        """Return debug sample values."""
+        try:
+            repo = ProductRepository(self._session())
+            samples = repo.get_sample_values()
+            lines = [
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                "🔍 DEBUG SAMPLE VALUES",
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                "",
+                "These are the first 5 distinct values from each column:",
+                "",
+                "📦 customer_model:"
+            ]
+            for val in samples.get("customer_model", []):
+                lines.append(f"  • {val}")
             lines.append("")
-            lines.append(f"⚠️ Error: {samples['error']}")
-        lines.extend([
-            "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "💡 If you see your values above, search should work.",
-            "If the list is empty, check the database connection.",
-            "",
-            "Type another search or 99 to exit.",
-        ])
-        return "\n".join(lines)
+            lines.append("🔢 material_no:")
+            for val in samples.get("material_no", []):
+                lines.append(f"  • {val}")
+            lines.append("")
+            lines.append("📂 division:")
+            for val in samples.get("division", []):
+                lines.append(f"  • {val}")
+            if "error" in samples:
+                lines.append("")
+                lines.append(f"⚠️ Error: {samples['error']}")
+            lines.extend([
+                "",
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                "💡 If you see your values above, search should work.",
+                "If the list is empty, check the database connection.",
+                "",
+                "Type another search or 99 to exit.",
+            ])
+            return "\n".join(lines)
+        except Exception as e:
+            logger.exception("Error in _get_debug_info")
+            return f"⚠️ Error: {str(e)}"
 
-    @staticmethod
-    def test_info(info: Dict[str, Any]) -> str:
-        lines = [
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "🔌 DATABASE TEST",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "",
-            info.get("message", "No message"),
-        ]
-        if info.get("connected"):
-            lines.append(f"Total rows: {info.get('row_count', 0)}")
-        else:
-            lines.append(f"Error: {info.get('error', 'Unknown error')}")
-        lines.extend([
-            "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "Type DEBUG for sample values, or search for a product.",
-        ])
-        return "\n".join(lines)
+    def _test_connection(self) -> str:
+        """Test database connection and return row count."""
+        try:
+            with engine.connect() as conn:
+                count = conn.execute(
+                    text("SELECT COUNT(*) FROM delivery_reports")
+                ).scalar()
+                return "\n".join([
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                    "🔌 DATABASE TEST",
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                    "",
+                    f"✅ Connection OK. Found {count} rows.",
+                    "",
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                    "Type DEBUG for sample values, or search for a product.",
+                ])
+        except Exception as e:
+            logger.exception("Connection test failed")
+            return "\n".join([
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                "🔌 DATABASE TEST",
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                "",
+                f"❌ Connection failed: {e}",
+                "",
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            ])
 
-    @staticmethod
-    def model_dashboard(data: Dict[str, Any]) -> str:
+    def _search_product(self, query: str) -> str:
+        """Search for a product model or division and return dashboard."""
+        try:
+            repo = ProductRepository(self._session())
+
+            # 1. Try to resolve as a model
+            model_name = repo.resolve_model(query)
+            if model_name:
+                model_data = repo.get_model_data(model_name)
+                if model_data:
+                    return self._render_model_dashboard(model_data)
+
+            # 2. Try to resolve as a division
+            division_name = repo.resolve_division(query)
+            if division_name:
+                division_data = repo.get_division_data(division_name)
+                if division_data:
+                    return self._render_division_dashboard(division_data)
+
+            # No match
+            return self._format_not_found(query)
+
+        except Exception as e:
+            logger.exception(f"Error searching for '{query}'")
+            return self._format_error(str(e))
+
+    def _render_model_dashboard(self, data: Dict[str, Any]) -> str:
+        """Render model dashboard."""
         lines = [
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "      📦 PRODUCT INTELLIGENCE CENTER",
@@ -511,8 +572,8 @@ class ProductDashboardFormatter:
         ])
         return "\n".join(lines)
 
-    @staticmethod
-    def division_dashboard(data: Dict[str, Any]) -> str:
+    def _render_division_dashboard(self, data: Dict[str, Any]) -> str:
+        """Render division dashboard."""
         lines = [
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "      📦 PRODUCT DIVISION ANALYTICS",
@@ -579,8 +640,8 @@ class ProductDashboardFormatter:
         ])
         return "\n".join(lines)
 
-    @staticmethod
-    def not_found(query: str) -> str:
+    def _format_not_found(self, query: str) -> str:
+        """Format not found message."""
         return "\n".join([
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "❌ PRODUCT NOT FOUND",
@@ -600,14 +661,15 @@ class ProductDashboardFormatter:
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         ])
 
-    @staticmethod
-    def error() -> str:
+    def _format_error(self, error: str) -> str:
+        """Format error message."""
         return "\n".join([
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "⚠️ SERVICE ERROR",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
-            "An unexpected error occurred while processing your request.",
+            f"An error occurred: {error}",
+            "",
             "Please try again later.",
             "",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -620,87 +682,33 @@ class ProductDashboardFormatter:
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         ])
 
-# ============================================================
-# MAIN SERVICE – MIRRORS DEALER PATTERN
-# ============================================================
-
-class ProductAnalyticsService:
-    def __init__(self) -> None:
-        self._version = VERSION
-        self._formatter = ProductDashboardFormatter()
-        logger.info(f"✅ ProductAnalyticsService v{self._version} (Dealer pattern)")
-
-    def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
-        """Main entry point – mirrors Dealer's handle_message."""
-        try:
-            if not message or not message.strip():
-                return self._formatter.welcome()
-
-            msg = message.strip()
-
-            # Exit to gateway
-            if msg == "99":
-                logger.info(f"Exit signal from {sender}")
-                return "99"
-
-            # Show welcome when user selects this service
-            if msg == SERVICE_OPTION:
-                logger.info(f"Service selected, showing welcome to {sender}")
-                return self._formatter.welcome()
-
-            # Diagnostic commands
-            if msg == DEBUG_COMMAND:
-                samples = ProductSearchRepository.get_sample_values()
-                return self._formatter.debug_info(samples)
-
-            if msg == TEST_COMMAND:
-                info = ProductSearchRepository.test_connection()
-                return self._formatter.test_info(info)
-
-            # Search for product
-            logger.info(f"Searching for: '{msg}' from {sender}")
-
-            # 1. Try to resolve as a model
-            model_name = ProductSearchRepository.resolve_model(msg)
-            if model_name:
-                model_data = ProductSearchRepository.get_model_data(model_name)
-                if model_data:
-                    return self._formatter.model_dashboard(model_data)
-
-            # 2. Try to resolve as a division
-            division_name = ProductSearchRepository.resolve_division(msg)
-            if division_name:
-                division_data = ProductSearchRepository.get_division_data(division_name)
-                if division_data:
-                    return self._formatter.division_dashboard(division_data)
-
-            # No match
-            return self._formatter.not_found(msg)
-
-        except Exception as e:
-            logger.error(f"Unexpected error: {e}", exc_info=True)
-            return self._formatter.error()
-
-    def get_main_menu(self) -> str:
-        return self._formatter.welcome()
-
-    def handle_message(self, message: str, sender: str) -> str:
-        return self.process_whatsapp_query(message, sender)
+    @staticmethod
+    def _session() -> Session:
+        return SessionLocal()
 
 # ============================================================
 # SINGLETON & EXPORTS
 # ============================================================
 
-_service_instance: Optional[ProductAnalyticsService] = None
+_product_service: Optional[ProductAnalyticsService] = None
 
 def get_product_analytics_service() -> ProductAnalyticsService:
-    global _service_instance
-    if _service_instance is None:
-        _service_instance = ProductAnalyticsService()
-    return _service_instance
+    global _product_service
+    try:
+        if _product_service is None:
+            logger.info("🔧 Creating ProductAnalyticsService instance...")
+            _product_service = ProductAnalyticsService()
+            logger.info("✅ ProductAnalyticsService instance created successfully")
+        return _product_service
+    except Exception as e:
+        logger.error(f"❌ Failed to create ProductAnalyticsService: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        _product_service = ProductAnalyticsService()
+        return _product_service
 
 __all__ = [
     "ProductAnalyticsService",
     "get_product_analytics_service",
-    "VERSION",
+    "VERSION"
 ]
