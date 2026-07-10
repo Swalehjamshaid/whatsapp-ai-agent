@@ -1,8 +1,8 @@
 """
 File: app/services/product_service.py
-Version: 8.1 - FULL DIAGNOSTIC VERSION
-Purpose: Search product models or divisions. Includes COUNT and DEBUG commands.
-         No intent detection needed – pure search.
+Version: 8.2 - DEALER-PATTERN WITH DIAGNOSTICS
+Purpose: Search product models or divisions. Includes DEBUG, COUNT, and TEST commands.
+         Uses exact match first, then ILIKE, like Dealer Analytics.
 """
 
 from __future__ import annotations
@@ -15,10 +15,11 @@ from app.database import engine
 
 logger = logging.getLogger(__name__)
 
-VERSION = "8.1"
+VERSION = "8.2"
 SERVICE_OPTION = "5"
 DEBUG_COMMAND = "DEBUG"
 COUNT_COMMAND = "COUNT"
+TEST_COMMAND = "TEST"
 
 # ============================================================
 # UTILITY FUNCTIONS
@@ -56,10 +57,31 @@ def _format_number(num: int) -> str:
     return f"{num:,}"
 
 # ============================================================
-# REPOSITORY – RAW SQL WITH DIAGNOSTICS
+# REPOSITORY – DEALER PATTERN WITH DIAGNOSTICS
 # ============================================================
 
 class ProductSearchRepository:
+    @staticmethod
+    def test_connection() -> Dict[str, Any]:
+        """Simple test to verify DB connection and count."""
+        try:
+            with engine.connect() as conn:
+                count = conn.execute(
+                    text("SELECT COUNT(*) FROM delivery_reports")
+                ).scalar()
+                return {
+                    "connected": True,
+                    "row_count": count,
+                    "message": f"✅ Connection OK. Found {count} rows."
+                }
+        except Exception as e:
+            logger.error(f"Connection test failed: {e}")
+            return {
+                "connected": False,
+                "error": str(e),
+                "message": f"❌ Connection failed: {e}"
+            }
+
     @staticmethod
     def get_table_info() -> Dict[str, Any]:
         """Get total row count and sample of divisions/models."""
@@ -69,10 +91,10 @@ class ProductSearchRepository:
                     text("SELECT COUNT(*) FROM delivery_reports")
                 ).scalar()
                 divisions = conn.execute(
-                    text("SELECT DISTINCT division FROM delivery_reports LIMIT 10")
+                    text("SELECT DISTINCT TRIM(division) FROM delivery_reports WHERE division IS NOT NULL LIMIT 10")
                 ).fetchall()
                 models = conn.execute(
-                    text("SELECT DISTINCT customer_model FROM delivery_reports WHERE customer_model IS NOT NULL LIMIT 10")
+                    text("SELECT DISTINCT TRIM(customer_model) FROM delivery_reports WHERE customer_model IS NOT NULL LIMIT 10")
                 ).fetchall()
                 return {
                     "total_rows": count,
@@ -90,25 +112,25 @@ class ProductSearchRepository:
             with engine.connect() as conn:
                 models = conn.execute(
                     text("""
-                        SELECT DISTINCT customer_model
+                        SELECT DISTINCT TRIM(customer_model)
                         FROM delivery_reports
-                        WHERE customer_model IS NOT NULL AND customer_model != ''
+                        WHERE customer_model IS NOT NULL AND TRIM(customer_model) != ''
                         LIMIT 5
                     """)
                 ).fetchall()
                 materials = conn.execute(
                     text("""
-                        SELECT DISTINCT material_no
+                        SELECT DISTINCT TRIM(material_no)
                         FROM delivery_reports
-                        WHERE material_no IS NOT NULL AND material_no != ''
+                        WHERE material_no IS NOT NULL AND TRIM(material_no) != ''
                         LIMIT 5
                     """)
                 ).fetchall()
                 divisions = conn.execute(
                     text("""
-                        SELECT DISTINCT division
+                        SELECT DISTINCT TRIM(division)
                         FROM delivery_reports
-                        WHERE division IS NOT NULL AND division != ''
+                        WHERE division IS NOT NULL AND TRIM(division) != ''
                         LIMIT 5
                     """)
                 ).fetchall()
@@ -122,19 +144,109 @@ class ProductSearchRepository:
             return {"error": str(e)}
 
     @staticmethod
-    def get_model_data(model: str) -> Optional[Dict[str, Any]]:
-        model_clean = model.strip()
+    def resolve_model(model_input: str) -> Optional[str]:
+        """Find an exact or partial match for a product model."""
+        if not model_input or not model_input.strip():
+            return None
+        model_clean = model_input.strip()
+        logger.info(f"[Repository] Resolving model: '{model_clean}'")
+
+        try:
+            with engine.connect() as conn:
+                # Exact match (case‑insensitive, trimmed)
+                result = conn.execute(
+                    text("""
+                        SELECT TRIM(COALESCE(customer_model, material_no)) AS model
+                        FROM delivery_reports
+                        WHERE LOWER(TRIM(COALESCE(customer_model, material_no))) = LOWER(TRIM(:model))
+                        LIMIT 1
+                    """),
+                    {"model": model_clean}
+                ).first()
+                if result:
+                    logger.info(f"[Repository] Exact match found: {result[0]}")
+                    return result[0]
+
+                # Partial match with ILIKE
+                result = conn.execute(
+                    text("""
+                        SELECT TRIM(COALESCE(customer_model, material_no)) AS model
+                        FROM delivery_reports
+                        WHERE TRIM(COALESCE(customer_model, material_no)) ILIKE TRIM(:pattern)
+                        LIMIT 1
+                    """),
+                    {"pattern": f"%{model_clean}%"}
+                ).first()
+                if result:
+                    logger.info(f"[Repository] ILIKE match found: {result[0]}")
+                    return result[0]
+
+                logger.info(f"[Repository] No model match for '{model_clean}'")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error resolving model '{model_clean}': {e}")
+            return None
+
+    @staticmethod
+    def resolve_division(division_input: str) -> Optional[str]:
+        """Find an exact or partial match for a division."""
+        if not division_input or not division_input.strip():
+            return None
+        division_clean = division_input.strip()
+        logger.info(f"[Repository] Resolving division: '{division_clean}'")
+
+        try:
+            with engine.connect() as conn:
+                # Exact match
+                result = conn.execute(
+                    text("""
+                        SELECT DISTINCT TRIM(division)
+                        FROM delivery_reports
+                        WHERE LOWER(TRIM(division)) = LOWER(TRIM(:division))
+                        LIMIT 1
+                    """),
+                    {"division": division_clean}
+                ).first()
+                if result:
+                    logger.info(f"[Repository] Exact match found: {result[0]}")
+                    return result[0]
+
+                # Partial match with ILIKE
+                result = conn.execute(
+                    text("""
+                        SELECT DISTINCT TRIM(division)
+                        FROM delivery_reports
+                        WHERE TRIM(division) ILIKE TRIM(:pattern)
+                        LIMIT 1
+                    """),
+                    {"pattern": f"%{division_clean}%"}
+                ).first()
+                if result:
+                    logger.info(f"[Repository] ILIKE match found: {result[0]}")
+                    return result[0]
+
+                logger.info(f"[Repository] No division match for '{division_clean}'")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error resolving division '{division_clean}': {e}")
+            return None
+
+    @staticmethod
+    def get_model_data(model_name: str) -> Optional[Dict[str, Any]]:
+        """Get full aggregated data for a resolved model name."""
+        model_clean = model_name.strip()
         if not model_clean:
             return None
 
         try:
             with engine.connect() as conn:
-                logger.info(f"Searching model: '{model_clean}'")
                 result = conn.execute(
                     text("""
                         SELECT
-                            COALESCE(customer_model, material_no, 'Unknown') AS model,
-                            COALESCE(division, 'Unknown') AS division,
+                            TRIM(COALESCE(customer_model, material_no, 'Unknown')) AS model,
+                            TRIM(COALESCE(division, 'Unknown')) AS division,
                             COALESCE(SUM(dn_amount), 0) AS total_revenue,
                             COALESCE(SUM(dn_qty), 0) AS total_units,
                             COUNT(DISTINCT dn_no) AS dn_count,
@@ -145,20 +257,16 @@ class ProductSearchRepository:
                             COUNT(DISTINCT CASE WHEN pod_date IS NULL THEN dn_no END) AS pending_dn,
                             AVG(EXTRACT(DAY FROM (good_issue_date - dn_create_date))) AS avg_delivery_days
                         FROM delivery_reports
-                        WHERE customer_model ILIKE :model
-                           OR material_no ILIKE :model
+                        WHERE TRIM(COALESCE(customer_model, material_no)) = TRIM(:model)
                         GROUP BY customer_model, material_no, division
                         ORDER BY total_revenue DESC
                         LIMIT 1
                     """),
-                    {"model": f"%{model_clean}%"}
+                    {"model": model_clean}
                 ).first()
 
                 if not result or result.total_revenue == 0:
-                    logger.info(f"No model data found for '{model_clean}'")
                     return None
-
-                logger.info(f"Found model: {result.model} with revenue {result.total_revenue}")
 
                 data = {
                     'model': _text(result.model),
@@ -176,33 +284,32 @@ class ProductSearchRepository:
 
                 cities = conn.execute(
                     text("""
-                        SELECT ship_to_city, SUM(dn_amount) AS revenue
+                        SELECT TRIM(ship_to_city) AS city, SUM(dn_amount) AS revenue
                         FROM delivery_reports
-                        WHERE customer_model ILIKE :model
-                           OR material_no ILIKE :model
+                        WHERE TRIM(COALESCE(customer_model, material_no)) = TRIM(:model)
                         GROUP BY ship_to_city
                         ORDER BY revenue DESC
                         LIMIT 5
                     """),
-                    {"model": f"%{model_clean}%"}
+                    {"model": model_clean}
                 ).fetchall()
                 data['top_cities'] = [c[0] for c in cities if c[0]]
 
                 return data
 
         except Exception as e:
-            logger.error(f"Error in get_model_data: {e}")
+            logger.error(f"Error getting model data for '{model_clean}': {e}")
             return None
 
     @staticmethod
-    def get_division_data(division: str) -> Optional[Dict[str, Any]]:
-        division_clean = division.strip()
+    def get_division_data(division_name: str) -> Optional[Dict[str, Any]]:
+        """Get full aggregated data for a resolved division name."""
+        division_clean = division_name.strip()
         if not division_clean:
             return None
 
         try:
             with engine.connect() as conn:
-                logger.info(f"Searching division: '{division_clean}'")
                 result = conn.execute(
                     text("""
                         SELECT
@@ -216,16 +323,13 @@ class ProductSearchRepository:
                             COUNT(DISTINCT CASE WHEN pod_date IS NULL THEN dn_no END) AS pending_dn,
                             AVG(EXTRACT(DAY FROM (good_issue_date - dn_create_date))) AS avg_delivery_days
                         FROM delivery_reports
-                        WHERE division ILIKE :division
+                        WHERE TRIM(division) = TRIM(:division)
                     """),
-                    {"division": f"%{division_clean}%"}
+                    {"division": division_clean}
                 ).first()
 
                 if not result or result.total_revenue == 0:
-                    logger.info(f"No division data found for '{division_clean}'")
                     return None
-
-                logger.info(f"Found division: '{division_clean}' with revenue {result.total_revenue}")
 
                 data = {
                     'division': division_clean,
@@ -242,22 +346,22 @@ class ProductSearchRepository:
 
                 products = conn.execute(
                     text("""
-                        SELECT COALESCE(customer_model, material_no, 'Unknown') AS product,
+                        SELECT TRIM(COALESCE(customer_model, material_no, 'Unknown')) AS product,
                                SUM(dn_amount) AS revenue
                         FROM delivery_reports
-                        WHERE division ILIKE :division
+                        WHERE TRIM(division) = TRIM(:division)
                         GROUP BY customer_model, material_no
                         ORDER BY revenue DESC
                         LIMIT 5
                     """),
-                    {"division": f"%{division_clean}%"}
+                    {"division": division_clean}
                 ).fetchall()
                 data['top_products'] = [p[0] for p in products if p[0]]
 
                 return data
 
         except Exception as e:
-            logger.error(f"Error in get_division_data: {e}")
+            logger.error(f"Error getting division data for '{division_clean}': {e}")
             return None
 
 # ============================================================
@@ -301,6 +405,26 @@ class ProductDashboardFormatter:
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "🤖 Awaiting Product Search...",
         ])
+
+    @staticmethod
+    def test_info(info: Dict[str, Any]) -> str:
+        lines = [
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🔌 DATABASE TEST",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            info.get("message", "No message"),
+        ]
+        if info.get("connected"):
+            lines.append(f"Total rows: {info.get('row_count', 0)}")
+        else:
+            lines.append(f"Error: {info.get('error', 'Unknown error')}")
+        lines.extend([
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "Type DEBUG for sample values, COUNT for table info, or search for a product.",
+        ])
+        return "\n".join(lines)
 
     @staticmethod
     def debug_info(samples: Dict[str, list]) -> str:
@@ -552,7 +676,7 @@ class ProductAnalyticsService:
     def __init__(self) -> None:
         self._version = VERSION
         self._formatter = ProductDashboardFormatter()
-        logger.info(f"✅ ProductAnalyticsService v{self._version} (diagnostic)")
+        logger.info(f"✅ ProductAnalyticsService v{self._version} (Dealer pattern with diagnostics)")
 
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
         try:
@@ -577,15 +701,25 @@ class ProductAnalyticsService:
                 info = ProductSearchRepository.get_table_info()
                 return self._formatter.table_info(info)
 
+            if msg == TEST_COMMAND:
+                info = ProductSearchRepository.test_connection()
+                return self._formatter.test_info(info)
+
             logger.info(f"Searching for: '{msg}' from {sender}")
 
-            model_data = ProductSearchRepository.get_model_data(msg)
-            if model_data:
-                return self._formatter.model_dashboard(model_data)
+            # 1. Try to resolve as a model (exact/ILIKE)
+            model_name = ProductSearchRepository.resolve_model(msg)
+            if model_name:
+                model_data = ProductSearchRepository.get_model_data(model_name)
+                if model_data:
+                    return self._formatter.model_dashboard(model_data)
 
-            division_data = ProductSearchRepository.get_division_data(msg)
-            if division_data:
-                return self._formatter.division_dashboard(division_data)
+            # 2. Try to resolve as a division (exact/ILIKE)
+            division_name = ProductSearchRepository.resolve_division(msg)
+            if division_name:
+                division_data = ProductSearchRepository.get_division_data(division_name)
+                if division_data:
+                    return self._formatter.division_dashboard(division_data)
 
             return self._formatter.not_found(msg)
 
