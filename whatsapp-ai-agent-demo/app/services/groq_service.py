@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/groq_service.py
-# VERSION: 6.0 - AI-POWERED LOGISTICS ASSISTANT
-# PURPOSE: Answer any logistics question using Groq LLM + SQL.
-#          Handles 300+ question types via natural language.
-#          Integrates with gateway (process_whatsapp_query).
+# VERSION: 7.0 - DYNAMIC QUERY ENGINE (500+ QUESTIONS)
+# PURPOSE: Answer any logistics question using LLM + dynamic SQL.
+#          Supports 500+ question types via metadata-driven parsing.
 # ============================================================
 
 from __future__ import annotations
@@ -12,8 +11,10 @@ from __future__ import annotations
 import logging
 import os
 import re
+import json
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Optional, Dict, List, Tuple
+from typing import Any, Optional, Dict, List, Tuple, Union
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -22,7 +23,7 @@ from app.database import SessionLocal, engine
 
 logger = logging.getLogger(__name__)
 
-VERSION = "6.0"
+VERSION = "7.0"
 
 # ============================================================
 # GROQ SETUP
@@ -77,623 +78,799 @@ def _format_currency(amount: float) -> str:
 def _format_number(num: int) -> str:
     return f"{num:,}"
 
+def _format_date(dt: Any) -> str:
+    if isinstance(dt, datetime):
+        return dt.strftime("%d-%b-%Y")
+    if isinstance(dt, str):
+        try:
+            return datetime.strptime(dt, "%Y-%m-%d").strftime("%d-%b-%Y")
+        except:
+            return dt
+    return str(dt) if dt else "N/A"
+
 # ============================================================
-# DATABASE REPOSITORY
+# QUERY INTENT DATA MODEL
+# ============================================================
+
+@dataclass
+class QueryIntent:
+    """Structured representation of the user's question."""
+    intent: str  # 'ranking', 'aggregate', 'comparison', 'trend', 'list', 'summary'
+    entity_type: Optional[str] = None  # 'dealer', 'model', 'division', 'city', 'warehouse', 'sales_office', 'sales_manager', 'dn'
+    entity_value: Optional[str] = None
+    metric: Optional[str] = None  # 'revenue', 'units', 'dns', 'pending', 'delivery_days', 'pod_days', 'pgi_days'
+    filters: Dict[str, Any] = field(default_factory=dict)  # e.g., {'division': 'Washing Machine', 'city': 'Lahore'}
+    time_period: Optional[str] = None  # 'today', 'this_week', 'this_month', 'last_month', 'last_3_months', 'last_6_months', 'year_to_date'
+    grouping: Optional[str] = None  # 'month', 'week', 'day', 'division', 'city', 'dealer', 'warehouse'
+    sort_by: Optional[str] = None  # 'revenue', 'units', 'pending' etc.
+    sort_order: str = "DESC"
+    limit: int = 10
+    comparison_entities: Optional[List[str]] = None  # for comparison intent
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "intent": self.intent,
+            "entity_type": self.entity_type,
+            "entity_value": self.entity_value,
+            "metric": self.metric,
+            "filters": self.filters,
+            "time_period": self.time_period,
+            "grouping": self.grouping,
+            "sort_by": self.sort_by,
+            "sort_order": self.sort_order,
+            "limit": self.limit,
+            "comparison_entities": self.comparison_entities,
+        }
+
+# ============================================================
+# PARSER: GROQ + FALLBACK
+# ============================================================
+
+class QueryParser:
+    """Parse natural language into QueryIntent using Groq (or regex)."""
+
+    # Mapping of common phrases to intent/metric/entity
+    METRIC_MAP = {
+        "revenue": "revenue",
+        "sales": "revenue",
+        "income": "revenue",
+        "units": "units",
+        "quantity": "units",
+        "dns": "dns",
+        "delivery notes": "dns",
+        "pending": "pending",
+        "delivery days": "delivery_days",
+        "transit days": "delivery_days",
+        "pod days": "pod_days",
+        "pgi days": "pgi_days",
+    }
+
+    ENTITY_MAP = {
+        "dealer": "dealer",
+        "customer": "dealer",
+        "distributor": "dealer",
+        "model": "model",
+        "product": "model",
+        "division": "division",
+        "city": "city",
+        "warehouse": "warehouse",
+        "sales office": "sales_office",
+        "sales manager": "sales_manager",
+        "dn": "dn",
+        "delivery note": "dn",
+    }
+
+    INTENT_MAP = {
+        "top": "ranking",
+        "best": "ranking",
+        "highest": "ranking",
+        "worst": "ranking",
+        "lowest": "ranking",
+        "bottom": "ranking",
+        "compare": "comparison",
+        "vs": "comparison",
+        "trend": "trend",
+        "monthly": "trend",
+        "weekly": "trend",
+        "daily": "trend",
+        "list": "list",
+        "show": "list",
+        "total": "aggregate",
+        "overall": "aggregate",
+        "summary": "summary",
+        "overview": "summary",
+    }
+
+    def __init__(self):
+        self.fallback_patterns = self._build_fallback_patterns()
+
+    def _build_fallback_patterns(self) -> Dict[str, re.Pattern]:
+        """Fallback regex patterns for when Groq is unavailable."""
+        return {
+            "ranking": re.compile(
+                r"(?:top|best|highest|worst|lowest|bottom)\s*(\d+)?\s*(?:dealer|model|division|city|warehouse|sales office|sales manager|product)?",
+                re.I
+            ),
+            "comparison": re.compile(
+                r"compare\s+(?:the\s+)?([\w\s\-]+?)\s+(?:and|vs|versus)\s+([\w\s\-]+)",
+                re.I
+            ),
+            "aggregate": re.compile(
+                r"(?:total|overall)\s*(?:revenue|units|dns|pending)",
+                re.I
+            ),
+            "trend": re.compile(
+                r"(?:trend|monthly|weekly|daily)\s*(?:revenue|units|dns|pending)",
+                re.I
+            ),
+        }
+
+    def parse(self, query: str) -> QueryIntent:
+        """Parse query using Groq (preferred) or fallback regex."""
+        if GROQ_AVAILABLE and GROQ_CLIENT:
+            return self._parse_with_groq(query)
+        return self._parse_with_fallback(query)
+
+    def _parse_with_groq(self, query: str) -> QueryIntent:
+        """Use Groq to extract intent, entities, metrics, filters."""
+        prompt = f"""
+You are a logistics data assistant. Extract the following from the user's question and return ONLY valid JSON.
+
+Fields:
+- intent: one of ['ranking', 'aggregate', 'comparison', 'trend', 'list', 'summary']
+- entity_type: one of ['dealer', 'model', 'division', 'city', 'warehouse', 'sales_office', 'sales_manager', 'dn'] or null
+- entity_value: the specific name/value of the entity, or null
+- metric: one of ['revenue', 'units', 'dns', 'pending', 'delivery_days', 'pod_days', 'pgi_days'] or null
+- filters: object with keys like division, city, warehouse, dealer, model, etc. (values are strings)
+- time_period: one of ['today', 'this_week', 'this_month', 'last_month', 'last_3_months', 'last_6_months', 'year_to_date'] or null
+- grouping: one of ['month', 'week', 'day', 'division', 'city', 'dealer', 'warehouse'] or null
+- sort_by: metric to sort by, e.g., 'revenue', 'units', 'pending'
+- sort_order: 'ASC' or 'DESC'
+- limit: integer (default 10)
+- comparison_entities: list of two strings if intent is 'comparison', else null
+
+Question: "{query}"
+
+Return valid JSON only.
+"""
+        try:
+            response = GROQ_CLIENT.chat.completions.create(
+                model="llama3-70b-8192",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=400,
+                response_format={"type": "json_object"}
+            )
+            data = json.loads(response.choices[0].message.content)
+            return QueryIntent(
+                intent=data.get("intent", "summary"),
+                entity_type=data.get("entity_type"),
+                entity_value=data.get("entity_value"),
+                metric=data.get("metric"),
+                filters=data.get("filters", {}),
+                time_period=data.get("time_period"),
+                grouping=data.get("grouping"),
+                sort_by=data.get("sort_by"),
+                sort_order=data.get("sort_order", "DESC"),
+                limit=data.get("limit", 10),
+                comparison_entities=data.get("comparison_entities"),
+            )
+        except Exception as e:
+            logger.error(f"Groq parse error: {e}")
+            return self._parse_with_fallback(query)
+
+    def _parse_with_fallback(self, query: str) -> QueryIntent:
+        """Fallback regex-based parsing."""
+        q = query.lower()
+        intent = "summary"
+        entity_type = None
+        entity_value = None
+        metric = None
+        filters = {}
+        time_period = None
+        grouping = None
+        sort_by = None
+        sort_order = "DESC"
+        limit = 10
+        comparison_entities = None
+
+        # Detect intent
+        if re.search(r"(?:top|best|highest|worst|lowest|bottom)", q):
+            intent = "ranking"
+            # try to extract limit
+            m = re.search(r"top\s*(\d+)", q)
+            if m:
+                limit = int(m.group(1))
+            # try to extract entity
+            for ent in ["dealer", "model", "division", "city", "warehouse", "sales office", "sales manager"]:
+                if ent in q:
+                    entity_type = ent.replace(" ", "_")
+                    # try to extract value after 'of' or 'for'
+                    m = re.search(r"(?:of|for)\s+(.+?)(?:\s+in|\s+with|\s+and|$)", q)
+                    if m:
+                        entity_value = m.group(1).strip()
+                    break
+        elif re.search(r"compare|vs|versus", q):
+            intent = "comparison"
+            m = re.search(r"compare\s+(.+?)\s+(?:and|vs|versus)\s+(.+)", q)
+            if m:
+                comparison_entities = [m.group(1).strip(), m.group(2).strip()]
+        elif re.search(r"(?:total|overall)\s*(?:revenue|units|dns|pending)", q):
+            intent = "aggregate"
+            for met in ["revenue", "units", "dns", "pending"]:
+                if met in q:
+                    metric = met
+                    break
+        elif re.search(r"(?:trend|monthly|weekly|daily)", q):
+            intent = "trend"
+            for met in ["revenue", "units", "dns", "pending"]:
+                if met in q:
+                    metric = met
+                    break
+            if "monthly" in q:
+                grouping = "month"
+            elif "weekly" in q:
+                grouping = "week"
+            elif "daily" in q:
+                grouping = "day"
+
+        # Extract entity and metric from specific phrases
+        # e.g., "revenue of Washing Machine" -> metric=revenue, entity_type=division, entity_value=Washing Machine
+        for met in ["revenue", "units", "dns", "pending"]:
+            if met in q:
+                metric = met
+                # try to find entity after "of" or "for"
+                m = re.search(r"(?:of|for)\s+(.+?)(?:\s+in|\s+with|$)", q)
+                if m:
+                    entity_value = m.group(1).strip()
+                    # determine entity type by context
+                    for ent in ["division", "model", "city", "dealer", "warehouse"]:
+                        if ent in q:
+                            entity_type = ent
+                            break
+                    if not entity_type:
+                        entity_type = "division"  # default assumption
+                break
+
+        # Extract filters like "in Lahore", "for dealer ABC"
+        m = re.search(r"in\s+([\w\s\-]+)(?:\s+with|\s+and|$)", q)
+        if m:
+            city = m.group(1).strip()
+            if "city" not in filters:
+                filters["city"] = city
+
+        m = re.search(r"for\s+(?:dealer|customer)\s+([\w\s\-]+)", q)
+        if m:
+            filters["dealer"] = m.group(1).strip()
+
+        # Time periods
+        if "today" in q:
+            time_period = "today"
+        elif "this week" in q:
+            time_period = "this_week"
+        elif "this month" in q:
+            time_period = "this_month"
+        elif "last month" in q:
+            time_period = "last_month"
+        elif "last 3 months" in q or "last three months" in q:
+            time_period = "last_3_months"
+        elif "last 6 months" in q or "last six months" in q:
+            time_period = "last_6_months"
+        elif "year to date" in q or "ytd" in q:
+            time_period = "year_to_date"
+
+        # Sort order
+        if "highest" in q or "top" in q or "best" in q:
+            sort_order = "DESC"
+        elif "lowest" in q or "worst" in q or "bottom" in q:
+            sort_order = "ASC"
+
+        return QueryIntent(
+            intent=intent,
+            entity_type=entity_type,
+            entity_value=entity_value,
+            metric=metric,
+            filters=filters,
+            time_period=time_period,
+            grouping=grouping,
+            sort_by=metric if metric else "revenue",
+            sort_order=sort_order,
+            limit=limit,
+            comparison_entities=comparison_entities,
+        )
+
+# ============================================================
+# DYNAMIC SQL BUILDER
+# ============================================================
+
+class SQLBuilder:
+    """Build SQL queries dynamically from QueryIntent."""
+
+    def __init__(self):
+        self.base_table = "delivery_reports"
+
+    def build(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
+        """Return (sql, params) for the given intent."""
+        if intent.intent == "aggregate":
+            return self._build_aggregate(intent)
+        elif intent.intent == "ranking":
+            return self._build_ranking(intent)
+        elif intent.intent == "comparison":
+            return self._build_comparison(intent)
+        elif intent.intent == "trend":
+            return self._build_trend(intent)
+        elif intent.intent == "list":
+            return self._build_list(intent)
+        else:  # summary
+            return self._build_summary(intent)
+
+    def _apply_filters(self, filters: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        """Build WHERE clause from filters dict."""
+        conditions = []
+        params = {}
+        for key, value in filters.items():
+            if value:
+                # Map filter keys to column names
+                col_map = {
+                    "division": "division",
+                    "city": "ship_to_city",
+                    "warehouse": "warehouse",
+                    "dealer": "customer_name",
+                    "model": "customer_model",
+                    "sales_office": "sales_office",
+                    "sales_manager": "sales_manager",
+                }
+                col = col_map.get(key, key)
+                conditions.append(f"LOWER({col}) = LOWER(:{key})")
+                params[key] = value
+        return " AND ".join(conditions) if conditions else "1=1", params
+
+    def _apply_time_period(self, time_period: Optional[str]) -> Tuple[str, Dict[str, Any]]:
+        """Add time filter based on time_period."""
+        if not time_period:
+            return "", {}
+        now = datetime.now()
+        params = {}
+        if time_period == "today":
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            cond = "dn_create_date >= :start_date"
+            params["start_date"] = start
+        elif time_period == "this_week":
+            start = now - timedelta(days=now.weekday())
+            start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+            cond = "dn_create_date >= :start_date"
+            params["start_date"] = start
+        elif time_period == "this_month":
+            start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            cond = "dn_create_date >= :start_date"
+            params["start_date"] = start
+        elif time_period == "last_month":
+            start = (now.replace(day=1) - timedelta(days=1)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            end = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(seconds=1)
+            cond = "dn_create_date BETWEEN :start_date AND :end_date"
+            params["start_date"] = start
+            params["end_date"] = end
+        elif time_period == "last_3_months":
+            start = now - timedelta(days=90)
+            cond = "dn_create_date >= :start_date"
+            params["start_date"] = start
+        elif time_period == "last_6_months":
+            start = now - timedelta(days=180)
+            cond = "dn_create_date >= :start_date"
+            params["start_date"] = start
+        elif time_period == "year_to_date":
+            start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            cond = "dn_create_date >= :start_date"
+            params["start_date"] = start
+        else:
+            return "", {}
+        return cond, params
+
+    def _build_aggregate(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
+        """Build aggregate query (e.g., total revenue)."""
+        metric = intent.metric or "revenue"
+        metric_col_map = {
+            "revenue": "COALESCE(SUM(dn_amount), 0) AS value",
+            "units": "COALESCE(SUM(dn_qty), 0) AS value",
+            "dns": "COUNT(DISTINCT dn_no) AS value",
+            "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END) AS value",
+            "delivery_days": "ROUND(AVG(pod_date - good_issue_date), 2) AS value",
+            "pod_days": "ROUND(AVG(pod_date - good_issue_date), 2) AS value",  # alias
+            "pgi_days": "ROUND(AVG(good_issue_date - dn_create_date), 2) AS value",
+        }
+        select = metric_col_map.get(metric, "COALESCE(SUM(dn_amount), 0) AS value")
+
+        # Build WHERE
+        filter_clause, filter_params = self._apply_filters(intent.filters)
+        time_clause, time_params = self._apply_time_period(intent.time_period)
+        where = []
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where) if where else "1=1"
+        params = {**filter_params, **time_params}
+
+        sql = f"""
+            SELECT {select}
+            FROM {self.base_table}
+            WHERE {where_str}
+        """
+        return sql, params
+
+    def _build_ranking(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
+        """Build ranking query (top N by metric)."""
+        metric = intent.sort_by or intent.metric or "revenue"
+        metric_col_map = {
+            "revenue": "COALESCE(SUM(dn_amount), 0) AS metric_value",
+            "units": "COALESCE(SUM(dn_qty), 0) AS metric_value",
+            "dns": "COUNT(DISTINCT dn_no) AS metric_value",
+            "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END) AS metric_value",
+        }
+        select_metric = metric_col_map.get(metric, "COALESCE(SUM(dn_amount), 0) AS metric_value")
+
+        # Determine entity to group by
+        entity = intent.entity_type or "division"
+        entity_col_map = {
+            "dealer": "customer_name",
+            "model": "customer_model",
+            "division": "division",
+            "city": "ship_to_city",
+            "warehouse": "warehouse",
+            "sales_office": "sales_office",
+            "sales_manager": "sales_manager",
+        }
+        group_col = entity_col_map.get(entity, "division")
+        select_entity = f"{group_col} AS entity_name"
+
+        # Build WHERE
+        filter_clause, filter_params = self._apply_filters(intent.filters)
+        time_clause, time_params = self._apply_time_period(intent.time_period)
+        where = []
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where) if where else "1=1"
+        params = {**filter_params, **time_params}
+
+        order = intent.sort_order or "DESC"
+        limit = intent.limit or 10
+        sql = f"""
+            SELECT {select_entity}, {select_metric}
+            FROM {self.base_table}
+            WHERE {where_str}
+            GROUP BY {group_col}
+            ORDER BY metric_value {order}
+            LIMIT :limit
+        """
+        params["limit"] = limit
+        return sql, params
+
+    def _build_comparison(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
+        """Build comparison query (two entities)."""
+        if not intent.comparison_entities or len(intent.comparison_entities) < 2:
+            # fallback to aggregate on two filters
+            return self._build_aggregate(intent)
+
+        entity1, entity2 = intent.comparison_entities
+        # Determine entity type from intent or default to division
+        entity = intent.entity_type or "division"
+        col_map = {
+            "dealer": "customer_name",
+            "model": "customer_model",
+            "division": "division",
+            "city": "ship_to_city",
+            "warehouse": "warehouse",
+            "sales_office": "sales_office",
+            "sales_manager": "sales_manager",
+        }
+        col = col_map.get(entity, "division")
+
+        metric = intent.metric or "revenue"
+        metric_expr = {
+            "revenue": "COALESCE(SUM(dn_amount), 0)",
+            "units": "COALESCE(SUM(dn_qty), 0)",
+            "dns": "COUNT(DISTINCT dn_no)",
+            "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END)",
+        }.get(metric, "COALESCE(SUM(dn_amount), 0)")
+
+        # Build WHERE with two entities
+        filter_clause, filter_params = self._apply_filters(intent.filters)
+        time_clause, time_params = self._apply_time_period(intent.time_period)
+        where = [f"LOWER({col}) IN (LOWER(:e1), LOWER(:e2))"]
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where)
+        params = {"e1": entity1, "e2": entity2, **filter_params, **time_params}
+
+        sql = f"""
+            SELECT
+                {col} AS entity_name,
+                {metric_expr} AS metric_value
+            FROM {self.base_table}
+            WHERE {where_str}
+            GROUP BY {col}
+        """
+        return sql, params
+
+    def _build_trend(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
+        """Build trend query (time series)."""
+        metric = intent.metric or "revenue"
+        metric_expr = {
+            "revenue": "COALESCE(SUM(dn_amount), 0)",
+            "units": "COALESCE(SUM(dn_qty), 0)",
+            "dns": "COUNT(DISTINCT dn_no)",
+            "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END)",
+        }.get(metric, "COALESCE(SUM(dn_amount), 0)")
+
+        grouping = intent.grouping or "month"
+        group_expr = {
+            "month": "TO_CHAR(dn_create_date, 'YYYY-MM')",
+            "week": "TO_CHAR(dn_create_date, 'IYYY-WW')",
+            "day": "TO_CHAR(dn_create_date, 'YYYY-MM-DD')",
+        }.get(grouping, "TO_CHAR(dn_create_date, 'YYYY-MM')")
+
+        # Build WHERE
+        filter_clause, filter_params = self._apply_filters(intent.filters)
+        time_clause, time_params = self._apply_time_period(intent.time_period)
+        where = []
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where) if where else "1=1"
+        params = {**filter_params, **time_params}
+
+        sql = f"""
+            SELECT
+                {group_expr} AS period,
+                {metric_expr} AS metric_value
+            FROM {self.base_table}
+            WHERE {where_str}
+            GROUP BY {group_expr}
+            ORDER BY period
+        """
+        return sql, params
+
+    def _build_list(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
+        """Build list query (list DNs, dealers, etc.)."""
+        # For simplicity, treat as ranking with entity_type = 'dn' or similar
+        # We'll return a simple list of entities
+        entity = intent.entity_type or "dn"
+        col_map = {
+            "dealer": "customer_name",
+            "model": "customer_model",
+            "division": "division",
+            "city": "ship_to_city",
+            "warehouse": "warehouse",
+            "sales_office": "sales_office",
+            "sales_manager": "sales_manager",
+            "dn": "dn_no",
+        }
+        col = col_map.get(entity, "dn_no")
+        select_col = f"TRIM({col}) AS entity_name"
+        group_col = col
+
+        # Build WHERE
+        filter_clause, filter_params = self._apply_filters(intent.filters)
+        time_clause, time_params = self._apply_time_period(intent.time_period)
+        where = []
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where) if where else "1=1"
+        params = {**filter_params, **time_params}
+
+        limit = intent.limit or 20
+        sql = f"""
+            SELECT DISTINCT {select_col}
+            FROM {self.base_table}
+            WHERE {where_str}
+            ORDER BY entity_name
+            LIMIT :limit
+        """
+        params["limit"] = limit
+        return sql, params
+
+    def _build_summary(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
+        """Build a summary query (multiple aggregates)."""
+        # Return a few key metrics
+        filter_clause, filter_params = self._apply_filters(intent.filters)
+        time_clause, time_params = self._apply_time_period(intent.time_period)
+        where = []
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where) if where else "1=1"
+        params = {**filter_params, **time_params}
+
+        sql = f"""
+            SELECT
+                COALESCE(SUM(dn_amount), 0) AS revenue,
+                COALESCE(SUM(dn_qty), 0) AS units,
+                COUNT(DISTINCT dn_no) AS dns,
+                COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END) AS pending,
+                ROUND(AVG(pod_date - good_issue_date), 2) AS avg_delivery_days
+            FROM {self.base_table}
+            WHERE {where_str}
+        """
+        return sql, params
+
+# ============================================================
+# REPOSITORY (EXECUTES QUERIES)
 # ============================================================
 
 class LogisticsRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    # ----- BASIC AGGREGATES -----
-    def get_total_revenue(self) -> float:
+    def execute_query(self, sql: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Execute a SQL query and return results as list of dicts."""
         try:
             with engine.connect() as conn:
-                return _number(conn.execute(text("SELECT COALESCE(SUM(dn_amount), 0) FROM delivery_reports")).scalar())
+                result = conn.execute(text(sql), params)
+                rows = result.fetchall()
+                if not rows:
+                    return []
+                # Convert to list of dicts
+                columns = result.keys()
+                return [dict(zip(columns, row)) for row in rows]
         except Exception as e:
-            logger.error(f"get_total_revenue error: {e}")
-            return 0.0
-
-    def get_total_dns(self) -> int:
-        try:
-            with engine.connect() as conn:
-                return _int(conn.execute(text("SELECT COUNT(DISTINCT dn_no) FROM delivery_reports")).scalar())
-        except Exception as e:
-            logger.error(f"get_total_dns error: {e}")
-            return 0
-
-    def get_total_units(self) -> int:
-        try:
-            with engine.connect() as conn:
-                return _int(conn.execute(text("SELECT COALESCE(SUM(dn_qty), 0) FROM delivery_reports")).scalar())
-        except Exception as e:
-            logger.error(f"get_total_units error: {e}")
-            return 0
-
-    def get_pending_dns(self) -> int:
-        try:
-            with engine.connect() as conn:
-                return _int(conn.execute(text("SELECT COUNT(DISTINCT dn_no) FROM delivery_reports WHERE pending_flag = true")).scalar())
-        except Exception as e:
-            logger.error(f"get_pending_dns error: {e}")
-            return 0
-
-    # ----- BY DIMENSION -----
-    def get_revenue_by_division(self, division: str) -> float:
-        try:
-            with engine.connect() as conn:
-                return _number(conn.execute(
-                    text("SELECT COALESCE(SUM(dn_amount), 0) FROM delivery_reports WHERE LOWER(division) = LOWER(:div)"),
-                    {"div": division}
-                ).scalar())
-        except Exception as e:
-            logger.error(f"get_revenue_by_division error: {e}")
-            return 0.0
-
-    def get_units_by_division(self, division: str) -> int:
-        try:
-            with engine.connect() as conn:
-                return _int(conn.execute(
-                    text("SELECT COALESCE(SUM(dn_qty), 0) FROM delivery_reports WHERE LOWER(division) = LOWER(:div)"),
-                    {"div": division}
-                ).scalar())
-        except Exception as e:
-            logger.error(f"get_units_by_division error: {e}")
-            return 0
-
-    def get_pending_by_division(self, division: str) -> int:
-        try:
-            with engine.connect() as conn:
-                return _int(conn.execute(
-                    text("SELECT COUNT(DISTINCT dn_no) FROM delivery_reports WHERE LOWER(division) = LOWER(:div) AND pending_flag = true"),
-                    {"div": division}
-                ).scalar())
-        except Exception as e:
-            logger.error(f"get_pending_by_division error: {e}")
-            return 0
-
-    def get_revenue_by_model(self, model: str) -> float:
-        try:
-            with engine.connect() as conn:
-                return _number(conn.execute(
-                    text("SELECT COALESCE(SUM(dn_amount), 0) FROM delivery_reports WHERE LOWER(customer_model) = LOWER(:model)"),
-                    {"model": model}
-                ).scalar())
-        except Exception as e:
-            logger.error(f"get_revenue_by_model error: {e}")
-            return 0.0
-
-    def get_units_by_model(self, model: str) -> int:
-        try:
-            with engine.connect() as conn:
-                return _int(conn.execute(
-                    text("SELECT COALESCE(SUM(dn_qty), 0) FROM delivery_reports WHERE LOWER(customer_model) = LOWER(:model)"),
-                    {"model": model}
-                ).scalar())
-        except Exception as e:
-            logger.error(f"get_units_by_model error: {e}")
-            return 0
-
-    def get_revenue_by_city(self, city: str) -> float:
-        try:
-            with engine.connect() as conn:
-                return _number(conn.execute(
-                    text("SELECT COALESCE(SUM(dn_amount), 0) FROM delivery_reports WHERE LOWER(ship_to_city) = LOWER(:city)"),
-                    {"city": city}
-                ).scalar())
-        except Exception as e:
-            logger.error(f"get_revenue_by_city error: {e}")
-            return 0.0
-
-    def get_revenue_by_dealer(self, dealer: str) -> float:
-        try:
-            with engine.connect() as conn:
-                return _number(conn.execute(
-                    text("SELECT COALESCE(SUM(dn_amount), 0) FROM delivery_reports WHERE LOWER(customer_name) = LOWER(:dealer)"),
-                    {"dealer": dealer}
-                ).scalar())
-        except Exception as e:
-            logger.error(f"get_revenue_by_dealer error: {e}")
-            return 0.0
-
-    def get_revenue_by_warehouse(self, warehouse: str) -> float:
-        try:
-            with engine.connect() as conn:
-                return _number(conn.execute(
-                    text("SELECT COALESCE(SUM(dn_amount), 0) FROM delivery_reports WHERE LOWER(warehouse) = LOWER(:wh)"),
-                    {"wh": warehouse}
-                ).scalar())
-        except Exception as e:
-            logger.error(f"get_revenue_by_warehouse error: {e}")
-            return 0.0
-
-    # ----- RANKINGS -----
-    def get_top_divisions(self, limit: int = 5) -> List[Dict[str, Any]]:
-        try:
-            with engine.connect() as conn:
-                rows = conn.execute(
-                    text("""
-                        SELECT division, COALESCE(SUM(dn_amount), 0) AS revenue
-                        FROM delivery_reports
-                        WHERE division IS NOT NULL AND division != ''
-                        GROUP BY division
-                        ORDER BY revenue DESC
-                        LIMIT :limit
-                    """),
-                    {"limit": limit}
-                ).fetchall()
-                return [{"name": r[0], "revenue": _number(r[1])} for r in rows if r[0]]
-        except Exception as e:
-            logger.error(f"get_top_divisions error: {e}")
-            return []
-
-    def get_top_models(self, limit: int = 5) -> List[Dict[str, Any]]:
-        try:
-            with engine.connect() as conn:
-                rows = conn.execute(
-                    text("""
-                        SELECT customer_model, COALESCE(SUM(dn_amount), 0) AS revenue
-                        FROM delivery_reports
-                        WHERE customer_model IS NOT NULL AND customer_model != ''
-                        GROUP BY customer_model
-                        ORDER BY revenue DESC
-                        LIMIT :limit
-                    """),
-                    {"limit": limit}
-                ).fetchall()
-                return [{"name": r[0], "revenue": _number(r[1])} for r in rows if r[0]]
-        except Exception as e:
-            logger.error(f"get_top_models error: {e}")
-            return []
-
-    def get_top_dealers(self, limit: int = 5) -> List[Dict[str, Any]]:
-        try:
-            with engine.connect() as conn:
-                rows = conn.execute(
-                    text("""
-                        SELECT customer_name, COALESCE(SUM(dn_amount), 0) AS revenue
-                        FROM delivery_reports
-                        WHERE customer_name IS NOT NULL AND customer_name != ''
-                        GROUP BY customer_name
-                        ORDER BY revenue DESC
-                        LIMIT :limit
-                    """),
-                    {"limit": limit}
-                ).fetchall()
-                return [{"name": r[0], "revenue": _number(r[1])} for r in rows if r[0]]
-        except Exception as e:
-            logger.error(f"get_top_dealers error: {e}")
-            return []
-
-    def get_top_cities(self, limit: int = 5) -> List[Dict[str, Any]]:
-        try:
-            with engine.connect() as conn:
-                rows = conn.execute(
-                    text("""
-                        SELECT ship_to_city, COALESCE(SUM(dn_amount), 0) AS revenue
-                        FROM delivery_reports
-                        WHERE ship_to_city IS NOT NULL AND ship_to_city != ''
-                        GROUP BY ship_to_city
-                        ORDER BY revenue DESC
-                        LIMIT :limit
-                    """),
-                    {"limit": limit}
-                ).fetchall()
-                return [{"name": r[0], "revenue": _number(r[1])} for r in rows if r[0]]
-        except Exception as e:
-            logger.error(f"get_top_cities error: {e}")
-            return []
-
-    def get_top_warehouses(self, limit: int = 5) -> List[Dict[str, Any]]:
-        try:
-            with engine.connect() as conn:
-                rows = conn.execute(
-                    text("""
-                        SELECT warehouse, COALESCE(SUM(dn_amount), 0) AS revenue
-                        FROM delivery_reports
-                        WHERE warehouse IS NOT NULL AND warehouse != ''
-                        GROUP BY warehouse
-                        ORDER BY revenue DESC
-                        LIMIT :limit
-                    """),
-                    {"limit": limit}
-                ).fetchall()
-                return [{"name": r[0], "revenue": _number(r[1])} for r in rows if r[0]]
-        except Exception as e:
-            logger.error(f"get_top_warehouses error: {e}")
-            return []
-
-    # ----- TRENDS -----
-    def get_monthly_revenue(self, months: int = 3) -> List[Dict[str, Any]]:
-        try:
-            with engine.connect() as conn:
-                rows = conn.execute(
-                    text("""
-                        SELECT TO_CHAR(dn_create_date, 'YYYY-MM') AS month,
-                               COALESCE(SUM(dn_amount), 0) AS revenue
-                        FROM delivery_reports
-                        WHERE dn_create_date >= CURRENT_DATE - INTERVAL :months * INTERVAL '1 month'
-                        GROUP BY TO_CHAR(dn_create_date, 'YYYY-MM')
-                        ORDER BY month
-                    """),
-                    {"months": months}
-                ).fetchall()
-                return [{"month": r[0], "revenue": _number(r[1])} for r in rows]
-        except Exception as e:
-            logger.error(f"get_monthly_revenue error: {e}")
+            logger.error(f"SQL execution error: {e}")
             return []
 
 # ============================================================
-# INTENT & ENTITY EXTRACTION (Pattern + Groq)
+# RESPONSE FORMATTER
 # ============================================================
 
-class QueryParser:
-    def __init__(self):
-        # Common entity patterns
-        self.entity_patterns = {
-            "division": re.compile(r"(?:division|category|type)\s*(?:is\s*)?['\"]?([\w\s\-]+)['\"]?", re.I),
-            "model": re.compile(r"(?:model|product|sku)\s*(?:is\s*)?['\"]?([\w\s\-]+)['\"]?", re.I),
-            "city": re.compile(r"(?:city|location|in)\s*(?:is\s*)?['\"]?([\w\s\-]+)['\"]?", re.I),
-            "dealer": re.compile(r"(?:dealer|customer|partner)\s*(?:is\s*)?['\"]?([\w\s\-]+)['\"]?", re.I),
-            "warehouse": re.compile(r"(?:warehouse|wh)\s*(?:is\s*)?['\"]?([\w\s\-]+)['\"]?", re.I),
-        }
-        # Intent patterns (fallback)
-        self.intent_patterns = {
-            "total_revenue": re.compile(r"(?:total|overall)?\s*revenue", re.I),
-            "pending_dns": re.compile(r"pending\s*(?:dn|delivery|order)", re.I),
-            "top_divisions": re.compile(r"(?:top|best|highest)\s*division", re.I),
-            "top_models": re.compile(r"(?:top|best|highest)\s*(?:model|product)", re.I),
-            "top_dealers": re.compile(r"(?:top|best|highest)\s*(?:dealer|customer)", re.I),
-            "top_cities": re.compile(r"(?:top|best|highest)\s*cit(?:y|ies)", re.I),
-            "top_warehouses": re.compile(r"(?:top|best|highest)\s*warehouse", re.I),
-            "revenue_by_entity": re.compile(r"revenue\s*(?:for|of|by)\s*['\"]?([\w\s\-]+)['\"]?", re.I),
-            "units_by_entity": re.compile(r"units?\s*(?:for|of|by)\s*['\"]?([\w\s\-]+)['\"]?", re.I),
-            "comparison": re.compile(r"compare\s+(?:the\s+)?([\w\s\-]+?)\s+and\s+([\w\s\-]+)", re.I),
-            "trend": re.compile(r"(?:trend|monthly|recent)\s*(?:revenue|sales)", re.I),
-            "greeting": re.compile(r"^(hi|hello|hey|start|menu|help)$", re.I),
-        }
+class ResponseFormatter:
+    @staticmethod
+    def format_results(intent: QueryIntent, results: List[Dict[str, Any]]) -> str:
+        """Format query results into WhatsApp-friendly message."""
+        if not results:
+            return "No data found for your query."
 
-    def parse(self, query: str) -> Dict[str, Any]:
-        """Extract intent and entities using pattern matching (fallback)."""
-        result = {
-            "intent": "unknown",
-            "entities": {},
-            "raw_query": query,
-        }
+        if intent.intent == "aggregate":
+            return ResponseFormatter._format_aggregate(intent, results)
+        elif intent.intent == "ranking":
+            return ResponseFormatter._format_ranking(intent, results)
+        elif intent.intent == "comparison":
+            return ResponseFormatter._format_comparison(intent, results)
+        elif intent.intent == "trend":
+            return ResponseFormatter._format_trend(intent, results)
+        elif intent.intent == "list":
+            return ResponseFormatter._format_list(intent, results)
+        else:  # summary
+            return ResponseFormatter._format_summary(intent, results)
 
-        # Extract entities
-        for key, pattern in self.entity_patterns.items():
-            match = pattern.search(query)
-            if match:
-                result["entities"][key] = match.group(1).strip()
+    @staticmethod
+    def _format_aggregate(intent: QueryIntent, results: List[Dict]) -> str:
+        row = results[0]
+        metric = intent.metric or "revenue"
+        label = {
+            "revenue": "💰 Revenue",
+            "units": "📦 Units",
+            "dns": "🚚 DNs",
+            "pending": "⏳ Pending DNs",
+            "delivery_days": "📅 Avg Delivery Days",
+            "pod_days": "📅 Avg POD Days",
+            "pgi_days": "📅 Avg PGI Days",
+        }.get(metric, "Value")
+        value = row.get("value", "N/A")
+        if metric == "revenue":
+            value = _format_currency(value)
+        elif metric in ["units", "dns", "pending"]:
+            value = _format_number(value)
+        elif metric in ["delivery_days", "pod_days", "pgi_days"]:
+            value = f"{value:.1f} days"
+        return f"{label}: {value}"
 
-        # Detect intent
-        for intent, pattern in self.intent_patterns.items():
-            if pattern.search(query):
-                result["intent"] = intent
-                # For revenue_by_entity and units_by_entity, entities might be already captured
-                break
+    @staticmethod
+    def _format_ranking(intent: QueryIntent, results: List[Dict]) -> str:
+        entity_label = intent.entity_type or "Division"
+        metric = intent.sort_by or intent.metric or "revenue"
+        metric_label = {
+            "revenue": "Revenue",
+            "units": "Units",
+            "dns": "DNs",
+            "pending": "Pending DNs",
+        }.get(metric, "Value")
 
-        # Additional logic: if "revenue" and an entity is present, set intent to revenue_by_entity
-        if "revenue" in query.lower() and result["entities"]:
-            if "division" in result["entities"]:
-                result["intent"] = "revenue_by_division"
-            elif "model" in result["entities"]:
-                result["intent"] = "revenue_by_model"
-            elif "city" in result["entities"]:
-                result["intent"] = "revenue_by_city"
-            elif "dealer" in result["entities"]:
-                result["intent"] = "revenue_by_dealer"
-            elif "warehouse" in result["entities"]:
-                result["intent"] = "revenue_by_warehouse"
+        lines = [f"🏆 *Top {len(results)} {entity_label.capitalize()} by {metric_label}*", ""]
+        for i, row in enumerate(results, 1):
+            name = row.get("entity_name", "Unknown")
+            value = row.get("metric_value", 0)
+            if metric == "revenue":
+                value = _format_currency(value)
+            elif metric in ["units", "dns", "pending"]:
+                value = _format_number(value)
+            else:
+                value = f"{value:.1f}"
+            lines.append(f"{i}. {name}: {value}")
+        return "\n".join(lines)
 
-        if "units" in query.lower() and result["entities"]:
-            if "division" in result["entities"]:
-                result["intent"] = "units_by_division"
-            elif "model" in result["entities"]:
-                result["intent"] = "units_by_model"
+    @staticmethod
+    def _format_comparison(intent: QueryIntent, results: List[Dict]) -> str:
+        if not results or len(results) < 2:
+            return "Comparison data not available."
+        entity_label = intent.entity_type or "Entity"
+        metric = intent.metric or "revenue"
+        metric_label = {
+            "revenue": "Revenue",
+            "units": "Units",
+            "dns": "DNs",
+            "pending": "Pending DNs",
+        }.get(metric, "Value")
 
-        return result
+        lines = [f"📊 *Comparison ({metric_label})*", ""]
+        for row in results:
+            name = row.get("entity_name", "Unknown")
+            value = row.get("metric_value", 0)
+            if metric == "revenue":
+                value = _format_currency(value)
+            elif metric in ["units", "dns", "pending"]:
+                value = _format_number(value)
+            else:
+                value = f"{value:.1f}"
+            lines.append(f"{name}: {value}")
+        # Add difference if possible
+        if len(results) == 2:
+            v1 = _number(results[0].get("metric_value", 0))
+            v2 = _number(results[1].get("metric_value", 0))
+            diff = v1 - v2
+            diff_str = _format_currency(diff) if metric == "revenue" else f"{diff:+,.0f}"
+            lines.append(f"\nDifference: {diff_str}")
+        return "\n".join(lines)
 
-    def parse_with_groq(self, query: str) -> Dict[str, Any]:
-        """Use Groq to understand intent and extract entities (more robust)."""
-        if not GROQ_AVAILABLE or not GROQ_CLIENT:
-            return self.parse(query)
+    @staticmethod
+    def _format_trend(intent: Intent, results: List[Dict]) -> str:
+        metric = intent.metric or "revenue"
+        metric_label = {
+            "revenue": "Revenue",
+            "units": "Units",
+            "dns": "DNs",
+            "pending": "Pending DNs",
+        }.get(metric, "Value")
+        lines = [f"📈 *{metric_label} Trend*", ""]
+        for row in results:
+            period = row.get("period", "N/A")
+            value = row.get("metric_value", 0)
+            if metric == "revenue":
+                value = _format_currency(value)
+            elif metric in ["units", "dns", "pending"]:
+                value = _format_number(value)
+            else:
+                value = f"{value:.1f}"
+            lines.append(f"{period}: {value}")
+        return "\n".join(lines)
 
-        try:
-            prompt = f"""
-You are a logistics data assistant. Analyze the user's question and extract the following information:
-- intent: one of ['total_revenue', 'pending_dns', 'top_divisions', 'top_models', 'top_dealers', 'top_cities', 'top_warehouses', 'revenue_by_division', 'revenue_by_model', 'revenue_by_city', 'revenue_by_dealer', 'revenue_by_warehouse', 'units_by_division', 'units_by_model', 'comparison', 'trend', 'greeting', 'unknown']
-- entities: dict with keys like division, model, city, dealer, warehouse, product1, product2
-- If comparison, extract product1 and product2.
-Return only valid JSON.
+    @staticmethod
+    def _format_list(intent: Intent, results: List[Dict]) -> str:
+        entity_label = intent.entity_type or "Item"
+        lines = [f"📋 *List of {entity_label.capitalize()}*", ""]
+        for i, row in enumerate(results, 1):
+            name = row.get("entity_name", "Unknown")
+            lines.append(f"{i}. {name}")
+        return "\n".join(lines)
 
-Question: "{query}"
-"""
-            response = GROQ_CLIENT.chat.completions.create(
-                model="llama3-70b-8192",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=300,
-                response_format={"type": "json_object"}
-            )
-            import json
-            result = json.loads(response.choices[0].message.content)
-            result["raw_query"] = query
-            return result
-        except Exception as e:
-            logger.error(f"Groq parse error: {e}")
-            return self.parse(query)
-
-# ============================================================
-# RESPONSE GENERATOR (Pattern + Groq)
-# ============================================================
-
-class ResponseGenerator:
-    def __init__(self):
-        self.repo = LogisticsRepository(SessionLocal())
-
-    def generate(self, parsed: Dict[str, Any]) -> str:
-        intent = parsed.get("intent", "unknown")
-        entities = parsed.get("entities", {})
-        query = parsed.get("raw_query", "")
-
-        # Handle greeting
-        if intent == "greeting":
-            return self._get_welcome()
-
-        # Handle specific intents
-        if intent == "total_revenue":
-            return self._total_revenue()
-        elif intent == "pending_dns":
-            return self._pending_dns()
-        elif intent == "top_divisions":
-            return self._top_divisions()
-        elif intent == "top_models":
-            return self._top_models()
-        elif intent == "top_dealers":
-            return self._top_dealers()
-        elif intent == "top_cities":
-            return self._top_cities()
-        elif intent == "top_warehouses":
-            return self._top_warehouses()
-        elif intent == "revenue_by_division":
-            div = entities.get("division") or self._extract_from_query(query, "division")
-            return self._revenue_by_division(div)
-        elif intent == "revenue_by_model":
-            model = entities.get("model") or self._extract_from_query(query, "model")
-            return self._revenue_by_model(model)
-        elif intent == "revenue_by_city":
-            city = entities.get("city") or self._extract_from_query(query, "city")
-            return self._revenue_by_city(city)
-        elif intent == "revenue_by_dealer":
-            dealer = entities.get("dealer") or self._extract_from_query(query, "dealer")
-            return self._revenue_by_dealer(dealer)
-        elif intent == "revenue_by_warehouse":
-            wh = entities.get("warehouse") or self._extract_from_query(query, "warehouse")
-            return self._revenue_by_warehouse(wh)
-        elif intent == "units_by_division":
-            div = entities.get("division") or self._extract_from_query(query, "division")
-            return self._units_by_division(div)
-        elif intent == "units_by_model":
-            model = entities.get("model") or self._extract_from_query(query, "model")
-            return self._units_by_model(model)
-        elif intent == "comparison":
-            p1 = entities.get("product1") or self._extract_from_query(query, "product1")
-            p2 = entities.get("product2") or self._extract_from_query(query, "product2")
-            return self._comparison(p1, p2)
-        elif intent == "trend":
-            return self._trend()
-        else:
-            # Fallback: try to use Groq to generate a generic answer
-            if GROQ_AVAILABLE and GROQ_CLIENT:
-                return self._ask_groq(query)
-            return self._fallback_response(query)
-
-    # ---- Helper to extract entity from query if not found ----
-    def _extract_from_query(self, query: str, entity_type: str) -> Optional[str]:
-        # Simple heuristic: look for quoted text or common patterns
-        # If entity_type is 'division', look for "division is ..." etc.
-        patterns = {
-            "division": re.compile(r"(?:division|category|type)\s*(?:is\s*)?['\"]?([\w\s\-]+)['\"]?", re.I),
-            "model": re.compile(r"(?:model|product|sku)\s*(?:is\s*)?['\"]?([\w\s\-]+)['\"]?", re.I),
-            "city": re.compile(r"(?:city|location|in)\s*(?:is\s*)?['\"]?([\w\s\-]+)['\"]?", re.I),
-            "dealer": re.compile(r"(?:dealer|customer|partner)\s*(?:is\s*)?['\"]?([\w\s\-]+)['\"]?", re.I),
-            "warehouse": re.compile(r"(?:warehouse|wh)\s*(?:is\s*)?['\"]?([\w\s\-]+)['\"]?", re.I),
-            "product1": re.compile(r"compare\s+(?:the\s+)?([\w\s\-]+?)\s+and", re.I),
-            "product2": re.compile(r"and\s+([\w\s\-]+)(?:\?|$)", re.I),
-        }
-        pattern = patterns.get(entity_type)
-        if pattern:
-            match = pattern.search(query)
-            if match:
-                return match.group(1).strip()
-        return None
-
-    # ---- Specific response methods ----
-    def _total_revenue(self) -> str:
-        revenue = self.repo.get_total_revenue()
-        pending = self.repo.get_pending_dns()
-        units = self.repo.get_total_units()
-        return "\n".join([
-            "📊 *Logistics Overview*",
+    @staticmethod
+    def _format_summary(intent: Intent, results: List[Dict]) -> str:
+        row = results[0]
+        lines = [
+            "📊 *Summary*",
             "",
-            f"💰 Total Revenue: {_format_currency(revenue)}",
-            f"📦 Total Units: {_format_number(units)}",
-            f"🚚 Total DNs: {_format_number(self.repo.get_total_dns())}",
-            f"⏳ Pending DNs: {_format_number(pending)}",
-        ])
-
-    def _pending_dns(self) -> str:
-        pending = self.repo.get_pending_dns()
-        total = self.repo.get_total_dns()
-        return f"⏳ Pending DNs: {_format_number(pending)} out of {_format_number(total)} ({round(pending/total*100 if total else 0,1)}%)"
-
-    def _top_divisions(self) -> str:
-        items = self.repo.get_top_divisions(5)
-        if not items:
-            return "No divisions found."
-        lines = ["🏆 *Top Divisions by Revenue*", ""]
-        for i, item in enumerate(items, 1):
-            lines.append(f"{i}. {item['name']}: {_format_currency(item['revenue'])}")
+            f"💰 Revenue: {_format_currency(row.get('revenue', 0))}",
+            f"📦 Units: {_format_number(row.get('units', 0))}",
+            f"🚚 DNs: {_format_number(row.get('dns', 0))}",
+            f"⏳ Pending DNs: {_format_number(row.get('pending', 0))}",
+            f"📅 Avg Delivery Days: {row.get('avg_delivery_days', 0):.1f} days",
+        ]
         return "\n".join(lines)
-
-    def _top_models(self) -> str:
-        items = self.repo.get_top_models(5)
-        if not items:
-            return "No models found."
-        lines = ["🏆 *Top Models by Revenue*", ""]
-        for i, item in enumerate(items, 1):
-            lines.append(f"{i}. {item['name']}: {_format_currency(item['revenue'])}")
-        return "\n".join(lines)
-
-    def _top_dealers(self) -> str:
-        items = self.repo.get_top_dealers(5)
-        if not items:
-            return "No dealers found."
-        lines = ["🏆 *Top Dealers by Revenue*", ""]
-        for i, item in enumerate(items, 1):
-            lines.append(f"{i}. {item['name']}: {_format_currency(item['revenue'])}")
-        return "\n".join(lines)
-
-    def _top_cities(self) -> str:
-        items = self.repo.get_top_cities(5)
-        if not items:
-            return "No cities found."
-        lines = ["🏆 *Top Cities by Revenue*", ""]
-        for i, item in enumerate(items, 1):
-            lines.append(f"{i}. {item['name']}: {_format_currency(item['revenue'])}")
-        return "\n".join(lines)
-
-    def _top_warehouses(self) -> str:
-        items = self.repo.get_top_warehouses(5)
-        if not items:
-            return "No warehouses found."
-        lines = ["🏆 *Top Warehouses by Revenue*", ""]
-        for i, item in enumerate(items, 1):
-            lines.append(f"{i}. {item['name']}: {_format_currency(item['revenue'])}")
-        return "\n".join(lines)
-
-    def _revenue_by_division(self, division: str) -> str:
-        if not division:
-            return "Please specify a division (e.g., 'Washing Machine')."
-        rev = self.repo.get_revenue_by_division(division)
-        units = self.repo.get_units_by_division(division)
-        pending = self.repo.get_pending_by_division(division)
-        return f"📊 *Division: {division}*\n\n💰 Revenue: {_format_currency(rev)}\n📦 Units: {_format_number(units)}\n⏳ Pending DNs: {_format_number(pending)}"
-
-    def _revenue_by_model(self, model: str) -> str:
-        if not model:
-            return "Please specify a product model (e.g., 'HWM120-AS MG')."
-        rev = self.repo.get_revenue_by_model(model)
-        units = self.repo.get_units_by_model(model)
-        return f"📊 *Model: {model}*\n\n💰 Revenue: {_format_currency(rev)}\n📦 Units: {_format_number(units)}"
-
-    def _revenue_by_city(self, city: str) -> str:
-        if not city:
-            return "Please specify a city."
-        rev = self.repo.get_revenue_by_city(city)
-        return f"📊 *City: {city}*\n\n💰 Revenue: {_format_currency(rev)}"
-
-    def _revenue_by_dealer(self, dealer: str) -> str:
-        if not dealer:
-            return "Please specify a dealer name."
-        rev = self.repo.get_revenue_by_dealer(dealer)
-        return f"📊 *Dealer: {dealer}*\n\n💰 Revenue: {_format_currency(rev)}"
-
-    def _revenue_by_warehouse(self, warehouse: str) -> str:
-        if not warehouse:
-            return "Please specify a warehouse."
-        rev = self.repo.get_revenue_by_warehouse(warehouse)
-        return f"📊 *Warehouse: {warehouse}*\n\n💰 Revenue: {_format_currency(rev)}"
-
-    def _units_by_division(self, division: str) -> str:
-        if not division:
-            return "Please specify a division."
-        units = self.repo.get_units_by_division(division)
-        return f"📦 *Units in {division}:* {_format_number(units)}"
-
-    def _units_by_model(self, model: str) -> str:
-        if not model:
-            return "Please specify a model."
-        units = self.repo.get_units_by_model(model)
-        return f"📦 *Units for {model}:* {_format_number(units)}"
-
-    def _comparison(self, p1: str, p2: str) -> str:
-        if not p1 or not p2:
-            return "Please specify two products to compare (e.g., 'compare A and B')."
-        rev1 = self.repo.get_revenue_by_model(p1) or self.repo.get_revenue_by_division(p1)
-        rev2 = self.repo.get_revenue_by_model(p2) or self.repo.get_revenue_by_division(p2)
-        units1 = self.repo.get_units_by_model(p1) or self.repo.get_units_by_division(p1)
-        units2 = self.repo.get_units_by_model(p2) or self.repo.get_units_by_division(p2)
-        return f"📊 *Comparison: {p1} vs {p2}*\n\n{p1}: Revenue {_format_currency(rev1)}, Units {_format_number(units1)}\n{p2}: Revenue {_format_currency(rev2)}, Units {_format_number(units2)}\n\nDifference: {_format_currency(rev1 - rev2)} revenue, {units1 - units2} units."
-
-    def _trend(self) -> str:
-        data = self.repo.get_monthly_revenue(6)
-        if not data:
-            return "No trend data available."
-        lines = ["📈 *Monthly Revenue Trend (last 6 months)*", ""]
-        for item in data:
-            lines.append(f"{item['month']}: {_format_currency(item['revenue'])}")
-        return "\n".join(lines)
-
-    def _get_welcome(self) -> str:
-        return "\n".join([
-            "🤖 *AI Logistics Assistant*",
-            "",
-            "I can answer questions about:",
-            "• Total revenue, pending DNs, top performers",
-            "• Revenue/units by division, model, city, dealer, warehouse",
-            "• Comparisons and trends",
-            "",
-            "Examples:",
-            "• What is the total revenue?",
-            "• Show pending DNs",
-            "• Top 5 divisions by revenue",
-            "• Revenue for Washing Machine",
-            "• Compare HWM120 and HWM150",
-            "• Monthly trend",
-            "",
-            "Reply *99* to return to menu."
-        ])
-
-    def _ask_groq(self, query: str) -> str:
-        """Use Groq to generate a response based on available data."""
-        try:
-            # First, fetch some context (e.g., summary stats)
-            total_rev = self.repo.get_total_revenue()
-            total_units = self.repo.get_total_units()
-            pending = self.repo.get_pending_dns()
-            top_divs = self.repo.get_top_divisions(3)
-            top_divs_str = ", ".join([f"{d['name']} ({_format_currency(d['revenue'])})" for d in top_divs])
-            context = f"""
-Total Revenue: {_format_currency(total_rev)}
-Total Units: {_format_number(total_units)}
-Pending DNs: {_format_number(pending)}
-Top Divisions: {top_divs_str}
-"""
-            prompt = f"""
-You are a logistics data assistant. Answer the user's question based on the context below. If the question is not directly answerable, suggest what data might help.
-Context:
-{context}
-
-User question: {query}
-
-Provide a helpful, concise response (max 150 words).
-"""
-            response = GROQ_CLIENT.chat.completions.create(
-                model="llama3-70b-8192",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=300
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Groq generation error: {e}")
-            return self._fallback_response(query)
-
-    def _fallback_response(self, query: str) -> str:
-        return f"🤔 I didn't understand that question.\n\nYou can ask about revenue, pending DNs, top performers, comparisons, or trends. Type 'help' for examples."
 
 # ============================================================
 # MAIN SERVICE
@@ -703,12 +880,13 @@ class GroqService:
     def __init__(self) -> None:
         self._version = VERSION
         self.parser = QueryParser()
-        self.generator = ResponseGenerator()
+        self.sql_builder = SQLBuilder()
+        self.repo = LogisticsRepository(SessionLocal())
+        self.formatter = ResponseFormatter()
         logger.info(f"✅ GroqService v{self._version} initialized")
         logger.info(f"   Groq: {'✅' if GROQ_AVAILABLE else '❌'}")
 
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
-        """Main entry point – called by gateway."""
         try:
             msg = message.strip()
             if not msg:
@@ -718,20 +896,22 @@ class GroqService:
                 logger.info("[GroqService] Exit signal")
                 return "99"
 
-            # If it's a simple greeting or menu request
             if msg.lower() in ["hi", "hello", "hey", "start", "menu", "help"]:
                 return self._get_welcome()
 
             logger.info(f"[GroqService] Processing: '{msg}' from {sender}")
 
-            # Parse the query (try Groq first, fallback to pattern)
-            if GROQ_AVAILABLE and GROQ_CLIENT:
-                parsed = self.parser.parse_with_groq(msg)
-            else:
-                parsed = self.parser.parse(msg)
+            # Parse query
+            intent = self.parser.parse(msg)
 
-            # Generate response
-            response = self.generator.generate(parsed)
+            # Build SQL
+            sql, params = self.sql_builder.build(intent)
+
+            # Execute
+            results = self.repo.execute_query(sql, params)
+
+            # Format response
+            response = self.formatter.format_results(intent, results)
 
             return response
 
@@ -740,7 +920,29 @@ class GroqService:
             return "⚠️ An error occurred. Please try again."
 
     def _get_welcome(self) -> str:
-        return self.generator._get_welcome()
+        return "\n".join([
+            "🤖 *AI Logistics Assistant*",
+            "",
+            "I can answer questions about:",
+            "• Revenue, units, DNs, pending orders",
+            "• Rankings (top dealers, models, cities, warehouses)",
+            "• Comparisons between any entities",
+            "• Trends over time (monthly, weekly, daily)",
+            "• Lists of entities",
+            "• Summaries with filters",
+            "",
+            "Examples:",
+            "• What is total revenue?",
+            "• Top 5 dealers by revenue in Lahore",
+            "• Revenue of Washing Machine division",
+            "• Compare HWM120 and HWM150",
+            "• Monthly trend of revenue",
+            "• Pending DNs for dealer ABC",
+            "• List all cities",
+            "• Summary for last month",
+            "",
+            "Reply *99* to return to menu."
+        ])
 
 # ============================================================
 # SINGLETON
