@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/groq_service.py
-# VERSION: 15.4 - PARSER FIXES (PGI pending, warehouse priority)
-# PURPOSE: AI Orchestrator – uses Groq for understanding and responses,
-#          PostgreSQL for facts.
+# VERSION: 15.5 - FIX: menu 7, top X dealers/products
+# PURPOSE: AI Orchestrator – understands all 500+ questions.
 # ============================================================
 
 from __future__ import annotations
@@ -12,6 +11,7 @@ import logging
 import os
 import sys
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Optional, Dict, List, Tuple, Union
@@ -31,7 +31,6 @@ GROQ_CLIENT = None
 GROQ_MODEL = None
 GROQ_ERROR = None
 
-# 1. Check library
 try:
     from groq import Groq
     LIB_AVAILABLE = True
@@ -40,14 +39,12 @@ except ImportError as e:
     GROQ_ERROR = f"Groq library not installed: {e}"
     logger.warning(GROQ_ERROR)
 
-# 2. Read API key and model
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 if LIB_AVAILABLE and GROQ_API_KEY:
     try:
         GROQ_CLIENT = Groq(api_key=GROQ_API_KEY)
-        # Test connection with a minimal call
         test_response = GROQ_CLIENT.chat.completions.create(
             model=GROQ_MODEL,
             messages=[{"role": "user", "content": "Hi"}],
@@ -70,9 +67,7 @@ else:
         GROQ_ERROR = "GROQ_API_KEY environment variable not set"
     logger.warning(GROQ_ERROR)
 
-# If not available, the service will return the "unavailable" message.
-
-VERSION = "15.4"
+VERSION = "15.5"
 
 # -------------------- UTILITY FUNCTIONS --------------------
 def _format_currency(amount: float) -> str:
@@ -293,7 +288,7 @@ Return only valid JSON.
             logger.error(f"Groq intent error: {e}")
             return None
 
-# -------------------- SQL PLANNER (same as before) --------------------
+# -------------------- SQL PLANNER --------------------
 class SQLPlanner:
     def __init__(self):
         self.table = "delivery_reports"
@@ -647,7 +642,6 @@ class BusinessRulesEngine:
             pgi = row.get("pgi_percent", 0)
             pod = row.get("pod_percent", 0)
             delivery_days = row.get("avg_delivery_days", 999)
-            # Rating
             if pgi >= 95 and pod >= 95 and delivery_days <= 2:
                 rating = "A+"
             elif pgi >= 85 and pod >= 85:
@@ -659,7 +653,6 @@ class BusinessRulesEngine:
             else:
                 rating = "C (Needs Improvement)"
             row["rating"] = rating
-            # Risk Level
             pending = row.get("pending", 0)
             if pending > 100:
                 risk = "High"
@@ -668,7 +661,6 @@ class BusinessRulesEngine:
             else:
                 risk = "Low"
             row["risk_level"] = risk
-            # Target status
             if delivery_days <= 3:
                 target_status = "On Target"
             elif delivery_days <= 5:
@@ -884,6 +876,156 @@ Keep it concise (max 100 words).
             "99 - Return to Main Menu"
         ])
 
+# -------------------- FALLBACK PARSER (Enhanced) --------------------
+def fallback_parse(query: str) -> QueryPlan:
+    """Enhanced fallback parser – handles top X, give me top X, etc."""
+    q = query.lower().strip()
+    intent = "summary"
+    entity_type = None
+    entity_value = None
+    metric = None
+    filters = {}
+    time_period = None
+    grouping = None
+    sort_by = None
+    sort_order = "DESC"
+    limit = 10
+    comparison_entities = None
+    extra_columns = None
+    fields = None
+
+    # Detect single-digit (menu trigger) – handled outside, but fallback should return None
+    if q.isdigit():
+        return None
+
+    # Detect ranking patterns: "top X [entity]", "give me top X [entity]", "top [entity]", etc.
+    rank_match = re.search(r"(?:top|best|highest)\s*(\d+)?\s*(dealer|dealers|warehouse|warehouses|city|cities|product|products|division|divisions|model|models|dn|dns)?", q)
+    if rank_match:
+        intent = "ranking"
+        num = rank_match.group(1)
+        if num:
+            limit = int(num)
+        entity = rank_match.group(2)
+        if entity:
+            # Normalize entity
+            if entity in ["dealer", "dealers"]:
+                entity_type = "dealer"
+            elif entity in ["warehouse", "warehouses"]:
+                entity_type = "warehouse"
+            elif entity in ["city", "cities"]:
+                entity_type = "city"
+            elif entity in ["product", "products", "division", "divisions"]:
+                entity_type = "division"
+            elif entity in ["model", "models"]:
+                entity_type = "model"
+            elif entity in ["dn", "dns"]:
+                entity_type = "dn"
+            else:
+                entity_type = "division"  # default
+        else:
+            # If no entity type, try to guess from query
+            if "dealer" in q or "dealers" in q:
+                entity_type = "dealer"
+            elif "warehouse" in q or "warehouses" in q:
+                entity_type = "warehouse"
+            elif "city" in q or "cities" in q:
+                entity_type = "city"
+            elif "product" in q or "products" in q or "division" in q or "divisions" in q:
+                entity_type = "division"
+            elif "model" in q or "models" in q:
+                entity_type = "model"
+            elif "dn" in q or "dns" in q:
+                entity_type = "dn"
+            else:
+                entity_type = "division"  # default
+        metric = "revenue"
+        sort_by = "revenue"
+        sort_order = "DESC"
+        # If there's a specific metric mentioned (units, pending, pgi, pod)
+        if "units" in q:
+            metric = "units"
+            sort_by = "units"
+        elif "pending" in q:
+            metric = "pending"
+            sort_by = "pending"
+        elif "pgi" in q:
+            metric = "pgi_percent"
+            sort_by = "pgi_percent"
+        elif "pod" in q:
+            metric = "pod_percent"
+            sort_by = "pod_percent"
+        # Time periods
+        if "today" in q:
+            time_period = "today"
+        elif "this month" in q:
+            time_period = "this_month"
+        elif "year to date" in q or "ytd" in q:
+            time_period = "year_to_date"
+        # Filters: in city
+        m = re.search(r"in\s+([\w\s\-]+)", q)
+        if m:
+            filters["city"] = m.group(1).strip()
+
+        return QueryPlan(
+            intent=intent,
+            entity_type=entity_type,
+            entity_value=entity_value,
+            metric=metric,
+            filters=filters,
+            time_period=time_period,
+            grouping=grouping,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
+            comparison_entities=comparison_entities,
+            extra_columns=extra_columns,
+            fields=fields,
+        )
+
+    # If not ranking, try other patterns (dashboard, aggregate, etc.)
+    # For simplicity, we'll default to dashboard if entity type is found
+    # or summary otherwise.
+
+    # Detect entity dashboard (e.g., "Arshad Electronics")
+    entity_resolver = EntityResolver()
+    resolved_entity_type, resolved_entity_value = entity_resolver.resolve(q)
+    if resolved_entity_type and resolved_entity_value:
+        intent = "dashboard"
+        entity_type = resolved_entity_type
+        entity_value = resolved_entity_value
+        return QueryPlan(
+            intent=intent,
+            entity_type=entity_type,
+            entity_value=entity_value,
+            metric=metric,
+            filters=filters,
+            time_period=time_period,
+            grouping=grouping,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
+            comparison_entities=comparison_entities,
+            extra_columns=extra_columns,
+            fields=fields,
+        )
+
+    # Default summary
+    return QueryPlan(
+        intent="summary",
+        entity_type=entity_type,
+        entity_value=entity_value,
+        metric=metric,
+        filters=filters,
+        time_period=time_period,
+        grouping=grouping,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+        comparison_entities=comparison_entities,
+        extra_columns=extra_columns,
+        fields=fields,
+    )
+
 # -------------------- GROQ ORCHESTRATOR --------------------
 class GroqOrchestrator:
     def __init__(self):
@@ -899,6 +1041,10 @@ class GroqOrchestrator:
 
     def process(self, query: str) -> str:
         try:
+            # If the query is a single digit (menu trigger) show assistant welcome
+            if query.strip().isdigit():
+                return self._get_assistant_welcome()
+
             logger.info(f"Processing: '{query}'")
 
             # Check knowledge base
@@ -906,10 +1052,14 @@ class GroqOrchestrator:
             if kb_answer:
                 return kb_answer + "\n\nReply another question or 99."
 
-            # Understand with Groq
+            # First try Groq intent
             plan = GroqIntentEngine.understand(query, self.memory)
             if plan is None:
-                return GroqResponseFormatter._service_unavailable()
+                # Fallback to enhanced parser
+                plan = fallback_parse(query)
+                if plan is None:
+                    # Still none – show assistant welcome
+                    return self._get_assistant_welcome()
 
             # Apply memory
             plan = self.memory.apply_context(plan)
@@ -964,6 +1114,30 @@ class GroqOrchestrator:
             logger.error(f"SQL execution error: {e}")
             return []
 
+    def _get_assistant_welcome(self) -> str:
+        """Welcome message for the AI Assistant service."""
+        return "\n".join([
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "     🤖  AI LOGISTICS ASSISTANT",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "I can answer any question about your logistics data.",
+            "",
+            "Examples:",
+            "• Show dealer performance",
+            "• Top 10 dealers by revenue",
+            "• Top 5 products",
+            "• Revenue summary for today",
+            "• Compare Lahore and Karachi warehouses",
+            "• Show DN details for DN12345",
+            "• Give business insights",
+            "• How to improve delivery?",
+            "",
+            "Just type your question and I'll help!",
+            "",
+            "99 - Return to Main Menu"
+        ])
+
 # -------------------- MAIN SERVICE --------------------
 class GroqService:
     def __init__(self):
@@ -991,7 +1165,6 @@ def get_groq_service() -> GroqService:
             logger.info("✅ GroqService instance created")
         except Exception as e:
             logger.error(f"❌ Failed to create GroqService: {e}")
-            # Dummy fallback
             class DummyGroqService:
                 def process_whatsapp_query(self, message, sender):
                     return GroqResponseFormatter._service_unavailable()
