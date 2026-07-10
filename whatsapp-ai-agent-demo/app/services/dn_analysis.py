@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/dn_analysis.py
-# VERSION: 35.1 - FIXED COLUMN NAMES FOR DELIVERYREPORT
+# VERSION: 35.2 - DN PROMPT + CYCLE DAYS + STATUS UNIFORM
 # ============================================================
 
 """
 DN Analysis Service – Independent Stateful Module.
-Provides rich DN dashboard, intent detection, and conversation management.
+Provides rich DN dashboard, intent detection, conversation management,
+and a clean DN entry prompt.
 """
 
 from __future__ import annotations
@@ -197,11 +198,14 @@ def _format_date(date_val: Any) -> str:
         return str(date_val)
 
 def _format_status(status: str) -> str:
-    """Format status with emoji and color indicator."""
+    """
+    Format status with emoji and color indicator.
+    Returns e.g., "🟢 Delivered" for delivered/completed/received.
+    """
     if not status:
         return "Unknown"
     s = status.lower()
-    if s in ['delivered', 'completed', 'pod received']:
+    if s in ['delivered', 'completed', 'pod received', 'received', 'delivered']:
         return "🟢 Delivered"
     elif s in ['pending', 'in transit', 'processing']:
         return "🟡 Pending"
@@ -421,7 +425,7 @@ class DNIntentEngine:
                     Route(name="pod", utterances=["pod status", "proof of delivery", "pod date", "delivery date", "when was it delivered"]),
                     Route(name="delay", utterances=["why delayed", "delay reason", "late delivery", "overdue", "delayed"]),
                     Route(name="transit", utterances=["transit time", "in transit", "delivery time", "how long in transit"]),
-                    Route(name="ageing", utterances=["ageing", "how old", "age", "days since", "delivery age"]),
+                    Route(name="ageing", utterances=["ageing", "how old", "days", "since", "delivery age"]),
                     Route(name="timeline", utterances=["timeline", "history", "chronology", "when", "dates"]),
                     Route(name="summary", utterances=["summary", "overview", "complete view", "all details", "full info"]),
                 ]
@@ -581,7 +585,7 @@ class DNIntentEngine:
         return IntentResult(intent=DNIntent(intent), confidence=confidence, entities=entities, raw_input=text, processing_time_ms=elapsed_ms)
 
 # ============================================================
-# DN RENDERER - Enhanced Rich Dashboard (unchanged except minor field mapping)
+# DN RENDERER - Enhanced Rich Dashboard
 # ============================================================
 
 class DNRenderer:
@@ -591,8 +595,7 @@ class DNRenderer:
     def render_dashboard(self, data: Dict[str, Any]) -> str:
         """Render the rich DN dashboard with all sections."""
         dn_no = data.get('dn_no', 'N/A')
-        # Use customer_name as dealer, and customer_code as dealer code if needed
-        dealer = data.get('customer_name', 'N/A')  # changed from 'dealer'
+        dealer = data.get('customer_name', 'N/A')
         city = data.get('ship_to_city', 'N/A')
         warehouse = data.get('warehouse', 'N/A')
         division = data.get('division', 'N/A')
@@ -604,13 +607,22 @@ class DNRenderer:
         created = _format_date(data.get('dn_create_date'))
         pgi_date = _format_date(data.get('good_issue_date'))
         pod_date = _format_date(data.get('pod_date'))
+        # Cycle days = PGI to POD (or creation to POD if no PGI)
         transit_days = data.get('transit_days', 0)
+        if transit_days == 0 and pod_date != "N/A" and created != "N/A":
+            # fallback: compute from creation to POD
+            try:
+                created_dt = datetime.strptime(data.get('dn_create_date'), '%Y-%m-%d') if isinstance(data.get('dn_create_date'), str) else None
+                pod_dt = datetime.strptime(data.get('pod_date'), '%Y-%m-%d') if isinstance(data.get('pod_date'), str) else None
+                if created_dt and pod_dt:
+                    transit_days = (pod_dt - created_dt).days
+            except:
+                pass
         
         delivery_status = data.get('delivery_status', 'Pending')
         pgi_status = data.get('pgi_status', 'Pending')
         pod_status = data.get('pod_status', 'Pending')
-        # pending_flag derived from pod_date is None
-        pending_flag = data.get('pending_flag', False)  # will be computed
+        pending_flag = data.get('pending_flag', False)
         
         products = data.get('products', [])
         insight = self._generate_ai_insight(data)
@@ -655,7 +667,7 @@ class DNRenderer:
         lines.append(f"🚛 PGI Date   : {pgi_date}")
         lines.append(f"📦 POD Date   : {pod_date}")
         transit_display = f"{transit_days} Days" if transit_days > 0 else "N/A"
-        lines.append(f"⏱ Transit    : {transit_display}")
+        lines.append(f"⏱ Total Cycle days     : {transit_display}")
         lines.append("")
         
         lines.append(SEP)
@@ -730,6 +742,27 @@ class DNRenderer:
             insights.append("✅ No operational issues detected.")
         return insights
     
+    def render_dn_prompt(self) -> str:
+        """Render the DN entry prompt shown when user enters the service."""
+        return """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📦 DN INTELLIGENCE CENTER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Please enter a Delivery Note (DN) Number.
+
+Example:
+6243634099
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 Commands
+
+🔎 Enter any Delivery Note Number to search.
+
+🏠 Reply *99* to return to the Main Menu.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🤖 Awaiting Delivery Note..."""
+    
     # Other render methods (pending, search, status, etc.) remain unchanged
     def render_pending(self, items: List[Dict[str, Any]]) -> str:
         if not items:
@@ -799,8 +832,8 @@ class DNRenderer:
     def render_dealer(self, data: Dict[str, Any]) -> str:
         dn_no = data.get('dn_no', 'N/A')
         fields = {
-            "Name": data.get('customer_name'),  # dealer name
-            "Code": data.get('customer_code')   # use customer_code as dealer code
+            "Name": data.get('customer_name'),
+            "Code": data.get('customer_code')
         }
         lines = [self.templates.format_header(f"Dealer - DN {dn_no}"), ""]
         for key, value in fields.items():
@@ -924,7 +957,7 @@ class DNRenderer:
             "DN": dn_no,
             "Customer": data.get('customer_name'),
             "Customer Code": data.get('customer_code'),
-            "Dealer": data.get('customer_name'),  # using customer_name as dealer
+            "Dealer": data.get('customer_name'),
             "Status": data.get('delivery_status', 'Pending'),
             "Amount": _format_currency(data.get('dn_amount', 0)),
             "Quantity": _format_number(data.get('dn_qty', 0)),
@@ -1011,16 +1044,13 @@ class DNDatabaseRepository:
                 logger.debug(f"Session close error: {e}")
     
     def get_dn_by_number(self, dn_no: str) -> QueryResult:
-        """Get DN by number, including products list.
-        Uses only columns that exist in DeliveryReport model.
-        """
+        """Get DN by number, including products list."""
         start_time = time.time()
         session = self._get_session()
         if not session:
             return QueryResult(data=None, row_count=0, execution_time_ms=0, success=False, error="Database unavailable")
         
         try:
-            # Query only attributes that are guaranteed to exist
             result = session.query(
                 DeliveryReport.dn_no,
                 DeliveryReport.division,
@@ -1048,7 +1078,7 @@ class DNDatabaseRepository:
                 self._close_session(session)
                 return QueryResult(data=None, row_count=0, execution_time_ms=(time.time()-start_time)*1000, success=True)
             
-            # Get products (group by customer_model)
+            # Products
             products_result = session.query(
                 DeliveryReport.customer_model,
                 func.sum(DeliveryReport.dn_qty).label('total_qty')
@@ -1066,7 +1096,6 @@ class DNDatabaseRepository:
                         'qty': int(row.total_qty or 0)
                     })
             
-            # Build data dict
             data = {
                 'dn_no': _text(result.dn_no),
                 'division': _text(result.division),
@@ -1088,9 +1117,8 @@ class DNDatabaseRepository:
                 'remarks': _text(result.remarks),
                 'products': products,
             }
-            # Compute pending_flag from pod_date
+            # pending_flag based on pod_date
             data['pending_flag'] = (data.get('pod_date') == "N/A" or not data.get('pod_date'))
-            # Derived fields
             data['age_days'] = self._calculate_age(data.get('dn_create_date'))
             data['delay_days'] = self._calculate_delay(data.get('dn_create_date'), data.get('delivery_status'))
             data['transit_days'] = self._calculate_transit(data.get('good_issue_date'), data.get('pod_date'))
@@ -1112,7 +1140,6 @@ class DNDatabaseRepository:
         if not session:
             return QueryResult(data=[], row_count=0, execution_time_ms=0, success=False, error="Database unavailable")
         try:
-            # pending = pod_date is NULL
             results = session.query(
                 DeliveryReport.dn_no,
                 DeliveryReport.customer_name,
@@ -1380,7 +1407,7 @@ class DNConversationManager:
             logger.info(f"🧹 Expired DN context removed for {session_id}")
 
 # ============================================================
-# MAIN DN ANALYTICS SERVICE (unchanged logic)
+# MAIN DN ANALYTICS SERVICE
 # ============================================================
 
 class DNAnalyticsService:
@@ -1399,7 +1426,7 @@ class DNAnalyticsService:
             return
         self._initialized = True
         self._service_name = "dn_analytics"
-        self._version = "35.1"
+        self._version = "35.2"
         self._intent_engine = DNIntentEngine()
         self._renderer = DNRenderer()
         self._repository = DNDatabaseRepository()
@@ -1450,24 +1477,39 @@ class DNAnalyticsService:
     
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
         if not message or not message.strip():
-            return self.get_main_menu()
+            return self._renderer.render_dn_prompt()  # show prompt on empty
+        
         start_time = time.time()
         message_clean = message.strip()
         logger.info(f"📨 DN Query: '{message_clean}' from {sender}")
+        
         context = self._conversation_manager.get_context(sender)
         context.touch()
+        
+        # Exit command
         if message_clean in ["99", "exit", "quit", "cancel"]:
             self._conversation_manager.destroy_context(sender)
             logger.info(f"🚪 DN session exited for {sender}")
             return "99"
+        
+        # Main menu / help
         if message_clean.lower() in ["menu", "help", "options", "0"]:
             return self.get_main_menu()
+        
+        # Detect intent
         intent_result = self._intent_engine.detect_intent(message_clean)
         logger.info(f"🎯 Intent: {intent_result.intent.value} (confidence: {intent_result.confidence:.2f})")
+        
         if intent_result.entities.get('dn'):
             context.current_dn = intent_result.entities['dn']
             logger.info(f"📌 DN set: {context.current_dn}")
+        
         response = self._process_intent(context, intent_result)
+        
+        # If response is None (unknown and no DN), show prompt
+        if response is None:
+            response = self._renderer.render_dn_prompt()
+        
         context.add_history(message_clean, response)
         self._conversation_manager.update_context(
             sender,
@@ -1475,12 +1517,14 @@ class DNAnalyticsService:
             last_query=message_clean,
             last_answer=response
         )
+        
         total_time_ms = (time.time() - start_time) * 1000
         self._log_performance(sender, intent_result, None, 0, total_time_ms)
         logger.info(f"⏱️  Total processing time: {total_time_ms:.1f}ms")
         return response
     
-    def _process_intent(self, context: DNConversationContext, intent: IntentResult) -> str:
+    def _process_intent(self, context: DNConversationContext, intent: IntentResult) -> Optional[str]:
+        """Returns None if we should show the prompt (no DN, unknown)."""
         if intent.intent == DNIntent.EXIT:
             return "99"
         if intent.intent == DNIntent.HELP:
@@ -1497,17 +1541,25 @@ class DNAnalyticsService:
                            DNIntent.DELAY, DNIntent.TRANSIT, DNIntent.AGEING,
                            DNIntent.TIMELINE, DNIntent.SUMMARY]:
             if not context.current_dn and not intent.entities.get('dn'):
-                return "🔍 Please provide a DN number first.\n\n0. Main Menu\n99. Back"
+                return None  # prompt for DN
             dn = intent.entities.get('dn') or context.current_dn
             context.current_dn = dn
             context.active_menu = DNMenuState.DETAILS
             return self._handle_dn_intent(context, intent)
+        
+        # Check if the message contains a DN number
         dn = _extract_dn(intent.raw_input)
         if dn and _is_valid_dn(dn):
             context.current_dn = dn
             context.active_menu = DNMenuState.DASHBOARD
             intent.entities['dn'] = dn
             return self._handle_dn_intent(context, intent)
+        
+        # If we're in the main state and no DN, show prompt
+        if context.active_menu == DNMenuState.MAIN:
+            return None  # prompt
+        
+        # Otherwise show help
         return "❌ I didn't understand that.\n\n" + self._renderer.render_help()
     
     def _handle_pending(self, context: DNConversationContext, intent: IntentResult) -> str:
