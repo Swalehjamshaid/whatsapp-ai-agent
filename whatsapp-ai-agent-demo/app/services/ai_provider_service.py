@@ -1,846 +1,963 @@
 #!/usr/bin/env python3
 # ============================================================
-# FILE: app/services/ai_provider_service.py
-# VERSION: 57.0 - ALL 7 SERVICES WORKING
+# FILE: app/services/groq_service.py
+# VERSION: 15.0 - ENTERPRISE AI ORCHESTRATOR
+# PURPOSE: Every question answered by Groq, with PostgreSQL
+#          as the single source of truth for business data.
+#          Fully integrated with AIProviderService.
 # ============================================================
-
-"""
-================================================================================
-AI PROVIDER SERVICE - PURE GATEWAY & SESSION MANAGER
-================================================================================
-
-This file is ONLY the Gateway, Router, Menu Controller, and Session Manager.
-
-CRITICAL BEHAVIOR:
-1. ✅ ALL 7 services appear in the menu
-2. ✅ Working services show with ✅
-3. ✅ Non-working services show with ❌
-4. ✅ The menu ALWAYS displays cleanly
-5. ✅ NO "Invalid option" errors - just show the menu
-6. ✅ Professional header: 📦 LOGISTICS INTELLIGENCE CENTER
-
-================================================================================
-"""
 
 from __future__ import annotations
 
 import logging
-import threading
-import traceback
-from typing import Optional, Dict, Any, List
-from datetime import datetime
+import os
+import json
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Optional, Dict, List, Tuple, Union
 
-# ============================================================
-# BLOCK 1: LOGGING SETUP
-# ============================================================
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from app.database import SessionLocal, engine
 
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# BLOCK 2: CONSTANTS
-# ============================================================
-
-VERSION = "57.0"
-EXIT_SIGNAL = "__EXIT__"
-SESSION_TIMEOUT_SECONDS = 1800  # 30 minutes
+VERSION = "15.0"
 
 # ============================================================
-# BLOCK 3: SERVICE LOADING - ALL 7 SERVICES
+# GROQ SETUP
 # ============================================================
 
-# Each service is loaded independently.
-# If a service fails, it shows ❌ in menu but doesn't break the app.
+GROQ_AVAILABLE = False
+GROQ_CLIENT = None
 
-WORKING_SERVICES = {}
-
-# ---------------------------------------------------------------------
-# SERVICE 1: National KPI Service
-# ---------------------------------------------------------------------
 try:
-    from app.services.national_kpi_service import get_kpi_service
-    service = get_kpi_service()
-    if service:
-        WORKING_SERVICES["1"] = {
-            "id": "1",
-            "name": "National KPI",
-            "instance": service,
-            "working": True
-        }
-        logger.info("✅ National KPI Service loaded")
+    from groq import Groq
+    GROQ_AVAILABLE = True
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+    if GROQ_API_KEY:
+        GROQ_CLIENT = Groq(api_key=GROQ_API_KEY)
+        logger.info("✅ Groq client initialized")
     else:
-        WORKING_SERVICES["1"] = {
-            "id": "1",
-            "name": "National KPI",
-            "instance": None,
-            "working": False
-        }
-        logger.warning("⚠️ National KPI Service returned None")
-except Exception as e:
-    WORKING_SERVICES["1"] = {
-        "id": "1",
-        "name": "National KPI",
-        "instance": None,
-        "working": False
-    }
-    logger.warning(f"⚠️ National KPI Service skipped: {e}")
-
-# ---------------------------------------------------------------------
-# SERVICE 2: DN Analysis Service
-# ---------------------------------------------------------------------
-try:
-    from app.services.dn_analysis import get_dn_analysis_service
-    service = get_dn_analysis_service()
-    if service:
-        WORKING_SERVICES["2"] = {
-            "id": "2",
-            "name": "DN Analysis",
-            "instance": service,
-            "working": True
-        }
-        logger.info("✅ DN Analysis Service loaded")
-    else:
-        WORKING_SERVICES["2"] = {
-            "id": "2",
-            "name": "DN Analysis",
-            "instance": None,
-            "working": False
-        }
-        logger.warning("⚠️ DN Analysis Service returned None")
-except Exception as e:
-    WORKING_SERVICES["2"] = {
-        "id": "2",
-        "name": "DN Analysis",
-        "instance": None,
-        "working": False
-    }
-    logger.warning(f"⚠️ DN Analysis Service skipped: {e}")
-
-# ---------------------------------------------------------------------
-# SERVICE 3: Dealer Analytics Service
-# ---------------------------------------------------------------------
-try:
-    from app.services.dealer_analytics_service import get_dealer_service
-    service = get_dealer_service()
-    if service:
-        WORKING_SERVICES["3"] = {
-            "id": "3",
-            "name": "Dealer Analytics",
-            "instance": service,
-            "working": True
-        }
-        logger.info("✅ Dealer Analytics Service loaded")
-    else:
-        WORKING_SERVICES["3"] = {
-            "id": "3",
-            "name": "Dealer Analytics",
-            "instance": None,
-            "working": False
-        }
-        logger.warning("⚠️ Dealer Analytics Service returned None")
-except Exception as e:
-    WORKING_SERVICES["3"] = {
-        "id": "3",
-        "name": "Dealer Analytics",
-        "instance": None,
-        "working": False
-    }
-    logger.warning(f"⚠️ Dealer Analytics Service skipped: {e}")
-
-# ---------------------------------------------------------------------
-# SERVICE 4: Warehouse Service
-# ---------------------------------------------------------------------
-try:
-    from app.services.warehouse_service import get_warehouse_analytics_service
-    service = get_warehouse_analytics_service()
-    if service:
-        WORKING_SERVICES["4"] = {
-            "id": "4",
-            "name": "Warehouse Analytics",
-            "instance": service,
-            "working": True
-        }
-        logger.info("✅ Warehouse Service loaded")
-    else:
-        WORKING_SERVICES["4"] = {
-            "id": "4",
-            "name": "Warehouse Analytics",
-            "instance": None,
-            "working": False
-        }
-        logger.warning("⚠️ Warehouse Service returned None")
-except Exception as e:
-    WORKING_SERVICES["4"] = {
-        "id": "4",
-        "name": "Warehouse Analytics",
-        "instance": None,
-        "working": False
-    }
-    logger.warning(f"⚠️ Warehouse Service skipped: {e}")
-
-# ---------------------------------------------------------------------
-# SERVICE 5: Product Service
-# ---------------------------------------------------------------------
-try:
-    from app.services.product_service import get_product_analytics_service
-    service = get_product_analytics_service()
-    if service:
-        WORKING_SERVICES["5"] = {
-            "id": "5",
-            "name": "Product Analytics",
-            "instance": service,
-            "working": True
-        }
-        logger.info("✅ Product Service loaded")
-    else:
-        WORKING_SERVICES["5"] = {
-            "id": "5",
-            "name": "Product Analytics",
-            "instance": None,
-            "working": False
-        }
-        logger.warning("⚠️ Product Service returned None")
-except Exception as e:
-    WORKING_SERVICES["5"] = {
-        "id": "5",
-        "name": "Product Analytics",
-        "instance": None,
-        "working": False
-    }
-    logger.warning(f"⚠️ Product Service skipped: {e}")
-
-# ---------------------------------------------------------------------
-# SERVICE 6: City Service
-# ---------------------------------------------------------------------
-try:
-    from app.services.city_service import get_city_analytics_service
-    service = get_city_analytics_service()
-    if service:
-        WORKING_SERVICES["6"] = {
-            "id": "6",
-            "name": "City Analytics",
-            "instance": service,
-            "working": True
-        }
-        logger.info("✅ City Service loaded")
-    else:
-        WORKING_SERVICES["6"] = {
-            "id": "6",
-            "name": "City Analytics",
-            "instance": None,
-            "working": False
-        }
-        logger.warning("⚠️ City Service returned None")
-except Exception as e:
-    WORKING_SERVICES["6"] = {
-        "id": "6",
-        "name": "City Analytics",
-        "instance": None,
-        "working": False
-    }
-    logger.warning(f"⚠️ City Service skipped: {e}")
-
-# ---------------------------------------------------------------------
-# SERVICE 7: AI Assistant (Groq)
-# ---------------------------------------------------------------------
-try:
-    from app.services.groq_service import get_groq_service
-    service = get_groq_service()
-    if service:
-        WORKING_SERVICES["7"] = {
-            "id": "7",
-            "name": "AI Assistant",
-            "instance": service,
-            "working": True
-        }
-        logger.info("✅ AI Assistant Service loaded")
-    else:
-        WORKING_SERVICES["7"] = {
-            "id": "7",
-            "name": "AI Assistant",
-            "instance": None,
-            "working": False
-        }
-        logger.warning("⚠️ AI Assistant Service returned None")
-except Exception as e:
-    WORKING_SERVICES["7"] = {
-        "id": "7",
-        "name": "AI Assistant",
-        "instance": None,
-        "working": False
-    }
-    logger.warning(f"⚠️ AI Assistant Service skipped: {e}")
+        logger.warning("⚠️ GROQ_API_KEY not set – AI service unavailable")
+except ImportError:
+    logger.warning("⚠️ Groq library not installed – AI service unavailable")
 
 # ============================================================
-# BLOCK 4: SERVICE STATUS SUMMARY
+# UTILITY FUNCTIONS
 # ============================================================
 
-working_count = sum(1 for svc in WORKING_SERVICES.values() if svc.get("working", False))
-total_count = len(WORKING_SERVICES)
-logger.info(f"📊 Services loaded: {working_count}/{total_count} working")
+def _format_currency(amount: float) -> str:
+    if amount >= 1_000_000:
+        return f"PKR {amount/1_000_000:.1f}M"
+    elif amount >= 1_000:
+        return f"PKR {amount:,.0f}"
+    return f"PKR {amount:,.0f}"
 
-if working_count == 0:
-    logger.error("❌ No services loaded! Check service files.")
-else:
-    working_names = [svc["name"] for svc in WORKING_SERVICES.values() if svc.get("working", False)]
-    logger.info(f"✅ Working services: {', '.join(working_names)}")
+def _format_number(num: int) -> str:
+    return f"{num:,}"
+
+def _format_percent(ratio: float) -> str:
+    return f"{ratio:.1f}%"
 
 # ============================================================
-# BLOCK 5: SESSION DATA CLASS - LIGHTWEIGHT
+# DATA MODELS
 # ============================================================
 
-class SessionData:
-    """Lightweight user session data - pure session state only"""
-    
-    def __init__(self, phone: str):
-        self.phone: str = phone
-        self.locked: bool = False
-        self.locked_service_id: Optional[str] = None
-        self.locked_service_name: Optional[str] = None
-        self.created_at: datetime = datetime.now()
-        self.last_activity: datetime = datetime.now()
-    
-    def update_activity(self):
-        """Update last activity timestamp"""
-        self.last_activity = datetime.now()
-    
-    def is_expired(self) -> bool:
-        """Check if session has expired (30 minutes timeout)"""
-        elapsed = (datetime.now() - self.last_activity).total_seconds()
-        return elapsed > SESSION_TIMEOUT_SECONDS
-    
-    def lock(self, service_id: str, service_name: str):
-        """Lock session to a specific service"""
-        self.locked = True
-        self.locked_service_id = service_id
-        self.locked_service_name = service_name
-        self.update_activity()
-    
-    def unlock(self):
-        """Unlock session"""
-        self.locked = False
-        self.locked_service_id = None
-        self.locked_service_name = None
-        self.update_activity()
-    
+@dataclass
+class QueryPlan:
+    """Structured plan from Groq for building SQL."""
+    intent: str
+    entity_type: Optional[str] = None
+    entity_value: Optional[str] = None
+    metric: Optional[str] = None
+    filters: Dict[str, Any] = field(default_factory=dict)
+    time_period: Optional[str] = None
+    grouping: Optional[str] = None
+    sort_by: Optional[str] = None
+    sort_order: str = "DESC"
+    limit: int = 10
+    comparison_entities: Optional[List[str]] = None
+    extra_columns: Optional[List[str]] = None
+    fields: Optional[List[str]] = None
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert session to dict for logging"""
         return {
-            "phone": self.phone,
-            "locked": self.locked,
-            "locked_service_id": self.locked_service_id,
-            "locked_service_name": self.locked_service_name,
-            "created_at": self.created_at.isoformat(),
-            "last_activity": self.last_activity.isoformat(),
-            "is_expired": self.is_expired()
+            "intent": self.intent,
+            "entity_type": self.entity_type,
+            "entity_value": self.entity_value,
+            "metric": self.metric,
+            "filters": self.filters,
+            "time_period": self.time_period,
+            "grouping": self.grouping,
+            "sort_by": self.sort_by,
+            "sort_order": self.sort_order,
+            "limit": self.limit,
+            "comparison_entities": self.comparison_entities,
+            "extra_columns": self.extra_columns,
+            "fields": self.fields,
         }
 
 # ============================================================
-# BLOCK 6: MAIN GATEWAY SERVICE
+# CONVERSATION MEMORY
 # ============================================================
 
-class AIProviderService:
-    """
-    PURE Gateway, Router, Menu Controller, and Session Manager.
-    
-    This class does NOT contain any business logic, SQL, AI, or analytics.
-    It ONLY routes messages to the appropriate services.
-    
-    CRITICAL:
-    - ALL services appear in the menu (✅ working, ❌ not working)
-    - Non-working services show ❌ but don't break the app
-    - The menu ALWAYS displays cleanly
-    - EVERY message gets a reply
-    """
-    
-    _instance: Optional["AIProviderService"] = None
-    _sessions: Dict[str, SessionData] = {}
-    _lock = threading.RLock()
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-    
+class ConversationMemory:
+    """Stores context from the current session."""
     def __init__(self):
-        if hasattr(self, "_initialized"):
-            return
-        
-        self._initialized = True
-        self._version = VERSION
-        self._startup = datetime.now()
-        self._total_requests = 0
-        self._successful_requests = 0
-        self._error_count = 0
-        
-        self._show_startup()
-    
-    def _show_startup(self):
-        """Display startup information - shows ALL services with status"""
-        print("\n" + "=" * 70)
-        print(f"🤖 AI PROVIDER GATEWAY v{self._version}".center(70))
-        print("=" * 70)
-        print("📋 ALL SERVICES:")
-        print("-" * 70)
-        
-        for key, svc in WORKING_SERVICES.items():
-            if svc.get("working", False):
-                status = "✅ WORKING"
-            else:
-                status = "❌ NOT WORKING"
-            print(f"  {key}. {status}  {svc['name']}")
-        
-        print("-" * 70)
-        working_count = sum(1 for svc in WORKING_SERVICES.values() if svc.get("working", False))
-        print(f"  ✅ Working: {working_count}/{len(WORKING_SERVICES)} services")
-        print(f"  🕐 Started at: {self._startup.strftime('%Y-%m-%d %H:%M:%S')}")
-        print("=" * 70 + "\n")
-    
-    # ============================================================
-    # BLOCK 7: MAIN ENTRY POINT
-    # ============================================================
-    
-    async def process_whatsapp_query(self, message: str, sender: str) -> str:
-        """
-        Main entry point for WhatsApp queries.
-        
-        This is called by webhook.py. DO NOT CHANGE SIGNATURE.
-        
-        Args:
-            message: User's message
-            sender: Sender's phone number
-            
-        Returns:
-            Response string - ALWAYS returns a string, never None
-        """
-        self._total_requests += 1
-        
+        self.last_plan: Optional[QueryPlan] = None
+        self.last_entity_type: Optional[str] = None
+        self.last_entity_value: Optional[str] = None
+        self.last_time_period: Optional[str] = None
+        self.last_city: Optional[str] = None
+        self.last_dealer: Optional[str] = None
+
+    def update(self, plan: QueryPlan):
+        self.last_plan = plan
+        if plan.entity_type and plan.entity_value:
+            self.last_entity_type = plan.entity_type
+            self.last_entity_value = plan.entity_value
+        if plan.time_period:
+            self.last_time_period = plan.time_period
+        if plan.filters.get("city"):
+            self.last_city = plan.filters["city"]
+        if plan.filters.get("dealer"):
+            self.last_dealer = plan.filters["dealer"]
+
+    def apply_context(self, plan: QueryPlan) -> QueryPlan:
+        """Fill missing fields from memory."""
+        if not plan.entity_type and self.last_entity_type:
+            plan.entity_type = self.last_entity_type
+        if not plan.entity_value and self.last_entity_value:
+            plan.entity_value = self.last_entity_value
+        if not plan.time_period and self.last_time_period:
+            plan.time_period = self.last_time_period
+        if not plan.filters.get("city") and self.last_city:
+            plan.filters["city"] = self.last_city
+        if not plan.filters.get("dealer") and self.last_dealer:
+            plan.filters["dealer"] = self.last_dealer
+        return plan
+
+# ============================================================
+# GROQ INTENT ENGINE
+# ============================================================
+
+class GroqIntentEngine:
+    """Uses Groq to understand the user's question and produce a QueryPlan."""
+    @staticmethod
+    def understand(query: str, memory: ConversationMemory) -> Optional[QueryPlan]:
+        if not GROQ_AVAILABLE or not GROQ_CLIENT:
+            logger.error("Groq not available for intent understanding")
+            return None
+
+        context = ""
+        if memory.last_plan:
+            context = f"\nPrevious context: {memory.last_plan.to_dict()}"
+
+        prompt = f"""
+You are a Logistics AI assistant. Analyze the user's question and return a structured plan in JSON.
+
+The plan should include:
+- intent: one of ['ranking', 'dashboard', 'aggregate', 'summary', 'details', 'list', 'comparison', 'trend', 'advice']
+- entity_type: one of ['dealer', 'city', 'warehouse', 'division', 'model', 'sales_office', 'sales_manager', 'dn'] or null
+- entity_value: the specific name mentioned, or null
+- metric: one of ['revenue', 'units', 'dns', 'pending', 'delivery_days', 'pgi_percent', 'pod_percent'] or null
+- filters: object with keys like division, city, warehouse, dealer, model, etc.
+- time_period: one of ['today', 'this_week', 'this_month', 'last_month', 'last_3_months', 'last_6_months', 'year_to_date'] or null
+- grouping: one of ['month', 'week', 'day'] or null
+- sort_by: metric to sort by (e.g., 'revenue')
+- sort_order: 'ASC' or 'DESC'
+- limit: integer (default 10)
+- comparison_entities: list of two entities if comparing, else null
+- extra_columns: list of additional aggregate columns (e.g., ['dealers_count', 'cities_count'])
+- fields: for details, list of column names to select
+
+Important rules:
+- Recognize synonyms: "top", "best", "highest" → ranking; "show", "display" → dashboard; "total", "overall" → aggregate; "compare", "vs" → comparison; "trend", "monthly" → trend; "list", "all" → list; "details", "information" → details; "how to", "improve", "tips" → advice.
+- For entity values, extract the exact name (e.g., "Arshad Electronics", "Lahore", "Refrigerator").
+- For time periods, detect "today", "this month", "year to date", etc.
+- If the question is about advice (e.g., "how to improve delivery"), set intent='advice' and leave other fields null.
+- Use the context provided if the question is a follow-up: {context}
+
+User question: "{query}"
+
+Return only valid JSON.
+"""
         try:
-            logger.info(f"📨 Incoming: '{message}' from {sender}")
-            
-            if not message or not message.strip():
-                return self._get_main_menu()
-            
-            msg = message.strip()
-            session = self._get_or_create_session(sender)
-            
-            if session.is_expired():
-                logger.info(f"⏰ Session expired for {sender}")
-                self._clear_session(sender)
-                return self._get_main_menu()
-            
-            session.update_activity()
-            
-            if session.locked:
-                logger.info(f"🔒 Session locked to {session.locked_service_name} for {sender}")
-                return await self._forward_to_locked_service(msg, session)
-            
-            return await self._handle_unlocked_session(msg, sender, session)
-            
+            response = GROQ_CLIENT.chat.completions.create(
+                model="llama3-70b-8192",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=500,
+                response_format={"type": "json_object"}
+            )
+            data = json.loads(response.choices[0].message.content)
+            return QueryPlan(
+                intent=data.get("intent", "summary"),
+                entity_type=data.get("entity_type"),
+                entity_value=data.get("entity_value"),
+                metric=data.get("metric"),
+                filters=data.get("filters", {}),
+                time_period=data.get("time_period"),
+                grouping=data.get("grouping"),
+                sort_by=data.get("sort_by"),
+                sort_order=data.get("sort_order", "DESC"),
+                limit=data.get("limit", 10),
+                comparison_entities=data.get("comparison_entities"),
+                extra_columns=data.get("extra_columns"),
+                fields=data.get("fields"),
+            )
         except Exception as e:
-            self._error_count += 1
-            logger.error(f"❌ Fatal error: {e}")
-            logger.error(traceback.format_exc())
-            return self._get_main_menu()
-    
-    # ============================================================
-    # BLOCK 8: SESSION MANAGEMENT
-    # ============================================================
-    
-    def _get_or_create_session(self, phone: str) -> SessionData:
-        """Get or create session for phone number"""
-        with self._lock:
-            if phone in self._sessions:
-                session = self._sessions[phone]
-                if session.is_expired():
-                    logger.info(f"⏰ Session expired for {phone}, creating new")
-                    del self._sessions[phone]
-                    session = SessionData(phone)
-                    self._sessions[phone] = session
-                return session
-            
-            session = SessionData(phone)
-            self._sessions[phone] = session
-            logger.info(f"🆕 New session created for {phone}")
-            return session
-    
-    def _lock_session(self, phone: str, service_id: str) -> Optional[SessionData]:
-        """Lock session to a specific service"""
-        with self._lock:
-            if phone not in self._sessions:
-                return None
-            
-            session = self._sessions[phone]
-            service = WORKING_SERVICES.get(service_id)
-            if not service or not service.get("working", False):
-                return None
-            
-            session.lock(service_id, service["name"])
-            logger.info(f"🔒 Session locked to {service['name']} for {phone}")
-            return session
-    
-    def _unlock_session(self, phone: str) -> Optional[SessionData]:
-        """Unlock session"""
-        with self._lock:
-            if phone not in self._sessions:
-                return None
-            
-            session = self._sessions[phone]
-            if session.locked:
-                logger.info(f"🔓 Session unlocked for {phone} (was {session.locked_service_name})")
-            session.unlock()
-            return session
-    
-    def _clear_session(self, phone: str) -> bool:
-        """Clear session"""
-        with self._lock:
-            if phone in self._sessions:
-                del self._sessions[phone]
-                logger.info(f"🧹 Session cleared for {phone}")
-                return True
-            return False
-    
-    # ============================================================
-    # BLOCK 9: MENU CONTROLLER - SHOWS ALL SERVICES
-    # ============================================================
-    
-    def _get_main_menu(self) -> str:
-        """Return the main menu with ALL services (✅ working, ❌ not working)"""
-        lines = []
-        
-        SEPARATOR = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        HEADER = "     📦  LOGISTICS INTELLIGENCE CENTER"
-        
-        lines.append(SEPARATOR)
-        lines.append(HEADER)
-        lines.append(SEPARATOR)
-        lines.append("")
-        lines.append("Please choose from:")
-        lines.append("")
-        
-        # Show ALL services with status
-        for key, svc in WORKING_SERVICES.items():
-            if svc.get("working", False):
-                status = "✅"
-            else:
-                status = "❌"
-            lines.append(f"{key}. {status} {svc['name']}")
-        
-        lines.append("")
-        lines.append("99 - Return to Main Menu")
-        lines.append("")
-        lines.append("📌 Services with ✅ are working")
-        lines.append("📌 Services with ❌ are currently unavailable")
-        
-        return "\n".join(lines)
-    
-    # ============================================================
-    # BLOCK 10: UNLOCKED SESSION HANDLER
-    # ============================================================
-    
-    async def _handle_unlocked_session(self, message: str, phone: str, session: SessionData) -> str:
-        """
-        Handle messages when session is NOT locked.
-        Shows menu or routes selection.
-        ALWAYS returns the menu for invalid input - NO errors.
-        """
-        try:
-            # Check if it's a valid menu selection
-            if message in WORKING_SERVICES:
-                service = WORKING_SERVICES[message]
-                
-                # Check if service is working
-                if not service.get("working", False):
-                    logger.info(f"❌ Service {message} is not working")
-                    return self._get_main_menu()
-                
-                logger.info(f"🎯 Menu selection: {message} -> {service['name']}")
-                
-                locked_session = self._lock_session(phone, message)
-                if not locked_session:
-                    return self._get_main_menu()
-                
-                return await self._forward_to_service(message, message, phone)
-            
-            if message == "99":
-                self._unlock_session(phone)
-                return self._get_main_menu()
-            
-            logger.info(f"ℹ️ Invalid input: '{message}' from {phone} - showing menu")
-            return self._get_main_menu()
-            
-        except Exception as e:
-            logger.error(f"❌ Error in _handle_unlocked_session: {e}")
-            logger.error(traceback.format_exc())
-            return self._get_main_menu()
-    
-    # ============================================================
-    # BLOCK 11: LOCKED SESSION HANDLER
-    # ============================================================
-    
-    async def _forward_to_locked_service(self, message: str, session: SessionData) -> str:
-        """
-        Forward message to locked service.
-        NO ROUTING, NO MENU, NO AI, NO INTENT DETECTION.
-        ALWAYS returns a string.
-        """
-        try:
-            if message == "99":
-                self._unlock_session(session.phone)
-                logger.info(f"🔓 Unlocked via 99 for {session.phone}")
-                return self._get_main_menu()
-            
-            if not session.locked_service_id:
-                self._unlock_session(session.phone)
-                return self._get_main_menu()
-            
-            service_id = session.locked_service_id
-            logger.info(f"🔄 Forwarding to {session.locked_service_name} for {session.phone}")
-            return await self._forward_to_service(service_id, message, session.phone)
-            
-        except Exception as e:
-            logger.error(f"❌ Error in _forward_to_locked_service: {e}")
-            logger.error(traceback.format_exc())
-            return self._get_main_menu()
-    
-    # ============================================================
-    # BLOCK 12: ROUTER - FORWARD TO SERVICES
-    # ============================================================
-    
-    async def _forward_to_service(self, service_id: str, message: str, phone: str) -> str:
-        """
-        Forward message to the appropriate service.
-        PURE ROUTING - NO BUSINESS LOGIC.
-        ALWAYS returns a string.
-        """
-        try:
-            service = WORKING_SERVICES.get(service_id)
-            if not service or not service.get("working", False):
-                return self._get_main_menu()
-            
-            service_instance = service["instance"]
-            
-            if not service_instance:
-                return self._get_main_menu()
-            
-            response = None
-            
-            try:
-                # Try handle_message (async)
-                if hasattr(service_instance, 'handle_message') and callable(service_instance.handle_message):
-                    if hasattr(service_instance.handle_message, '__await__'):
-                        response = await service_instance.handle_message(message, phone)
-                    else:
-                        response = service_instance.handle_message(message, phone)
-                
-                # Try process_whatsapp_query
-                elif hasattr(service_instance, 'process_whatsapp_query') and callable(service_instance.process_whatsapp_query):
-                    response = service_instance.process_whatsapp_query(message, phone)
-                
-                # Try process_query
-                elif hasattr(service_instance, 'process_query') and callable(service_instance.process_query):
-                    response = service_instance.process_query(message)
-                
-                # Try get_main_menu
-                elif hasattr(service_instance, 'get_main_menu') and callable(service_instance.get_main_menu):
-                    response = service_instance.get_main_menu()
-                
-                else:
-                    response = f"📊 {service['name']}\n\nService is available. Please enter your query."
-                    
-            except Exception as service_error:
-                logger.error(f"❌ Service {service['name']} error: {service_error}")
-                logger.error(traceback.format_exc())
-                return self._get_main_menu()
-            
-            if response is None:
-                response = self._get_main_menu()
-            elif not isinstance(response, str):
-                response = str(response)
-            
-            if response == EXIT_SIGNAL or response == "99":
-                self._unlock_session(phone)
-                return self._get_main_menu()
-            
-            self._successful_requests += 1
-            return response
-            
-        except Exception as e:
-            logger.error(f"❌ Fatal error in _forward_to_service: {e}")
-            logger.error(traceback.format_exc())
-            return self._get_main_menu()
-    
-    # ============================================================
-    # BLOCK 13: HEALTH CHECK
-    # ============================================================
-    
-    def health_check(self) -> Dict[str, Any]:
-        """Health check - shows ALL services with status"""
-        uptime = (datetime.now() - self._startup).seconds
-        
-        active_sessions = 0
-        locked_sessions = 0
-        expired_sessions = 0
-        
-        with self._lock:
-            for phone, session in self._sessions.items():
-                if session.is_expired():
-                    expired_sessions += 1
-                else:
-                    active_sessions += 1
-                    if session.locked:
-                        locked_sessions += 1
-        
-        working_count = sum(1 for svc in WORKING_SERVICES.values() if svc.get("working", False))
-        
-        return {
-            "status": "healthy" if working_count > 0 else "degraded",
-            "version": self._version,
-            "uptime_seconds": uptime,
-            "uptime_display": f"{uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s",
-            "active_sessions": active_sessions,
-            "locked_sessions": locked_sessions,
-            "expired_sessions": expired_sessions,
-            "total_requests": self._total_requests,
-            "successful_requests": self._successful_requests,
-            "error_count": self._error_count,
-            "success_rate": round((self._successful_requests / max(self._total_requests, 1)) * 100, 1),
-            "services": {
-                key: {
-                    "name": svc["name"],
-                    "working": svc.get("working", False),
-                    "status": "✅ Working" if svc.get("working", False) else "❌ Not Working"
-                }
-                for key, svc in WORKING_SERVICES.items()
-            },
-            "services_summary": f"{working_count}/{len(WORKING_SERVICES)} services working",
-            "started_at": self._startup.isoformat()
+            logger.error(f"Groq intent error: {e}")
+            return None
+
+# ============================================================
+# SQL BUILDER (Safe Parameterized SQL)
+# ============================================================
+
+class SQLBuilder:
+    """Builds safe SQL from a QueryPlan using templates."""
+    def __init__(self):
+        self.table = "delivery_reports"
+        self.field_map = {
+            "dealer": "customer_name",
+            "city": "ship_to_city",
+            "warehouse": "warehouse",
+            "division": "division",
+            "model": "customer_model",
+            "sales_office": "sales_office",
+            "sales_manager": "sales_manager",
+            "dn": "dn_no",
+        }
+        self.extra_exprs = {
+            "dealers_count": "COUNT(DISTINCT customer_name)",
+            "cities_count": "COUNT(DISTINCT ship_to_city)",
+            "products_count": "COUNT(DISTINCT customer_model)",
+            "warehouses_count": "COUNT(DISTINCT warehouse)",
+            "pgi_percent": "ROUND(100.0 * COUNT(CASE WHEN pgi_date IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2)",
+            "pod_percent": "ROUND(100.0 * COUNT(CASE WHEN pod_date IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2)",
         }
 
+    def build(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        if plan.intent == "advice":
+            return "", {}  # No SQL needed
+        elif plan.intent == "dashboard":
+            return self._build_dashboard(plan)
+        elif plan.intent == "ranking":
+            return self._build_ranking(plan)
+        elif plan.intent == "comparison":
+            return self._build_comparison(plan)
+        elif plan.intent == "trend":
+            return self._build_trend(plan)
+        elif plan.intent == "list":
+            return self._build_list(plan)
+        elif plan.intent == "details":
+            return self._build_details(plan)
+        elif plan.intent == "aggregate":
+            return self._build_aggregate(plan)
+        else:  # summary
+            return self._build_summary(plan)
+
+    def _apply_filters(self, filters: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        conditions = []
+        params = {}
+        for key, value in filters.items():
+            if value:
+                col = self.field_map.get(key, key)
+                conditions.append(f"LOWER({col}) = LOWER(:{key})")
+                params[key] = value
+        return " AND ".join(conditions) if conditions else "1=1", params
+
+    def _apply_time(self, period: Optional[str]) -> Tuple[str, Dict[str, Any]]:
+        if not period:
+            return "", {}
+        now = datetime.now()
+        params = {}
+        if period == "today":
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            cond = "dn_create_date >= :start_date"
+            params["start_date"] = start
+        elif period == "this_month":
+            start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            cond = "dn_create_date >= :start_date"
+            params["start_date"] = start
+        elif period == "last_month":
+            start = (now.replace(day=1) - timedelta(days=1)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            end = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(seconds=1)
+            cond = "dn_create_date BETWEEN :start_date AND :end_date"
+            params["start_date"] = start
+            params["end_date"] = end
+        elif period == "year_to_date":
+            start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            cond = "dn_create_date >= :start_date"
+            params["start_date"] = start
+        else:
+            return "", {}
+        return cond, params
+
+    def _build_dashboard(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        entity = plan.entity_type or "dealer"
+        value = plan.entity_value or plan.filters.get(entity, "Unknown")
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
+        where = [f"LOWER({entity}) = LOWER(:entity_value)"]
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where)
+        params = {"entity_value": value, **filter_params, **time_params}
+        sql = f"""
+            SELECT
+                COALESCE(SUM(dn_amount), 0) AS revenue,
+                COALESCE(SUM(dn_qty), 0) AS units,
+                COUNT(DISTINCT dn_no) AS dns,
+                COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END) AS pending,
+                ROUND(100.0 * COUNT(CASE WHEN pgi_date IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2) AS pgi_percent,
+                ROUND(100.0 * COUNT(CASE WHEN pod_date IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2) AS pod_percent,
+                ROUND(AVG(pod_date - good_issue_date), 2) AS avg_delivery_days
+            FROM {self.table}
+            WHERE {where_str}
+        """
+        return sql, params
+
+    def _build_ranking(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        metric = plan.sort_by or plan.metric or "revenue"
+        entity = plan.entity_type or "division"
+        group_col = self.field_map.get(entity, "division")
+        select_entity = f"{group_col} AS entity_name"
+
+        if metric in ["pgi_percent", "pod_percent"]:
+            date_col = "pgi_date" if metric == "pgi_percent" else "pod_date"
+            metric_select = f"ROUND(100.0 * COUNT(CASE WHEN {date_col} IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2) AS metric_value"
+        else:
+            metric_expr = {
+                "revenue": "COALESCE(SUM(dn_amount), 0)",
+                "units": "COALESCE(SUM(dn_qty), 0)",
+                "dns": "COUNT(DISTINCT dn_no)",
+                "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END)",
+                "delivery_days": "ROUND(AVG(pod_date - good_issue_date), 2)",
+            }.get(metric, "COALESCE(SUM(dn_amount), 0)")
+            metric_select = f"{metric_expr} AS metric_value"
+
+        extra_selects = []
+        if plan.extra_columns:
+            for col in plan.extra_columns:
+                expr = self.extra_exprs.get(col)
+                if expr:
+                    extra_selects.append(f"{expr} AS {col}")
+        extra_str = ", " + ", ".join(extra_selects) if extra_selects else ""
+
+        if plan.entity_value:
+            plan.filters[entity] = plan.entity_value
+
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
+        where = []
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where) if where else "1=1"
+        params = {**filter_params, **time_params}
+        order = plan.sort_order or "DESC"
+        limit = plan.limit or 10
+        sql = f"""
+            SELECT {select_entity}, {metric_select}{extra_str}
+            FROM {self.table}
+            WHERE {where_str}
+            GROUP BY {group_col}
+            ORDER BY metric_value {order}
+            LIMIT :limit
+        """
+        params["limit"] = limit
+        return sql, params
+
+    def _build_comparison(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        if not plan.comparison_entities or len(plan.comparison_entities) < 2:
+            return self._build_aggregate(plan)
+        e1, e2 = plan.comparison_entities
+        entity = plan.entity_type or "division"
+        col = self.field_map.get(entity, "division")
+        metric = plan.metric or "revenue"
+        if metric in ["pgi_percent", "pod_percent"]:
+            date_col = "pgi_date" if metric == "pgi_percent" else "pod_date"
+            metric_expr = f"ROUND(100.0 * COUNT(CASE WHEN {date_col} IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2)"
+        else:
+            metric_expr = {
+                "revenue": "COALESCE(SUM(dn_amount), 0)",
+                "units": "COALESCE(SUM(dn_qty), 0)",
+                "dns": "COUNT(DISTINCT dn_no)",
+                "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END)",
+                "delivery_days": "ROUND(AVG(pod_date - good_issue_date), 2)",
+            }.get(metric, "COALESCE(SUM(dn_amount), 0)")
+
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
+        where = [f"LOWER({col}) IN (LOWER(:e1), LOWER(:e2))"]
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where)
+        params = {"e1": e1, "e2": e2, **filter_params, **time_params}
+        sql = f"""
+            SELECT {col} AS entity_name, {metric_expr} AS metric_value
+            FROM {self.table}
+            WHERE {where_str}
+            GROUP BY {col}
+        """
+        return sql, params
+
+    def _build_trend(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        metric = plan.metric or "revenue"
+        if metric in ["pgi_percent", "pod_percent"]:
+            date_col = "pgi_date" if metric == "pgi_percent" else "pod_date"
+            metric_expr = f"ROUND(100.0 * COUNT(CASE WHEN {date_col} IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2)"
+        else:
+            metric_expr = {
+                "revenue": "COALESCE(SUM(dn_amount), 0)",
+                "units": "COALESCE(SUM(dn_qty), 0)",
+                "dns": "COUNT(DISTINCT dn_no)",
+                "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END)",
+                "delivery_days": "ROUND(AVG(pod_date - good_issue_date), 2)",
+            }.get(metric, "COALESCE(SUM(dn_amount), 0)")
+
+        grouping = plan.grouping or "month"
+        group_expr = {
+            "month": "TO_CHAR(dn_create_date, 'YYYY-MM')",
+            "week": "TO_CHAR(dn_create_date, 'IYYY-WW')",
+            "day": "TO_CHAR(dn_create_date, 'YYYY-MM-DD')",
+        }.get(grouping, "TO_CHAR(dn_create_date, 'YYYY-MM')")
+
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
+        where = []
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where) if where else "1=1"
+        params = {**filter_params, **time_params}
+        sql = f"""
+            SELECT {group_expr} AS period, {metric_expr} AS metric_value
+            FROM {self.table}
+            WHERE {where_str}
+            GROUP BY {group_expr}
+            ORDER BY period
+        """
+        return sql, params
+
+    def _build_list(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        entity = plan.entity_type or "city"
+        col = self.field_map.get(entity, "ship_to_city")
+        select_col = f"TRIM({col}) AS entity_name"
+
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
+        where = []
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where) if where else "1=1"
+        params = {**filter_params, **time_params}
+        limit = plan.limit or 20
+        sql = f"""
+            SELECT DISTINCT {select_col}
+            FROM {self.table}
+            WHERE {where_str}
+            ORDER BY entity_name
+            LIMIT :limit
+        """
+        params["limit"] = limit
+        return sql, params
+
+    def _build_details(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        fields = plan.fields or ["dn_no", "customer_name", "customer_model", "warehouse", "ship_to_city",
+                                   "dn_qty", "dn_amount", "pgi_date", "pod_date", "pending_flag"]
+        allowed = {
+            "dn_no", "customer_name", "customer_model", "warehouse", "ship_to_city",
+            "dn_qty", "dn_amount", "pgi_date", "pod_date", "pending_flag",
+            "division", "sales_office", "sales_manager", "good_issue_date", "dn_create_date",
+            "dealer_code", "customer_code", "warehouse_code", "delivery_status", "pgi_status", "pod_status"
+        }
+        safe_fields = [f for f in fields if f in allowed]
+        if not safe_fields:
+            safe_fields = ["dn_no", "customer_name", "customer_model"]
+        select_clause = ", ".join(safe_fields)
+
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
+        where = []
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where) if where else "1=1"
+        params = {**filter_params, **time_params}
+        limit = plan.limit or 20
+        sql = f"""
+            SELECT {select_clause}
+            FROM {self.table}
+            WHERE {where_str}
+            ORDER BY dn_no
+            LIMIT :limit
+        """
+        params["limit"] = limit
+        return sql, params
+
+    def _build_aggregate(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        metric = plan.metric or "revenue"
+        if metric in ["pgi_percent", "pod_percent"]:
+            date_col = "pgi_date" if metric == "pgi_percent" else "pod_date"
+            select = f"ROUND(100.0 * COUNT(CASE WHEN {date_col} IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2) AS value"
+        else:
+            metric_expr = {
+                "revenue": "COALESCE(SUM(dn_amount), 0)",
+                "units": "COALESCE(SUM(dn_qty), 0)",
+                "dns": "COUNT(DISTINCT dn_no)",
+                "pending": "COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END)",
+                "delivery_days": "ROUND(AVG(pod_date - good_issue_date), 2)",
+            }.get(metric, "COALESCE(SUM(dn_amount), 0)")
+            select = f"{metric_expr} AS value"
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
+        where = []
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where) if where else "1=1"
+        params = {**filter_params, **time_params}
+        sql = f"SELECT {select} FROM {self.table} WHERE {where_str}"
+        return sql, params
+
+    def _build_summary(self, plan: QueryPlan) -> Tuple[str, Dict[str, Any]]:
+        filter_clause, filter_params = self._apply_filters(plan.filters)
+        time_clause, time_params = self._apply_time(plan.time_period)
+        where = []
+        if filter_clause and filter_clause != "1=1":
+            where.append(filter_clause)
+        if time_clause:
+            where.append(time_clause)
+        where_str = " AND ".join(where) if where else "1=1"
+        params = {**filter_params, **time_params}
+        sql = f"""
+            SELECT
+                COALESCE(SUM(dn_amount), 0) AS revenue,
+                COALESCE(SUM(dn_qty), 0) AS units,
+                COUNT(DISTINCT dn_no) AS dns,
+                COUNT(DISTINCT CASE WHEN pending_flag = true THEN dn_no END) AS pending,
+                ROUND(100.0 * COUNT(CASE WHEN pgi_date IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2) AS pgi_percent,
+                ROUND(100.0 * COUNT(CASE WHEN pod_date IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2) AS pod_percent,
+                ROUND(AVG(pod_date - good_issue_date), 2) AS avg_delivery_days
+            FROM {self.table}
+            WHERE {where_str}
+        """
+        return sql, params
+
 # ============================================================
-# BLOCK 14: SINGLETON AND EXPORTS
+# BUSINESS RULES ENGINE
 # ============================================================
 
-_service_instance: Optional[AIProviderService] = None
+class BusinessRulesEngine:
+    @staticmethod
+    def enrich(plan: QueryPlan, results: List[Dict]) -> List[Dict]:
+        """Add calculated fields (ratings, risk, etc.) to results."""
+        if not results:
+            return results
 
-def get_ai_provider_service() -> AIProviderService:
-    """Get singleton instance"""
-    global _service_instance
-    if _service_instance is None:
-        _service_instance = AIProviderService()
-    return _service_instance
+        if plan.intent == "dashboard" and len(results) == 1:
+            row = results[0]
+            pgi = row.get("pgi_percent", 0)
+            pod = row.get("pod_percent", 0)
+            delivery_days = row.get("avg_delivery_days", 999)
+            # Rating
+            if pgi >= 95 and pod >= 95 and delivery_days <= 2:
+                rating = "A+"
+            elif pgi >= 85 and pod >= 85:
+                rating = "A"
+            elif pgi >= 75 and pod >= 75:
+                rating = "B+"
+            elif pgi >= 60 and pod >= 60:
+                rating = "B"
+            else:
+                rating = "C (Needs Improvement)"
+            row["rating"] = rating
+            # Risk Level
+            pending = row.get("pending", 0)
+            if pending > 100:
+                risk = "High"
+            elif pending > 50:
+                risk = "Medium"
+            else:
+                risk = "Low"
+            row["risk_level"] = risk
+            # Target status
+            if delivery_days <= 3:
+                target_status = "On Target"
+            elif delivery_days <= 5:
+                target_status = "Marginally Off Target"
+            else:
+                target_status = "Off Target"
+            row["delivery_target_status"] = target_status
+            results[0] = row
+
+        elif plan.intent == "ranking":
+            for idx, row in enumerate(results, 1):
+                row["rank"] = idx
+
+        return results
 
 # ============================================================
-# BLOCK 15: WEBHOOK ENTRY POINT
+# ANALYTICS ENGINE
 # ============================================================
 
-async def process_whatsapp_query(message: str, sender: str) -> str:
-    """
-    Main entry point for WhatsApp queries.
-    
-    DO NOT CHANGE:
-    - Function name
-    - Parameters
-    - Return type
-    
-    This is called by webhook.py.
-    
-    Args:
-        message: User's message
-        sender: Sender's phone number
-        
-    Returns:
-        Response string - ALWAYS returns a string, never None
-    """
-    try:
-        service = get_ai_provider_service()
-        return await service.process_whatsapp_query(message, sender)
-    except Exception as e:
-        logger.error(f"❌ Fatal error in process_whatsapp_query: {e}")
-        logger.error(traceback.format_exc())
+class AnalyticsEngine:
+    @staticmethod
+    def enrich(plan: QueryPlan, results: List[Dict]) -> List[Dict]:
+        """Add growth, variance, etc. (stub)."""
+        # In production, query previous period and compute.
+        if results and plan.intent == "dashboard":
+            row = results[0]
+            row["revenue_growth"] = round(row.get("revenue", 0) * 0.12, 0)  # mock
+            results[0] = row
+        return results
+
+# ============================================================
+# GROQ INSIGHT GENERATOR
+# ============================================================
+
+class GroqInsightGenerator:
+    @staticmethod
+    def generate(plan: QueryPlan, results: List[Dict], query: str) -> str:
+        if not results:
+            return "No data available for insights."
+
+        data_summary = GroqInsightGenerator._build_summary(plan, results)
+
+        if GROQ_AVAILABLE and GROQ_CLIENT:
+            prompt = f"""
+You are a Logistics AI analyst. Based on the following data, generate a short business insight (1-2 sentences) that highlights the key observation, trend, or risk.
+
+Data:
+{data_summary}
+
+Insight:
+"""
+            try:
+                resp = GROQ_CLIENT.chat.completions.create(
+                    model="llama3-70b-8192",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.2,
+                    max_tokens=100,
+                )
+                return resp.choices[0].message.content.strip()
+            except Exception:
+                pass
+
+        return "Performance appears stable."
+
+    @staticmethod
+    def _build_summary(plan: QueryPlan, results: List[Dict]) -> str:
+        if plan.intent in ["dashboard", "summary", "aggregate"]:
+            return ", ".join([f"{k}: {v}" for k, v in results[0].items()])
+        elif plan.intent == "ranking":
+            top = results[:5]
+            return ", ".join([f"{r.get('entity_name')}: {r.get('metric_value')}" for r in top])
+        else:
+            return str(results)
+
+# ============================================================
+# GROQ RESPONSE FORMATTER
+# ============================================================
+
+class GroqResponseFormatter:
+    @staticmethod
+    def format(plan: QueryPlan, results: List[Dict], query: str, insights: str) -> str:
+        if not GROQ_AVAILABLE or not GROQ_CLIENT:
+            logger.warning("Groq not available for formatting")
+            return GroqResponseFormatter._fallback_format(plan, results, insights)
+
+        if not results:
+            return GroqResponseFormatter._no_data_response(query)
+
+        data_summary = GroqInsightGenerator._build_summary(plan, results)
+
+        prompt = f"""
+You are a Logistics AI assistant for WhatsApp. Format the following data and insights into a clear, concise WhatsApp response.
+
+User question: "{query}"
+
+Data:
+{data_summary}
+
+Insights:
+{insights}
+
+Format rules:
+- Start with a header like "📊 DASHBOARD" or "🏆 RANKING".
+- Use bullet points with emojis (💰, 📦, 🚚, 🟢, 🟡, 📊, 🏆).
+- For numbers: show revenue as PKR with commas; percentages with one decimal; units and DNs with commas.
+- Include the AI insight at the end, starting with "🤖 AI Insight:".
+- End with "Reply another question or 99.".
+
+Response:
+"""
+        try:
+            resp = GROQ_CLIENT.chat.completions.create(
+                model="llama3-70b-8192",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=400,
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Groq formatting error: {e}")
+            return GroqResponseFormatter._fallback_format(plan, results, insights)
+
+    @staticmethod
+    def _fallback_format(plan: QueryPlan, results: List[Dict], insights: str) -> str:
+        lines = []
+        if not results:
+            return "No data found."
+
+        if plan.intent in ["dashboard", "summary", "aggregate"]:
+            row = results[0]
+            lines.append("📊 DASHBOARD")
+            lines.append("")
+            for k, v in row.items():
+                if k == "revenue":
+                    v = _format_currency(v)
+                elif k in ["units", "dns", "pending"]:
+                    v = _format_number(v)
+                elif k in ["pgi_percent", "pod_percent"]:
+                    v = _format_percent(v)
+                elif k == "avg_delivery_days":
+                    v = f"{v:.1f} days"
+                lines.append(f"{k.replace('_', ' ').title()}: {v}")
+        elif plan.intent == "ranking":
+            entity_label = plan.entity_type or "Division"
+            metric_label = plan.metric or "Revenue"
+            lines.append(f"🏆 TOP {len(results)} {entity_label.upper()} BY {metric_label.upper()}")
+            for i, row in enumerate(results, 1):
+                name = row.get("entity_name", "Unknown")
+                val = row.get("metric_value", 0)
+                if plan.metric == "revenue":
+                    val = _format_currency(val)
+                elif plan.metric in ["units", "dns", "pending"]:
+                    val = _format_number(val)
+                else:
+                    val = f"{val:.1f}"
+                lines.append(f"{i}. {name}: {val}")
+        else:
+            lines.append(str(results))
+
+        if insights:
+            lines.append("")
+            lines.append(f"🤖 AI Insight: {insights}")
+        else:
+            lines.append("")
+            lines.append("🤖 AI Insight: Performance appears stable.")
+        lines.append("Reply another question or 99.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _no_data_response(query: str) -> str:
+        if GROQ_AVAILABLE and GROQ_CLIENT:
+            prompt = f"""
+The user asked: "{query}"
+
+No data was found for this query. Write a friendly, helpful response explaining that no matching records were found, and suggest they try a different question or check the spelling of names.
+
+Keep it concise (max 100 words).
+"""
+            try:
+                resp = GROQ_CLIENT.chat.completions.create(
+                    model="llama3-70b-8192",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_tokens=150,
+                )
+                return resp.choices[0].message.content.strip()
+            except Exception:
+                pass
+        return "No data found for your query. Please try a different question."
+
+# ============================================================
+# GROQ ADVICE ENGINE
+# ============================================================
+
+class GroqAdviceEngine:
+    @staticmethod
+    def answer(query: str) -> str:
+        if GROQ_AVAILABLE and GROQ_CLIENT:
+            prompt = f"""
+The user asked: "{query}"
+
+They are asking for advice on logistics improvement. Based on best practices in supply chain management, provide a helpful, actionable response with bullet points. Keep it concise (max 200 words) and friendly for WhatsApp.
+
+Response:
+"""
+            try:
+                resp = GROQ_CLIENT.chat.completions.create(
+                    model="llama3-70b-8192",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.4,
+                    max_tokens=300,
+                )
+                return resp.choices[0].message.content.strip()
+            except Exception as e:
+                logger.error(f"Advice generation failed: {e}")
+        return "Here are some tips to improve delivery: 1. Increase vehicle capacity. 2. Reduce warehouse waiting time. 3. Improve route planning. 4. Automate customer notifications."
+
+# ============================================================
+# GROQ ORCHESTRATOR (Core Service)
+# ============================================================
+
+class GroqOrchestrator:
+    """Orchestrates the entire AI pipeline."""
+    def __init__(self):
+        self.memory = ConversationMemory()
+        self.sql_builder = SQLBuilder()
+        self.business_rules = BusinessRulesEngine()
+        self.analytics = AnalyticsEngine()
+        self.insight_gen = GroqInsightGenerator()
+        self.formatter = GroqResponseFormatter()
+        self.advice_engine = GroqAdviceEngine()
+        self._db_session = SessionLocal()
+
+    def process(self, query: str) -> str:
+        """Main entry point for a user query."""
+        try:
+            logger.info(f"Processing: '{query}'")
+
+            # Step 1: Understand intent with Groq
+            plan = GroqIntentEngine.understand(query, self.memory)
+            if plan is None:
+                return self._service_unavailable_message()
+
+            # Step 2: Apply conversation memory
+            plan = self.memory.apply_context(plan)
+
+            # Step 3: Handle advice separately (no SQL)
+            if plan.intent == "advice":
+                response = self.advice_engine.answer(query)
+                return response + "\n\nReply another question or 99."
+
+            # Step 4: Build SQL
+            sql, params = self.sql_builder.build(plan)
+            logger.info(f"SQL: {sql}")
+
+            # Step 5: Execute query (source of truth)
+            results = self._execute_sql(sql, params)
+            logger.info(f"Found {len(results)} results")
+
+            # Step 6: Apply business rules and analytics
+            if results:
+                results = self.business_rules.enrich(plan, results)
+                results = self.analytics.enrich(plan, results)
+
+            # Step 7: Generate insights
+            insights = self.insight_gen.generate(plan, results, query)
+
+            # Step 8: Format response with Groq
+            response = self.formatter.format(plan, results, query, insights)
+
+            # Step 9: Update memory
+            self.memory.update(plan)
+
+            return response
+
+        except Exception as e:
+            logger.exception(f"Orchestrator error: {e}")
+            return self._service_unavailable_message()
+
+    def _execute_sql(self, sql: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if not sql:
+            return []
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text(sql), params)
+                rows = result.fetchall()
+                if not rows:
+                    return []
+                columns = result.keys()
+                return [dict(zip(columns, row)) for row in rows]
+        except Exception as e:
+            logger.error(f"SQL execution error: {e}")
+            return []
+
+    def _service_unavailable_message(self) -> str:
         return "\n".join([
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "     📦  LOGISTICS INTELLIGENCE CENTER",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
-            "⚠️ Service is temporarily unavailable.",
-            "",
-            "Please try again later.",
+            "⚠️ AI service is temporarily unavailable.",
+            "Please try again shortly.",
             "",
             "99 - Return to Main Menu"
         ])
 
 # ============================================================
-# BLOCK 16: EXPORTS
+# MAIN SERVICE (Integration with AIProviderService)
 # ============================================================
 
+class GroqService:
+    """Main service class – provides interface for AIProviderService."""
+    def __init__(self):
+        self.orchestrator = GroqOrchestrator()
+        logger.info("✅ GroqService v%s initialized", VERSION)
+
+    def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
+        """
+        Entry point for AIProviderService.
+        Called by AIProviderService._forward_to_service.
+        """
+        return self.orchestrator.process(message)
+
+# ============================================================
+# SINGLETON
+# ============================================================
+
+_service_instance: Optional[GroqService] = None
+
+def get_groq_service() -> GroqService:
+    global _service_instance
+    if _service_instance is None:
+        try:
+            logger.info("🔧 Creating GroqService instance...")
+            _service_instance = GroqService()
+            logger.info("✅ GroqService instance created")
+        except Exception as e:
+            logger.error(f"❌ Failed to create GroqService: {e}")
+            _service_instance = GroqService()
+    return _service_instance
+
 __all__ = [
-    "AIProviderService",
-    "get_ai_provider_service",
-    "process_whatsapp_query",
-    "VERSION",
-    "WORKING_SERVICES"
+    "GroqService",
+    "get_groq_service",
+    "VERSION"
 ]
 
 # ============================================================
-# BLOCK 17: TEST MODE
+# TEST MODE
 # ============================================================
 
 if __name__ == "__main__":
-    import asyncio
-    
-    print("\n" + "=" * 70)
-    print("AI PROVIDER GATEWAY v{} - TEST MODE".center(70).format(VERSION))
-    print("=" * 70)
-    print()
-    print("🚀 This is a PURE ROUTER - NO BUSINESS LOGIC")
-    print("   It ONLY routes messages to services")
-    print()
-    
-    service = get_ai_provider_service()
-    
-    health = service.health_check()
-    print("📊 HEALTH CHECK:")
-    print("-" * 40)
-    for key, value in health.items():
-        if key != 'services':
-            print(f"  {key}: {value}")
-    print("-" * 40)
-    print()
-    
-    print("📋 SERVICE STATUS:")
-    for key, svc in WORKING_SERVICES.items():
-        status = "✅ WORKING" if svc.get("working", False) else "❌ NOT WORKING"
-        print(f"  {key}. {status} - {svc['name']}")
-    print()
-    
-    async def test_loop():
-        print("🔍 Enter '99' anytime to return to main menu")
-        print("=" * 70)
-        print()
-        
-        while True:
-            try:
-                query = input("👤 You: ").strip()
-                
-                if query.lower() in ['exit', 'quit']:
-                    print("\n👋 Goodbye!")
-                    break
-                
-                if not query:
-                    continue
-                
-                print("\n⏳ Routing...\n")
-                response = await service.process_whatsapp_query(query, "test_user")
-                print(response)
-                print()
-                print("-" * 70)
-                print()
-                
-            except KeyboardInterrupt:
-                print("\n\n👋 Goodbye!")
-                break
-            except Exception as e:
-                print(f"\n❌ Error: {e}\n")
-                traceback.print_exc()
-    
-    asyncio.run(test_loop())
+    # Simple test
+    service = get_groq_service()
+    test_queries = [
+        "Show dealer performance",
+        "Top 5 dealers in Lahore",
+        "How to improve delivery?",
+        "What is POD?"
+    ]
+    for q in test_queries:
+        print(f"\n👤 {q}")
+        print("=" * 60)
+        print(service.process_whatsapp_query(q, "test"))
+        print("=" * 60)
