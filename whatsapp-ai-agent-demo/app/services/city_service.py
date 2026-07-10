@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/city_service.py
-# VERSION: 6.1 - ENTRY PROMPT & ENHANCED DASHBOARD WITH TOP DEALERS/PRODUCTS/EXCEPTIONS
+# VERSION: 6.2 - ADDED ATTOCK TO CITY LIST
 # ============================================================
 
 """
@@ -41,19 +41,19 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 SERVICE_ID = "6"                     # This service's number in the main menu
-VERSION = "6.1"
+VERSION = "6.2"
 CACHE_TTL = max(60, int(os.getenv("CITY_ANALYTICS_CACHE_TTL", "300")))
 DN_DELAY_THRESHOLD_DAYS = int(os.getenv("DN_DELAY_THRESHOLD_DAYS", "7"))
 
 # ============================================================
-# CONSTANTS
+# CONSTANTS - UPDATED WITH ATTOCK
 # ============================================================
 
 CITY_NAMES: List[str] = [
     "abbottabad", "lahore", "karachi", "rawalpindi", "quetta",
     "multan", "peshawar", "gilgit", "hyderabad", "islamabad",
     "sialkot", "gujranwala", "faisalabad", "bahawalpur", "sukkur",
-    "dg khan", "rahim yar khan", "gwadar"
+    "dg khan", "rahim yar khan", "gwadar", "attock"      # <--- ADDED
 ]
 
 CITY_ALIASES: Dict[str, str] = {
@@ -71,7 +71,7 @@ CITY_EMOJIS: Dict[str, str] = {
     "multan": "🌅", "peshawar": "🏔️", "quetta": "🏜️", "faisalabad": "🏭",
     "hyderabad": "🌊", "sialkot": "⚽", "gujranwala": "🏭", "bahawalpur": "🌴",
     "sukkur": "🌊", "dg khan": "🏔️", "rahim yar khan": "🌾", "abbottabad": "🏔️",
-    "gwadar": "🌊", "gilgit": "🏔️"
+    "gwadar": "🌊", "gilgit": "🏔️", "attock": "🏔️"     # <--- ADDED
 }
 
 WAREHOUSE_EMOJIS: Dict[str, str] = {
@@ -269,6 +269,7 @@ class CityDashboardBuilder:
             "rahim yar khan": (28.4200, 70.3030),
             "gwadar": (25.1260, 62.3250),
             "gilgit": (35.9208, 74.3144),
+            "attock": (33.7667, 72.3667),      # <--- ADDED
         }
         wc = coords.get(warehouse.lower())
         cc = coords.get(city.lower())
@@ -629,7 +630,7 @@ class CityAnalyticsService:
                     "",
                     "Please try again with a valid city name.",
                     "",
-                    "Examples: Lahore, Karachi, Islamabad",
+                    "Examples: Lahore, Karachi, Islamabad, Attock",
                     "",
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
                     "🤖 Awaiting City Name...",
@@ -655,7 +656,7 @@ class CityAnalyticsService:
         return "\n".join([
             "❌ I didn't understand that.",
             "",
-            "💡 Please enter a city name (e.g., Lahore) or type 99 to exit.",
+            "💡 Please enter a city name (e.g., Lahore, Attock) or type 99 to exit.",
             "",
             self._get_entry_prompt()
         ])
