@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/dn_analysis.py
-# VERSION: 35.0 - RICH DN DASHBOARD & PRODUCTS
+# VERSION: 35.1 - FIXED COLUMN NAMES FOR DELIVERYREPORT
 # ============================================================
 
 """
 DN Analysis Service – Independent Stateful Module.
-
-Provides:
-- DN lookup by number
-- Rich dashboard with products, timeline, status, AI insights
-- Intent detection, conversation management, and session handling
-- Integration with the AI Provider Gateway
+Provides rich DN dashboard, intent detection, and conversation management.
 """
 
 from __future__ import annotations
@@ -183,7 +178,6 @@ def _format_date(date_val: Any) -> str:
         return "N/A"
     try:
         if isinstance(date_val, str):
-            # Try common formats
             for fmt in ['%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f']:
                 try:
                     dt = datetime.strptime(date_val, fmt)
@@ -221,7 +215,6 @@ def _format_status(status: str) -> str:
 # ============================================================
 
 class DNMenuState(str, Enum):
-    """DN Menu states."""
     MAIN = "main"
     DASHBOARD = "dashboard"
     PENDING = "pending"
@@ -230,7 +223,6 @@ class DNMenuState(str, Enum):
     FOLLOWUP = "followup"
 
 class DNIntent(str, Enum):
-    """DN Intent types."""
     DASHBOARD = "dashboard"
     PENDING = "pending"
     SEARCH = "search"
@@ -257,7 +249,6 @@ class DNIntent(str, Enum):
 
 @dataclass
 class DNConversationContext:
-    """DN conversation context."""
     session_id: str
     locked: bool = True
     active_menu: DNMenuState = DNMenuState.MAIN
@@ -271,22 +262,19 @@ class DNConversationContext:
     updated_at: datetime = field(default_factory=datetime.now)
     
     def touch(self) -> None:
-        """Update timestamp."""
         self.updated_at = datetime.now()
     
     def is_expired(self) -> bool:
-        """Check if session has expired."""
         elapsed = datetime.now() - self.updated_at
         return elapsed.total_seconds() > SESSION_TIMEOUT_MINUTES * 60
     
     def add_history(self, query: str, answer: str) -> None:
-        """Add to conversation history."""
         self.history.append({
             "query": query,
             "answer": answer,
             "timestamp": datetime.now().isoformat()
         })
-        if len(self.history) > 100:  # Keep last 100 entries
+        if len(self.history) > 100:
             self.history = self.history[-100:]
         self.last_query = query
         self.last_answer = answer
@@ -294,7 +282,6 @@ class DNConversationContext:
 
 @dataclass
 class IntentResult:
-    """Intent detection result."""
     intent: DNIntent
     confidence: float
     entities: Dict[str, Any]
@@ -303,7 +290,6 @@ class IntentResult:
 
 @dataclass
 class QueryResult:
-    """Database query result."""
     data: Any
     row_count: int
     execution_time_ms: float
@@ -311,12 +297,10 @@ class QueryResult:
     error: Optional[str] = None
 
 # ============================================================
-# RESPONSE TEMPLATES - Enhanced for Rich Output
+# RESPONSE TEMPLATES (unchanged)
 # ============================================================
 
 class DNResponseTemplates:
-    """Standard response templates."""
-    
     @staticmethod
     def format_header(title: str) -> str:
         return f"📦 *{title}*"
@@ -341,7 +325,6 @@ class DNResponseTemplates:
     
     @staticmethod
     def format_dn_info(dn_no: str, **fields) -> str:
-        """Format DN information."""
         lines = [f"📦 *DN {dn_no}*", ""]
         for key, value in fields.items():
             if value is not None and value != "N/A":
@@ -350,60 +333,45 @@ class DNResponseTemplates:
     
     @staticmethod
     def format_list(title: str, items: List[Dict[str, str]], max_items: int = 15) -> str:
-        """Format a list of items."""
         if not items:
             return f"📋 *{title}*\n\n✅ No items found.\n\n{DNResponseTemplates.format_footer()}"
-        
         lines = [f"📋 *{title}*", ""]
         lines.append(f"Total: {len(items)}")
         lines.append("")
-        
         for i, item in enumerate(items[:max_items], 1):
             for key, value in item.items():
                 if value:
                     lines.append(f"{i}. {key}: {value}")
             lines.append("")
-        
         if len(items) > max_items:
             lines.append(f"... and {len(items) - max_items} more")
-        
         lines.extend(["", DNResponseTemplates.format_footer()])
         return "\n".join(lines)
 
 # ============================================================
-# DN INTENT ENGINE - Independent AI
+# DN INTENT ENGINE (unchanged)
 # ============================================================
 
 class DNIntentEngine:
-    """Independent AI engine for DN analysis."""
-    
     def __init__(self):
         self._initialized = False
         self._initialize()
     
     def _initialize(self):
-        """Initialize AI components."""
         if self._initialized:
             return
-        
         logger.info("🤖 Initializing DN Intent Engine...")
         start_time = time.time()
-        
-        # Initialize NLP components
         self._init_spacy()
         self._init_nltk()
         self._init_semantic_router()
         self._init_llm_clients()
-        
-        # Build intent patterns
         self._build_intent_patterns()
-        
         self._initialized = True
         elapsed = (time.time() - start_time) * 1000
         logger.info(f"✅ DN Intent Engine initialized in {elapsed:.1f}ms")
     
     def _init_spacy(self):
-        """Initialize spaCy."""
         self.nlp = None
         if spacy:
             try:
@@ -420,7 +388,6 @@ class DNIntentEngine:
             logger.warning("⚠️ spaCy not available")
     
     def _init_nltk(self):
-        """Initialize NLTK."""
         self.nltk_available = False
         if nltk:
             try:
@@ -438,117 +405,25 @@ class DNIntentEngine:
             logger.warning("⚠️ NLTK not available")
     
     def _init_semantic_router(self):
-        """Initialize Semantic Router."""
         self.semantic_router = None
         if SemanticRouter:
             try:
-                # Define routes
                 routes = [
-                    Route(
-                        name="dashboard",
-                        utterances=[
-                            "show dashboard", "dn dashboard", "delivery note dashboard",
-                            "dn info", "delivery note info"
-                        ]
-                    ),
-                    Route(
-                        name="pending",
-                        utterances=[
-                            "pending dns", "pending delivery notes", "show pending",
-                            "pending list", "undelivered"
-                        ]
-                    ),
-                    Route(
-                        name="status",
-                        utterances=[
-                            "what is status", "delivery status", "check status",
-                            "status update", "current status"
-                        ]
-                    ),
-                    Route(
-                        name="revenue",
-                        utterances=[
-                            "how much revenue", "dn amount", "delivery amount",
-                            "sales amount", "what is the amount"
-                        ]
-                    ),
-                    Route(
-                        name="units",
-                        utterances=[
-                            "how many units", "quantity", "dn qty",
-                            "items", "products"
-                        ]
-                    ),
-                    Route(
-                        name="customer",
-                        utterances=[
-                            "who is customer", "customer name", "customer code",
-                            "customer info", "customer details"
-                        ]
-                    ),
-                    Route(
-                        name="dealer",
-                        utterances=[
-                            "who is dealer", "dealer name", "dealer code",
-                            "dealer info", "distributor"
-                        ]
-                    ),
-                    Route(
-                        name="warehouse",
-                        utterances=[
-                            "which warehouse", "warehouse name", "warehouse code",
-                            "storage location", "plant"
-                        ]
-                    ),
-                    Route(
-                        name="pgi",
-                        utterances=[
-                            "pgi status", "goods issue", "issue date",
-                            "pgi date", "when was it issued"
-                        ]
-                    ),
-                    Route(
-                        name="pod",
-                        utterances=[
-                            "pod status", "proof of delivery", "pod date",
-                            "delivery date", "when was it delivered"
-                        ]
-                    ),
-                    Route(
-                        name="delay",
-                        utterances=[
-                            "why delayed", "delay reason", "late delivery",
-                            "overdue", "delayed"
-                        ]
-                    ),
-                    Route(
-                        name="transit",
-                        utterances=[
-                            "transit time", "in transit", "delivery time",
-                            "how long in transit"
-                        ]
-                    ),
-                    Route(
-                        name="ageing",
-                        utterances=[
-                            "ageing", "how old", "age", "days since",
-                            "delivery age"
-                        ]
-                    ),
-                    Route(
-                        name="timeline",
-                        utterances=[
-                            "timeline", "history", "chronology",
-                            "when", "dates"
-                        ]
-                    ),
-                    Route(
-                        name="summary",
-                        utterances=[
-                            "summary", "overview", "complete view",
-                            "all details", "full info"
-                        ]
-                    ),
+                    Route(name="dashboard", utterances=["show dashboard", "dn dashboard", "delivery note dashboard", "dn info", "delivery note info"]),
+                    Route(name="pending", utterances=["pending dns", "pending delivery notes", "show pending", "pending list", "undelivered"]),
+                    Route(name="status", utterances=["what is status", "delivery status", "check status", "status update", "current status"]),
+                    Route(name="revenue", utterances=["how much revenue", "dn amount", "delivery amount", "sales amount", "what is the amount"]),
+                    Route(name="units", utterances=["how many units", "quantity", "dn qty", "items", "products"]),
+                    Route(name="customer", utterances=["who is customer", "customer name", "customer code", "customer info", "customer details"]),
+                    Route(name="dealer", utterances=["who is dealer", "dealer name", "dealer code", "dealer info", "distributor"]),
+                    Route(name="warehouse", utterances=["which warehouse", "warehouse name", "warehouse code", "storage location", "plant"]),
+                    Route(name="pgi", utterances=["pgi status", "goods issue", "issue date", "pgi date", "when was it issued"]),
+                    Route(name="pod", utterances=["pod status", "proof of delivery", "pod date", "delivery date", "when was it delivered"]),
+                    Route(name="delay", utterances=["why delayed", "delay reason", "late delivery", "overdue", "delayed"]),
+                    Route(name="transit", utterances=["transit time", "in transit", "delivery time", "how long in transit"]),
+                    Route(name="ageing", utterances=["ageing", "how old", "age", "days since", "delivery age"]),
+                    Route(name="timeline", utterances=["timeline", "history", "chronology", "when", "dates"]),
+                    Route(name="summary", utterances=["summary", "overview", "complete view", "all details", "full info"]),
                 ]
                 self.semantic_router = SemanticRouter(routes=routes)
                 logger.info("✅ Semantic Router initialized")
@@ -558,39 +433,33 @@ class DNIntentEngine:
             logger.warning("⚠️ Semantic Router not available")
     
     def _init_llm_clients(self):
-        """Initialize LLM clients."""
         self.openai_client = None
         self.groq_client = None
         self.anthropic_client = None
         self.litellm_client = None
-        
         if openai and OPENAI_API_KEY:
             try:
                 self.openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
                 logger.info("✅ OpenAI client initialized")
             except Exception as e:
                 logger.warning(f"⚠️ OpenAI initialization failed: {e}")
-        
         if groq and GROQ_API_KEY:
             try:
                 self.groq_client = groq.Groq(api_key=GROQ_API_KEY)
                 logger.info("✅ Groq client initialized")
             except Exception as e:
                 logger.warning(f"⚠️ Groq initialization failed: {e}")
-        
         if anthropic and ANTHROPIC_API_KEY:
             try:
                 self.anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                 logger.info("✅ Anthropic client initialized")
             except Exception as e:
                 logger.warning(f"⚠️ Anthropic initialization failed: {e}")
-        
         if litellm:
             self.litellm_client = litellm
             logger.info("✅ LiteLLM available")
     
     def _build_intent_patterns(self):
-        """Build intent pattern dictionaries for rapid matching."""
         self.intent_patterns = {
             DNIntent.DASHBOARD: ['dashboard', 'info', 'summary', 'overview'],
             DNIntent.PENDING: ['pending', 'undelivered', 'not delivered'],
@@ -612,49 +481,37 @@ class DNIntentEngine:
         }
     
     def _rapidfuzz_match(self, text: str) -> Optional[Tuple[str, float]]:
-        """Use RapidFuzz for fast fuzzy matching."""
         if not fuzz or not process:
             return None
-        
         text_lower = text.lower()
         best_match = None
         best_score = 0.0
-        
         for intent, patterns in self.intent_patterns.items():
             for pattern in patterns:
                 score = fuzz.partial_ratio(text_lower, pattern)
                 if score > best_score:
                     best_score = score
                     best_match = intent
-        
-        if best_score > 80:  # Threshold for fuzzy match
+        if best_score > 80:
             return (best_match.value, best_score / 100.0)
         return None
     
     def _spacy_match(self, text: str) -> Optional[Tuple[str, float]]:
-        """Use spaCy for semantic understanding."""
         if not self.nlp:
             return None
-        
         doc = self.nlp(text)
-        # Extract entities and nouns
         entities = [ent.text.lower() for ent in doc.ents]
         nouns = [token.text.lower() for token in doc if token.pos_ in ['NOUN', 'PROPN']]
         lemmas = [token.lemma_.lower() for token in doc]
-        
-        # Check against intent patterns
         for intent, patterns in self.intent_patterns.items():
             for pattern in patterns:
                 if pattern in lemmas or pattern in nouns or pattern in entities:
-                    return (intent.value, 0.85)  # High confidence for direct match
-        
+                    return (intent.value, 0.85)
         return None
     
     def _semantic_router_match(self, text: str) -> Optional[Tuple[str, float]]:
-        """Use Semantic Router for intent classification."""
         if not self.semantic_router:
             return None
-        
         try:
             result = self.semantic_router(text)
             if result:
@@ -664,16 +521,11 @@ class DNIntentEngine:
         return None
     
     def _llm_verify(self, text: str, candidates: List[Tuple[str, float]]) -> Tuple[str, float]:
-        """Use LLM to verify and refine intent."""
         if not candidates:
             return (DNIntent.UNKNOWN.value, 0.0)
-        
-        # If we have a high confidence candidate, use it
         for intent, confidence in candidates:
             if confidence > 0.9:
                 return (intent, confidence)
-        
-        # Try LLM verification if available
         try:
             if self.openai_client:
                 response = self.openai_client.chat.completions.create(
@@ -686,138 +538,86 @@ class DNIntentEngine:
                     temperature=0.1
                 )
                 intent_text = response.choices[0].message.content.strip().lower()
-                # Map to known intents
                 for intent in DNIntent:
                     if intent.value in intent_text or intent_text in intent.value:
                         return (intent.value, 0.9)
         except Exception as e:
             logger.debug(f"LLM verification failed: {e}")
-        
-        # Return best candidate
         return candidates[0]
     
     def detect_intent(self, text: str) -> IntentResult:
-        """
-        Detect intent using multi-stage pipeline.
-        
-        Stages:
-        1. RapidFuzz - Fast fuzzy matching (~10ms)
-        2. SpaCy - Semantic understanding (~20ms)
-        3. Semantic Router - ML-based (~30ms)
-        4. LLM Verification - Final verification (~100ms)
-        """
         start_time = time.time()
-        
         if not text or not text.strip():
-            return IntentResult(
-                intent=DNIntent.UNKNOWN,
-                confidence=0.0,
-                entities={},
-                raw_input=text,
-                processing_time_ms=0.0
-            )
-        
+            return IntentResult(intent=DNIntent.UNKNOWN, confidence=0.0, entities={}, raw_input=text, processing_time_ms=0.0)
         text_clean = text.strip().lower()
-        
-        # Check for DN number first (high priority)
         dn = _extract_dn(text)
         entities = {"dn": dn} if dn else {}
-        
-        # Stage 1: RapidFuzz (fast)
         result = self._rapidfuzz_match(text_clean)
         candidates = []
         if result:
             candidates.append(result)
-        
-        # Stage 2: SpaCy
         result = self._spacy_match(text_clean)
         if result:
             candidates.append(result)
-        
-        # Stage 3: Semantic Router
         result = self._semantic_router_match(text_clean)
         if result:
             candidates.append(result)
-        
-        # Stage 4: LLM Verification (if needed)
         if candidates:
             intent, confidence = self._llm_verify(text_clean, candidates)
         else:
             intent = DNIntent.UNKNOWN.value
             confidence = 0.0
-        
-        # Detect if it's a help request
         if any(word in text_clean for word in ['help', 'support', '?']):
             intent = DNIntent.HELP.value
             confidence = max(confidence, 0.7)
-        
-        # Detect exit
         if text_clean in ['99', 'exit', 'quit', 'cancel']:
             intent = DNIntent.EXIT.value
             confidence = 1.0
-        
-        # If we have a DN, and no specific intent, default to dashboard
         if dn and (intent == DNIntent.UNKNOWN.value or confidence < 0.5):
             intent = DNIntent.DASHBOARD.value
             confidence = 0.6
             entities = {"dn": dn}
-        
         elapsed_ms = (time.time() - start_time) * 1000
-        
-        return IntentResult(
-            intent=DNIntent(intent),
-            confidence=confidence,
-            entities=entities,
-            raw_input=text,
-            processing_time_ms=elapsed_ms
-        )
+        return IntentResult(intent=DNIntent(intent), confidence=confidence, entities=entities, raw_input=text, processing_time_ms=elapsed_ms)
 
 # ============================================================
-# DN RENDERER - Enhanced Rich Dashboard
+# DN RENDERER - Enhanced Rich Dashboard (unchanged except minor field mapping)
 # ============================================================
 
 class DNRenderer:
-    """Specialized renderer for DN responses."""
-    
     def __init__(self):
         self.templates = DNResponseTemplates()
     
     def render_dashboard(self, data: Dict[str, Any]) -> str:
         """Render the rich DN dashboard with all sections."""
         dn_no = data.get('dn_no', 'N/A')
-        dealer = data.get('dealer', 'N/A')
+        # Use customer_name as dealer, and customer_code as dealer code if needed
+        dealer = data.get('customer_name', 'N/A')  # changed from 'dealer'
         city = data.get('ship_to_city', 'N/A')
         warehouse = data.get('warehouse', 'N/A')
         division = data.get('division', 'N/A')
         
-        # Summary
         products_count = len(data.get('products', []))
         total_units = data.get('dn_qty', 0)
         revenue = data.get('dn_amount', 0)
         
-        # Timeline
         created = _format_date(data.get('dn_create_date'))
         pgi_date = _format_date(data.get('good_issue_date'))
         pod_date = _format_date(data.get('pod_date'))
         transit_days = data.get('transit_days', 0)
         
-        # Status
         delivery_status = data.get('delivery_status', 'Pending')
         pgi_status = data.get('pgi_status', 'Pending')
         pod_status = data.get('pod_status', 'Pending')
-        pending_flag = data.get('pending_flag', False)
+        # pending_flag derived from pod_date is None
+        pending_flag = data.get('pending_flag', False)  # will be computed
         
-        # Products list
         products = data.get('products', [])
-        
-        # AI Insight
         insight = self._generate_ai_insight(data)
         
-        # Build output
         lines = []
         SEP = "━━━━━━━━━━━━━━━━━━━━━━"
         
-        # Header
         lines.append(SEP)
         lines.append("📦 DELIVERY NOTE INTELLIGENCE CENTER")
         lines.append(SEP)
@@ -838,7 +638,6 @@ class DNRenderer:
         lines.append(f"{division}")
         lines.append("")
         
-        # Summary
         lines.append(SEP)
         lines.append("📊 DELIVERY SUMMARY")
         lines.append(SEP)
@@ -848,7 +647,6 @@ class DNRenderer:
         lines.append(f"💰 Revenue  : {_format_currency(revenue)}")
         lines.append("")
         
-        # Timeline
         lines.append(SEP)
         lines.append("🚚 DELIVERY TIMELINE")
         lines.append(SEP)
@@ -860,7 +658,6 @@ class DNRenderer:
         lines.append(f"⏱ Transit    : {transit_display}")
         lines.append("")
         
-        # Current Status
         lines.append(SEP)
         lines.append("✅ CURRENT STATUS")
         lines.append(SEP)
@@ -872,13 +669,12 @@ class DNRenderer:
         lines.append(f"🟢 Pending  : {pending_text}")
         lines.append("")
         
-        # Products
         if products:
             lines.append(SEP)
             lines.append("📦 PRODUCTS")
             lines.append(SEP)
             lines.append("")
-            for item in products[:10]:  # Limit to 10 products
+            for item in products[:10]:
                 model = item.get('model', 'N/A')
                 qty = item.get('qty', 0)
                 lines.append(f"• {model} × {qty}")
@@ -886,7 +682,6 @@ class DNRenderer:
                 lines.append(f"... and {len(products)-10} more")
             lines.append("")
         
-        # AI Insight
         lines.append(SEP)
         lines.append("🤖 AI INSIGHT")
         lines.append(SEP)
@@ -894,7 +689,6 @@ class DNRenderer:
         lines.extend(insight)
         lines.append("")
         
-        # Next Action
         lines.append(SEP)
         lines.append("🔄 NEXT ACTION")
         lines.append(SEP)
@@ -907,14 +701,12 @@ class DNRenderer:
         return "\n".join(lines)
     
     def _generate_ai_insight(self, data: Dict[str, Any]) -> List[str]:
-        """Generate AI insights based on data."""
         insights = []
         status = data.get('delivery_status', '').lower()
         transit_days = data.get('transit_days', 0)
         delay_days = data.get('delay_days', 0)
         threshold = DN_DELAY_THRESHOLD_DAYS
         
-        # Delivery status
         if status in ['delivered', 'completed']:
             insights.append("✅ Delivered before SLA.")
             if transit_days <= 3:
@@ -927,26 +719,21 @@ class DNRenderer:
             else:
                 insights.append("⏳ In transit. Expected delivery soon.")
         
-        # Check for issues
         if data.get('pending_flag', False):
             insights.append("⏳ Pending action required. Follow up with logistics.")
         
-        # Revenue insight
         revenue = data.get('dn_amount', 0)
         if revenue > 1_000_000:
             insights.append("💰 High value delivery. Ensure proper documentation.")
         
-        # If everything is fine
         if not insights:
             insights.append("✅ No operational issues detected.")
-        
         return insights
     
+    # Other render methods (pending, search, status, etc.) remain unchanged
     def render_pending(self, items: List[Dict[str, Any]]) -> str:
-        """Render pending DN list."""
         if not items:
             return "📋 *Pending DNs*\n\n✅ No pending DNs found.\n\n" + self.templates.format_footer()
-        
         formatted_items = []
         for item in items[:15]:
             formatted_items.append({
@@ -954,14 +741,11 @@ class DNRenderer:
                 "Customer": item.get('customer_name', 'N/A'),
                 "Status": item.get('delivery_status', 'Pending')
             })
-        
         return self.templates.format_list("Pending DNs", formatted_items)
     
     def render_search(self, query: str, items: List[Dict[str, Any]]) -> str:
-        """Render search results."""
         if not items:
             return f"🔍 No results found for '{query}'\n\n{self.templates.format_footer()}"
-        
         formatted_items = []
         for item in items[:15]:
             formatted_items.append({
@@ -969,11 +753,9 @@ class DNRenderer:
                 "Customer": item.get('customer_name', 'N/A'),
                 "Status": item.get('delivery_status', 'Pending')
             })
-        
         return self.templates.format_list(f"Search Results for '{query}'", formatted_items)
     
     def render_status(self, data: Dict[str, Any]) -> str:
-        """Render DN status (simple version)."""
         dn_no = data.get('dn_no', 'N/A')
         fields = {
             "Status": data.get('delivery_status', 'Pending'),
@@ -983,7 +765,6 @@ class DNRenderer:
             "PGI Date": _format_date(data.get('good_issue_date')),
             "POD Date": _format_date(data.get('pod_date'))
         }
-        
         lines = [self.templates.format_header(f"Status - DN {dn_no}"), ""]
         for key, value in fields.items():
             if value and value != "N/A":
@@ -992,28 +773,22 @@ class DNRenderer:
         return "\n".join(lines)
     
     def render_revenue(self, data: Dict[str, Any]) -> str:
-        """Render DN revenue."""
         dn_no = data.get('dn_no', 'N/A')
         amount = data.get('dn_amount', 0)
-        
         return f"💰 *Revenue - DN {dn_no}*\n\n{_format_currency(amount)}\n\n{self.templates.format_footer()}"
     
     def render_units(self, data: Dict[str, Any]) -> str:
-        """Render DN units."""
         dn_no = data.get('dn_no', 'N/A')
         qty = data.get('dn_qty', 0)
-        
         return f"📦 *Units - DN {dn_no}*\n\n{_format_number(qty)}\n\n{self.templates.format_footer()}"
     
     def render_customer(self, data: Dict[str, Any]) -> str:
-        """Render customer information."""
         dn_no = data.get('dn_no', 'N/A')
         fields = {
             "Name": data.get('customer_name'),
             "Code": data.get('customer_code'),
             "Model": data.get('customer_model')
         }
-        
         lines = [self.templates.format_header(f"Customer - DN {dn_no}"), ""]
         for key, value in fields.items():
             if value and value != "N/A":
@@ -1022,13 +797,11 @@ class DNRenderer:
         return "\n".join(lines)
     
     def render_dealer(self, data: Dict[str, Any]) -> str:
-        """Render dealer information."""
         dn_no = data.get('dn_no', 'N/A')
         fields = {
-            "Name": data.get('dealer'),
-            "Code": data.get('dealer_code')
+            "Name": data.get('customer_name'),  # dealer name
+            "Code": data.get('customer_code')   # use customer_code as dealer code
         }
-        
         lines = [self.templates.format_header(f"Dealer - DN {dn_no}"), ""]
         for key, value in fields.items():
             if value and value != "N/A":
@@ -1037,15 +810,11 @@ class DNRenderer:
         return "\n".join(lines)
     
     def render_warehouse(self, data: Dict[str, Any]) -> str:
-        """Render warehouse information."""
         dn_no = data.get('dn_no', 'N/A')
         fields = {
             "Warehouse": data.get('warehouse'),
-            "Code": data.get('warehouse_code'),
-            "Location": data.get('storage_location'),
             "City": data.get('ship_to_city')
         }
-        
         lines = [self.templates.format_header(f"Warehouse - DN {dn_no}"), ""]
         for key, value in fields.items():
             if value and value != "N/A":
@@ -1054,14 +823,12 @@ class DNRenderer:
         return "\n".join(lines)
     
     def render_pgi(self, data: Dict[str, Any]) -> str:
-        """Render PGI information."""
         dn_no = data.get('dn_no', 'N/A')
         fields = {
             "PGI Status": data.get('pgi_status', 'Pending'),
             "PGI Date": _format_date(data.get('good_issue_date')),
             "Work Order": data.get('dn_work')
         }
-        
         lines = [self.templates.format_header(f"PGI - DN {dn_no}"), ""]
         for key, value in fields.items():
             if value and value != "N/A":
@@ -1070,14 +837,12 @@ class DNRenderer:
         return "\n".join(lines)
     
     def render_pod(self, data: Dict[str, Any]) -> str:
-        """Render POD information."""
         dn_no = data.get('dn_no', 'N/A')
         fields = {
             "POD Status": data.get('pod_status', 'Pending'),
             "POD Date": _format_date(data.get('pod_date')),
             "Delivery Status": data.get('delivery_status', 'Pending')
         }
-        
         lines = [self.templates.format_header(f"POD - DN {dn_no}"), ""]
         for key, value in fields.items():
             if value and value != "N/A":
@@ -1086,13 +851,10 @@ class DNRenderer:
         return "\n".join(lines)
     
     def render_delay(self, data: Dict[str, Any]) -> str:
-        """Render delay information."""
         dn_no = data.get('dn_no', 'N/A')
         days = data.get('delay_days', 0)
         threshold = data.get('threshold', DN_DELAY_THRESHOLD_DAYS)
-        
         status = "⚠️ DELAYED" if days > threshold else "✅ ON TIME"
-        
         lines = [
             self.templates.format_header(f"Delay Analysis - DN {dn_no}"),
             "",
@@ -1105,7 +867,6 @@ class DNRenderer:
         return "\n".join(lines)
     
     def render_transit(self, data: Dict[str, Any]) -> str:
-        """Render transit information."""
         dn_no = data.get('dn_no', 'N/A')
         fields = {
             "Transit Days": data.get('transit_days', 'N/A'),
@@ -1113,7 +874,6 @@ class DNRenderer:
             "POD Date": _format_date(data.get('pod_date')),
             "Status": data.get('delivery_status', 'Pending')
         }
-        
         lines = [self.templates.format_header(f"Transit - DN {dn_no}"), ""]
         for key, value in fields.items():
             if value and value != "N/A":
@@ -1122,14 +882,12 @@ class DNRenderer:
         return "\n".join(lines)
     
     def render_ageing(self, data: Dict[str, Any]) -> str:
-        """Render ageing information."""
         dn_no = data.get('dn_no', 'N/A')
         fields = {
             "Age (Days)": data.get('age_days', 'N/A'),
             "Created": _format_date(data.get('dn_create_date')),
             "Status": data.get('delivery_status', 'Pending')
         }
-        
         lines = [self.templates.format_header(f"Ageing - DN {dn_no}"), ""]
         for key, value in fields.items():
             if value and value != "N/A":
@@ -1138,24 +896,19 @@ class DNRenderer:
         return "\n".join(lines)
     
     def render_timeline(self, data: Dict[str, Any]) -> str:
-        """Render timeline information."""
         dn_no = data.get('dn_no', 'N/A')
-        
         events = []
         created = _format_date(data.get('dn_create_date'))
         pgi = _format_date(data.get('good_issue_date'))
         pod = _format_date(data.get('pod_date'))
-        
         if created != "N/A":
             events.append(f"📋 Created: {created}")
         if pgi != "N/A":
             events.append(f"🚚 PGI: {pgi}")
         if pod != "N/A":
             events.append(f"✅ POD: {pod}")
-        
         if not events:
             events = ["No timeline events available"]
-        
         lines = [
             self.templates.format_header(f"Timeline - DN {dn_no}"),
             "",
@@ -1166,14 +919,12 @@ class DNRenderer:
         return "\n".join(lines)
     
     def render_summary(self, data: Dict[str, Any]) -> str:
-        """Render comprehensive summary."""
         dn_no = data.get('dn_no', 'N/A')
-        
         fields = {
             "DN": dn_no,
             "Customer": data.get('customer_name'),
             "Customer Code": data.get('customer_code'),
-            "Dealer": data.get('dealer'),
+            "Dealer": data.get('customer_name'),  # using customer_name as dealer
             "Status": data.get('delivery_status', 'Pending'),
             "Amount": _format_currency(data.get('dn_amount', 0)),
             "Quantity": _format_number(data.get('dn_qty', 0)),
@@ -1183,7 +934,6 @@ class DNRenderer:
             "Warehouse": data.get('warehouse'),
             "City": data.get('ship_to_city')
         }
-        
         lines = [self.templates.format_header(f"Summary - DN {dn_no}"), ""]
         for key, value in fields.items():
             if value and value != "N/A" and value != "0" and value != "PKR 0.00":
@@ -1192,7 +942,6 @@ class DNRenderer:
         return "\n".join(lines)
     
     def render_help(self) -> str:
-        """Render help information."""
         return "\n".join([
             "💡 *DN Commands:*",
             "",
@@ -1218,7 +967,6 @@ class DNRenderer:
         ])
     
     def render_main_menu(self) -> str:
-        """Render main menu."""
         return "\n".join([
             "📦 *DN ANALYTICS MENU*",
             "",
@@ -1237,18 +985,15 @@ class DNRenderer:
         ])
 
 # ============================================================
-# DN DATABASE REPOSITORY
+# DN DATABASE REPOSITORY - FIXED COLUMN NAMES
 # ============================================================
 
 class DNDatabaseRepository:
-    """Database repository for DN operations."""
-    
     def __init__(self):
         self._session_local = SessionLocal if DB_AVAILABLE else None
         logger.info(f"🗄️  Database repository initialized: {'connected' if self._session_local else 'unavailable'}")
     
     def _get_session(self) -> Optional[Session]:
-        """Get database session."""
         if not self._session_local:
             logger.error("❌ Database not available")
             return None
@@ -1259,7 +1004,6 @@ class DNDatabaseRepository:
             return None
     
     def _close_session(self, session: Optional[Session]):
-        """Close database session."""
         if session:
             try:
                 session.close()
@@ -1267,21 +1011,16 @@ class DNDatabaseRepository:
                 logger.debug(f"Session close error: {e}")
     
     def get_dn_by_number(self, dn_no: str) -> QueryResult:
-        """Get DN by number, including products list."""
+        """Get DN by number, including products list.
+        Uses only columns that exist in DeliveryReport model.
+        """
         start_time = time.time()
         session = self._get_session()
-        
         if not session:
-            return QueryResult(
-                data=None,
-                row_count=0,
-                execution_time_ms=0,
-                success=False,
-                error="Database unavailable"
-            )
+            return QueryResult(data=None, row_count=0, execution_time_ms=0, success=False, error="Database unavailable")
         
         try:
-            # First get the main DN record (aggregated)
+            # Query only attributes that are guaranteed to exist
             result = session.query(
                 DeliveryReport.dn_no,
                 DeliveryReport.division,
@@ -1289,8 +1028,6 @@ class DNDatabaseRepository:
                 DeliveryReport.customer_code,
                 DeliveryReport.customer_name,
                 DeliveryReport.customer_model,
-                DeliveryReport.dealer,
-                DeliveryReport.dealer_code,
                 DeliveryReport.dn_work,
                 DeliveryReport.delivery_status,
                 DeliveryReport.pgi_status,
@@ -1301,26 +1038,17 @@ class DNDatabaseRepository:
                 DeliveryReport.dn_qty,
                 DeliveryReport.dn_amount,
                 DeliveryReport.warehouse,
-                DeliveryReport.warehouse_code,
-                DeliveryReport.storage_location,
                 DeliveryReport.ship_to_city,
                 DeliveryReport.remarks,
-                DeliveryReport.pending_flag,
             ).filter(
                 DeliveryReport.dn_no == dn_no
             ).first()
             
             if not result:
                 self._close_session(session)
-                return QueryResult(
-                    data=None,
-                    row_count=0,
-                    execution_time_ms=(time.time() - start_time) * 1000,
-                    success=True,
-                    error=None
-                )
+                return QueryResult(data=None, row_count=0, execution_time_ms=(time.time()-start_time)*1000, success=True)
             
-            # Get products list (group by customer_model, sum quantities)
+            # Get products (group by customer_model)
             products_result = session.query(
                 DeliveryReport.customer_model,
                 func.sum(DeliveryReport.dn_qty).label('total_qty')
@@ -1346,8 +1074,6 @@ class DNDatabaseRepository:
                 'customer_code': _text(result.customer_code),
                 'customer_name': _text(result.customer_name),
                 'customer_model': _text(result.customer_model),
-                'dealer': _text(result.dealer),
-                'dealer_code': _text(result.dealer_code),
                 'dn_work': _text(result.dn_work),
                 'delivery_status': _text(result.delivery_status, 'Pending'),
                 'pgi_status': _text(result.pgi_status, 'Pending'),
@@ -1358,58 +1084,35 @@ class DNDatabaseRepository:
                 'dn_qty': result.dn_qty or 0,
                 'dn_amount': result.dn_amount or 0,
                 'warehouse': _text(result.warehouse),
-                'warehouse_code': _text(result.warehouse_code),
-                'storage_location': _text(result.storage_location),
                 'ship_to_city': _text(result.ship_to_city),
                 'remarks': _text(result.remarks),
-                'pending_flag': result.pending_flag or False,
                 'products': products,
             }
-            
-            # Calculate derived fields
+            # Compute pending_flag from pod_date
+            data['pending_flag'] = (data.get('pod_date') == "N/A" or not data.get('pod_date'))
+            # Derived fields
             data['age_days'] = self._calculate_age(data.get('dn_create_date'))
             data['delay_days'] = self._calculate_delay(data.get('dn_create_date'), data.get('delivery_status'))
             data['transit_days'] = self._calculate_transit(data.get('good_issue_date'), data.get('pod_date'))
             
             self._close_session(session)
-            
             elapsed_ms = (time.time() - start_time) * 1000
-            
-            return QueryResult(
-                data=data,
-                row_count=1,
-                execution_time_ms=elapsed_ms,
-                success=True
-            )
+            return QueryResult(data=data, row_count=1, execution_time_ms=elapsed_ms, success=True)
             
         except Exception as e:
             logger.error(f"❌ Database error: {e}")
             import traceback
             logger.error(traceback.format_exc())
             self._close_session(session)
-            return QueryResult(
-                data=None,
-                row_count=0,
-                execution_time_ms=(time.time() - start_time) * 1000,
-                success=False,
-                error=str(e)
-            )
+            return QueryResult(data=None, row_count=0, execution_time_ms=(time.time()-start_time)*1000, success=False, error=str(e))
     
     def get_pending_dns(self, limit: int = 30) -> QueryResult:
-        """Get pending DNs."""
         start_time = time.time()
         session = self._get_session()
-        
         if not session:
-            return QueryResult(
-                data=[],
-                row_count=0,
-                execution_time_ms=0,
-                success=False,
-                error="Database unavailable"
-            )
-        
+            return QueryResult(data=[], row_count=0, execution_time_ms=0, success=False, error="Database unavailable")
         try:
+            # pending = pod_date is NULL
             results = session.query(
                 DeliveryReport.dn_no,
                 DeliveryReport.customer_name,
@@ -1417,16 +1120,11 @@ class DNDatabaseRepository:
                 DeliveryReport.delivery_status,
                 DeliveryReport.dn_create_date,
             ).filter(
-                or_(
-                    DeliveryReport.pending_flag.is_(True),
-                    DeliveryReport.pod_date.is_(None)
-                )
+                DeliveryReport.pod_date.is_(None)
             ).order_by(
                 desc(DeliveryReport.dn_create_date)
             ).limit(limit).all()
-            
             self._close_session(session)
-            
             items = []
             for row in results:
                 items.append({
@@ -1436,41 +1134,18 @@ class DNDatabaseRepository:
                     'delivery_status': _text(row.delivery_status, 'Pending'),
                     'dn_create_date': _text(row.dn_create_date),
                 })
-            
             elapsed_ms = (time.time() - start_time) * 1000
-            
-            return QueryResult(
-                data=items,
-                row_count=len(items),
-                execution_time_ms=elapsed_ms,
-                success=True
-            )
-            
+            return QueryResult(data=items, row_count=len(items), execution_time_ms=elapsed_ms, success=True)
         except Exception as e:
             logger.error(f"❌ Pending query error: {e}")
             self._close_session(session)
-            return QueryResult(
-                data=[],
-                row_count=0,
-                execution_time_ms=(time.time() - start_time) * 1000,
-                success=False,
-                error=str(e)
-            )
+            return QueryResult(data=[], row_count=0, execution_time_ms=(time.time()-start_time)*1000, success=False, error=str(e))
     
     def search_dns(self, query: str, limit: int = 30) -> QueryResult:
-        """Search DNs."""
         start_time = time.time()
         session = self._get_session()
-        
         if not session:
-            return QueryResult(
-                data=[],
-                row_count=0,
-                execution_time_ms=0,
-                success=False,
-                error="Database unavailable"
-            )
-        
+            return QueryResult(data=[], row_count=0, execution_time_ms=0, success=False, error="Database unavailable")
         try:
             search_pattern = f"%{query}%"
             results = session.query(
@@ -1485,16 +1160,13 @@ class DNDatabaseRepository:
                     DeliveryReport.customer_name.ilike(search_pattern),
                     DeliveryReport.customer_code.ilike(search_pattern),
                     DeliveryReport.division.ilike(search_pattern),
-                    DeliveryReport.dealer.ilike(search_pattern),
                     DeliveryReport.ship_to_city.ilike(search_pattern),
                     DeliveryReport.warehouse.ilike(search_pattern),
                 )
             ).order_by(
                 desc(DeliveryReport.dn_create_date)
             ).limit(limit).all()
-            
             self._close_session(session)
-            
             items = []
             for row in results:
                 items.append({
@@ -1504,59 +1176,27 @@ class DNDatabaseRepository:
                     'delivery_status': _text(row.delivery_status, 'Pending'),
                     'dn_create_date': _text(row.dn_create_date),
                 })
-            
             elapsed_ms = (time.time() - start_time) * 1000
-            
-            return QueryResult(
-                data=items,
-                row_count=len(items),
-                execution_time_ms=elapsed_ms,
-                success=True
-            )
-            
+            return QueryResult(data=items, row_count=len(items), execution_time_ms=elapsed_ms, success=True)
         except Exception as e:
             logger.error(f"❌ Search error: {e}")
             self._close_session(session)
-            return QueryResult(
-                data=[],
-                row_count=0,
-                execution_time_ms=(time.time() - start_time) * 1000,
-                success=False,
-                error=str(e)
-            )
+            return QueryResult(data=[], row_count=0, execution_time_ms=(time.time()-start_time)*1000, success=False, error=str(e))
     
     def get_dn_stats(self) -> QueryResult:
-        """Get DN statistics."""
         start_time = time.time()
         session = self._get_session()
-        
         if not session:
-            return QueryResult(
-                data={},
-                row_count=0,
-                execution_time_ms=0,
-                success=False,
-                error="Database unavailable"
-            )
-        
+            return QueryResult(data={}, row_count=0, execution_time_ms=0, success=False, error="Database unavailable")
         try:
-            # Count stats
             total = session.query(DeliveryReport).count()
-            pending = session.query(DeliveryReport).filter(DeliveryReport.pending_flag.is_(True)).count()
+            pending = session.query(DeliveryReport).filter(DeliveryReport.pod_date.is_(None)).count()
             delivered = session.query(DeliveryReport).filter(DeliveryReport.pod_date.is_not(None)).count()
             pgi_issued = session.query(DeliveryReport).filter(DeliveryReport.good_issue_date.is_not(None)).count()
-            
-            # Revenue stats
             total_revenue = session.query(func.sum(DeliveryReport.dn_amount)).scalar() or 0
-            pending_revenue = session.query(func.sum(DeliveryReport.dn_amount)).filter(
-                DeliveryReport.pending_flag.is_(True)
-            ).scalar() or 0
-            
-            # Total units
+            pending_revenue = session.query(func.sum(DeliveryReport.dn_amount)).filter(DeliveryReport.pod_date.is_(None)).scalar() or 0
             total_units = session.query(func.sum(DeliveryReport.dn_qty)).scalar() or 0
-            
             self._close_session(session)
-            
             data = {
                 'total_dns': total,
                 'pending_dns': pending,
@@ -1566,34 +1206,18 @@ class DNDatabaseRepository:
                 'pending_revenue': pending_revenue,
                 'total_units': total_units,
             }
-            
             elapsed_ms = (time.time() - start_time) * 1000
-            
-            return QueryResult(
-                data=data,
-                row_count=1,
-                execution_time_ms=elapsed_ms,
-                success=True
-            )
-            
+            return QueryResult(data=data, row_count=1, execution_time_ms=elapsed_ms, success=True)
         except Exception as e:
             logger.error(f"❌ Stats error: {e}")
             self._close_session(session)
-            return QueryResult(
-                data={},
-                row_count=0,
-                execution_time_ms=(time.time() - start_time) * 1000,
-                success=False,
-                error=str(e)
-            )
+            return QueryResult(data={}, row_count=0, execution_time_ms=(time.time()-start_time)*1000, success=False, error=str(e))
     
     def _calculate_age(self, create_date: Any) -> int:
-        """Calculate age in days from creation date."""
         if not create_date or create_date == "N/A":
             return 0
         try:
             if isinstance(create_date, str):
-                # Try to parse date string
                 for fmt in ['%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f']:
                     try:
                         date_obj = datetime.strptime(create_date, fmt)
@@ -1608,24 +1232,20 @@ class DNDatabaseRepository:
                 date_obj = datetime.combine(create_date, datetime.min.time())
             else:
                 return 0
-            
             delta = datetime.now() - date_obj
             return max(0, delta.days)
         except Exception:
             return 0
     
     def _calculate_delay(self, create_date: Any, status: str) -> int:
-        """Calculate delay days."""
         if status and status.lower() in ['delivered', 'completed']:
             return 0
         return self._calculate_age(create_date)
     
     def _calculate_transit(self, issue_date: Any, pod_date: Any) -> int:
-        """Calculate transit days."""
         if not issue_date or not pod_date:
             return 0
         try:
-            # Parse dates
             date_format = '%Y-%m-%d'
             if isinstance(issue_date, str):
                 issue = datetime.strptime(issue_date[:10], date_format).date()
@@ -1633,26 +1253,22 @@ class DNDatabaseRepository:
                 issue = issue_date
             else:
                 return 0
-            
             if isinstance(pod_date, str):
                 pod = datetime.strptime(pod_date[:10], date_format).date()
             elif isinstance(pod_date, date):
                 pod = pod_date
             else:
                 return 0
-            
             delta = pod - issue
             return max(0, delta.days)
         except Exception:
             return 0
 
 # ============================================================
-# DN STATE MACHINE
+# DN STATE MACHINE (unchanged)
 # ============================================================
 
 class DNStateMachine:
-    """State machine for DN conversation flow."""
-    
     def __init__(self):
         self._transitions = {
             DNMenuState.MAIN: {
@@ -1690,55 +1306,44 @@ class DNStateMachine:
         }
     
     def transition(self, current_state: DNMenuState, action: str) -> DNMenuState:
-        """Transition to new state based on action."""
         transitions = self._transitions.get(current_state, {})
         return transitions.get(action, current_state)
     
     def can_transition(self, current_state: DNMenuState, action: str) -> bool:
-        """Check if transition is valid."""
         transitions = self._transitions.get(current_state, {})
         return action in transitions
 
 # ============================================================
-# DN CONVERSATION MANAGER
+# DN CONVERSATION MANAGER (unchanged)
 # ============================================================
 
 class DNConversationManager:
-    """Manages DN conversation contexts."""
-    
     def __init__(self):
         self._contexts: Dict[str, DNConversationContext] = {}
         self._lock = threading.RLock()
         self._timeout_minutes = SESSION_TIMEOUT_MINUTES
-        
         logger.info(f"🗣️  Conversation manager initialized (timeout: {self._timeout_minutes}m)")
     
     def get_context(self, session_id: str) -> DNConversationContext:
-        """Get or create context for session."""
         with self._lock:
             self._cleanup_expired()
-            
             if session_id not in self._contexts:
                 context = DNConversationContext(session_id=session_id)
                 self._contexts[session_id] = context
                 logger.info(f"🆕 New DN context created for {session_id}")
                 return context
-            
             context = self._contexts[session_id]
             if context.is_expired():
                 logger.info(f"⏰ DN context expired for {session_id}, creating new")
                 del self._contexts[session_id]
                 context = DNConversationContext(session_id=session_id)
                 self._contexts[session_id] = context
-            
             return context
     
     def update_context(self, session_id: str, **kwargs) -> Optional[DNConversationContext]:
-        """Update context fields."""
         with self._lock:
             if session_id not in self._contexts:
                 return None
-            
             context = self._contexts[session_id]
             for key, value in kwargs.items():
                 if hasattr(context, key):
@@ -1747,13 +1352,11 @@ class DNConversationManager:
             return context
     
     def add_history(self, session_id: str, query: str, answer: str) -> None:
-        """Add to conversation history."""
         with self._lock:
             if session_id in self._contexts:
                 self._contexts[session_id].add_history(query, answer)
     
     def destroy_context(self, session_id: str) -> bool:
-        """Destroy context and unlock session."""
         with self._lock:
             if session_id in self._contexts:
                 del self._contexts[session_id]
@@ -1762,30 +1365,25 @@ class DNConversationManager:
             return False
     
     def is_locked(self, session_id: str) -> bool:
-        """Check if session is locked in DN context."""
         with self._lock:
             if session_id in self._contexts:
                 return self._contexts[session_id].locked
             return False
     
     def _cleanup_expired(self) -> None:
-        """Clean up expired contexts."""
         expired = []
         for session_id, context in self._contexts.items():
             if context.is_expired():
                 expired.append(session_id)
-        
         for session_id in expired:
             del self._contexts[session_id]
             logger.info(f"🧹 Expired DN context removed for {session_id}")
 
 # ============================================================
-# MAIN DN ANALYTICS SERVICE
+# MAIN DN ANALYTICS SERVICE (unchanged logic)
 # ============================================================
 
 class DNAnalyticsService:
-    """Main DN Analytics Service - Independent Stateful Module."""
-    
     _instance: Optional["DNAnalyticsService"] = None
     _lock = threading.Lock()
     
@@ -1799,22 +1397,16 @@ class DNAnalyticsService:
     def __init__(self):
         if hasattr(self, "_initialized") and self._initialized:
             return
-        
         self._initialized = True
         self._service_name = "dn_analytics"
-        self._version = "35.0"
-        
-        # Initialize components
+        self._version = "35.1"
         self._intent_engine = DNIntentEngine()
         self._renderer = DNRenderer()
         self._repository = DNDatabaseRepository()
         self._conversation_manager = DNConversationManager()
         self._state_machine = DNStateMachine()
-        
-        # Performance tracking
         self._performance_logs: List[Dict[str, Any]] = []
         self._perf_lock = threading.RLock()
-        
         logger.info("=" * 60)
         logger.info(f"🚀 DN Analytics Service v{self._version} initialized")
         logger.info(f"   🗄️  Database: {'Connected' if DB_AVAILABLE else 'Fallback'}")
@@ -1825,7 +1417,6 @@ class DNAnalyticsService:
     def _log_performance(self, session_id: str, intent_result: IntentResult, 
                          query_result: Optional[QueryResult], render_time_ms: float,
                          total_time_ms: float) -> None:
-        """Log performance metrics."""
         with self._perf_lock:
             self._performance_logs.append({
                 'session_id': session_id,
@@ -1838,18 +1429,14 @@ class DNAnalyticsService:
                 'row_count': query_result.row_count if query_result else 0,
                 'timestamp': datetime.now().isoformat()
             })
-            
-            # Keep only last 1000 entries
             if len(self._performance_logs) > 1000:
                 self._performance_logs = self._performance_logs[-1000:]
     
     def get_main_menu(self) -> str:
-        """Get the main DN menu."""
         return self._renderer.render_main_menu()
     
     def health_check(self) -> Dict[str, Any]:
-        """Health check endpoint."""
-        stats = {
+        return {
             "service": self._service_name,
             "version": self._version,
             "status": "healthy",
@@ -1860,49 +1447,27 @@ class DNAnalyticsService:
             "exit_command": "99",
             "timestamp": datetime.now().isoformat()
         }
-        return stats
     
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
-        """
-        Main entry point for DN processing.
-        
-        This is the ONLY external interface.
-        All processing stays inside this module.
-        """
         if not message or not message.strip():
             return self.get_main_menu()
-        
         start_time = time.time()
         message_clean = message.strip()
         logger.info(f"📨 DN Query: '{message_clean}' from {sender}")
-        
-        # Get or create context
         context = self._conversation_manager.get_context(sender)
         context.touch()
-        
-        # STEP 1: Check for exit command
         if message_clean in ["99", "exit", "quit", "cancel"]:
             self._conversation_manager.destroy_context(sender)
             logger.info(f"🚪 DN session exited for {sender}")
             return "99"
-        
-        # STEP 2: Check for main menu command
         if message_clean.lower() in ["menu", "help", "options", "0"]:
             return self.get_main_menu()
-        
-        # STEP 3: Detect intent
         intent_result = self._intent_engine.detect_intent(message_clean)
         logger.info(f"🎯 Intent: {intent_result.intent.value} (confidence: {intent_result.confidence:.2f})")
-        
-        # Check if DN was detected in the query
         if intent_result.entities.get('dn'):
             context.current_dn = intent_result.entities['dn']
             logger.info(f"📌 DN set: {context.current_dn}")
-        
-        # STEP 4: Process based on intent
         response = self._process_intent(context, intent_result)
-        
-        # STEP 5: Update context
         context.add_history(message_clean, response)
         self._conversation_manager.update_context(
             sender,
@@ -1910,108 +1475,67 @@ class DNAnalyticsService:
             last_query=message_clean,
             last_answer=response
         )
-        
-        # STEP 6: Log performance
         total_time_ms = (time.time() - start_time) * 1000
         self._log_performance(sender, intent_result, None, 0, total_time_ms)
         logger.info(f"⏱️  Total processing time: {total_time_ms:.1f}ms")
-        
         return response
     
     def _process_intent(self, context: DNConversationContext, intent: IntentResult) -> str:
-        """Process intent and return response."""
-        
-        # Handle exit
         if intent.intent == DNIntent.EXIT:
             return "99"
-        
-        # Handle help
         if intent.intent == DNIntent.HELP:
             return self._renderer.render_help()
-        
-        # Handle pending
         if intent.intent == DNIntent.PENDING:
             context.active_menu = DNMenuState.PENDING
             return self._handle_pending(context, intent)
-        
-        # Handle search
         if intent.intent == DNIntent.SEARCH:
             context.active_menu = DNMenuState.SEARCH
             return self._handle_search(context, intent)
-        
-        # Handle DN-specific intents
         if intent.intent in [DNIntent.DASHBOARD, DNIntent.STATUS, DNIntent.REVENUE,
                            DNIntent.UNITS, DNIntent.CUSTOMER, DNIntent.DEALER,
                            DNIntent.WAREHOUSE, DNIntent.PGI, DNIntent.POD,
                            DNIntent.DELAY, DNIntent.TRANSIT, DNIntent.AGEING,
                            DNIntent.TIMELINE, DNIntent.SUMMARY]:
-            
-            # Check if we have a DN
             if not context.current_dn and not intent.entities.get('dn'):
                 return "🔍 Please provide a DN number first.\n\n0. Main Menu\n99. Back"
-            
-            # Use DN from context or from intent
             dn = intent.entities.get('dn') or context.current_dn
             context.current_dn = dn
             context.active_menu = DNMenuState.DETAILS
-            
             return self._handle_dn_intent(context, intent)
-        
-        # Check if the message contains a DN number
         dn = _extract_dn(intent.raw_input)
         if dn and _is_valid_dn(dn):
             context.current_dn = dn
             context.active_menu = DNMenuState.DASHBOARD
             intent.entities['dn'] = dn
             return self._handle_dn_intent(context, intent)
-        
-        # Unknown intent - show help
         return "❌ I didn't understand that.\n\n" + self._renderer.render_help()
     
     def _handle_pending(self, context: DNConversationContext, intent: IntentResult) -> str:
-        """Handle pending DN request."""
         result = self._repository.get_pending_dns(limit=30)
-        
         if not result.success:
             return f"⚠️ Error fetching pending DNs: {result.error}\n\n0. Main Menu\n99. Back"
-        
         return self._renderer.render_pending(result.data)
     
     def _handle_search(self, context: DNConversationContext, intent: IntentResult) -> str:
-        """Handle DN search."""
-        # Extract search query
         query = intent.raw_input
-        # Remove "search" keyword
         for word in ["search", "find", "lookup"]:
             query = query.replace(word, "").strip()
-        
         if not query:
             return "🔍 Please specify what to search.\n\n0. Main Menu\n99. Back"
-        
         result = self._repository.search_dns(query, limit=30)
-        
         if not result.success:
             return f"⚠️ Error searching: {result.error}\n\n0. Main Menu\n99. Back"
-        
         return self._renderer.render_search(query, result.data)
     
     def _handle_dn_intent(self, context: DNConversationContext, intent: IntentResult) -> str:
-        """Handle DN-specific intents."""
         dn = intent.entities.get('dn') or context.current_dn
-        
         if not dn:
             return "🔍 Please provide a DN number.\n\n0. Main Menu\n99. Back"
-        
-        # Get DN data
         result = self._repository.get_dn_by_number(dn)
-        
         if not result.success:
             return f"⚠️ Error fetching DN {dn}: {result.error}\n\n0. Main Menu\n99. Back"
-        
         if not result.data:
             return f"⚠️ DN '{dn}' not found.\n\n0. Main Menu\n99. Back"
-        
-        # Render based on intent
         intent_map = {
             DNIntent.DASHBOARD: self._renderer.render_dashboard,
             DNIntent.STATUS: self._renderer.render_status,
@@ -2028,19 +1552,17 @@ class DNAnalyticsService:
             DNIntent.TIMELINE: self._renderer.render_timeline,
             DNIntent.SUMMARY: self._renderer.render_summary,
         }
-        
         renderer = intent_map.get(intent.intent, self._renderer.render_dashboard)
         return renderer(result.data)
 
 # ============================================================
-# MODULE EXPORTS - Public Interface
+# MODULE EXPORTS
 # ============================================================
 
 _service: Optional[DNAnalyticsService] = None
 _service_lock = threading.Lock()
 
 def get_dn_analytics_service() -> DNAnalyticsService:
-    """Get singleton DN Analytics service."""
     global _service
     if _service is None:
         with _service_lock:
@@ -2052,16 +1574,8 @@ def get_dn_analytics_service() -> DNAnalyticsService:
 get_dn_analysis_service = get_dn_analytics_service
 
 def process_dn_menu(session_id: str, user_input: str) -> Dict[str, Any]:
-    """
-    Process DN menu interaction.
-    
-    Returns:
-        Dict with response and metadata
-    """
     service = get_dn_analytics_service()
     result = service.process_whatsapp_query(user_input, session_id)
-    
-    # Check if this is an exit
     if result == "99":
         return {
             "response": "99",
@@ -2070,7 +1584,6 @@ def process_dn_menu(session_id: str, user_input: str) -> Dict[str, Any]:
             "data": {},
             "exit_menu": True
         }
-    
     return {
         "response": result,
         "menu_type": "dn_menu",
@@ -2080,17 +1593,14 @@ def process_dn_menu(session_id: str, user_input: str) -> Dict[str, Any]:
     }
 
 def get_dn_main_menu() -> str:
-    """Get DN main menu."""
     service = get_dn_analytics_service()
     return service.get_main_menu()
 
 def is_session_locked(session_id: str) -> bool:
-    """Check if a session is locked in DN context."""
     service = get_dn_analytics_service()
     return service._conversation_manager.is_locked(session_id)
 
 def get_session_context(session_id: str) -> Optional[Dict[str, Any]]:
-    """Get session context for debugging."""
     service = get_dn_analytics_service()
     context = service._conversation_manager.get_context(session_id)
     if context:
@@ -2108,12 +1618,9 @@ def get_session_context(session_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 def get_performance_stats() -> Dict[str, Any]:
-    """Get performance statistics."""
     service = get_dn_analytics_service()
-    
     with service._perf_lock:
         logs = service._performance_logs
-        
         if not logs:
             return {
                 "total_requests": 0,
@@ -2123,11 +1630,9 @@ def get_performance_stats() -> Dict[str, Any]:
                 "min_total_time_ms": 0,
                 "max_total_time_ms": 0
             }
-        
         total_times = [log['total_time_ms'] for log in logs]
         intent_times = [log['intent_time_ms'] for log in logs]
         db_times = [log['db_time_ms'] for log in logs if log['db_time_ms'] > 0]
-        
         return {
             "total_requests": len(logs),
             "avg_total_time_ms": sum(total_times) / len(total_times),
@@ -2138,28 +1643,16 @@ def get_performance_stats() -> Dict[str, Any]:
             "target_total_ms": PERFORMANCE_TARGET_TOTAL
         }
 
-# ============================================================
-# MODULE EXPORTS
-# ============================================================
-
 __all__ = [
-    # Public API
     "DNAnalyticsService",
     "get_dn_analytics_service",
-    "get_dn_analysis_service",  # For ai_provider_service
+    "get_dn_analysis_service",
     "process_dn_menu",
     "get_dn_main_menu",
     "is_session_locked",
     "get_session_context",
     "get_performance_stats",
-    
-    # Exposed for compatibility
-    "DNAnalysisService",  # Alias for backward compatibility
+    "DNAnalysisService",
 ]
 
-# Backward compatibility alias
 DNAnalysisService = DNAnalyticsService
-
-# ============================================================
-# END OF FILE
-# ============================================================
