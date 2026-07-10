@@ -1,8 +1,10 @@
 """
 File: app/services/product_service.py
-Version: 7.0 - RAW SQL WITH DEBUG (like Dealer Analytics)
-Purpose: Search product models or divisions using PostgreSQL ILIKE.
-         Uses engine.connect() for reliability.
+Version: 8.0 - FINAL PRODUCTION READY
+Purpose: Product search by Model or Division using raw SQL.
+         Works with the gateway (5 to enter, 99 to exit).
+         Uses exact columns: division, customer_model, material_no.
+         Includes DEBUG command to show sample values.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from app.database import engine
 
 logger = logging.getLogger(__name__)
 
-VERSION = "7.0"
+VERSION = "8.0"
 SERVICE_OPTION = "5"
 DEBUG_COMMAND = "DEBUG"
 
@@ -55,39 +57,36 @@ def _format_number(num: int) -> str:
     return f"{num:,}"
 
 # ============================================================
-# REPOSITORY (raw SQL)
+# REPOSITORY – ALL RAW SQL
 # ============================================================
 
 class ProductSearchRepository:
     @staticmethod
     def get_sample_values() -> Dict[str, list]:
-        """Return up to 5 distinct values from customer_model and division."""
+        """Return up to 5 distinct values from each key column."""
         try:
             with engine.connect() as conn:
-                # customer_model samples
                 models = conn.execute(
                     text("""
-                        SELECT DISTINCT TRIM(customer_model)
+                        SELECT DISTINCT customer_model
                         FROM delivery_reports
-                        WHERE customer_model IS NOT NULL AND TRIM(customer_model) != ''
+                        WHERE customer_model IS NOT NULL AND customer_model != ''
                         LIMIT 5
                     """)
                 ).fetchall()
-                # division samples
-                divisions = conn.execute(
-                    text("""
-                        SELECT DISTINCT TRIM(division)
-                        FROM delivery_reports
-                        WHERE division IS NOT NULL AND TRIM(division) != ''
-                        LIMIT 5
-                    """)
-                ).fetchall()
-                # material_no samples (optional)
                 materials = conn.execute(
                     text("""
-                        SELECT DISTINCT TRIM(material_no)
+                        SELECT DISTINCT material_no
                         FROM delivery_reports
-                        WHERE material_no IS NOT NULL AND TRIM(material_no) != ''
+                        WHERE material_no IS NOT NULL AND material_no != ''
+                        LIMIT 5
+                    """)
+                ).fetchall()
+                divisions = conn.execute(
+                    text("""
+                        SELECT DISTINCT division
+                        FROM delivery_reports
+                        WHERE division IS NOT NULL AND division != ''
                         LIMIT 5
                     """)
                 ).fetchall()
@@ -102,19 +101,19 @@ class ProductSearchRepository:
 
     @staticmethod
     def get_model_data(model: str) -> Optional[Dict[str, Any]]:
-        """Get aggregated data for a product model (case‑insensitive ILIKE)."""
+        """Get data for a specific product model (case‑insensitive partial match)."""
         model_clean = model.strip()
         if not model_clean:
             return None
 
         try:
             with engine.connect() as conn:
-                # Main aggregates
+                # Main aggregates – use ILIKE for case‑insensitive partial match
                 result = conn.execute(
                     text("""
                         SELECT
-                            TRIM(COALESCE(customer_model, material_no, 'Unknown')) AS model,
-                            TRIM(COALESCE(division, 'Unknown')) AS division,
+                            COALESCE(customer_model, material_no, 'Unknown') AS model,
+                            COALESCE(division, 'Unknown') AS division,
                             COALESCE(SUM(dn_amount), 0) AS total_revenue,
                             COALESCE(SUM(dn_qty), 0) AS total_units,
                             COUNT(DISTINCT dn_no) AS dn_count,
@@ -125,8 +124,8 @@ class ProductSearchRepository:
                             COUNT(DISTINCT CASE WHEN pod_date IS NULL THEN dn_no END) AS pending_dn,
                             AVG(EXTRACT(DAY FROM (good_issue_date - dn_create_date))) AS avg_delivery_days
                         FROM delivery_reports
-                        WHERE TRIM(customer_model) ILIKE TRIM(:model)
-                           OR TRIM(material_no) ILIKE TRIM(:model)
+                        WHERE customer_model ILIKE :model
+                           OR material_no ILIKE :model
                         GROUP BY customer_model, material_no, division
                         ORDER BY total_revenue DESC
                         LIMIT 1
@@ -154,10 +153,10 @@ class ProductSearchRepository:
                 # Top cities for this model
                 cities = conn.execute(
                     text("""
-                        SELECT TRIM(ship_to_city) AS city, SUM(dn_amount) AS revenue
+                        SELECT ship_to_city, SUM(dn_amount) AS revenue
                         FROM delivery_reports
-                        WHERE TRIM(customer_model) ILIKE TRIM(:model)
-                           OR TRIM(material_no) ILIKE TRIM(:model)
+                        WHERE customer_model ILIKE :model
+                           OR material_no ILIKE :model
                         GROUP BY ship_to_city
                         ORDER BY revenue DESC
                         LIMIT 5
@@ -174,14 +173,13 @@ class ProductSearchRepository:
 
     @staticmethod
     def get_division_data(division: str) -> Optional[Dict[str, Any]]:
-        """Get aggregated data for a product division (case‑insensitive ILIKE)."""
+        """Get aggregated data for a product division (case‑insensitive partial match)."""
         division_clean = division.strip()
         if not division_clean:
             return None
 
         try:
             with engine.connect() as conn:
-                # Main aggregates
                 result = conn.execute(
                     text("""
                         SELECT
@@ -195,7 +193,7 @@ class ProductSearchRepository:
                             COUNT(DISTINCT CASE WHEN pod_date IS NULL THEN dn_no END) AS pending_dn,
                             AVG(EXTRACT(DAY FROM (good_issue_date - dn_create_date))) AS avg_delivery_days
                         FROM delivery_reports
-                        WHERE TRIM(division) ILIKE TRIM(:division)
+                        WHERE division ILIKE :division
                     """),
                     {"division": f"%{division_clean}%"}
                 ).first()
@@ -219,10 +217,10 @@ class ProductSearchRepository:
                 # Top 5 models in this division
                 products = conn.execute(
                     text("""
-                        SELECT TRIM(COALESCE(customer_model, material_no, 'Unknown')) AS product,
+                        SELECT COALESCE(customer_model, material_no, 'Unknown') AS product,
                                SUM(dn_amount) AS revenue
                         FROM delivery_reports
-                        WHERE TRIM(division) ILIKE TRIM(:division)
+                        WHERE division ILIKE :division
                         GROUP BY customer_model, material_no
                         ORDER BY revenue DESC
                         LIMIT 5
@@ -238,7 +236,7 @@ class ProductSearchRepository:
             return None
 
 # ============================================================
-# FORMATTERS (unchanged)
+# FORMATTERS – WHATSAPP FRIENDLY
 # ============================================================
 
 class ProductDashboardFormatter:
@@ -502,7 +500,7 @@ class ProductAnalyticsService:
     def __init__(self) -> None:
         self._version = VERSION
         self._formatter = ProductDashboardFormatter()
-        logger.info(f"✅ ProductAnalyticsService v{self._version} (raw SQL)")
+        logger.info(f"✅ ProductAnalyticsService v{self._version} (raw SQL, final)")
 
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
         try:
@@ -525,7 +523,7 @@ class ProductAnalyticsService:
 
             logger.info(f"Searching for: '{msg}' from {sender}")
 
-            # Try model
+            # Try model first
             model_data = ProductSearchRepository.get_model_data(msg)
             if model_data:
                 return self._formatter.model_dashboard(model_data)
@@ -548,7 +546,7 @@ class ProductAnalyticsService:
         return self.process_whatsapp_query(message, sender)
 
 # ============================================================
-# SINGLETON
+# SINGLETON & EXPORTS
 # ============================================================
 
 _service_instance: Optional[ProductAnalyticsService] = None
