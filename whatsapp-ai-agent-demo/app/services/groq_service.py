@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/groq_service.py
-# VERSION: 9.0 - RAG ARCHITECTURE: Groq → PostgreSQL → Groq
+# VERSION: 9.1 - ROBUST PARSING & ALWAYS GROQ RESPONSE
 # PURPOSE: Answer any logistics question using Groq for intent
-#          and formatting, and PostgreSQL for accurate data.
-#          Supports unlimited question variations via dynamic SQL.
+#          and formatting, with PostgreSQL for accurate data.
+#          Fixed parsing for "dealer", "city", "DN" queries.
 # ============================================================
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from app.database import SessionLocal, engine
 
 logger = logging.getLogger(__name__)
 
-VERSION = "9.0"
+VERSION = "9.1"
 
 # ============================================================
 # GROQ SETUP
@@ -104,14 +104,14 @@ class QueryIntent:
     entity_value: Optional[str] = None
     metric: Optional[str] = None        # revenue, units, dns, pending, delivery_days, pgi_percent, pod_percent
     filters: Dict[str, Any] = field(default_factory=dict)
-    time_period: Optional[str] = None   # today, this_week, this_month, last_month, last_3_months, last_6_months, year_to_date
-    grouping: Optional[str] = None      # month, week, day, division, city, dealer, warehouse
+    time_period: Optional[str] = None
+    grouping: Optional[str] = None
     sort_by: Optional[str] = None
     sort_order: str = "DESC"
     limit: int = 10
     comparison_entities: Optional[List[str]] = None
-    extra_columns: Optional[List[str]] = None   # for advanced analytics
-    fields: Optional[List[str]] = None          # for details
+    extra_columns: Optional[List[str]] = None
+    fields: Optional[List[str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -157,10 +157,6 @@ class GroqIntentParser:
         return q
 
     def parse(self, query: str) -> QueryIntent:
-        """
-        Use Groq to extract intent and return a QueryIntent.
-        If Groq is not available, fallback to regex parsing.
-        """
         normalized = self._normalize(query)
         if GROQ_AVAILABLE and GROQ_CLIENT:
             return self._parse_with_groq(normalized)
@@ -173,7 +169,7 @@ You are a Logistics AI assistant. Extract structured information from the user's
 Return ONLY valid JSON with these fields:
 - intent: one of ['ranking', 'aggregate', 'comparison', 'trend', 'list', 'summary', 'details', 'dashboard']
 - entity_type: one of ['dealer', 'city', 'warehouse', 'division', 'model', 'sales_office', 'sales_manager', 'dn'] or null
-- entity_value: the specific name/value mentioned, or null
+- entity_value: the specific name mentioned, or null
 - metric: one of ['revenue', 'units', 'dns', 'pending', 'delivery_days', 'pgi_percent', 'pod_percent'] or null
 - filters: object with keys like division, city, warehouse, dealer, model, etc. (values are strings)
 - time_period: one of ['today', 'this_week', 'this_month', 'last_month', 'last_3_months', 'last_6_months', 'year_to_date'] or null
@@ -185,15 +181,15 @@ Return ONLY valid JSON with these fields:
 - extra_columns: list of additional aggregate columns (e.g., ['dealers_count', 'cities_count'])
 - fields: for details, list of column names to select
 
-Important rules:
-- If the user asks for a single entity (e.g., "Arshad Electronics", "Lahore", "Refrigerator"), treat as intent='dashboard'.
-- If they ask for a ranking (e.g., "top", "highest", "best"), intent='ranking'.
-- For "compare X and Y", intent='comparison'.
-- For time trends, intent='trend'.
-- For a list of entities, intent='list'.
-- For a single KPI (e.g., total revenue), intent='aggregate'.
-- For a full summary with multiple KPIs, intent='summary'.
-- For DN-level details, intent='details'.
+Examples:
+- "Top 5 dealers by revenue in Lahore" → intent='ranking', entity_type='dealer', metric='revenue', filters={{'city':'Lahore'}}, limit=5, sort_order='DESC'
+- "Which city has the highest sales?" → intent='ranking', entity_type='city', metric='revenue', limit=1, sort_order='DESC'
+- "Arshad Electronics" → intent='dashboard', entity_type='dealer', entity_value='Arshad Electronics'
+- "Compare Lahore and Karachi warehouses" → intent='comparison', entity_type='warehouse', comparison_entities=['Lahore','Karachi'], metric='revenue'
+- "Monthly trend of revenue" → intent='trend', metric='revenue', grouping='month'
+- "Show DN details for DN12345" → intent='details', fields=['dn_no','customer_name','customer_model','warehouse','ship_to_city','dn_qty','dn_amount','pgi_date','pod_date','pending_flag'], filters={{'dn_no':'DN12345'}}
+- "Total revenue" → intent='aggregate', metric='revenue'
+- "Summary for last month" → intent='summary', time_period='last_month'
 
 Question: "{query}"
 
@@ -228,7 +224,9 @@ Return valid JSON only.
             return self._parse_with_fallback(query)
 
     def _parse_with_fallback(self, query: str) -> QueryIntent:
-        """Regex-based fallback when Groq is unavailable."""
+        """
+        Enhanced fallback parser with robust regex for common patterns.
+        """
         q = query.lower()
         intent = "summary"
         entity_type = None
@@ -244,31 +242,105 @@ Return valid JSON only.
         extra_columns = None
         fields = None
 
-        # Detect entity dashboards: if query is just a name, try to guess type
-        # This is simplistic; Groq handles this better.
+        # ---- Detect intent and entity type ----
 
-        # Simple pattern matching (similar to previous versions)
-        if re.search(r"top|highest|best|worst|lowest", q):
-            intent = "ranking"
-            m = re.search(r"top\s*(\d+)", q)
-            if m:
-                limit = int(m.group(1))
-            # detect entity type
-            for ent in ["dealer", "city", "warehouse", "division", "model", "sales office", "sales manager"]:
-                if ent in q:
-                    entity_type = ent.replace(" ", "_")
-                    break
-            if not entity_type:
-                entity_type = "division"
-            if not metric:
-                metric = "revenue"
-            sort_by = metric
-
-        elif "compare" in q or "vs" in q:
+        # 1. Detect comparison
+        if re.search(r"compare|vs|versus", q):
             intent = "comparison"
             m = re.search(r"compare\s+(.+?)\s+(?:and|vs|versus)\s+(.+)", q)
             if m:
                 comparison_entities = [m.group(1).strip(), m.group(2).strip()]
+                # Try to detect entity type from context
+                if "warehouse" in q:
+                    entity_type = "warehouse"
+                elif "city" in q:
+                    entity_type = "city"
+                elif "dealer" in q:
+                    entity_type = "dealer"
+                elif "division" in q or "product" in q:
+                    entity_type = "division"
+                # If not, default to division
+                if not entity_type:
+                    entity_type = "division"
+                metric = "revenue"
+
+        # 2. Detect ranking (top/highest/best/worst/lowest/bottom)
+        elif re.search(r"top|highest|best|worst|lowest|bottom", q):
+            intent = "ranking"
+            # Extract limit
+            m = re.search(r"top\s*(\d+)", q)
+            if m:
+                limit = int(m.group(1))
+            # Determine entity type
+            if "dealer" in q or "customer" in q:
+                entity_type = "dealer"
+            elif "city" in q or "cities" in q:
+                entity_type = "city"
+            elif "warehouse" in q:
+                entity_type = "warehouse"
+            elif "product" in q or "division" in q:
+                entity_type = "division"
+            elif "model" in q:
+                entity_type = "model"
+            elif "sales office" in q:
+                entity_type = "sales_office"
+            elif "sales manager" in q:
+                entity_type = "sales_manager"
+            elif "dn" in q:
+                entity_type = "dn"
+            else:
+                # Default to division
+                entity_type = "division"
+
+            # Metric: revenue, units, dns, pending
+            if "units" in q or "quantity" in q:
+                metric = "units"
+            elif "dns" in q or "delivery notes" in q:
+                metric = "dns"
+            elif "pending" in q:
+                metric = "pending"
+            else:
+                metric = "revenue"   # default
+
+            sort_by = metric
+            # Sort order from context
+            if "highest" in q or "top" in q or "best" in q:
+                sort_order = "DESC"
+            elif "lowest" in q or "worst" in q or "bottom" in q:
+                sort_order = "ASC"
+
+            # Extract filters (e.g., "in Lahore")
+            m = re.search(r"in\s+([\w\s\-]+?)(?:\s+by|\s+with|$)", q)
+            if m:
+                city = m.group(1).strip()
+                # If entity_type is city, this might be a specific city value, but we treat as filter
+                filters["city"] = city
+
+            # Extract entity value if specific (e.g., "dealer ABC")
+            m = re.search(r"for\s+(?:dealer|customer)\s+([\w\s\-]+)", q)
+            if m:
+                filters["dealer"] = m.group(1).strip()
+            m = re.search(r"for\s+warehouse\s+([\w\s\-]+)", q)
+            if m:
+                filters["warehouse"] = m.group(1).strip()
+            m = re.search(r"for\s+division\s+([\w\s\-]+)", q)
+            if m:
+                filters["division"] = m.group(1).strip()
+            # Also handle "of" pattern
+            m = re.search(r"of\s+([\w\s\-]+?)(?:\s+in|\s+by|\s+$)", q)
+            if m and not filters:
+                # Might be entity value
+                candidate = m.group(1).strip()
+                if "dealer" in q:
+                    filters["dealer"] = candidate
+                elif "city" in q:
+                    filters["city"] = candidate
+                elif "warehouse" in q:
+                    filters["warehouse"] = candidate
+                elif "division" in q or "product" in q:
+                    filters["division"] = candidate
+
+        # 3. Detect trend
         elif "trend" in q or "monthly" in q or "weekly" in q or "daily" in q:
             intent = "trend"
             if "monthly" in q:
@@ -277,39 +349,83 @@ Return valid JSON only.
                 grouping = "week"
             elif "daily" in q:
                 grouping = "day"
-            if not metric:
+            # Metric
+            if "units" in q:
+                metric = "units"
+            elif "dns" in q:
+                metric = "dns"
+            elif "pending" in q:
+                metric = "pending"
+            else:
                 metric = "revenue"
+
+        # 4. Detect list
         elif "list" in q:
             intent = "list"
-        elif "total" in q or "overall" in q:
-            intent = "aggregate"
-        elif "details" in q or "dn" in q:
+            # Determine entity type
+            if "dealer" in q or "customer" in q:
+                entity_type = "dealer"
+            elif "city" in q:
+                entity_type = "city"
+            elif "warehouse" in q:
+                entity_type = "warehouse"
+            elif "division" in q or "product" in q:
+                entity_type = "division"
+            elif "model" in q:
+                entity_type = "model"
+            else:
+                entity_type = "city"  # default
+
+        # 5. Detect details (DN)
+        elif "dn" in q and ("details" in q or "show" in q or "list" in q):
             intent = "details"
             fields = ["dn_no", "customer_name", "customer_model", "warehouse", "ship_to_city",
                       "dn_qty", "dn_amount", "pgi_date", "pod_date", "pending_flag"]
-        # If no intent, try dashboard – often just an entity name
+            # Extract DN number
+            m = re.search(r"dn\s*[#:]?\s*([A-Za-z0-9\-]+)", q)
+            if m:
+                filters["dn_no"] = m.group(1)
+            else:
+                # If no specific DN, maybe list all with filters
+                pass
+
+        # 6. Detect aggregate (total/overall)
+        elif "total" in q or "overall" in q:
+            intent = "aggregate"
+            if "units" in q:
+                metric = "units"
+            elif "dns" in q:
+                metric = "dns"
+            elif "pending" in q:
+                metric = "pending"
+            else:
+                metric = "revenue"
+            # Add filters if any
+            m = re.search(r"in\s+([\w\s\-]+)", q)
+            if m:
+                filters["city"] = m.group(1).strip()
+
+        # 7. Dashboard (single entity, no explicit intent)
         else:
             intent = "dashboard"
-            # Try to extract entity
+            # Try to extract entity type and value
+            # First check if it's a known entity type
+            found = False
             for ent in ["dealer", "city", "warehouse", "division", "model", "sales office", "sales manager"]:
                 if ent in q:
                     entity_type = ent.replace(" ", "_")
-                    # The rest of the query is the entity value
+                    # The rest is the value
                     entity_value = q.replace(ent, "").strip()
+                    found = True
                     break
-            # If still not, assume it's a dealer or city
-            if not entity_type:
+            if not found:
+                # Assume dealer
                 entity_type = "dealer"
                 entity_value = q
 
-        # Extract metric
+        # If metric not set, default to revenue
         if not metric:
-            for met in ["revenue", "units", "dns", "pending", "pgi_percent", "pod_percent"]:
-                if met in q:
-                    metric = met
-                    break
-            if not metric:
-                metric = "revenue"
+            metric = "revenue"
 
         # Extract time period
         if "today" in q:
@@ -327,14 +443,13 @@ Return valid JSON only.
         elif "year to date" in q or "ytd" in q:
             time_period = "year_to_date"
 
-        # Extract filters (city, dealer, etc.)
-        m = re.search(r"in\s+([\w\s\-]+)", q)
-        if m:
-            filters["city"] = m.group(1).strip()
-        m = re.search(r"for\s+(?:dealer|customer)\s+([\w\s\-]+)", q)
-        if m:
-            filters["dealer"] = m.group(1).strip()
+        # If we have a dashboard entity, set sort_by to metric for ranking if needed
+        if intent == "dashboard":
+            sort_by = metric
+        elif not sort_by:
+            sort_by = metric
 
+        logger.info(f"Fallback parsed: intent={intent}, entity_type={entity_type}, metric={metric}, filters={filters}")
         return QueryIntent(
             intent=intent,
             entity_type=entity_type,
@@ -343,7 +458,7 @@ Return valid JSON only.
             filters=filters,
             time_period=time_period,
             grouping=grouping,
-            sort_by=sort_by if sort_by else metric,
+            sort_by=sort_by,
             sort_order=sort_order,
             limit=limit,
             comparison_entities=comparison_entities,
@@ -352,17 +467,12 @@ Return valid JSON only.
         )
 
 # ============================================================
-# QUERY PLANNER & SQL BUILDER
+# QUERY PLANNER & SQL BUILDER (unchanged from v9.0)
 # ============================================================
 
 class SQLBuilder:
-    """
-    Maps QueryIntent to a parameterized PostgreSQL query.
-    Uses the delivery_reports table and its fields.
-    """
     def __init__(self):
         self.table = "delivery_reports"
-        # Field mappings (mostly direct)
         self.field_map = {
             "dn_no": "dn_no",
             "customer_name": "customer_name",
@@ -385,7 +495,6 @@ class SQLBuilder:
             "good_issue_date": "good_issue_date",
             "pod_date": "pod_date",
         }
-        # Extra column expressions for analytics
         self.extra_exprs = {
             "dealers_count": "COUNT(DISTINCT customer_name)",
             "cities_count": "COUNT(DISTINCT ship_to_city)",
@@ -466,17 +575,11 @@ class SQLBuilder:
         return cond, params
 
     def _build_dashboard(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        """
-        Dashboard for a single entity (dealer, city, warehouse, division, model, etc.).
-        Returns a summary of key metrics for that entity.
-        """
         entity_type = intent.entity_type or "dealer"
         entity_value = intent.entity_value
         if not entity_value:
-            # fallback: try to use filters
             entity_value = intent.filters.get(entity_type)
         if not entity_value:
-            # Default to a dummy value to avoid empty query
             entity_value = "Unknown"
 
         filter_clause, filter_params = self._apply_filters(intent.filters)
@@ -488,7 +591,6 @@ class SQLBuilder:
             where.append(time_clause)
         where_str = " AND ".join(where)
         params = {"entity_value": entity_value, **filter_params, **time_params}
-
         sql = f"""
             SELECT
                 COALESCE(SUM(dn_amount), 0) AS revenue,
@@ -522,7 +624,6 @@ class SQLBuilder:
             }.get(metric, "COALESCE(SUM(dn_amount), 0)")
             metric_select = f"{metric_expr} AS metric_value"
 
-        # Add extra columns if requested
         extra_selects = []
         if intent.extra_columns:
             for col in intent.extra_columns:
@@ -531,7 +632,6 @@ class SQLBuilder:
                     extra_selects.append(f"{expr} AS {col}")
         extra_str = ", " + ", ".join(extra_selects) if extra_selects else ""
 
-        # Apply filters and time
         if intent.entity_value:
             intent.filters[entity] = intent.entity_value
         filter_clause, filter_params = self._apply_filters(intent.filters)
@@ -545,7 +645,6 @@ class SQLBuilder:
         params = {**filter_params, **time_params}
         order = intent.sort_order or "DESC"
         limit = intent.limit or 10
-
         sql = f"""
             SELECT {select_entity}, {metric_select}{extra_str}
             FROM {self.table}
@@ -633,8 +732,8 @@ class SQLBuilder:
         return sql, params
 
     def _build_list(self, intent: QueryIntent) -> Tuple[str, Dict[str, Any]]:
-        entity = intent.entity_type or "dn"
-        col = self.field_map.get(entity, "dn_no")
+        entity = intent.entity_type or "city"
+        col = self.field_map.get(entity, "ship_to_city")
         select_col = f"TRIM({col}) AS entity_name"
 
         filter_clause, filter_params = self._apply_filters(intent.filters)
@@ -742,18 +841,33 @@ class SQLBuilder:
         return sql, params
 
 # ============================================================
-# BUSINESS RULES ENGINE (Optional post-processing)
+# REPOSITORY
+# ============================================================
+
+class LogisticsRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def execute_query(self, sql: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text(sql), params)
+                rows = result.fetchall()
+                if not rows:
+                    return []
+                columns = result.keys()
+                return [dict(zip(columns, row)) for row in rows]
+        except Exception as e:
+            logger.error(f"SQL execution error: {e}")
+            return []
+
+# ============================================================
+# BUSINESS RULES ENGINE
 # ============================================================
 
 class BusinessRulesEngine:
-    """
-    Applies business rules to compute derived KPIs, ratings, and alerts.
-    These are deterministic calculations that can be done in Python after SQL.
-    """
     @staticmethod
     def enrich_dashboard(data: Dict[str, Any]) -> Dict[str, Any]:
-        """Add derived KPIs to a dashboard result."""
-        # Example: add a rating based on PGI%
         pgi = data.get("pgi_percent", 0)
         if pgi >= 95:
             data["rating"] = "Excellent"
@@ -763,14 +877,11 @@ class BusinessRulesEngine:
             data["rating"] = "Average"
         else:
             data["rating"] = "Needs Improvement"
-        # Add delivery target flag (if avg_delivery_days > target)
         data["delivery_target_met"] = data.get("avg_delivery_days", 999) <= 3.0
         return data
 
     @staticmethod
     def enrich_ranking(results: List[Dict]) -> List[Dict]:
-        """Add ranking-based business rules."""
-        # For simplicity, just pass through
         return results
 
 # ============================================================
@@ -778,37 +889,16 @@ class BusinessRulesEngine:
 # ============================================================
 
 class GroqResponseFormatter:
-    """
-    Calls Groq to format the query results into a conversational WhatsApp message.
-    This is the second Groq interaction.
-    """
     @staticmethod
     def format(intent: QueryIntent, results: List[Dict], query: str) -> Optional[str]:
         if not GROQ_AVAILABLE or not GROQ_CLIENT:
+            logger.warning("Groq not available, skipping response formatting")
             return None
 
+        # Prepare data summary
         if not results:
-            prompt = f"""
-The user asked: "{query}"
-
-No data was found for that query. Write a helpful, friendly response explaining that no matching records were found, and suggest they try a different question or check the spelling of names.
-
-Keep it concise (max 100 words).
-"""
-            try:
-                resp = GROQ_CLIENT.chat.completions.create(
-                    model="llama3-70b-8192",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,
-                    max_tokens=150,
-                )
-                return resp.choices[0].message.content.strip()
-            except Exception:
-                return "No data found for your query. Please try again."
-
-        # Build a compact summary of the data
-        data_summary = ""
-        if intent.intent in ["summary", "aggregate", "dashboard"]:
+            data_summary = "No data found."
+        elif intent.intent in ["summary", "aggregate", "dashboard"]:
             row = results[0]
             data_summary = ", ".join([f"{k}: {v}" for k, v in row.items()])
         elif intent.intent == "ranking":
@@ -828,11 +918,6 @@ Keep it concise (max 100 words).
                 row_parts = [f"{k}: {v}" for k, v in r.items()]
                 lines.append(" | ".join(row_parts))
             data_summary = "\n".join(lines)
-        elif intent.intent == "comparison":
-            lines = []
-            for r in results:
-                lines.append(f"{r.get('entity_name', 'Unknown')}: {r.get('metric_value', 0)}")
-            data_summary = "\n".join(lines)
         else:
             data_summary = "\n".join([str(r) for r in results[:10]])
 
@@ -847,9 +932,9 @@ Data:
 Instructions:
 - Write in a conversational tone, suitable for WhatsApp.
 - Use emojis where appropriate (e.g., 💰 for revenue, 🏆 for top ranking).
-- If it's a ranking, present it as a list with numbers.
+- If it's a ranking, present it as a numbered list.
 - For a dashboard, highlight the key metrics with labels.
-- Include any notable insights or recommendations based on the data.
+- If no data was found, politely say so and suggest they try a different question.
 - Keep the response under 300 words.
 - Do not say "here is the data" – just present the answer naturally.
 
@@ -868,15 +953,14 @@ Response:
             return None
 
 # ============================================================
-# FALLBACK TEMPLATE FORMATTER (when Groq is unavailable)
+# FALLBACK TEMPLATE FORMATTER
 # ============================================================
 
 class TemplateFormatter:
-    """Simple template-based formatter as fallback."""
     @staticmethod
     def format(intent: QueryIntent, results: List[Dict]) -> str:
         if not results:
-            return "No data found for your query."
+            return "No data found for your query. Please try a different question."
 
         if intent.intent == "dashboard" or intent.intent == "summary":
             row = results[0]
@@ -901,8 +985,12 @@ class TemplateFormatter:
                 val = row.get("metric_value", 0)
                 if intent.metric == "revenue":
                     val = _format_currency(val)
+                elif intent.metric in ["units", "dns", "pending"]:
+                    val = _format_number(val)
+                elif intent.metric in ["delivery_days"]:
+                    val = f"{val:.1f} days"
                 else:
-                    val = _format_number(val) if isinstance(val, (int, float)) else str(val)
+                    val = str(val)
                 lines.append(f"{i}. {name}: {val}")
             return "\n".join(lines)
         elif intent.intent == "details":
@@ -919,10 +1007,6 @@ class TemplateFormatter:
 # ============================================================
 
 class GroqService:
-    """
-    Orchestrates the RAG pipeline:
-    1. Groq intent parser → 2. SQL builder → 3. PostgreSQL → 4. Business rules → 5. Groq formatter
-    """
     def __init__(self) -> None:
         self._version = VERSION
         self.intent_parser = GroqIntentParser()
@@ -941,7 +1025,6 @@ class GroqService:
             if not msg:
                 return self._get_welcome() + self.FOOTER
 
-            # Single-digit triggers the welcome menu
             if msg.isdigit() and msg != "99":
                 return self._get_welcome() + self.FOOTER
 
@@ -966,18 +1049,18 @@ class GroqService:
             results = self.repo.execute_query(sql, params)
             logger.info(f"Found {len(results)} results")
 
-            # Step 4: Apply business rules (enrich data)
+            # Step 4: Apply business rules
             if intent.intent == "dashboard" and results:
                 results[0] = self.business_rules.enrich_dashboard(results[0])
             elif intent.intent == "ranking" and results:
                 results = self.business_rules.enrich_ranking(results)
 
-            # Step 5: Format response using Groq (preferred)
+            # Step 5: Format response – prefer Groq
             formatted = self.groq_formatter.format(intent, results, msg)
             if formatted:
                 response = formatted
             else:
-                # Fallback to template formatter
+                # Fallback to template
                 response = self.template_formatter.format(intent, results)
 
             return response + self.FOOTER
@@ -1002,30 +1085,10 @@ class GroqService:
             "• Pending DNs for dealer ABC",
             "• List all cities",
             "• Show DN details for DN12345",
+            "• Which DN has the highest quantity?",
             "",
             "Reply *99* to return to this menu."
         ])
-
-# ============================================================
-# LOGISTICS REPOSITORY
-# ============================================================
-
-class LogisticsRepository:
-    def __init__(self, session: Session):
-        self.session = session
-
-    def execute_query(self, sql: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        try:
-            with engine.connect() as conn:
-                result = conn.execute(text(sql), params)
-                rows = result.fetchall()
-                if not rows:
-                    return []
-                columns = result.keys()
-                return [dict(zip(columns, row)) for row in rows]
-        except Exception as e:
-            logger.error(f"SQL execution error: {e}")
-            return []
 
 # ============================================================
 # SINGLETON
