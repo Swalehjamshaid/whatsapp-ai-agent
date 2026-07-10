@@ -1,76 +1,79 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/groq_service.py
-# VERSION: 15.1 - IMPROVED ERROR LOGGING
+# VERSION: 15.2 - FIXED ENV LOADING & MODEL CONFIG
 # PURPOSE: AI Orchestrator – uses Groq for understanding and responses,
-#          PostgreSQL for facts. Returns service unavailable if Groq missing.
+#          PostgreSQL for facts. Fully compatible with Railway env.
 # ============================================================
 
 from __future__ import annotations
 
 import logging
 import os
-import json
 import sys
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Optional, Dict, List, Tuple, Union
 
-# Import database – if not available, we'll still run with mock
+# -------------------- ENVIRONMENT LOADING --------------------
+# Load .env file if it exists (for local development)
 try:
-    from sqlalchemy import text
-    from sqlalchemy.orm import Session
-    from app.database import SessionLocal, engine
-    DB_AVAILABLE = True
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# -------------------- GROQ SETUP --------------------
+GROQ_AVAILABLE = False
+GROQ_CLIENT = None
+GROQ_MODEL = None
+GROQ_ERROR = None
+
+# 1. Check if library is installed
+try:
+    from groq import Groq
+    LIB_AVAILABLE = True
 except ImportError as e:
-    DB_AVAILABLE = False
-    engine = None
-    SessionLocal = None
-    # Define dummy text function to avoid errors
-    def text(*args, **kwargs):
-        return None
+    LIB_AVAILABLE = False
+    GROQ_ERROR = f"Groq library not installed: {e}"
+
+# 2. Read API key and model from environment
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # use the one from your env
+
+if LIB_AVAILABLE and GROQ_API_KEY:
+    try:
+        GROQ_CLIENT = Groq(api_key=GROQ_API_KEY)
+        # Test the connection with a minimal call
+        test_response = GROQ_CLIENT.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens=5,
+            temperature=0.0,
+        )
+        if test_response and test_response.choices:
+            GROQ_AVAILABLE = True
+            logger.info(f"✅ Groq client initialized successfully (model: {GROQ_MODEL})")
+        else:
+            GROQ_ERROR = "Test call returned no response"
+    except Exception as e:
+        GROQ_ERROR = f"Groq init error: {e}"
+        logger.error(GROQ_ERROR)
+else:
+    if not LIB_AVAILABLE:
+        GROQ_ERROR = "Groq library not installed"
+    elif not GROQ_API_KEY:
+        GROQ_ERROR = "GROQ_API_KEY environment variable not set"
+    logger.warning(GROQ_ERROR)
+
+# If not available, the service will return the "unavailable" message.
 
 logger = logging.getLogger(__name__)
 
-VERSION = "15.1"
+VERSION = "15.2"
 
-# ============================================================
-# GROQ SETUP – with detailed logging
-# ============================================================
-
-GROQ_AVAILABLE = False
-GROQ_CLIENT = None
-GROQ_ERROR = None
-
-try:
-    from groq import Groq
-    GROQ_LIB_AVAILABLE = True
-except ImportError as e:
-    GROQ_LIB_AVAILABLE = False
-    GROQ_ERROR = f"Groq library not installed: {e}"
-    logger.warning(GROQ_ERROR)
-
-if GROQ_LIB_AVAILABLE:
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-    if GROQ_API_KEY:
-        try:
-            GROQ_CLIENT = Groq(api_key=GROQ_API_KEY)
-            GROQ_AVAILABLE = True
-            logger.info("✅ Groq client initialized successfully")
-        except Exception as e:
-            GROQ_ERROR = f"Groq client init failed: {e}"
-            logger.error(GROQ_ERROR)
-    else:
-        GROQ_ERROR = "GROQ_API_KEY environment variable not set"
-        logger.warning(GROQ_ERROR)
-
-if not GROQ_AVAILABLE:
-    logger.error(f"Groq is NOT available: {GROQ_ERROR}")
-
-# ============================================================
-# UTILITY FUNCTIONS
-# ============================================================
-
+# -------------------- UTILITY FUNCTIONS --------------------
 def _format_currency(amount: float) -> str:
     if amount >= 1_000_000:
         return f"PKR {amount/1_000_000:.1f}M"
@@ -84,10 +87,7 @@ def _format_number(num: int) -> str:
 def _format_percent(ratio: float) -> str:
     return f"{ratio:.1f}%"
 
-# ============================================================
-# DATA MODELS
-# ============================================================
-
+# -------------------- DATA MODELS --------------------
 @dataclass
 class QueryPlan:
     intent: str
@@ -121,10 +121,7 @@ class QueryPlan:
             "fields": self.fields,
         }
 
-# ============================================================
-# KNOWLEDGE BASE (no SQL)
-# ============================================================
-
+# -------------------- KNOWLEDGE BASE --------------------
 class KnowledgeBase:
     @staticmethod
     def answer(query: str) -> Optional[str]:
@@ -141,10 +138,7 @@ class KnowledgeBase:
             return "SLA defines expected delivery time based on distance. For Haier, 0-100 km = 1 day, 101-250 = 2 days, etc."
         return None
 
-# ============================================================
-# CONVERSATION MEMORY
-# ============================================================
-
+# -------------------- CONVERSATION MEMORY --------------------
 class ConversationMemory:
     def __init__(self):
         self.last_plan: Optional[QueryPlan] = None
@@ -179,10 +173,18 @@ class ConversationMemory:
             plan.filters["dealer"] = self.last_dealer
         return plan
 
-# ============================================================
-# ENTITY RESOLVER (cached from DB) – graceful fallback
-# ============================================================
+# -------------------- DATABASE HELPERS (if available) --------------------
+try:
+    from sqlalchemy import text
+    from app.database import SessionLocal, engine
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
+    engine = None
+    def text(*args, **kwargs):
+        return None
 
+# -------------------- ENTITY RESOLVER --------------------
 class EntityResolver:
     def __init__(self):
         self._cache = {}
@@ -190,7 +192,6 @@ class EntityResolver:
 
     def _load_cache(self):
         if not DB_AVAILABLE or engine is None:
-            logger.warning("Database not available, using empty entity cache")
             return
         try:
             with engine.connect() as conn:
@@ -222,10 +223,7 @@ class EntityResolver:
                     return entity_type, name
         return None, None
 
-# ============================================================
-# GROQ INTENT ENGINE (First Groq call)
-# ============================================================
-
+# -------------------- GROQ INTENT ENGINE --------------------
 class GroqIntentEngine:
     @staticmethod
     def understand(query: str, memory: ConversationMemory) -> Optional[QueryPlan]:
@@ -268,7 +266,7 @@ Return only valid JSON.
 """
         try:
             response = GROQ_CLIENT.chat.completions.create(
-                model="llama3-70b-8192",
+                model=GROQ_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
                 max_tokens=500,
@@ -294,10 +292,7 @@ Return only valid JSON.
             logger.error(f"Groq intent error: {e}")
             return None
 
-# ============================================================
-# SQL PLANNER (Templates) – with graceful DB fallback
-# ============================================================
-
+# -------------------- SQL PLANNER (Templates) --------------------
 class SQLPlanner:
     def __init__(self):
         self.table = "delivery_reports"
@@ -639,10 +634,7 @@ class SQLPlanner:
         """
         return sql, params
 
-# ============================================================
-# BUSINESS RULES ENGINE
-# ============================================================
-
+# -------------------- BUSINESS RULES ENGINE --------------------
 class BusinessRulesEngine:
     @staticmethod
     def enrich(plan: QueryPlan, results: List[Dict]) -> List[Dict]:
@@ -691,10 +683,7 @@ class BusinessRulesEngine:
 
         return results
 
-# ============================================================
-# ANALYTICS ENGINE
-# ============================================================
-
+# -------------------- ANALYTICS ENGINE --------------------
 class AnalyticsEngine:
     @staticmethod
     def enrich(plan: QueryPlan, results: List[Dict]) -> List[Dict]:
@@ -704,10 +693,7 @@ class AnalyticsEngine:
             results[0] = row
         return results
 
-# ============================================================
-# GROQ INSIGHT GENERATOR
-# ============================================================
-
+# -------------------- GROQ INSIGHT GENERATOR --------------------
 class GroqInsightGenerator:
     @staticmethod
     def generate(plan: QueryPlan, results: List[Dict], query: str) -> str:
@@ -727,7 +713,7 @@ Insight:
 """
             try:
                 resp = GROQ_CLIENT.chat.completions.create(
-                    model="llama3-70b-8192",
+                    model=GROQ_MODEL,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.2,
                     max_tokens=100,
@@ -748,10 +734,7 @@ Insight:
         else:
             return str(results)
 
-# ============================================================
-# GROQ ADVICE ENGINE
-# ============================================================
-
+# -------------------- GROQ ADVICE ENGINE --------------------
 class GroqAdviceEngine:
     @staticmethod
     def answer(query: str) -> str:
@@ -765,7 +748,7 @@ Response:
 """
             try:
                 resp = GROQ_CLIENT.chat.completions.create(
-                    model="llama3-70b-8192",
+                    model=GROQ_MODEL,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.4,
                     max_tokens=300,
@@ -775,10 +758,7 @@ Response:
                 logger.error(f"Advice generation failed: {e}")
         return "Here are some tips to improve delivery: 1. Increase vehicle capacity. 2. Reduce warehouse waiting time. 3. Improve route planning. 4. Automate customer notifications."
 
-# ============================================================
-# GROQ RESPONSE FORMATTER (Final Groq call)
-# ============================================================
-
+# -------------------- GROQ RESPONSE FORMATTER --------------------
 class GroqResponseFormatter:
     @staticmethod
     def format(plan: QueryPlan, results: List[Dict], query: str, insights: str) -> str:
@@ -812,7 +792,7 @@ Response:
 """
         try:
             resp = GROQ_CLIENT.chat.completions.create(
-                model="llama3-70b-8192",
+                model=GROQ_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
                 max_tokens=400,
@@ -880,7 +860,7 @@ Keep it concise (max 100 words).
 """
             try:
                 resp = GROQ_CLIENT.chat.completions.create(
-                    model="llama3-70b-8192",
+                    model=GROQ_MODEL,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3,
                     max_tokens=150,
@@ -903,10 +883,7 @@ Keep it concise (max 100 words).
             "99 - Return to Main Menu"
         ])
 
-# ============================================================
-# GROQ ORCHESTRATOR (Core)
-# ============================================================
-
+# -------------------- GROQ ORCHESTRATOR --------------------
 class GroqOrchestrator:
     def __init__(self):
         self.memory = ConversationMemory()
@@ -923,48 +900,46 @@ class GroqOrchestrator:
         try:
             logger.info(f"Processing: '{query}'")
 
-            # 1. Check knowledge base (no SQL)
+            # Check knowledge base
             kb_answer = self.knowledge.answer(query)
             if kb_answer:
                 return kb_answer + "\n\nReply another question or 99."
 
-            # 2. Understand with Groq
+            # Understand with Groq
             plan = GroqIntentEngine.understand(query, self.memory)
             if plan is None:
-                # If Groq is not available, return service unavailable
                 return GroqResponseFormatter._service_unavailable()
 
-            # 3. Apply conversation memory
+            # Apply memory
             plan = self.memory.apply_context(plan)
 
-            # 4. If advice, use advice engine
+            # Advice
             if plan.intent == "advice":
                 response = self.advice_engine.answer(query)
                 return response + "\n\nReply another question or 99."
 
-            # 5. Build SQL (templates)
+            # Build SQL
             sql, params = self.sql_planner.build(plan)
             if not sql:
-                # No SQL needed (e.g., advice already handled)
                 return "I understand your request, but no SQL was generated. Please refine your question."
             logger.info(f"SQL: {sql}")
 
-            # 6. Execute query (PostgreSQL source of truth)
+            # Execute
             results = self._execute_sql(sql, params)
             logger.info(f"Found {len(results)} results")
 
-            # 7. Apply business rules and analytics
+            # Enrich
             if results:
                 results = self.business_rules.enrich(plan, results)
                 results = self.analytics.enrich(plan, results)
 
-            # 8. Generate insights (Groq)
+            # Insights
             insights = self.insight_gen.generate(plan, results, query)
 
-            # 9. Final formatting (Groq)
+            # Format
             response = self.formatter.format(plan, results, query, insights)
 
-            # 10. Update memory
+            # Update memory
             self.memory.update(plan)
 
             return response
@@ -974,7 +949,7 @@ class GroqOrchestrator:
             return GroqResponseFormatter._service_unavailable()
 
     def _execute_sql(self, sql: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        if not sql or not DB_AVAILABLE or engine is None:
+        if not DB_AVAILABLE or engine is None:
             return []
         try:
             with engine.connect() as conn:
@@ -988,10 +963,7 @@ class GroqOrchestrator:
             logger.error(f"SQL execution error: {e}")
             return []
 
-# ============================================================
-# MAIN SERVICE (Integration with AIProviderService)
-# ============================================================
-
+# -------------------- MAIN SERVICE --------------------
 class GroqService:
     def __init__(self):
         try:
@@ -1006,10 +978,7 @@ class GroqService:
             return GroqResponseFormatter._service_unavailable()
         return self.orchestrator.process(message)
 
-# ============================================================
-# SINGLETON - ALWAYS RETURNS AN OBJECT
-# ============================================================
-
+# -------------------- SINGLETON --------------------
 _service_instance: Optional[GroqService] = None
 
 def get_groq_service() -> GroqService:
@@ -1021,7 +990,7 @@ def get_groq_service() -> GroqService:
             logger.info("✅ GroqService instance created")
         except Exception as e:
             logger.error(f"❌ Failed to create GroqService: {e}")
-            # Return a dummy object that returns the service unavailable message
+            # Dummy fallback
             class DummyGroqService:
                 def process_whatsapp_query(self, message, sender):
                     return GroqResponseFormatter._service_unavailable()
