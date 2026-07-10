@@ -1,26 +1,21 @@
 """
 File: app/services/product_service.py
-Version: 6.5 - COMPLETE PRODUCT SEARCH ENGINE (with full error handling)
-Purpose: Single‑entry search for Product Models or Divisions.
-         Shows welcome on "5", searches on any other input.
-         Catches and logs all errors.
+Version: 7.0 - RAW SQL WITH DEBUG (like Dealer Analytics)
+Purpose: Search product models or divisions using PostgreSQL ILIKE.
+         Uses engine.connect() for reliability.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
-from sqlalchemy import func, distinct, or_, and_
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import SQLAlchemyError
-
-from app.database import SessionLocal
-from app.models import DeliveryReport
+from sqlalchemy import text
+from app.database import engine
 
 logger = logging.getLogger(__name__)
 
-VERSION = "6.5"
+VERSION = "7.0"
 SERVICE_OPTION = "5"
 DEBUG_COMMAND = "DEBUG"
 
@@ -60,168 +55,190 @@ def _format_number(num: int) -> str:
     return f"{num:,}"
 
 # ============================================================
-# REPOSITORY
+# REPOSITORY (raw SQL)
 # ============================================================
 
 class ProductSearchRepository:
-    def __init__(self, session: Session):
-        self.session = session
-
-    def get_sample_values(self) -> Dict[str, list]:
-        """Return sample values from key columns for debugging."""
+    @staticmethod
+    def get_sample_values() -> Dict[str, list]:
+        """Return up to 5 distinct values from customer_model and division."""
         try:
-            models = self.session.query(
-                distinct(DeliveryReport.customer_model)
-            ).filter(DeliveryReport.customer_model.isnot(None)).limit(5).all()
-            materials = self.session.query(
-                distinct(DeliveryReport.material_no)
-            ).filter(DeliveryReport.material_no.isnot(None)).limit(5).all()
-            divisions = self.session.query(
-                distinct(DeliveryReport.division)
-            ).filter(DeliveryReport.division.isnot(None)).limit(5).all()
-            return {
-                "customer_model": [m[0] for m in models if m[0]],
-                "material_no": [m[0] for m in materials if m[0]],
-                "division": [m[0] for m in divisions if m[0]],
-            }
+            with engine.connect() as conn:
+                # customer_model samples
+                models = conn.execute(
+                    text("""
+                        SELECT DISTINCT TRIM(customer_model)
+                        FROM delivery_reports
+                        WHERE customer_model IS NOT NULL AND TRIM(customer_model) != ''
+                        LIMIT 5
+                    """)
+                ).fetchall()
+                # division samples
+                divisions = conn.execute(
+                    text("""
+                        SELECT DISTINCT TRIM(division)
+                        FROM delivery_reports
+                        WHERE division IS NOT NULL AND TRIM(division) != ''
+                        LIMIT 5
+                    """)
+                ).fetchall()
+                # material_no samples (optional)
+                materials = conn.execute(
+                    text("""
+                        SELECT DISTINCT TRIM(material_no)
+                        FROM delivery_reports
+                        WHERE material_no IS NOT NULL AND TRIM(material_no) != ''
+                        LIMIT 5
+                    """)
+                ).fetchall()
+                return {
+                    "customer_model": [r[0] for r in models if r[0]],
+                    "material_no": [r[0] for r in materials if r[0]],
+                    "division": [r[0] for r in divisions if r[0]],
+                }
         except Exception as e:
-            logger.error(f"Error getting sample values: {e}")
+            logger.error(f"Error in get_sample_values: {e}")
             return {"error": str(e)}
 
-    def get_model_data(self, model: str) -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def get_model_data(model: str) -> Optional[Dict[str, Any]]:
+        """Get aggregated data for a product model (case‑insensitive ILIKE)."""
         model_clean = model.strip()
         if not model_clean:
             return None
 
         try:
-            filter_cond = or_(
-                func.lower(DeliveryReport.customer_model).ilike(f"%{model_clean.lower()}%"),
-                func.lower(DeliveryReport.material_no).ilike(f"%{model_clean.lower()}%")
-            )
+            with engine.connect() as conn:
+                # Main aggregates
+                result = conn.execute(
+                    text("""
+                        SELECT
+                            TRIM(COALESCE(customer_model, material_no, 'Unknown')) AS model,
+                            TRIM(COALESCE(division, 'Unknown')) AS division,
+                            COALESCE(SUM(dn_amount), 0) AS total_revenue,
+                            COALESCE(SUM(dn_qty), 0) AS total_units,
+                            COUNT(DISTINCT dn_no) AS dn_count,
+                            COUNT(DISTINCT warehouse) AS warehouse_count,
+                            COUNT(DISTINCT ship_to_city) AS city_count,
+                            COUNT(DISTINCT customer_name) AS dealer_count,
+                            COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dn,
+                            COUNT(DISTINCT CASE WHEN pod_date IS NULL THEN dn_no END) AS pending_dn,
+                            AVG(EXTRACT(DAY FROM (good_issue_date - dn_create_date))) AS avg_delivery_days
+                        FROM delivery_reports
+                        WHERE TRIM(customer_model) ILIKE TRIM(:model)
+                           OR TRIM(material_no) ILIKE TRIM(:model)
+                        GROUP BY customer_model, material_no, division
+                        ORDER BY total_revenue DESC
+                        LIMIT 1
+                    """),
+                    {"model": f"%{model_clean}%"}
+                ).first()
 
-            result = self.session.query(
-                func.coalesce(DeliveryReport.customer_model, DeliveryReport.material_no).label('model'),
-                func.coalesce(DeliveryReport.division, 'Unknown').label('division'),
-                func.sum(DeliveryReport.dn_amount).label('total_revenue'),
-                func.sum(DeliveryReport.dn_qty).label('total_units'),
-                func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
-                func.count(distinct(DeliveryReport.warehouse)).label('warehouse_count'),
-                func.count(distinct(DeliveryReport.ship_to_city)).label('city_count'),
-                func.count(distinct(DeliveryReport.customer_name)).label('dealer_count'),
-                func.count(distinct(
-                    and_(DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)
-                )).label('delivered_dn'),
-                func.count(distinct(
-                    and_(DeliveryReport.pod_date.is_(None), DeliveryReport.dn_no)
-                )).label('pending_dn'),
-                func.avg(
-                    func.extract('day', DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
-                ).label('avg_delivery_days')
-            ).filter(filter_cond).group_by(
-                DeliveryReport.customer_model,
-                DeliveryReport.division,
-                DeliveryReport.material_no
-            ).order_by(
-                func.sum(DeliveryReport.dn_amount).desc()
-            ).first()
+                if not result or result.total_revenue == 0:
+                    return None
 
-            if not result or result.total_revenue is None:
-                return None
+                data = {
+                    'model': _text(result.model),
+                    'division': _text(result.division),
+                    'total_revenue': _number(result.total_revenue),
+                    'total_units': _int(result.total_units),
+                    'dn_count': _int(result.dn_count),
+                    'warehouse_count': _int(result.warehouse_count),
+                    'city_count': _int(result.city_count),
+                    'dealer_count': _int(result.dealer_count),
+                    'delivered_dn': _int(result.delivered_dn),
+                    'pending_dn': _int(result.pending_dn),
+                    'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
+                }
 
-            data = {
-                'model': _text(result.model),
-                'division': _text(result.division),
-                'total_revenue': _number(result.total_revenue),
-                'total_units': _int(result.total_units),
-                'dn_count': _int(result.dn_count),
-                'warehouse_count': _int(result.warehouse_count),
-                'city_count': _int(result.city_count),
-                'dealer_count': _int(result.dealer_count),
-                'delivered_dn': _int(result.delivered_dn),
-                'pending_dn': _int(result.pending_dn),
-                'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
-            }
+                # Top cities for this model
+                cities = conn.execute(
+                    text("""
+                        SELECT TRIM(ship_to_city) AS city, SUM(dn_amount) AS revenue
+                        FROM delivery_reports
+                        WHERE TRIM(customer_model) ILIKE TRIM(:model)
+                           OR TRIM(material_no) ILIKE TRIM(:model)
+                        GROUP BY ship_to_city
+                        ORDER BY revenue DESC
+                        LIMIT 5
+                    """),
+                    {"model": f"%{model_clean}%"}
+                ).fetchall()
+                data['top_cities'] = [c[0] for c in cities if c[0]]
 
-            top_cities = self.session.query(
-                DeliveryReport.ship_to_city,
-                func.sum(DeliveryReport.dn_amount).label('revenue')
-            ).filter(filter_cond).group_by(
-                DeliveryReport.ship_to_city
-            ).order_by(
-                func.sum(DeliveryReport.dn_amount).desc()
-            ).limit(5).all()
+                return data
 
-            data['top_cities'] = [_text(city.ship_to_city) for city in top_cities if city.ship_to_city]
-            return data
-
-        except SQLAlchemyError as e:
-            logger.error(f"SQL error in get_model_data: {e}")
-            return None
         except Exception as e:
-            logger.error(f"Unexpected error in get_model_data: {e}")
+            logger.error(f"Error in get_model_data for '{model_clean}': {e}")
             return None
 
-    def get_division_data(self, division: str) -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def get_division_data(division: str) -> Optional[Dict[str, Any]]:
+        """Get aggregated data for a product division (case‑insensitive ILIKE)."""
         division_clean = division.strip()
         if not division_clean:
             return None
 
         try:
-            filter_cond = func.lower(DeliveryReport.division).ilike(f"%{division_clean.lower()}%")
+            with engine.connect() as conn:
+                # Main aggregates
+                result = conn.execute(
+                    text("""
+                        SELECT
+                            COALESCE(SUM(dn_amount), 0) AS total_revenue,
+                            COALESCE(SUM(dn_qty), 0) AS total_units,
+                            COUNT(DISTINCT dn_no) AS dn_count,
+                            COUNT(DISTINCT warehouse) AS warehouse_count,
+                            COUNT(DISTINCT ship_to_city) AS city_count,
+                            COUNT(DISTINCT customer_name) AS dealer_count,
+                            COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dn,
+                            COUNT(DISTINCT CASE WHEN pod_date IS NULL THEN dn_no END) AS pending_dn,
+                            AVG(EXTRACT(DAY FROM (good_issue_date - dn_create_date))) AS avg_delivery_days
+                        FROM delivery_reports
+                        WHERE TRIM(division) ILIKE TRIM(:division)
+                    """),
+                    {"division": f"%{division_clean}%"}
+                ).first()
 
-            result = self.session.query(
-                func.sum(DeliveryReport.dn_amount).label('total_revenue'),
-                func.sum(DeliveryReport.dn_qty).label('total_units'),
-                func.count(distinct(DeliveryReport.dn_no)).label('dn_count'),
-                func.count(distinct(DeliveryReport.warehouse)).label('warehouse_count'),
-                func.count(distinct(DeliveryReport.ship_to_city)).label('city_count'),
-                func.count(distinct(DeliveryReport.customer_name)).label('dealer_count'),
-                func.count(distinct(
-                    and_(DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)
-                )).label('delivered_dn'),
-                func.count(distinct(
-                    and_(DeliveryReport.pod_date.is_(None), DeliveryReport.dn_no)
-                )).label('pending_dn'),
-                func.avg(
-                    func.extract('day', DeliveryReport.good_issue_date - DeliveryReport.dn_create_date)
-                ).label('avg_delivery_days')
-            ).filter(filter_cond).first()
+                if not result or result.total_revenue == 0:
+                    return None
 
-            if not result or result.total_revenue is None:
-                return None
+                data = {
+                    'division': division_clean,
+                    'total_revenue': _number(result.total_revenue),
+                    'total_units': _int(result.total_units),
+                    'dn_count': _int(result.dn_count),
+                    'warehouse_count': _int(result.warehouse_count),
+                    'city_count': _int(result.city_count),
+                    'dealer_count': _int(result.dealer_count),
+                    'delivered_dn': _int(result.delivered_dn),
+                    'pending_dn': _int(result.pending_dn),
+                    'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
+                }
 
-            data = {
-                'division': division_clean,
-                'total_revenue': _number(result.total_revenue),
-                'total_units': _int(result.total_units),
-                'dn_count': _int(result.dn_count),
-                'warehouse_count': _int(result.warehouse_count),
-                'city_count': _int(result.city_count),
-                'dealer_count': _int(result.dealer_count),
-                'delivered_dn': _int(result.delivered_dn),
-                'pending_dn': _int(result.pending_dn),
-                'avg_delivery_days': round(_number(result.avg_delivery_days), 1),
-            }
+                # Top 5 models in this division
+                products = conn.execute(
+                    text("""
+                        SELECT TRIM(COALESCE(customer_model, material_no, 'Unknown')) AS product,
+                               SUM(dn_amount) AS revenue
+                        FROM delivery_reports
+                        WHERE TRIM(division) ILIKE TRIM(:division)
+                        GROUP BY customer_model, material_no
+                        ORDER BY revenue DESC
+                        LIMIT 5
+                    """),
+                    {"division": f"%{division_clean}%"}
+                ).fetchall()
+                data['top_products'] = [p[0] for p in products if p[0]]
 
-            top_products = self.session.query(
-                func.coalesce(DeliveryReport.customer_model, DeliveryReport.material_no).label('product'),
-                func.sum(DeliveryReport.dn_amount).label('revenue')
-            ).filter(filter_cond).group_by('product').order_by(
-                func.sum(DeliveryReport.dn_amount).desc()
-            ).limit(5).all()
+                return data
 
-            data['top_products'] = [_text(p.product) for p in top_products if p.product]
-            return data
-
-        except SQLAlchemyError as e:
-            logger.error(f"SQL error in get_division_data: {e}")
-            return None
         except Exception as e:
-            logger.error(f"Unexpected error in get_division_data: {e}")
+            logger.error(f"Error in get_division_data for '{division_clean}': {e}")
             return None
 
 # ============================================================
-# FORMATTERS
+# FORMATTERS (unchanged)
 # ============================================================
 
 class ProductDashboardFormatter:
@@ -290,7 +307,7 @@ class ProductDashboardFormatter:
             "",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "💡 Compare your search with these values.",
-            "If you see your product here, we need to adjust the search.",
+            "If you see your product here, search should work.",
             "",
             "Type another search or 99 to exit.",
         ])
@@ -485,11 +502,7 @@ class ProductAnalyticsService:
     def __init__(self) -> None:
         self._version = VERSION
         self._formatter = ProductDashboardFormatter()
-        logger.info(f"✅ ProductAnalyticsService v{self._version} (complete)")
-
-    @staticmethod
-    def _session() -> Session:
-        return SessionLocal()
+        logger.info(f"✅ ProductAnalyticsService v{self._version} (raw SQL)")
 
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
         try:
@@ -507,27 +520,25 @@ class ProductAnalyticsService:
                 return self._formatter.welcome()
 
             if msg == DEBUG_COMMAND:
-                with self._session() as session:
-                    repo = ProductSearchRepository(session)
-                    samples = repo.get_sample_values()
+                samples = ProductSearchRepository.get_sample_values()
                 return self._formatter.debug_info(samples)
 
             logger.info(f"Searching for: '{msg}' from {sender}")
 
-            with self._session() as session:
-                repo = ProductSearchRepository(session)
-                model_data = repo.get_model_data(msg)
-                if model_data:
-                    return self._formatter.model_dashboard(model_data)
+            # Try model
+            model_data = ProductSearchRepository.get_model_data(msg)
+            if model_data:
+                return self._formatter.model_dashboard(model_data)
 
-                division_data = repo.get_division_data(msg)
-                if division_data:
-                    return self._formatter.division_dashboard(division_data)
+            # Try division
+            division_data = ProductSearchRepository.get_division_data(msg)
+            if division_data:
+                return self._formatter.division_dashboard(division_data)
 
             return self._formatter.not_found(msg)
 
         except Exception as e:
-            logger.error(f"Unexpected error in process_whatsapp_query: {e}", exc_info=True)
+            logger.error(f"Unexpected error: {e}", exc_info=True)
             return self._formatter.error()
 
     def get_main_menu(self) -> str:
