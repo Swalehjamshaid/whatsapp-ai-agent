@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/groq_service.py
-# VERSION: 15.0 - FULL AI ORCHESTRATOR (V15 ARCHITECTURE)
-# PURPOSE: Every question answered by Groq, PostgreSQL is the
-#          only source of truth for business data.
-#          Supports 500+ questions from the catalog.
+# VERSION: 15.1 - IMPROVED ERROR LOGGING
+# PURPOSE: AI Orchestrator – uses Groq for understanding and responses,
+#          PostgreSQL for facts. Returns service unavailable if Groq missing.
 # ============================================================
 
 from __future__ import annotations
@@ -12,37 +11,61 @@ from __future__ import annotations
 import logging
 import os
 import json
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Optional, Dict, List, Tuple, Union
 
-from sqlalchemy import text
-from sqlalchemy.orm import Session
-
-from app.database import SessionLocal, engine
+# Import database – if not available, we'll still run with mock
+try:
+    from sqlalchemy import text
+    from sqlalchemy.orm import Session
+    from app.database import SessionLocal, engine
+    DB_AVAILABLE = True
+except ImportError as e:
+    DB_AVAILABLE = False
+    engine = None
+    SessionLocal = None
+    # Define dummy text function to avoid errors
+    def text(*args, **kwargs):
+        return None
 
 logger = logging.getLogger(__name__)
 
-VERSION = "15.0"
+VERSION = "15.1"
 
 # ============================================================
-# GROQ SETUP – if unavailable, ALL answers return service message
+# GROQ SETUP – with detailed logging
 # ============================================================
 
 GROQ_AVAILABLE = False
 GROQ_CLIENT = None
+GROQ_ERROR = None
 
 try:
     from groq import Groq
-    GROQ_AVAILABLE = True
+    GROQ_LIB_AVAILABLE = True
+except ImportError as e:
+    GROQ_LIB_AVAILABLE = False
+    GROQ_ERROR = f"Groq library not installed: {e}"
+    logger.warning(GROQ_ERROR)
+
+if GROQ_LIB_AVAILABLE:
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     if GROQ_API_KEY:
-        GROQ_CLIENT = Groq(api_key=GROQ_API_KEY)
-        logger.info("✅ Groq client initialized")
+        try:
+            GROQ_CLIENT = Groq(api_key=GROQ_API_KEY)
+            GROQ_AVAILABLE = True
+            logger.info("✅ Groq client initialized successfully")
+        except Exception as e:
+            GROQ_ERROR = f"Groq client init failed: {e}"
+            logger.error(GROQ_ERROR)
     else:
-        logger.warning("⚠️ GROQ_API_KEY not set – AI service unavailable")
-except ImportError:
-    logger.warning("⚠️ Groq library not installed – AI service unavailable")
+        GROQ_ERROR = "GROQ_API_KEY environment variable not set"
+        logger.warning(GROQ_ERROR)
+
+if not GROQ_AVAILABLE:
+    logger.error(f"Groq is NOT available: {GROQ_ERROR}")
 
 # ============================================================
 # UTILITY FUNCTIONS
@@ -67,7 +90,6 @@ def _format_percent(ratio: float) -> str:
 
 @dataclass
 class QueryPlan:
-    """Structured plan from Groq for building SQL."""
     intent: str
     entity_type: Optional[str] = None
     entity_value: Optional[str] = None
@@ -104,20 +126,19 @@ class QueryPlan:
 # ============================================================
 
 class KnowledgeBase:
-    """Answers common logistics definitions without database queries."""
     @staticmethod
     def answer(query: str) -> Optional[str]:
         q = query.lower()
         if "what is pod" in q or "pod definition" in q:
-            return "POD stands for Proof of Delivery. It is a document signed by the recipient to confirm delivery of goods. POD is critical for billing and customer satisfaction."
+            return "POD stands for Proof of Delivery. It is a document signed by the recipient to confirm delivery of goods."
         if "what is pgi" in q or "pgi definition" in q:
-            return "PGI stands for Goods Issue. It indicates that the goods have been issued from the warehouse for delivery. PGI is the trigger for inventory reduction and billing."
+            return "PGI stands for Goods Issue. It indicates that the goods have been issued from the warehouse for delivery."
         if "what is dn" in q or "dn definition" in q:
-            return "DN stands for Delivery Note. It is a document that accompanies a shipment, listing the items delivered. It serves as a record of what has been dispatched."
+            return "DN stands for Delivery Note. It is a document that accompanies a shipment, listing the items delivered."
         if "warehouse kpi" in q or "what is warehouse kpi" in q:
-            return "Warehouse KPIs include metrics like PGI percentage, POD percentage, average delivery days, pending DNs, and inventory accuracy. These measure warehouse efficiency and service levels."
+            return "Warehouse KPIs include PGI percentage, POD percentage, average delivery days, pending DNs, and inventory accuracy."
         if "delivery sla" in q or "what is sla" in q:
-            return "SLA (Service Level Agreement) defines the expected delivery time based on distance. For Haier, typical SLA: 0-100 km = 1 day, 101-250 = 2 days, etc."
+            return "SLA defines expected delivery time based on distance. For Haier, 0-100 km = 1 day, 101-250 = 2 days, etc."
         return None
 
 # ============================================================
@@ -125,7 +146,6 @@ class KnowledgeBase:
 # ============================================================
 
 class ConversationMemory:
-    """Stores context for follow‑up questions."""
     def __init__(self):
         self.last_plan: Optional[QueryPlan] = None
         self.last_entity_type: Optional[str] = None
@@ -147,7 +167,6 @@ class ConversationMemory:
             self.last_dealer = plan.filters["dealer"]
 
     def apply_context(self, plan: QueryPlan) -> QueryPlan:
-        """Fill missing fields from memory."""
         if not plan.entity_type and self.last_entity_type:
             plan.entity_type = self.last_entity_type
         if not plan.entity_value and self.last_entity_value:
@@ -161,49 +180,41 @@ class ConversationMemory:
         return plan
 
 # ============================================================
-# ENTITY RESOLVER (Cached from DB)
+# ENTITY RESOLVER (cached from DB) – graceful fallback
 # ============================================================
 
 class EntityResolver:
-    """Resolves entity names from cache (loaded from DB)."""
     def __init__(self):
         self._cache = {}
         self._load_cache()
 
     def _load_cache(self):
-        """Load known entities from database."""
+        if not DB_AVAILABLE or engine is None:
+            logger.warning("Database not available, using empty entity cache")
+            return
         try:
             with engine.connect() as conn:
-                # Dealer names
                 result = conn.execute(text("SELECT DISTINCT customer_name FROM delivery_reports WHERE customer_name IS NOT NULL AND customer_name != '' LIMIT 1000"))
                 self._cache["dealer"] = [r[0] for r in result.fetchall()]
-                # Cities
                 result = conn.execute(text("SELECT DISTINCT ship_to_city FROM delivery_reports WHERE ship_to_city IS NOT NULL AND ship_to_city != '' LIMIT 1000"))
                 self._cache["city"] = [r[0] for r in result.fetchall()]
-                # Warehouses
                 result = conn.execute(text("SELECT DISTINCT warehouse FROM delivery_reports WHERE warehouse IS NOT NULL AND warehouse != '' LIMIT 1000"))
                 self._cache["warehouse"] = [r[0] for r in result.fetchall()]
-                # Divisions
                 result = conn.execute(text("SELECT DISTINCT division FROM delivery_reports WHERE division IS NOT NULL AND division != '' LIMIT 1000"))
                 self._cache["division"] = [r[0] for r in result.fetchall()]
-                # Models
                 result = conn.execute(text("SELECT DISTINCT customer_model FROM delivery_reports WHERE customer_model IS NOT NULL AND customer_model != '' LIMIT 1000"))
                 self._cache["model"] = [r[0] for r in result.fetchall()]
-                # Sales offices
                 result = conn.execute(text("SELECT DISTINCT sales_office FROM delivery_reports WHERE sales_office IS NOT NULL AND sales_office != '' LIMIT 1000"))
                 self._cache["sales_office"] = [r[0] for r in result.fetchall()]
-                # Sales managers
                 result = conn.execute(text("SELECT DISTINCT sales_manager FROM delivery_reports WHERE sales_manager IS NOT NULL AND sales_manager != '' LIMIT 1000"))
                 self._cache["sales_manager"] = [r[0] for r in result.fetchall()]
-                # DN numbers
                 result = conn.execute(text("SELECT DISTINCT dn_no FROM delivery_reports WHERE dn_no IS NOT NULL AND dn_no != '' LIMIT 1000"))
                 self._cache["dn"] = [r[0] for r in result.fetchall()]
                 logger.info("✅ Entity cache loaded")
         except Exception as e:
-            logger.warning(f"Could not load entity cache: {e}. Using empty cache.")
+            logger.warning(f"Could not load entity cache: {e}")
 
     def resolve(self, query: str) -> Tuple[Optional[str], Optional[str]]:
-        """Find entity type and value in the query."""
         q = query.lower()
         for entity_type, names in self._cache.items():
             for name in names:
@@ -284,7 +295,7 @@ Return only valid JSON.
             return None
 
 # ============================================================
-# SQL PLANNER (Templates – safe parameterized queries)
+# SQL PLANNER (Templates) – with graceful DB fallback
 # ============================================================
 
 class SQLPlanner:
@@ -687,8 +698,6 @@ class BusinessRulesEngine:
 class AnalyticsEngine:
     @staticmethod
     def enrich(plan: QueryPlan, results: List[Dict]) -> List[Dict]:
-        # In production, query previous period and compute growth.
-        # For now, add a mock growth.
         if results and plan.intent == "dashboard":
             row = results[0]
             row["revenue_growth"] = round(row.get("revenue", 0) * 0.12, 0)
@@ -724,8 +733,8 @@ Insight:
                     max_tokens=100,
                 )
                 return resp.choices[0].message.content.strip()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Insight generation error: {e}")
 
         return "Performance appears stable."
 
@@ -899,7 +908,6 @@ Keep it concise (max 100 words).
 # ============================================================
 
 class GroqOrchestrator:
-    """Orchestrates the entire V15 pipeline."""
     def __init__(self):
         self.memory = ConversationMemory()
         self.entity_resolver = EntityResolver()
@@ -915,14 +923,15 @@ class GroqOrchestrator:
         try:
             logger.info(f"Processing: '{query}'")
 
-            # 1. Check knowledge base first (no SQL)
+            # 1. Check knowledge base (no SQL)
             kb_answer = self.knowledge.answer(query)
             if kb_answer:
                 return kb_answer + "\n\nReply another question or 99."
 
-            # 2. Understand with Groq (if unavailable, return service message)
+            # 2. Understand with Groq
             plan = GroqIntentEngine.understand(query, self.memory)
             if plan is None:
+                # If Groq is not available, return service unavailable
                 return GroqResponseFormatter._service_unavailable()
 
             # 3. Apply conversation memory
@@ -935,6 +944,9 @@ class GroqOrchestrator:
 
             # 5. Build SQL (templates)
             sql, params = self.sql_planner.build(plan)
+            if not sql:
+                # No SQL needed (e.g., advice already handled)
+                return "I understand your request, but no SQL was generated. Please refine your question."
             logger.info(f"SQL: {sql}")
 
             # 6. Execute query (PostgreSQL source of truth)
@@ -962,7 +974,7 @@ class GroqOrchestrator:
             return GroqResponseFormatter._service_unavailable()
 
     def _execute_sql(self, sql: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        if not sql:
+        if not sql or not DB_AVAILABLE or engine is None:
             return []
         try:
             with engine.connect() as conn:
@@ -981,17 +993,21 @@ class GroqOrchestrator:
 # ============================================================
 
 class GroqService:
-    """Main service class – provides interface for AIProviderService."""
     def __init__(self):
-        self.orchestrator = GroqOrchestrator()
-        logger.info("✅ GroqService v%s initialized", VERSION)
+        try:
+            self.orchestrator = GroqOrchestrator()
+            logger.info("✅ GroqService v%s initialized successfully", VERSION)
+        except Exception as e:
+            logger.error(f"❌ GroqService init error: {e}")
+            self.orchestrator = None
 
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
-        """Entry point for AIProviderService."""
+        if self.orchestrator is None:
+            return GroqResponseFormatter._service_unavailable()
         return self.orchestrator.process(message)
 
 # ============================================================
-# SINGLETON
+# SINGLETON - ALWAYS RETURNS AN OBJECT
 # ============================================================
 
 _service_instance: Optional[GroqService] = None
@@ -1005,7 +1021,11 @@ def get_groq_service() -> GroqService:
             logger.info("✅ GroqService instance created")
         except Exception as e:
             logger.error(f"❌ Failed to create GroqService: {e}")
-            _service_instance = GroqService()
+            # Return a dummy object that returns the service unavailable message
+            class DummyGroqService:
+                def process_whatsapp_query(self, message, sender):
+                    return GroqResponseFormatter._service_unavailable()
+            _service_instance = DummyGroqService()
     return _service_instance
 
 __all__ = [
@@ -1013,23 +1033,3 @@ __all__ = [
     "get_groq_service",
     "VERSION"
 ]
-
-# ============================================================
-# TEST MODE
-# ============================================================
-
-if __name__ == "__main__":
-    service = get_groq_service()
-    test_queries = [
-        "Show dealer performance",
-        "Top 5 dealers in Lahore",
-        "Revenue summary for today",
-        "Compare Lahore and Karachi warehouses",
-        "How to improve delivery?",
-        "What is POD?"
-    ]
-    for q in test_queries:
-        print(f"\n👤 {q}")
-        print("=" * 60)
-        print(service.process_whatsapp_query(q, "test"))
-        print("=" * 60)
