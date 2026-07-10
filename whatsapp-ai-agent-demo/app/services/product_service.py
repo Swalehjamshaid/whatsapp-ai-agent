@@ -1,6 +1,9 @@
 """
 File: app/services/product_service.py
-Version: 6.4 - DIAGNOSTIC: shows sample values
+Version: 6.5 - COMPLETE PRODUCT SEARCH ENGINE (with full error handling)
+Purpose: Single‑entry search for Product Models or Divisions.
+         Shows welcome on "5", searches on any other input.
+         Catches and logs all errors.
 """
 
 from __future__ import annotations
@@ -17,12 +20,12 @@ from app.models import DeliveryReport
 
 logger = logging.getLogger(__name__)
 
-VERSION = "6.4"
+VERSION = "6.5"
 SERVICE_OPTION = "5"
 DEBUG_COMMAND = "DEBUG"
 
 # ============================================================
-# UTILITY FUNCTIONS (same as before)
+# UTILITY FUNCTIONS
 # ============================================================
 
 def _text(value: Any, default: str = "N/A") -> str:
@@ -57,7 +60,7 @@ def _format_number(num: int) -> str:
     return f"{num:,}"
 
 # ============================================================
-# REPOSITORY (with diagnostic helpers)
+# REPOSITORY
 # ============================================================
 
 class ProductSearchRepository:
@@ -218,7 +221,7 @@ class ProductSearchRepository:
             return None
 
 # ============================================================
-# FORMATTERS (unchanged)
+# FORMATTERS
 # ============================================================
 
 class ProductDashboardFormatter:
@@ -295,33 +298,194 @@ class ProductDashboardFormatter:
 
     @staticmethod
     def model_dashboard(data: Dict[str, Any]) -> str:
-        # ... same as before (omitted for brevity, copy from previous version) ...
-        pass
+        lines = [
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "      📦 PRODUCT INTELLIGENCE CENTER",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"📦 Product Model",
+            f"{data.get('model', 'N/A')}",
+            "",
+            f"📂 Division",
+            f"{data.get('division', 'N/A')}",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "📊 SALES OVERVIEW",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"💰 Revenue          : {_format_currency(data.get('total_revenue', 0))}",
+            f"📦 Total Units      : {_format_number(data.get('total_units', 0))}",
+            f"🚚 Total DNs        : {_format_number(data.get('dn_count', 0))}",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🌍 COVERAGE",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"🏭 Warehouses       : {_format_number(data.get('warehouse_count', 0))}",
+            f"🏙 Cities           : {_format_number(data.get('city_count', 0))}",
+            f"👤 Dealers          : {_format_number(data.get('dealer_count', 0))}",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🚚 DELIVERY KPI",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"🟢 Delivered DNs    : {_format_number(data.get('delivered_dn', 0))}",
+            f"🟡 Pending DNs      : {_format_number(data.get('pending_dn', 0))}",
+            "",
+            f"📅 Avg Delivery     : {data.get('avg_delivery_days', 0)} Days",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🏆 TOP CITIES",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+        ]
+
+        top_cities = data.get('top_cities', [])
+        if top_cities:
+            for city in top_cities:
+                lines.append(f"• {city}")
+        else:
+            lines.append("• No data")
+
+        lines.extend([
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🤖 AI INSIGHT",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "✅ High demand product.",
+            "✅ Excellent delivery performance." if data.get('avg_delivery_days', 99) <= 3 else "⚠️ Delivery time can be improved.",
+            "⚠ Pending deliveries require follow-up." if data.get('pending_dn', 0) > 0 else "✅ No pending deliveries.",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🔄 NEXT ACTION",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "📝 Enter another Product Model or Division.",
+            "",
+            "🏠 Reply *99* to return to the Previous Menu.",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ])
+        return "\n".join(lines)
 
     @staticmethod
     def division_dashboard(data: Dict[str, Any]) -> str:
-        # ... same as before ...
-        pass
+        lines = [
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "      📦 PRODUCT DIVISION ANALYTICS",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"📂 Division",
+            f"{data.get('division', 'N/A')}",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "📊 BUSINESS OVERVIEW",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"💰 Revenue           : {_format_currency(data.get('total_revenue', 0))}",
+            f"📦 Units Sold        : {_format_number(data.get('total_units', 0))}",
+            f"🚚 Total DNs         : {_format_number(data.get('dn_count', 0))}",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🌍 COVERAGE",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"🏭 Warehouses        : {_format_number(data.get('warehouse_count', 0))}",
+            f"🏙 Cities            : {_format_number(data.get('city_count', 0))}",
+            f"👤 Active Dealers    : {_format_number(data.get('dealer_count', 0))}",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🚚 DELIVERY KPI",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"🟢 Delivered DNs     : {_format_number(data.get('delivered_dn', 0))}",
+            f"🟡 Pending DNs       : {_format_number(data.get('pending_dn', 0))}",
+            "",
+            f"📅 Avg Delivery      : {data.get('avg_delivery_days', 0)} Days",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🏆 TOP 5 PRODUCTS",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+        ]
+
+        top_products = data.get('top_products', [])
+        if top_products:
+            for product in top_products:
+                lines.append(f"• {product}")
+        else:
+            lines.append("• No products")
+
+        lines.extend([
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🤖 AI INSIGHT",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "✅ High demand division.",
+            "⚠ Improve delivery performance in pending locations." if data.get('pending_dn', 0) > 0 else "✅ Excellent delivery performance.",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🔄 NEXT ACTION",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "📝 Enter another Product Model or Division.",
+            "",
+            "🏠 Reply *99* to return to the Previous Menu.",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ])
+        return "\n".join(lines)
 
     @staticmethod
     def not_found(query: str) -> str:
-        # ... same as before ...
-        pass
+        return "\n".join([
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "❌ PRODUCT NOT FOUND",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"No matching Product Model or Division found for '{query}'.",
+            "",
+            "Please check your spelling and try again.",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🔄 NEXT ACTION",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "📝 Enter another Product Model or Division.",
+            "",
+            "🏠 Reply *99* to return to the Previous Menu.",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ])
 
     @staticmethod
     def error() -> str:
-        # ... same as before ...
-        pass
+        return "\n".join([
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "⚠️ SERVICE ERROR",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "An unexpected error occurred while processing your request.",
+            "Please try again later.",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🔄 NEXT ACTION",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "📝 Enter another Product Model or Division.",
+            "",
+            "🏠 Reply *99* to return to the Previous Menu.",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ])
 
 # ============================================================
-# MAIN SERVICE (with DEBUG command)
+# MAIN SERVICE
 # ============================================================
 
 class ProductAnalyticsService:
     def __init__(self) -> None:
         self._version = VERSION
         self._formatter = ProductDashboardFormatter()
-        logger.info(f"✅ ProductAnalyticsService v{self._version} (diagnostic mode)")
+        logger.info(f"✅ ProductAnalyticsService v{self._version} (complete)")
 
     @staticmethod
     def _session() -> Session:
