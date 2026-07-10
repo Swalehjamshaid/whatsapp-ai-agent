@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # FILE: app/services/dealer_analytics_service.py
-# VERSION: 12.11 - ROAD DISTANCE WITH CACHING
+# VERSION: 12.12 - ADDED 99 EXIT TO DASHBOARD
 # ============================================================
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_PROFILE = os.getenv("ORS_PROFILE", "driving-car")
-VERSION = "12.11"
+VERSION = "12.12"
 
 # Try to import geocoding libraries
 try:
@@ -599,8 +599,13 @@ class DealerAnalyticsService:
         try:
             message_clean = message.strip()
             
-            # Check if it's a numeric command (1-9 or 99)
-            if message_clean in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '99']:
+            # SPECIAL: 99 exits to main menu
+            if message_clean == "99":
+                logger.info("[Service] Exit command detected, returning 99")
+                return "99"
+            
+            # Numeric commands (1-9,0) show help
+            if message_clean in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']:
                 logger.info("[Service] Numeric input detected, showing help")
                 return self._get_help_message()
             
@@ -677,7 +682,7 @@ Simply type the dealer name.
 • You can type partial names
 • We'll show suggestions if no exact match
 • All data is real-time from the database
-• Type **99** for this help menu anytime
+• Type **99** to return to the Main Menu
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Type a dealer name to get started!
@@ -978,8 +983,11 @@ Type a dealer name to search again
         for rec in recommendations:
             lines.append(f"✅ {rec}")
         
+        # Footer with 99 exit option
         lines.extend([
             "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "99 to Return to Main Menu",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "Type a dealer name to search",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
