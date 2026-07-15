@@ -51,3 +51,27 @@ apscheduler==3.10.4
 # ============================================================
 
 prometheus-client==0.22.1
+
+# ============================================================
+# Additional Libraries for Excel Upload & Report Generation
+# (pandas already installed – skip duplication)
+# ============================================================
+
+# --- Excel Reading & Writing (no Excel required) ---
+openpyxl==3.1.5               # Read/write .xlsx files
+
+# --- Advanced Excel Report Generation ---
+XlsxWriter==3.2.0             # Charts, conditional formatting, data validation
+ExcelAlchemy==1.2.0           # Structured import/export with Pydantic validation
+xlsxreport==0.3.0             # YAML‑driven automated Excel reports
+
+# --- Interactive Charts & Dashboards ---
+plotly==5.24.1                # Interactive visualizations
+streamlit==1.39.0             # Build dashboards (used with exceldash-python)
+
+# --- PDF Report Generation ---
+reportlab==4.2.2              # Full programmatic PDF control
+reportbro-lib==1.2.0          # Template‑based PDF/Excel (visual designer)
+
+# --- Enterprise-grade (optional, commercial) ---
+# aspose-cells==24.12.0       # Uncomment if licensed – no Excel dependency
