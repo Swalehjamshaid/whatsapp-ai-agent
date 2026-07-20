@@ -1,13 +1,16 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 4.2 - FIXED DATA POPULATION
+# VERSION: 4.3 - REPOSITORY PATTERN (ALIGNED WITH DN_ANALYSIS)
 # ============================================================
-# FIXES:
-#   - Removed limit/offset from aggregations (caused zero sums)
-#   - Handled NULL good_issue_date in average delivery
-#   - Improved monthly date labels (YYYY-MM)
-#   - Added logging for debugging
-#   - Daily trends now group by date correctly
+# PURPOSE: Central orchestration service for the Logistics Intelligence Dashboard.
+#          Provides executive KPIs, warehouse/dealer/product/city intelligence,
+#          AI-driven insights, and advanced filtering/search.
+#
+# ARCHITECTURE:
+#   - DashboardRepository handles all database queries with proper session mgmt.
+#   - DashboardService orchestrates data aggregation and formatting.
+#   - All public methods and signatures preserved for backward compatibility.
+#   - Uses the same session management pattern as dn_analysis.py.
 # ============================================================
 
 import asyncio
@@ -26,7 +29,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models import DeliveryReport
 
-# Optional external libraries (lazy loaded)
+# Optional external libraries (lazy loaded) – preserved
 try:
     import pandas as pd
     PANDAS_AVAILABLE = True
@@ -61,7 +64,57 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# CACHE DECORATOR (in-memory with TTL)
+# UTILITY FUNCTIONS (mirroring dn_analysis.py)
+# ============================================================
+
+def _text(value: Any, default: str = "N/A") -> str:
+    """Safely convert value to string."""
+    if value is None:
+        return default
+    return str(value).strip() or default
+
+def _format_currency(amount: float) -> str:
+    """Format currency amount."""
+    if amount is None:
+        return "PKR 0.00"
+    if amount >= 1_000_000:
+        return f"PKR {amount/1_000_000:.2f}M"
+    elif amount >= 1_000:
+        return f"PKR {amount:,.0f}"
+    return f"PKR {amount:,.0f}"
+
+def _format_number(num: Union[int, float]) -> str:
+    """Format number with commas."""
+    if num is None:
+        return "0"
+    return f"{num:,}"
+
+def _format_date(date_val: Any) -> str:
+    """Format date to 'dd-MMM-yyyy' (e.g., 23-Jun-2026)"""
+    if not date_val:
+        return "N/A"
+    try:
+        if isinstance(date_val, str):
+            for fmt in ['%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f']:
+                try:
+                    dt = datetime.strptime(date_val, fmt)
+                    break
+                except ValueError:
+                    continue
+            else:
+                return date_val
+        elif isinstance(date_val, datetime):
+            dt = date_val
+        elif isinstance(date_val, date):
+            dt = datetime.combine(date_val, datetime.min.time())
+        else:
+            return str(date_val)
+        return dt.strftime("%d-%b-%Y")
+    except Exception:
+        return str(date_val)
+
+# ============================================================
+# CACHE DECORATOR (unchanged)
 # ============================================================
 
 class InMemoryCache:
@@ -83,7 +136,6 @@ class InMemoryCache:
 
 cache = InMemoryCache(ttl_seconds=5)
 
-
 def cached(ttl=5):
     def decorator(func):
         @wraps(func)
@@ -98,6 +150,9 @@ def cached(ttl=5):
         return wrapper
     return decorator
 
+# ============================================================
+# DASHBOARD CONTEXT (unchanged)
+# ============================================================
 
 class DashboardContext:
     def __init__(self, filters: Dict[str, Any], role: str):
@@ -120,6 +175,562 @@ class DashboardContext:
         self.recommendations: Optional[List[Dict[str, Any]]] = None
         self.loaded = False
 
+# ============================================================
+# DASHBOARD REPOSITORY (pattern aligned with dn_analysis.py)
+# ============================================================
+
+class DashboardRepository:
+    """Handles all database queries for the dashboard, with proper session management."""
+    
+    def __init__(self):
+        self._session_local = SessionLocal
+        logger.info("🗄️  DashboardRepository initialized")
+    
+    def _get_session(self) -> Optional[Session]:
+        try:
+            return self._session_local()
+        except Exception as e:
+            logger.error(f"❌ Database session error: {e}")
+            return None
+    
+    def _close_session(self, session: Optional[Session]):
+        if session:
+            try:
+                session.close()
+            except Exception as e:
+                logger.debug(f"Session close error: {e}")
+    
+    def get_summary(self, filters: Dict[str, Any]) -> Dict[str, Any]:
+        """Get summary KPIs (revenue, units, DNs, distinct counts, etc.)."""
+        session = self._get_session()
+        if not session:
+            logger.error("❌ No database session available")
+            return self._empty_summary()
+        
+        try:
+            query = session.query(DeliveryReport)
+            # Apply filters
+            if "start_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+            if "end_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+            if "warehouse" in filters:
+                query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
+            if "dealer" in filters:
+                query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
+            if "product" in filters:
+                query = query.filter(DeliveryReport.material_no == filters["product"])
+            if "city" in filters:
+                query = query.filter(DeliveryReport.ship_to_city == filters["city"])
+            if "division" in filters:
+                query = query.filter(DeliveryReport.division == filters["division"])
+            if "status" in filters:
+                query = query.filter(DeliveryReport.delivery_status == filters["status"])
+            
+            total_revenue = query.with_entities(func.sum(DeliveryReport.dn_amount)).scalar() or 0.0
+            total_units = query.with_entities(func.sum(DeliveryReport.dn_qty)).scalar() or 0
+            total_dn = query.with_entities(func.count(DeliveryReport.dn_no)).scalar() or 0
+            
+            # Distinct counts
+            dealers = session.query(DeliveryReport.dealer_code).filter(DeliveryReport.dealer_code.isnot(None)).distinct().count()
+            warehouses = session.query(DeliveryReport.warehouse).filter(DeliveryReport.warehouse.isnot(None)).distinct().count()
+            cities = session.query(DeliveryReport.ship_to_city).filter(DeliveryReport.ship_to_city.isnot(None)).distinct().count()
+            products = session.query(DeliveryReport.material_no).filter(DeliveryReport.material_no.isnot(None)).distinct().count()
+            
+            # Average delivery days – handle NULL good_issue_date
+            avg_delivery = query.with_entities(
+                func.avg(
+                    case(
+                        (DeliveryReport.good_issue_date.isnot(None),
+                         func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date))),
+                        else_=0
+                    )
+                )
+            ).scalar() or 0.0
+            
+            # POD completion rate
+            pod_completed = query.filter(DeliveryReport.pod_status == 'Delivered').count()
+            total_with_pod = query.filter(DeliveryReport.pod_status.isnot(None)).count()
+            pod_rate = (pod_completed / (total_with_pod or 1)) * 100
+            
+            self._close_session(session)
+            return {
+                "total_revenue": total_revenue,
+                "total_units": total_units,
+                "total_delivery_notes": total_dn,
+                "active_dealers": dealers,
+                "active_warehouses": warehouses,
+                "active_cities": cities,
+                "active_products": products,
+                "active_transporters": 0,
+                "average_delivery_days": avg_delivery,
+                "average_pod_days": 0.0,
+                "average_pgi_days": 0.0,
+                "delivery_achievement_rate": pod_rate,
+                "pod_completion_rate": pod_rate,
+                "otif_percentage": 0.0,
+                "inventory_accuracy": 0.0,
+                "dashboard_health_score": 70.0,
+                "last_database_refresh": datetime.datetime.utcnow().isoformat()
+            }
+        except Exception as e:
+            logger.exception("❌ Failed to get summary")
+            self._close_session(session)
+            return self._empty_summary()
+    
+    def _empty_summary(self) -> Dict[str, Any]:
+        return {
+            "total_revenue": 0.0,
+            "total_units": 0,
+            "total_delivery_notes": 0,
+            "active_dealers": 0,
+            "active_warehouses": 0,
+            "active_cities": 0,
+            "active_products": 0,
+            "active_transporters": 0,
+            "average_delivery_days": 0.0,
+            "average_pod_days": 0.0,
+            "average_pgi_days": 0.0,
+            "delivery_achievement_rate": 0.0,
+            "pod_completion_rate": 0.0,
+            "otif_percentage": 0.0,
+            "inventory_accuracy": 0.0,
+            "dashboard_health_score": 0.0,
+            "last_database_refresh": None,
+        }
+    
+    def get_warehouse_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Get aggregated performance per warehouse."""
+        session = self._get_session()
+        if not session:
+            return []
+        try:
+            query = session.query(
+                DeliveryReport.warehouse,
+                func.sum(DeliveryReport.dn_amount).label('revenue'),
+                func.sum(DeliveryReport.dn_qty).label('units'),
+                func.count(DeliveryReport.dn_no).label('dn'),
+                func.avg(
+                    case(
+                        (DeliveryReport.good_issue_date.isnot(None),
+                         func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date))),
+                        else_=0
+                    )
+                ).label('avg_delivery')
+            ).filter(DeliveryReport.warehouse.isnot(None))
+            
+            if "start_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+            if "end_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+            if "dealer" in filters:
+                query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
+            if "product" in filters:
+                query = query.filter(DeliveryReport.material_no == filters["product"])
+            if "city" in filters:
+                query = query.filter(DeliveryReport.ship_to_city == filters["city"])
+            if "division" in filters:
+                query = query.filter(DeliveryReport.division == filters["division"])
+            if "status" in filters:
+                query = query.filter(DeliveryReport.delivery_status == filters["status"])
+            
+            data = query.group_by(DeliveryReport.warehouse).all()
+            self._close_session(session)
+            result = []
+            for row in data:
+                avg_del = row.avg_delivery or 0.0
+                # Use helper methods from the service (we'll pass them later)
+                # For now, compute grade and risk inline
+                grade = self._compute_grade(avg_del)
+                risk = self._compute_risk(avg_del)
+                result.append({
+                    "warehouse_code": row.warehouse,
+                    "warehouse_name": row.warehouse,
+                    "revenue": row.revenue or 0.0,
+                    "units": row.units or 0,
+                    "delivery_notes": row.dn or 0,
+                    "dealers": 0,
+                    "products": 0,
+                    "cities": 0,
+                    "average_delivery_days": avg_del,
+                    "average_pod_days": 0.0,
+                    "average_pgi_days": 0.0,
+                    "otif": 0.0,
+                    "capacity": 0,
+                    "utilization": 0,
+                    "pending_deliveries": 0,
+                    "late_deliveries": 0,
+                    "performance_grade": grade,
+                    "risk_level": risk,
+                    "ai_recommendation": self._warehouse_recommendation(row.warehouse, grade, risk),
+                })
+            return result
+        except Exception as e:
+            logger.exception("❌ Failed to get warehouse performance")
+            self._close_session(session)
+            return []
+    
+    def get_dealer_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        session = self._get_session()
+        if not session:
+            return []
+        try:
+            query = session.query(
+                DeliveryReport.dealer_code,
+                DeliveryReport.customer_name,
+                func.sum(DeliveryReport.dn_amount).label('revenue'),
+                func.sum(DeliveryReport.dn_qty).label('units'),
+                func.count(DeliveryReport.dn_no).label('dn'),
+                func.avg(
+                    case(
+                        (DeliveryReport.good_issue_date.isnot(None),
+                         func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date))),
+                        else_=0
+                    )
+                ).label('avg_delivery')
+            ).filter(DeliveryReport.dealer_code.isnot(None))
+            
+            if "start_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+            if "end_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+            if "warehouse" in filters:
+                query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
+            if "product" in filters:
+                query = query.filter(DeliveryReport.material_no == filters["product"])
+            if "city" in filters:
+                query = query.filter(DeliveryReport.ship_to_city == filters["city"])
+            if "division" in filters:
+                query = query.filter(DeliveryReport.division == filters["division"])
+            if "status" in filters:
+                query = query.filter(DeliveryReport.delivery_status == filters["status"])
+            
+            data = query.group_by(DeliveryReport.dealer_code, DeliveryReport.customer_name).all()
+            self._close_session(session)
+            result = []
+            for row in data:
+                revenue = row.revenue or 0.0
+                units = row.units or 0
+                avg_del = row.avg_delivery or 0.0
+                score = self._compute_dealer_score(revenue, units, avg_del)
+                result.append({
+                    "dealer_name": row.customer_name or row.dealer_code,
+                    "dealer_code": row.dealer_code,
+                    "revenue": revenue,
+                    "units": units,
+                    "delivery_notes": row.dn or 0,
+                    "products": 0,
+                    "cities": 0,
+                    "warehouses": 0,
+                    "average_delivery_days": avg_del,
+                    "average_pod_days": 0.0,
+                    "average_pgi_days": 0.0,
+                    "last_delivery": None,
+                    "last_order": None,
+                    "growth_percentage": 0.0,
+                    "rank": 0,
+                    "performance_score": score,
+                    "ai_recommendation": self._dealer_recommendation(row.dealer_code, score, avg_del),
+                })
+            return result
+        except Exception as e:
+            logger.exception("❌ Failed to get dealer performance")
+            self._close_session(session)
+            return []
+    
+    def get_product_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        session = self._get_session()
+        if not session:
+            return []
+        try:
+            query = session.query(
+                DeliveryReport.material_no,
+                DeliveryReport.customer_model,
+                func.sum(DeliveryReport.dn_amount).label('revenue'),
+                func.sum(DeliveryReport.dn_qty).label('units'),
+                func.count(DeliveryReport.dn_no).label('dn')
+            ).filter(DeliveryReport.material_no.isnot(None))
+            
+            if "start_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+            if "end_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+            if "warehouse" in filters:
+                query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
+            if "dealer" in filters:
+                query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
+            if "city" in filters:
+                query = query.filter(DeliveryReport.ship_to_city == filters["city"])
+            if "division" in filters:
+                query = query.filter(DeliveryReport.division == filters["division"])
+            if "status" in filters:
+                query = query.filter(DeliveryReport.delivery_status == filters["status"])
+            
+            data = query.group_by(DeliveryReport.material_no, DeliveryReport.customer_model).all()
+            self._close_session(session)
+            result = []
+            for row in data:
+                units = row.units or 0
+                is_slow = units < 100
+                is_fast = units > 300
+                result.append({
+                    "product_name": row.customer_model or row.material_no,
+                    "sku": row.material_no,
+                    "revenue": row.revenue or 0.0,
+                    "units": units,
+                    "dealers": 0,
+                    "warehouses": 0,
+                    "cities": 0,
+                    "monthly_trend": [],
+                    "average_delivery_days": 0.0,
+                    "slow_moving_flag": is_slow,
+                    "fast_moving_flag": is_fast,
+                    "growth_percentage": 0.0,
+                    "ai_recommendation": self._product_recommendation(row.material_no, is_slow, is_fast),
+                })
+            return result
+        except Exception as e:
+            logger.exception("❌ Failed to get product performance")
+            self._close_session(session)
+            return []
+    
+    def get_city_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        session = self._get_session()
+        if not session:
+            return []
+        try:
+            query = session.query(
+                DeliveryReport.ship_to_city,
+                func.sum(DeliveryReport.dn_amount).label('revenue'),
+                func.sum(DeliveryReport.dn_qty).label('units'),
+                func.count(DeliveryReport.dn_no).label('dn')
+            ).filter(DeliveryReport.ship_to_city.isnot(None))
+            
+            if "start_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+            if "end_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+            if "warehouse" in filters:
+                query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
+            if "dealer" in filters:
+                query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
+            if "product" in filters:
+                query = query.filter(DeliveryReport.material_no == filters["product"])
+            if "division" in filters:
+                query = query.filter(DeliveryReport.division == filters["division"])
+            if "status" in filters:
+                query = query.filter(DeliveryReport.delivery_status == filters["status"])
+            
+            data = query.group_by(DeliveryReport.ship_to_city).all()
+            self._close_session(session)
+            result = []
+            for row in data:
+                result.append({
+                    "city": row.ship_to_city,
+                    "revenue": row.revenue or 0.0,
+                    "units": row.units or 0,
+                    "dealers": 0,
+                    "warehouses": 0,
+                    "products": 0,
+                    "average_distance": 0.0,
+                    "average_delivery_days": 0.0,
+                    "pending_deliveries": 0,
+                    "late_deliveries": 0,
+                    "delivery_target": 0.0,
+                    "achievement_percentage": 0.0,
+                    "risk_level": "Low",
+                })
+            return result
+        except Exception as e:
+            logger.exception("❌ Failed to get city performance")
+            self._close_session(session)
+            return []
+    
+    def get_monthly_trends(self, filters: Dict[str, Any]) -> Dict[str, List]:
+        session = self._get_session()
+        if not session:
+            return {"months": [], "revenue": [], "units": [], "delivery_notes": [], "pod_rate": []}
+        try:
+            month_label = func.to_char(DeliveryReport.dn_create_date, 'YYYY-MM')
+            rev = session.query(
+                month_label.label('month'),
+                func.sum(DeliveryReport.dn_amount).label('value')
+            ).filter(DeliveryReport.dn_create_date.isnot(None))
+            if "start_date" in filters:
+                rev = rev.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+            if "end_date" in filters:
+                rev = rev.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+            rev = rev.group_by('month').order_by('month').all()
+            months = [r.month for r in rev]
+            revenue_data = [r.value or 0.0 for r in rev]
+            
+            units = session.query(
+                month_label.label('month'),
+                func.sum(DeliveryReport.dn_qty).label('value')
+            ).filter(DeliveryReport.dn_create_date.isnot(None))
+            if "start_date" in filters:
+                units = units.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+            if "end_date" in filters:
+                units = units.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+            units = units.group_by('month').order_by('month').all()
+            units_data = [u.value or 0 for u in units]
+            
+            dn = session.query(
+                month_label.label('month'),
+                func.count(DeliveryReport.dn_no).label('value')
+            ).filter(DeliveryReport.dn_create_date.isnot(None))
+            if "start_date" in filters:
+                dn = dn.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+            if "end_date" in filters:
+                dn = dn.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+            dn = dn.group_by('month').order_by('month').all()
+            dn_data = [d.value or 0 for d in dn]
+            
+            pod = session.query(
+                month_label.label('month'),
+                func.count(DeliveryReport.id).label('total'),
+                func.sum(func.cast(DeliveryReport.pod_status == 'Delivered', Integer)).label('delivered')
+            ).filter(DeliveryReport.dn_create_date.isnot(None))
+            if "start_date" in filters:
+                pod = pod.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+            if "end_date" in filters:
+                pod = pod.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+            pod = pod.group_by('month').order_by('month').all()
+            pod_data = [(p.delivered / (p.total or 1)) * 100 for p in pod] if pod else []
+            
+            self._close_session(session)
+            return {
+                "months": months,
+                "revenue": revenue_data,
+                "units": units_data,
+                "delivery_notes": dn_data,
+                "pod_rate": pod_data,
+            }
+        except Exception as e:
+            logger.exception("❌ Failed to get monthly trends")
+            self._close_session(session)
+            return {"months": [], "revenue": [], "units": [], "delivery_notes": [], "pod_rate": []}
+    
+    def get_daily_trends(self, filters: Dict[str, Any]) -> Dict[str, List]:
+        session = self._get_session()
+        if not session:
+            return {"dates": [], "revenue": [], "units": [], "delivery_notes": []}
+        try:
+            start_date = datetime.datetime.utcnow() - datetime.timedelta(days=30)
+            query = session.query(
+                DeliveryReport.dn_create_date.label('date'),
+                func.sum(DeliveryReport.dn_amount).label('revenue'),
+                func.sum(DeliveryReport.dn_qty).label('units'),
+                func.count(DeliveryReport.dn_no).label('dn')
+            ).filter(DeliveryReport.dn_create_date >= start_date)
+            if "warehouse" in filters:
+                query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
+            if "dealer" in filters:
+                query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
+            if "product" in filters:
+                query = query.filter(DeliveryReport.material_no == filters["product"])
+            if "city" in filters:
+                query = query.filter(DeliveryReport.ship_to_city == filters["city"])
+            if "division" in filters:
+                query = query.filter(DeliveryReport.division == filters["division"])
+            if "status" in filters:
+                query = query.filter(DeliveryReport.delivery_status == filters["status"])
+            data = query.group_by(DeliveryReport.dn_create_date).order_by(DeliveryReport.dn_create_date).all()
+            self._close_session(session)
+            dates = [d.date.strftime('%Y-%m-%d') for d in data]
+            revenue = [d.revenue or 0.0 for d in data]
+            units = [d.units or 0 for d in data]
+            dn = [d.dn or 0 for d in data]
+            return {"dates": dates, "revenue": revenue, "units": units, "delivery_notes": dn}
+        except Exception as e:
+            logger.exception("❌ Failed to get daily trends")
+            self._close_session(session)
+            return {"dates": [], "revenue": [], "units": [], "delivery_notes": []}
+    
+    def get_health(self) -> Dict[str, Any]:
+        session = self._get_session()
+        if not session:
+            return {"status": "unhealthy", "message": "No database connection"}
+        try:
+            count = session.query(func.count(DeliveryReport.id)).scalar() or 0
+            self._close_session(session)
+            return {"status": "healthy" if count > 0 else "unhealthy", "message": "Data available" if count > 0 else "No data", "record_count": count}
+        except Exception as e:
+            self._close_session(session)
+            return {"status": "unhealthy", "message": str(e)}
+    
+    def get_record_count(self) -> int:
+        session = self._get_session()
+        if not session:
+            return 0
+        try:
+            count = session.query(func.count(DeliveryReport.id)).scalar() or 0
+            self._close_session(session)
+            return count
+        except Exception:
+            self._close_session(session)
+            return 0
+    
+    # Helper methods (mirroring those in DashboardService)
+    @staticmethod
+    def _compute_grade(avg_delivery: float) -> str:
+        if avg_delivery <= 2:
+            return "A"
+        elif avg_delivery <= 4:
+            return "B"
+        else:
+            return "C"
+    
+    @staticmethod
+    def _compute_risk(avg_delivery: float) -> str:
+        if avg_delivery <= 2:
+            return "Low"
+        elif avg_delivery <= 4:
+            return "Medium"
+        else:
+            return "High"
+    
+    @staticmethod
+    def _compute_dealer_score(revenue: float, units: int, avg_delivery: float) -> float:
+        score = 0.0
+        if revenue > 0:
+            score += min(revenue / 1000000, 1) * 40
+        if units > 0:
+            score += min(units / 1000, 1) * 30
+        if avg_delivery > 0:
+            score += max(0, (5 - avg_delivery) / 5) * 20
+        return min(score, 100)
+    
+    @staticmethod
+    def _warehouse_recommendation(code: str, grade: str, risk: str) -> str:
+        if grade in ("A", "B") and risk == "Low":
+            return "Maintain current operations."
+        elif grade == "C" or risk == "Medium":
+            return "Review processes and improve OTIF."
+        else:
+            return "Urgent intervention required: capacity and delivery issues."
+    
+    @staticmethod
+    def _dealer_recommendation(code: str, score: float, avg_delivery: float) -> str:
+        if score >= 80:
+            return "Top performer – consider loyalty rewards."
+        elif score >= 60:
+            return "Good performance – focus on reducing delivery days."
+        else:
+            return "Needs improvement – provide training and support."
+    
+    @staticmethod
+    def _product_recommendation(code: str, slow: bool, fast: bool) -> str:
+        if slow:
+            return "Consider discounting or discontinuing this product."
+        elif fast:
+            return "Increase inventory levels and marketing."
+        else:
+            return "Monitor performance closely."
+
+# ============================================================
+# DASHBOARD SERVICE (orchestrates repository calls)
+# ============================================================
 
 class DashboardService:
     def __init__(self, analytics_repository=None, analytics_service=None):
@@ -127,6 +738,7 @@ class DashboardService:
         self.service = analytics_service
         self.logger = logger.getChild(self.__class__.__name__)
         self._context_cache: Dict[str, DashboardContext] = {}
+        self._db_repo = DashboardRepository()  # new repository for DB access
 
     @cached(ttl=5)
     async def get_dashboard_data(
@@ -208,429 +820,56 @@ class DashboardService:
             raise
 
     # ----------------------------------------------------------------------
-    # Individual loaders – fixed to return all data (no limit/offset in sums)
+    # Individual loaders – now using the repository
     # ----------------------------------------------------------------------
 
     async def _load_summary(self, filters: Dict) -> Dict[str, Any]:
-        def _sync_query():
-            with SessionLocal() as session:
-                query = session.query(DeliveryReport)
-                # Apply filters (if any)
-                if "start_date" in filters:
-                    query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
-                if "end_date" in filters:
-                    query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
-                if "warehouse" in filters:
-                    query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
-                if "dealer" in filters:
-                    query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
-                if "product" in filters:
-                    query = query.filter(DeliveryReport.material_no == filters["product"])
-                if "city" in filters:
-                    query = query.filter(DeliveryReport.ship_to_city == filters["city"])
-                if "division" in filters:
-                    query = query.filter(DeliveryReport.division == filters["division"])
-                if "status" in filters:
-                    query = query.filter(DeliveryReport.delivery_status == filters["status"])
-
-                total_revenue = query.with_entities(func.sum(DeliveryReport.dn_amount)).scalar() or 0.0
-                total_units = query.with_entities(func.sum(DeliveryReport.dn_qty)).scalar() or 0
-                total_dn = query.with_entities(func.count(DeliveryReport.dn_no)).scalar() or 0
-
-                # Distinct counts (no limit)
-                dealers = session.query(DeliveryReport.dealer_code).filter(DeliveryReport.dealer_code.isnot(None)).distinct().count()
-                warehouses = session.query(DeliveryReport.warehouse).filter(DeliveryReport.warehouse.isnot(None)).distinct().count()
-                cities = session.query(DeliveryReport.ship_to_city).filter(DeliveryReport.ship_to_city.isnot(None)).distinct().count()
-                products = session.query(DeliveryReport.material_no).filter(DeliveryReport.material_no.isnot(None)).distinct().count()
-
-                # Average delivery days – handle NULL good_issue_date
-                avg_delivery = query.with_entities(
-                    func.avg(
-                        case(
-                            (DeliveryReport.good_issue_date.isnot(None),
-                             func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date))),
-                            else_=0
-                        )
-                    )
-                ).scalar() or 0.0
-
-                # POD completion rate
-                pod_completed = query.filter(DeliveryReport.pod_status == 'Delivered').count()
-                total_with_pod = query.filter(DeliveryReport.pod_status.isnot(None)).count()
-                pod_rate = (pod_completed / (total_with_pod or 1)) * 100
-
-                last_refresh = datetime.datetime.utcnow()
-                return {
-                    "total_revenue": total_revenue,
-                    "total_units": total_units,
-                    "total_delivery_notes": total_dn,
-                    "active_dealers": dealers,
-                    "active_warehouses": warehouses,
-                    "active_cities": cities,
-                    "active_products": products,
-                    "active_transporters": 0,
-                    "average_delivery_days": avg_delivery,
-                    "average_pod_days": 0.0,
-                    "average_pgi_days": 0.0,
-                    "delivery_achievement_rate": pod_rate,
-                    "pod_completion_rate": pod_rate,
-                    "otif_percentage": 0.0,
-                    "inventory_accuracy": 0.0,
-                    "dashboard_health_score": 70.0,
-                    "last_database_refresh": last_refresh.isoformat()
-                }
-        return await asyncio.to_thread(_sync_query)
+        # Run the repository method in a thread to avoid blocking
+        return await asyncio.to_thread(self._db_repo.get_summary, filters)
 
     async def _load_warehouse_performance(self, filters: Dict, limit: int, offset: int) -> List[Dict]:
-        def _sync():
-            with SessionLocal() as session:
-                query = session.query(
-                    DeliveryReport.warehouse,
-                    func.sum(DeliveryReport.dn_amount).label('revenue'),
-                    func.sum(DeliveryReport.dn_qty).label('units'),
-                    func.count(DeliveryReport.dn_no).label('dn'),
-                    func.avg(
-                        case(
-                            (DeliveryReport.good_issue_date.isnot(None),
-                             func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date))),
-                            else_=0
-                        )
-                    ).label('avg_delivery')
-                ).filter(DeliveryReport.warehouse.isnot(None))
-
-                # Apply filters (no limit/offset – we want all warehouses)
-                if "start_date" in filters:
-                    query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
-                if "end_date" in filters:
-                    query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
-                if "dealer" in filters:
-                    query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
-                if "product" in filters:
-                    query = query.filter(DeliveryReport.material_no == filters["product"])
-                if "city" in filters:
-                    query = query.filter(DeliveryReport.ship_to_city == filters["city"])
-                if "division" in filters:
-                    query = query.filter(DeliveryReport.division == filters["division"])
-                if "status" in filters:
-                    query = query.filter(DeliveryReport.delivery_status == filters["status"])
-
-                data = query.group_by(DeliveryReport.warehouse).all()  # no limit
-
-                result = []
-                for row in data:
-                    avg_del = row.avg_delivery or 0.0
-                    grade = self._compute_performance_grade(0.0, avg_del, 0.0)
-                    risk = self._compute_risk_level(0, 0, avg_del)
-                    result.append({
-                        "warehouse_code": row.warehouse,
-                        "warehouse_name": row.warehouse,
-                        "revenue": row.revenue or 0.0,
-                        "units": row.units or 0,
-                        "delivery_notes": row.dn or 0,
-                        "dealers": 0,
-                        "products": 0,
-                        "cities": 0,
-                        "average_delivery_days": avg_del,
-                        "average_pod_days": 0.0,
-                        "average_pgi_days": 0.0,
-                        "otif": 0.0,
-                        "capacity": 0,
-                        "utilization": 0,
-                        "pending_deliveries": 0,
-                        "late_deliveries": 0,
-                        "performance_grade": grade,
-                        "risk_level": risk,
-                        "ai_recommendation": self._generate_warehouse_recommendation(row.warehouse, grade, risk),
-                    })
-                return result
-        return await asyncio.to_thread(_sync)
+        # Note: limit/offset are ignored in the repository (we return all)
+        return await asyncio.to_thread(self._db_repo.get_warehouse_performance, filters)
 
     async def _load_dealer_performance(self, filters: Dict, limit: int, offset: int) -> List[Dict]:
-        def _sync():
-            with SessionLocal() as session:
-                query = session.query(
-                    DeliveryReport.dealer_code,
-                    DeliveryReport.customer_name,
-                    func.sum(DeliveryReport.dn_amount).label('revenue'),
-                    func.sum(DeliveryReport.dn_qty).label('units'),
-                    func.count(DeliveryReport.dn_no).label('dn'),
-                    func.avg(
-                        case(
-                            (DeliveryReport.good_issue_date.isnot(None),
-                             func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date))),
-                            else_=0
-                        )
-                    ).label('avg_delivery')
-                ).filter(DeliveryReport.dealer_code.isnot(None))
-
-                # Apply filters
-                if "start_date" in filters:
-                    query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
-                if "end_date" in filters:
-                    query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
-                if "warehouse" in filters:
-                    query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
-                if "product" in filters:
-                    query = query.filter(DeliveryReport.material_no == filters["product"])
-                if "city" in filters:
-                    query = query.filter(DeliveryReport.ship_to_city == filters["city"])
-                if "division" in filters:
-                    query = query.filter(DeliveryReport.division == filters["division"])
-                if "status" in filters:
-                    query = query.filter(DeliveryReport.delivery_status == filters["status"])
-
-                data = query.group_by(DeliveryReport.dealer_code, DeliveryReport.customer_name).all()
-
-                result = []
-                for row in data:
-                    revenue = row.revenue or 0.0
-                    units = row.units or 0
-                    avg_del = row.avg_delivery or 0.0
-                    score = self._compute_dealer_score(revenue, units, avg_del, 0.0)
-                    result.append({
-                        "dealer_name": row.customer_name or row.dealer_code,
-                        "dealer_code": row.dealer_code,
-                        "revenue": revenue,
-                        "units": units,
-                        "delivery_notes": row.dn or 0,
-                        "products": 0,
-                        "cities": 0,
-                        "warehouses": 0,
-                        "average_delivery_days": avg_del,
-                        "average_pod_days": 0.0,
-                        "average_pgi_days": 0.0,
-                        "last_delivery": None,
-                        "last_order": None,
-                        "growth_percentage": 0.0,
-                        "rank": 0,
-                        "performance_score": score,
-                        "ai_recommendation": self._generate_dealer_recommendation(row.dealer_code, score, avg_del),
-                    })
-                return result
-        return await asyncio.to_thread(_sync)
+        return await asyncio.to_thread(self._db_repo.get_dealer_performance, filters)
 
     async def _load_product_performance(self, filters: Dict, limit: int, offset: int) -> List[Dict]:
-        def _sync():
-            with SessionLocal() as session:
-                query = session.query(
-                    DeliveryReport.material_no,
-                    DeliveryReport.customer_model,
-                    func.sum(DeliveryReport.dn_amount).label('revenue'),
-                    func.sum(DeliveryReport.dn_qty).label('units'),
-                    func.count(DeliveryReport.dn_no).label('dn')
-                ).filter(DeliveryReport.material_no.isnot(None))
-
-                if "start_date" in filters:
-                    query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
-                if "end_date" in filters:
-                    query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
-                if "warehouse" in filters:
-                    query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
-                if "dealer" in filters:
-                    query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
-                if "city" in filters:
-                    query = query.filter(DeliveryReport.ship_to_city == filters["city"])
-                if "division" in filters:
-                    query = query.filter(DeliveryReport.division == filters["division"])
-                if "status" in filters:
-                    query = query.filter(DeliveryReport.delivery_status == filters["status"])
-
-                data = query.group_by(DeliveryReport.material_no, DeliveryReport.customer_model).all()
-
-                result = []
-                for row in data:
-                    units = row.units or 0
-                    is_slow = units < 100
-                    is_fast = units > 300
-                    result.append({
-                        "product_name": row.customer_model or row.material_no,
-                        "sku": row.material_no,
-                        "revenue": row.revenue or 0.0,
-                        "units": units,
-                        "dealers": 0,
-                        "warehouses": 0,
-                        "cities": 0,
-                        "monthly_trend": [],
-                        "average_delivery_days": 0.0,
-                        "slow_moving_flag": is_slow,
-                        "fast_moving_flag": is_fast,
-                        "growth_percentage": 0.0,
-                        "ai_recommendation": self._generate_product_recommendation(row.material_no, is_slow, is_fast, 0.0),
-                    })
-                return result
-        return await asyncio.to_thread(_sync)
+        return await asyncio.to_thread(self._db_repo.get_product_performance, filters)
 
     async def _load_city_performance(self, filters: Dict, limit: int, offset: int) -> List[Dict]:
-        def _sync():
-            with SessionLocal() as session:
-                query = session.query(
-                    DeliveryReport.ship_to_city,
-                    func.sum(DeliveryReport.dn_amount).label('revenue'),
-                    func.sum(DeliveryReport.dn_qty).label('units'),
-                    func.count(DeliveryReport.dn_no).label('dn')
-                ).filter(DeliveryReport.ship_to_city.isnot(None))
-
-                if "start_date" in filters:
-                    query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
-                if "end_date" in filters:
-                    query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
-                if "warehouse" in filters:
-                    query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
-                if "dealer" in filters:
-                    query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
-                if "product" in filters:
-                    query = query.filter(DeliveryReport.material_no == filters["product"])
-                if "division" in filters:
-                    query = query.filter(DeliveryReport.division == filters["division"])
-                if "status" in filters:
-                    query = query.filter(DeliveryReport.delivery_status == filters["status"])
-
-                data = query.group_by(DeliveryReport.ship_to_city).all()
-
-                result = []
-                for row in data:
-                    result.append({
-                        "city": row.ship_to_city,
-                        "revenue": row.revenue or 0.0,
-                        "units": row.units or 0,
-                        "dealers": 0,
-                        "warehouses": 0,
-                        "products": 0,
-                        "average_distance": 0.0,
-                        "average_delivery_days": 0.0,
-                        "pending_deliveries": 0,
-                        "late_deliveries": 0,
-                        "delivery_target": 0.0,
-                        "achievement_percentage": 0.0,
-                        "risk_level": "Low",
-                    })
-                return result
-        return await asyncio.to_thread(_sync)
+        return await asyncio.to_thread(self._db_repo.get_city_performance, filters)
 
     async def _load_transport_data(self, filters: Dict) -> Dict[str, Any]:
+        # No transport data in DeliveryReport – return placeholder
         return {"transport_breakdown": {}, "average_lead_time": 0.0, "vehicle_count": 0, "transporter_count": 0}
 
     async def _load_monthly_trends(self, filters: Dict) -> Dict[str, List]:
-        def _sync():
-            with SessionLocal() as session:
-                # Use TO_CHAR to get YYYY-MM format
-                month_label = func.to_char(DeliveryReport.dn_create_date, 'YYYY-MM')
-
-                rev = session.query(
-                    month_label.label('month'),
-                    func.sum(DeliveryReport.dn_amount).label('value')
-                ).filter(DeliveryReport.dn_create_date.isnot(None))
-                if "start_date" in filters:
-                    rev = rev.filter(DeliveryReport.dn_create_date >= filters["start_date"])
-                if "end_date" in filters:
-                    rev = rev.filter(DeliveryReport.dn_create_date <= filters["end_date"])
-                rev = rev.group_by('month').order_by('month').all()
-                months = [r.month for r in rev]
-                revenue_data = [r.value or 0.0 for r in rev]
-
-                # Monthly units
-                units = session.query(
-                    month_label.label('month'),
-                    func.sum(DeliveryReport.dn_qty).label('value')
-                ).filter(DeliveryReport.dn_create_date.isnot(None))
-                if "start_date" in filters:
-                    units = units.filter(DeliveryReport.dn_create_date >= filters["start_date"])
-                if "end_date" in filters:
-                    units = units.filter(DeliveryReport.dn_create_date <= filters["end_date"])
-                units = units.group_by('month').order_by('month').all()
-                units_data = [u.value or 0 for u in units]
-
-                # Monthly DN
-                dn = session.query(
-                    month_label.label('month'),
-                    func.count(DeliveryReport.dn_no).label('value')
-                ).filter(DeliveryReport.dn_create_date.isnot(None))
-                if "start_date" in filters:
-                    dn = dn.filter(DeliveryReport.dn_create_date >= filters["start_date"])
-                if "end_date" in filters:
-                    dn = dn.filter(DeliveryReport.dn_create_date <= filters["end_date"])
-                dn = dn.group_by('month').order_by('month').all()
-                dn_data = [d.value or 0 for d in dn]
-
-                # Monthly POD rate
-                pod = session.query(
-                    month_label.label('month'),
-                    func.count(DeliveryReport.id).label('total'),
-                    func.sum(func.cast(DeliveryReport.pod_status == 'Delivered', Integer)).label('delivered')
-                ).filter(DeliveryReport.dn_create_date.isnot(None))
-                if "start_date" in filters:
-                    pod = pod.filter(DeliveryReport.dn_create_date >= filters["start_date"])
-                if "end_date" in filters:
-                    pod = pod.filter(DeliveryReport.dn_create_date <= filters["end_date"])
-                pod = pod.group_by('month').order_by('month').all()
-                pod_data = [(p.delivered / (p.total or 1)) * 100 for p in pod] if pod else []
-
-                return {
-                    "months": months,
-                    "revenue": revenue_data,
-                    "units": units_data,
-                    "delivery_notes": dn_data,
-                    "pod_rate": pod_data,
-                }
-        return await asyncio.to_thread(_sync)
+        return await asyncio.to_thread(self._db_repo.get_monthly_trends, filters)
 
     async def _load_daily_trends(self, filters: Dict) -> Dict[str, List]:
-        def _sync():
-            start_date = datetime.datetime.utcnow() - datetime.timedelta(days=30)
-            with SessionLocal() as session:
-                query = session.query(
-                    DeliveryReport.dn_create_date.label('date'),
-                    func.sum(DeliveryReport.dn_amount).label('revenue'),
-                    func.sum(DeliveryReport.dn_qty).label('units'),
-                    func.count(DeliveryReport.dn_no).label('dn')
-                ).filter(DeliveryReport.dn_create_date >= start_date)
-
-                if "warehouse" in filters:
-                    query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
-                if "dealer" in filters:
-                    query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
-                if "product" in filters:
-                    query = query.filter(DeliveryReport.material_no == filters["product"])
-                if "city" in filters:
-                    query = query.filter(DeliveryReport.ship_to_city == filters["city"])
-                if "division" in filters:
-                    query = query.filter(DeliveryReport.division == filters["division"])
-                if "status" in filters:
-                    query = query.filter(DeliveryReport.delivery_status == filters["status"])
-
-                data = query.group_by(DeliveryReport.dn_create_date).order_by(DeliveryReport.dn_create_date).all()
-                dates = [d.date.strftime('%Y-%m-%d') for d in data]
-                revenue = [d.revenue or 0.0 for d in data]
-                units = [d.units or 0 for d in data]
-                dn = [d.dn or 0 for d in data]
-                return {"dates": dates, "revenue": revenue, "units": units, "delivery_notes": dn}
-        return await asyncio.to_thread(_sync)
+        return await asyncio.to_thread(self._db_repo.get_daily_trends, filters)
 
     async def _load_kpis(self, filters: Dict) -> Dict[str, Any]:
         summary = await self._load_summary(filters)
-        # Compute growth (last 30 days vs previous 30)
+        # Compute growth from last 30 days vs previous 30
         today = datetime.datetime.utcnow().date()
         last_30_start = today - datetime.timedelta(days=30)
         prev_30_start = today - datetime.timedelta(days=60)
-        prev_30_end = last_30_start - datetime.timedelta(days=1)
-
+        
         def get_revenue(start_d, end_d):
-            with SessionLocal() as session:
-                q = session.query(func.sum(DeliveryReport.dn_amount)).filter(
-                    DeliveryReport.dn_create_date >= start_d,
-                    DeliveryReport.dn_create_date <= end_d
-                )
-                if "warehouse" in filters:
-                    q = q.filter(DeliveryReport.warehouse == filters["warehouse"])
-                if "dealer" in filters:
-                    q = q.filter(DeliveryReport.dealer_code == filters["dealer"])
-                # other filters...
-                return q.scalar() or 0.0
-
-        current_rev = get_revenue(last_30_start, today)
-        prev_rev = get_revenue(prev_30_start, prev_30_end)
+            # Use repository method to get revenue for a date range
+            # We'll create a temporary filter for the range
+            range_filters = filters.copy()
+            range_filters["start_date"] = start_d
+            range_filters["end_date"] = end_d
+            result = self._db_repo.get_summary(range_filters)
+            return result.get("total_revenue", 0.0)
+        
+        current_rev = await asyncio.to_thread(get_revenue, last_30_start, today)
+        prev_rev = await asyncio.to_thread(get_revenue, prev_30_start, last_30_start - timedelta(days=1))
         revenue_growth = ((current_rev - prev_rev) / (prev_rev or 1)) * 100
-
+        
         return {
             "revenue": summary.get("total_revenue", 0.0),
             "units": summary.get("total_units", 0),
@@ -662,37 +901,29 @@ class DashboardService:
         }
 
     async def _load_rankings(self, filters: Dict, limit: int) -> Dict[str, List]:
+        # Not implemented – return empty
         return {"warehouses": [], "dealers": [], "products": [], "cities": []}
 
     async def _load_health(self, filters: Dict) -> Dict[str, Any]:
-        try:
-            with SessionLocal() as session:
-                count = session.query(func.count(DeliveryReport.id)).scalar() or 0
-                return {"status": "healthy" if count > 0 else "unhealthy", "message": "Data available" if count > 0 else "No data", "record_count": count}
-        except Exception as e:
-            return {"status": "unhealthy", "message": str(e)}
+        return await asyncio.to_thread(self._db_repo.get_health)
 
     async def _load_metadata(self, filters: Dict) -> Dict[str, Any]:
-        try:
-            with SessionLocal() as session:
-                record_count = session.query(func.count(DeliveryReport.id)).scalar() or 0
-            return {
-                "application_version": "4.2.0",
-                "database_version": "PostgreSQL (direct)",
-                "postgresql_status": "connected",
-                "database_size": "N/A",
-                "record_count": record_count,
-                "last_refresh": datetime.datetime.utcnow().isoformat(),
-                "last_etl_run": None,
-                "generated_by": "DashboardService v4.2",
-                "report_time": datetime.datetime.utcnow().isoformat(),
-                "time_zone": "UTC",
-                "environment": os.getenv("ENVIRONMENT", "production"),
-                "ai_model": "Built-in",
-                "execution_time_ms": 0
-            }
-        except Exception as e:
-            return {"version": "4.2.0", "generated_by": "DashboardService", "report_time": datetime.datetime.utcnow().isoformat()}
+        record_count = await asyncio.to_thread(self._db_repo.get_record_count)
+        return {
+            "application_version": "4.3.0",
+            "database_version": "PostgreSQL (repository)",
+            "postgresql_status": "connected",
+            "database_size": "N/A",
+            "record_count": record_count,
+            "last_refresh": datetime.datetime.utcnow().isoformat(),
+            "last_etl_run": None,
+            "generated_by": "DashboardService v4.3",
+            "report_time": datetime.datetime.utcnow().isoformat(),
+            "time_zone": "UTC",
+            "environment": os.getenv("ENVIRONMENT", "production"),
+            "ai_model": "Built-in",
+            "execution_time_ms": 0
+        }
 
     async def _load_inventory(self, filters: Dict) -> Dict[str, Any]:
         return {"total_products": 0, "total_units": 0, "warehouse_stock": [], "slow_moving": [], "fast_moving": []}
@@ -808,7 +1039,7 @@ class DashboardService:
         return {"total_products": 0, "total_units": 0, "warehouse_stock": []}
 
     # ----------------------------------------------------------------------
-    # Alert and recommendation generators (unchanged)
+    # Alerts and recommendations (unchanged)
     # ----------------------------------------------------------------------
     async def _generate_alerts(self, context: DashboardContext) -> List[Dict[str, Any]]:
         alerts = []
@@ -894,7 +1125,7 @@ class DashboardService:
         return recommendations
 
     # ----------------------------------------------------------------------
-    # Helper methods (unchanged)
+    # Helper methods (preserved)
     # ----------------------------------------------------------------------
     def _compute_performance_grade(self, otif: float, avg_delivery: float, utilization: float) -> str:
         if otif >= 95 and avg_delivery <= 2 and utilization <= 85:
