@@ -1,176 +1,159 @@
 <!-- ===================================================== -->
 <!-- FILE: app/templates/dashboard.html -->
 <!-- PROJECT: AI WhatsApp Customer Service Agent -->
+<!-- VERSION: 4.0 - ENTERPRISE LOGISTICS INTELLIGENCE DASHBOARD -->
 <!-- ===================================================== -->
 
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
-
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Logistics Dashboard - AI WhatsApp Agent</title>
+    <title>Logistics Intelligence Dashboard</title>
+
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome 6 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- AG Grid -->
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
+    <!-- SweetAlert2 -->
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <!-- Animate.css -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
 
     <style>
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        /* Custom Variables */
+        :root {
+            --primary: #128C7E;
+            --primary-light: #25D366;
+            --bg-light: #f8f9fa;
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-            background: #f0f2f5;
-            padding: 20px;
+            background: var(--bg-light);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
 
-        .container {
-            max-width: 1400px;
-            margin: auto;
+        .navbar-brand {
+            font-weight: 700;
+            color: var(--primary) !important;
         }
 
-        /* Navigation Menu */
-        .nav-menu {
-            background: white;
-            border-radius: 12px;
-            padding: 15px 25px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-            display: flex;
-            gap: 30px;
-            flex-wrap: wrap;
-        }
-
-        .nav-menu a {
-            color: #333;
-            text-decoration: none;
-            font-weight: 500;
-            padding: 8px 16px;
-            border-radius: 8px;
-            transition: all 0.3s;
-        }
-
-        .nav-menu a:hover {
-            background: #25D366;
-            color: white;
-        }
-
-        .nav-menu a.active {
-            background: #25D366;
-            color: white;
-        }
-
-        /* Header */
-        .header {
-            background: linear-gradient(135deg, #128C7E, #25D366);
-            color: white;
-            padding: 30px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-        }
-
-        .header h1 {
-            margin-bottom: 10px;
-            font-size: 28px;
-        }
-
-        .header p {
-            opacity: 0.95;
-            font-size: 16px;
-        }
-
-        /* Cards Grid */
-        .cards {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 20px;
-            margin-bottom: 25px;
+        .bg-primary-custom {
+            background: linear-gradient(135deg, var(--primary), var(--primary-light));
         }
 
         .card {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-            transition: transform 0.2s;
+            border: none;
+            border-radius: 16px;
+            transition: transform 0.2s, box-shadow 0.2s;
         }
-
         .card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+            transform: translateY(-4px);
+            box-shadow: 0 12px 30px rgba(0,0,0,0.1);
         }
 
-        .card h3 {
-            color: #666;
-            font-size: 14px;
-            margin-bottom: 10px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-
-        .metric {
-            font-size: 32px;
-            font-weight: bold;
-            color: #128C7E;
-        }
-
-        .metric-small {
-            font-size: 24px;
-        }
-
-        .currency {
-            font-size: 20px;
-            color: #666;
-        }
-
-        /* Sections */
-        .section {
+        .kpi-card {
+            border-left: 5px solid var(--primary);
             background: white;
-            padding: 25px;
+            padding: 1rem 1.25rem;
             border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+            height: 100%;
+        }
+        .kpi-card .kpi-icon {
+            font-size: 2rem;
+            opacity: 0.6;
+        }
+        .kpi-card .kpi-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: #1a1a2e;
+        }
+        .kpi-card .kpi-label {
+            font-size: 0.85rem;
+            color: #6c757d;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .kpi-card .kpi-trend {
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        .kpi-card .kpi-progress {
+            height: 6px;
+            border-radius: 3px;
+            background: #e9ecef;
+        }
+        .kpi-card .kpi-progress-bar {
+            height: 100%;
+            border-radius: 3px;
+            background: var(--primary);
+            width: 0%;
         }
 
-        .section h2 {
-            margin-bottom: 20px;
-            color: #333;
-            font-size: 20px;
-            border-left: 4px solid #25D366;
-            padding-left: 15px;
+        .alert-banner {
+            border-radius: 12px;
+            padding: 0.8rem 1.5rem;
+            font-weight: 500;
+        }
+        .alert-critical {
+            background: #f8d7da;
+            border-left: 6px solid #dc3545;
+            color: #721c24;
+        }
+        .alert-warning {
+            background: #fff3cd;
+            border-left: 6px solid #ffc107;
+            color: #856404;
+        }
+        .alert-normal {
+            background: #d1ecf1;
+            border-left: 6px solid #17a2b8;
+            color: #0c5460;
         }
 
-        .section h3 {
-            margin-bottom: 15px;
-            color: #555;
-            font-size: 18px;
+        .filter-bar {
+            background: white;
+            padding: 1.25rem 1.5rem;
+            border-radius: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+            margin-bottom: 1.5rem;
         }
 
-        /* Forms */
-        .upload-form {
+        .chart-container {
+            position: relative;
+            height: 280px;
+            width: 100%;
+        }
+
+        .section-title {
+            font-weight: 600;
+            color: #1a1a2e;
+            border-left: 6px solid var(--primary);
+            padding-left: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .upload-form, .search-form {
             display: flex;
             gap: 15px;
             flex-wrap: wrap;
             align-items: flex-end;
         }
-
-        .form-group {
+        .upload-form .form-group, .search-form .form-group {
             flex: 1;
+            min-width: 180px;
         }
-
-        label {
-            display: block;
-            margin-bottom: 8px;
-            color: #555;
-            font-weight: 500;
-            font-size: 14px;
-        }
-
-        input[type="file"],
-        input[type="text"],
-        select {
+        /* Preserve original upload input styles */
+        .upload-form input[type="file"],
+        .upload-form select,
+        .search-form input[type="text"],
+        .search-form select {
             width: 100%;
             padding: 10px 12px;
             border: 1px solid #ddd;
@@ -178,15 +161,14 @@
             font-size: 14px;
             transition: border-color 0.3s;
         }
-
-        input[type="file"]:focus,
-        input[type="text"]:focus,
-        select:focus {
+        .upload-form input[type="file"]:focus,
+        .upload-form select:focus,
+        .search-form input:focus,
+        .search-form select:focus {
             outline: none;
             border-color: #25D366;
         }
-
-        button {
+        .upload-form button, .search-form button {
             background: #25D366;
             color: white;
             border: none;
@@ -197,468 +179,798 @@
             font-weight: 500;
             transition: background 0.3s;
         }
-
-        button:hover {
+        .upload-form button:hover, .search-form button:hover {
             background: #128C7E;
         }
 
-        .search-form {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-
-        .search-form input {
-            flex: 2;
-        }
-
-        .search-form select {
-            flex: 1;
-        }
-
-        /* Tables */
-        table {
+        /* AG Grid container */
+        .ag-theme-alpine {
+            height: 400px;
             width: 100%;
-            border-collapse: collapse;
         }
 
-        th {
-            background: #2c3e50;
-            color: white;
-            padding: 12px;
-            text-align: left;
-            font-weight: 500;
-            font-size: 14px;
-        }
-
-        td {
-            padding: 12px;
-            border-bottom: 1px solid #e5e7eb;
-            font-size: 14px;
-        }
-
-        tr:hover {
-            background: #f8f9fa;
-        }
-
-        /* Status Badges */
-        .status-badge {
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 6px;
-            font-size: 12px;
-            font-weight: 500;
-        }
-
-        .status-online {
-            background: #d1fae5;
-            color: #065f46;
-        }
-
-        .status-offline {
-            background: #fee2e2;
-            color: #991b1b;
-        }
-
-        .status-pending {
-            background: #fed7aa;
-            color: #9b3412;
-        }
-
-        .status-completed {
-            background: #d1fae5;
-            color: #065f46;
-        }
-
-        .status-received {
-            background: #d1fae5;
-            color: #065f46;
-        }
-
-        /* Two Column Layout */
-        .two-columns {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 25px;
-            margin-bottom: 25px;
-        }
-
-        /* Alert Messages */
-        .alert {
-            padding: 12px 16px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-            display: none;
-        }
-
-        .alert.success {
-            background: #d1fae5;
-            color: #065f46;
-            display: block;
-        }
-
-        .alert.error {
-            background: #fee2e2;
-            color: #991b1b;
-            display: block;
-        }
-
-        /* Footer */
         .footer {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 16px;
+            margin-top: 2rem;
             text-align: center;
-            color: #888;
-            margin-top: 30px;
-            padding: 20px;
-            font-size: 14px;
+            color: #6c757d;
+            font-size: 0.9rem;
+            box-shadow: 0 -2px 8px rgba(0,0,0,0.04);
         }
 
+        /* Responsive tweaks */
         @media (max-width: 768px) {
-            .two-columns {
-                grid-template-columns: 1fr;
+            .kpi-card .kpi-value {
+                font-size: 1.4rem;
             }
-            
-            .cards {
-                grid-template-columns: repeat(2, 1fr);
+            .chart-container {
+                height: 200px;
             }
         }
-
     </style>
-
 </head>
 
 <body>
 
-<div class="container">
+<div class="container-fluid px-4 py-3">
 
-    <!-- Navigation Menu -->
-    <div class="nav-menu">
-        <a href="/dashboard" class="active">📊 Dashboard</a>
-        <a href="/upload-center">📤 Upload Center</a>
-        <a href="/logistics-status">📦 Logistics Analytics</a>
-        <a href="/status">🔧 System Status</a>
-        <a href="/webhook">📱 WhatsApp Status</a>
-    </div>
-
-    <!-- HEADER -->
-    <div class="header">
-        <h1>📦 Logistics Control Center</h1>
-        <p>Real-time DN, PGI & POD Tracking Dashboard</p>
-    </div>
-
-    <!-- Logistics KPI Cards -->
-    <div class="cards">
-        <div class="card">
-            <h3>Total DNs</h3>
-            <div class="metric">{{ total_records }}</div>
-        </div>
-        <div class="card">
-            <h3>Pending Deliveries</h3>
-            <div class="metric">{{ pending_deliveries }}</div>
-        </div>
-        <div class="card">
-            <h3>Pending POD</h3>
-            <div class="metric">{{ pending_pod }}</div>
-        </div>
-        <div class="card">
-            <h3>Pending PGI</h3>
-            <div class="metric">{{ pending_pgi }}</div>
-        </div>
-        <div class="card">
-            <h3>Pending Amount</h3>
-            <div class="metric">₹{{ pending_amount }}</div>
-        </div>
-        <div class="card">
-            <h3>Completed Deliveries</h3>
-            <div class="metric">{{ completed_deliveries }}</div>
-        </div>
-    </div>
-
-    <!-- Excel Upload Section -->
-    <div class="section">
-        <h2>📤 Upload Logistics Report</h2>
-        <form class="upload-form" action="/upload/excel" method="post" enctype="multipart/form-data">
-            <div class="form-group">
-                <label>Excel File (.xlsx, .xls)</label>
-                <input type="file" name="file" accept=".xlsx,.xls" required>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-light bg-white rounded-3 shadow-sm mb-4 px-3">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">
+                <i class="fas fa-cubes me-2 text-success"></i> Logistics Intelligence
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item"><a class="nav-link active" href="/dashboard"><i class="fas fa-tachometer-alt me-1"></i> Dashboard</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/upload-center"><i class="fas fa-upload me-1"></i> Upload Center</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/logistics-status"><i class="fas fa-truck me-1"></i> Logistics Analytics</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/status"><i class="fas fa-server me-1"></i> System Status</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/webhook"><i class="fab fa-whatsapp me-1"></i> WhatsApp</a></li>
+                </ul>
             </div>
-            <div class="form-group">
-                <label>Skip Duplicates</label>
-                <select name="skip_duplicates">
-                    <option value="true">Yes - Skip existing DNs</option>
-                    <option value="false">No - Update existing DNs</option>
+        </div>
+    </nav>
+
+    <!-- Alerts Banner -->
+    <div id="alertsContainer" class="mb-3"></div>
+
+    <!-- Executive Header -->
+    <div class="bg-primary-custom text-white p-4 rounded-4 mb-4 shadow">
+        <div class="row align-items-center">
+            <div class="col-md-8">
+                <h1 class="display-6 fw-bold"><i class="fas fa-chart-pie me-2"></i> Logistics Intelligence Center</h1>
+                <p class="lead mb-0">AI-powered real-time logistics analytics & recommendations</p>
+            </div>
+            <div class="col-md-4 text-md-end mt-3 mt-md-0">
+                <div><i class="fas fa-sync-alt me-1"></i> Last Updated: <span id="lastRefresh">Just now</span></div>
+                <div><i class="fas fa-user me-1"></i> User: Viewer</div>
+                <div><i class="fas fa-calendar-day me-1"></i> <span id="todayDate"></span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Filter Bar -->
+    <div class="filter-bar">
+        <form id="filterForm" class="row g-3 align-items-end">
+            <div class="col-md-2 col-sm-6">
+                <label class="form-label fw-bold small text-muted">Date Range</label>
+                <input type="date" class="form-control form-control-sm" id="filterDateStart" placeholder="Start">
+            </div>
+            <div class="col-md-2 col-sm-6">
+                <label class="form-label fw-bold small text-muted">&nbsp;</label>
+                <input type="date" class="form-control form-control-sm" id="filterDateEnd" placeholder="End">
+            </div>
+            <div class="col-md-2 col-sm-6">
+                <label class="form-label fw-bold small text-muted">Warehouse</label>
+                <select class="form-select form-select-sm" id="filterWarehouse">
+                    <option value="">All</option>
+                    <!-- populated by JS -->
                 </select>
             </div>
-            <button type="submit">⬆ Upload & Import</button>
-        </form>
-    </div>
-
-    <!-- Search Box -->
-    <div class="section">
-        <h2>🔍 Search Deliveries</h2>
-        <form class="search-form" action="/search" method="get">
-            <input type="text" name="q" placeholder="Search by DN, Dealer, Customer, or City..." required>
-            <select name="search_type">
-                <option value="all">All</option>
-                <option value="dn">DN Number</option>
-                <option value="dealer">Dealer Code</option>
-                <option value="city">City</option>
-                <option value="warehouse">Warehouse</option>
-                <option value="division">Division</option>
-            </select>
-            <button type="submit">🔍 Search</button>
-        </form>
-    </div>
-
-    <!-- Latest Uploads Table -->
-    <div class="section">
-        <h2>📋 Latest Uploads</h2>
-        {% if latest_uploads %}
-        <table>
-            <thead>
-                <tr>
-                    <th>File Name</th>
-                    <th>Upload Date</th>
-                    <th>Records Imported</th>
-                    <th>Batch ID</th>
-                    <th>Action</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for upload in latest_uploads %}
-                <tr>
-                    <td>{{ upload.filename }}</td>
-                    <td>{{ upload.upload_date.strftime('%Y-%m-%d %H:%M:%S') if upload.upload_date else 'N/A' }}</td>
-                    <td>{{ upload.record_count }}</td>
-                    <td>{{ upload.batch_id }}</td>
-                    <!-- FIX 5: Updated to match the actual route -->
-                    <td><a href="/upload/batch/{{ upload.batch_id }}" style="color:#25D366;">View</a></td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        {% else %}
-        <p>No uploads yet. Upload your first Excel report above.</p>
-        {% endif %}
-    </div>
-
-    <!-- Recent Deliveries (Two Column Layout) -->
-    <div class="two-columns">
-        
-        <!-- Recent Deliveries Table -->
-        <div class="section">
-            <h2>🚚 Recent Deliveries</h2>
-            {% if conversations %}
-            <table>
-                <thead>
-                    <tr>
-                        <th>DN No</th>
-                        <th>Dealer/Customer</th>
-                        <th>City</th>
-                        <th>PGI Status</th>
-                        <th>POD Status</th>
-                        <th>Amount</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for item in conversations %}
-                    <tr>
-                        <!-- DN Number -->
-                        <td><strong>{{ item.dn_no or 'N/A' }}</strong></td>
-                        
-                        <!-- FIX 3: Customer Name field -->
-                        <td>{{ item.customer_name or 'N/A' }}</td>
-                        
-                        <!-- FIX 1: Ship To City field -->
-                        <td>{{ item.ship_to_city or 'N/A' }}</td>
-                        
-                        <!-- PGI Status -->
-                        <td>
-                            <span class="status-badge {% if item.pgi_status == 'Completed' %}status-completed{% else %}status-pending{% endif %}">
-                                {{ item.pgi_status or 'Pending' }}
-                            </span>
-                        </td>
-                        
-                        <!-- POD Status -->
-                        <td>
-                            <span class="status-badge {% if item.pod_status == 'Received' %}status-completed{% else %}status-pending{% endif %}">
-                                {{ item.pod_status or 'Pending' }}
-                            </span>
-                        </td>
-                        
-                        <!-- FIX 2: DN Amount field -->
-                        <td>₹{{ "%.2f"|format(item.dn_amount or 0) }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            {% else %}
-            <p>No delivery records available. Upload an Excel report to see data.</p>
-            {% endif %}
-        </div>
-
-        <!-- Top Cities -->
-        <div class="section">
-            <h2>🏙️ Top Cities by Deliveries</h2>
-            {% if top_cities %}
-            <table>
-                <thead>
-                    <tr>
-                        <th>City</th>
-                        <th>Total Deliveries</th>
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for city in top_cities %}
-                    <tr>
-                        <td><strong>{{ city.city or city.ship_to_city or 'N/A' }}</strong></td>
-                        <td>{{ city.count }}</td>
-                        <td>
-                            <span class="status-badge status-pending">
-                                Active
-                            </span>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            {% else %}
-            <p>No city data available.</p>
-            {% endif %}
-        </div>
-    </div>
-
-    <!-- Warehouse Statistics -->
-    <div class="section">
-        <h2>🏭 Warehouse Performance</h2>
-        {% if top_warehouses %}
-        <table>
-            <thead>
-                <tr>
-                    <th>Warehouse</th>
-                    <th>Total Deliveries</th>
-                    <th>Pending Count</th>
-                    <th>Pending Amount</th>
-                    <th>Performance</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for wh in top_warehouses %}
-                <tr>
-                    <td><strong>{{ wh.warehouse }}</strong></td>
-                    <td>{{ wh.total_count or 0 }}</td>
-                    <td>{{ wh.pending_count or 0 }}</td>
-                    <td>₹{{ "%.2f"|format(wh.pending_amount or 0) }}</td>
-                    <td>
-                        <div style="background:#e5e7eb; border-radius:10px; overflow:hidden;">
-                            <div style="background:#25D366; width:{{ ((wh.total_count - (wh.pending_count or 0)) / wh.total_count * 100) if wh.total_count and wh.total_count > 0 else 0 }}%; height:6px;"></div>
-                        </div>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        {% else %}
-        <p>No warehouse data available.</p>
-        {% endif %}
-    </div>
-
-    <!-- Top Dealers Section (NEW) -->
-    <div class="section">
-        <h2>🏆 Top Dealers</h2>
-        {% if top_dealers %}
-        <table>
-            <thead>
-                <tr>
-                    <th>Dealer Code</th>
-                    <th>Dealer Name</th>
-                    <th>Total Deliveries</th>
-                    <th>Total Amount</th>
-                    <th>Pending Count</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for dealer in top_dealers %}
-                <tr>
-                    <td><strong>{{ dealer.dealer_code or 'N/A' }}</strong></td>
-                    <td>{{ dealer.customer_name or 'N/A' }}</td>
-                    <td>{{ dealer.delivery_count or 0 }}</td>
-                    <td>₹{{ "%.2f"|format(dealer.total_amount or 0) }}</td>
-                    <td>
-                        <span class="status-badge {% if dealer.pending_count > 0 %}status-pending{% else %}status-completed{% endif %}">
-                            {{ dealer.pending_count or 0 }}
-                        </span>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        {% else %}
-        <p>No dealer data available. Upload an Excel report to see dealer statistics.</p>
-        {% endif %}
-    </div>
-
-    <!-- System Status -->
-    <div class="section">
-        <h2>⚙️ System Status</h2>
-        <div class="two-columns" style="margin-bottom:0;">
-            <div>
-                <p><strong>📱 WhatsApp API:</strong> 
-                    <span class="status-badge {% if whatsapp_status == 'Online' %}status-online{% else %}status-offline{% endif %}">
-                        {{ whatsapp_status }}
-                    </span>
-                </p>
-                <p><strong>🤖 AI Service:</strong> 
-                    <span class="status-badge {% if claude_status == 'Online' %}status-online{% else %}status-offline{% endif %}">
-                        {{ claude_status }}
-                    </span>
-                </p>
-                <p><strong>💾 Database:</strong> 
-                    <span class="status-badge status-online">Connected</span>
-                </p>
+            <div class="col-md-2 col-sm-6">
+                <label class="form-label fw-bold small text-muted">Dealer</label>
+                <select class="form-select form-select-sm" id="filterDealer">
+                    <option value="">All</option>
+                </select>
             </div>
-            <div>
-                <p><strong>📦 Schema Version:</strong> {{ schema_version }}</p>
-                <p><strong>📅 Last Upload:</strong> {{ last_upload_date }}</p>
-                <p><strong>🏢 Total Warehouses:</strong> {{ warehouses }}</p>
-                <p><strong>🌆 Total Cities:</strong> {{ cities }}</p>
+            <div class="col-md-2 col-sm-6">
+                <label class="form-label fw-bold small text-muted">Product</label>
+                <select class="form-select form-select-sm" id="filterProduct">
+                    <option value="">All</option>
+                </select>
+            </div>
+            <div class="col-md-2 col-sm-6">
+                <label class="form-label fw-bold small text-muted">City</label>
+                <select class="form-select form-select-sm" id="filterCity">
+                    <option value="">All</option>
+                </select>
+            </div>
+            <div class="col-md-2 col-sm-6">
+                <label class="form-label fw-bold small text-muted">Division</label>
+                <select class="form-select form-select-sm" id="filterDivision">
+                    <option value="">All</option>
+                </select>
+            </div>
+            <div class="col-md-2 col-sm-6">
+                <label class="form-label fw-bold small text-muted">Transporter</label>
+                <select class="form-select form-select-sm" id="filterTransporter">
+                    <option value="">All</option>
+                </select>
+            </div>
+            <div class="col-md-2 col-sm-6">
+                <label class="form-label fw-bold small text-muted">Status</label>
+                <select class="form-select form-select-sm" id="filterStatus">
+                    <option value="">All</option>
+                    <option value="Pending">Pending</option>
+                    <option value="Delivered">Delivered</option>
+                    <option value="In Transit">In Transit</option>
+                </select>
+            </div>
+            <div class="col-md-1 col-sm-6">
+                <button type="button" class="btn btn-success btn-sm w-100" id="applyFilters"><i class="fas fa-filter me-1"></i> Apply</button>
+            </div>
+            <div class="col-md-1 col-sm-6">
+                <button type="button" class="btn btn-outline-secondary btn-sm w-100" id="resetFilters"><i class="fas fa-undo me-1"></i> Reset</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- KPI Cards (dynamically rendered) -->
+    <div id="kpiCards" class="row g-3 mb-4"></div>
+
+    <!-- Row: Charts -->
+    <div class="row g-3 mb-4">
+        <div class="col-xl-6 col-lg-12">
+            <div class="card p-3 h-100">
+                <h6 class="section-title"><i class="fas fa-chart-line me-2 text-primary"></i>Revenue Trend</h6>
+                <div class="chart-container"><canvas id="revenueChart"></canvas></div>
+            </div>
+        </div>
+        <div class="col-xl-6 col-lg-12">
+            <div class="card p-3 h-100">
+                <h6 class="section-title"><i class="fas fa-boxes me-2 text-success"></i>Units & DN Trend</h6>
+                <div class="chart-container"><canvas id="unitsChart"></canvas></div>
             </div>
         </div>
     </div>
 
-    <!-- Footer -->
+    <!-- Row: More Charts -->
+    <div class="row g-3 mb-4">
+        <div class="col-xl-6 col-lg-12">
+            <div class="card p-3 h-100">
+                <h6 class="section-title"><i class="fas fa-percent me-2 text-warning"></i>POD Rate Trend</h6>
+                <div class="chart-container"><canvas id="podChart"></canvas></div>
+            </div>
+        </div>
+        <div class="col-xl-6 col-lg-12">
+            <div class="card p-3 h-100">
+                <h6 class="section-title"><i class="fas fa-truck me-2 text-info"></i>Daily Delivery Trend</h6>
+                <div class="chart-container"><canvas id="dailyChart"></canvas></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Upload & Search Forms (unchanged) -->
+    <div class="row g-3 mb-4">
+        <div class="col-md-6">
+            <div class="card p-4">
+                <h6 class="section-title"><i class="fas fa-upload me-2 text-primary"></i>Upload Logistics Report</h6>
+                <!-- EXACTLY THE ORIGINAL UPLOAD FORM -->
+                <form class="upload-form" action="/upload/excel" method="post" enctype="multipart/form-data">
+                    <div class="form-group">
+                        <label>Excel File (.xlsx, .xls)</label>
+                        <input type="file" name="file" accept=".xlsx,.xls" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Skip Duplicates</label>
+                        <select name="skip_duplicates">
+                            <option value="true">Yes - Skip existing DNs</option>
+                            <option value="false">No - Update existing DNs</option>
+                        </select>
+                    </div>
+                    <button type="submit">⬆ Upload & Import</button>
+                </form>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card p-4">
+                <h6 class="section-title"><i class="fas fa-search me-2 text-primary"></i>Search Deliveries</h6>
+                <!-- EXACTLY THE ORIGINAL SEARCH FORM -->
+                <form class="search-form" action="/search" method="get">
+                    <input type="text" name="q" placeholder="Search by DN, Dealer, Customer, or City..." required>
+                    <select name="search_type">
+                        <option value="all">All</option>
+                        <option value="dn">DN Number</option>
+                        <option value="dealer">Dealer Code</option>
+                        <option value="city">City</option>
+                        <option value="warehouse">Warehouse</option>
+                        <option value="division">Division</option>
+                    </select>
+                    <button type="submit">🔍 Search</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Latest Uploads Table (AG Grid) -->
+    <div class="card p-3 mb-4">
+        <h6 class="section-title"><i class="fas fa-history me-2 text-primary"></i>Latest Uploads</h6>
+        <div id="uploadsGrid" class="ag-theme-alpine" style="height: 300px;"></div>
+    </div>
+
+    <!-- Warehouse & Dealer Intelligence Cards -->
+    <div class="row g-3 mb-4">
+        <div class="col-xl-6">
+            <div class="card p-3 h-100">
+                <h6 class="section-title"><i class="fas fa-warehouse me-2 text-primary"></i>Warehouse Intelligence</h6>
+                <div id="warehouseGrid" class="ag-theme-alpine" style="height: 300px;"></div>
+            </div>
+        </div>
+        <div class="col-xl-6">
+            <div class="card p-3 h-100">
+                <h6 class="section-title"><i class="fas fa-users me-2 text-success"></i>Dealer Intelligence</h6>
+                <div id="dealerGrid" class="ag-theme-alpine" style="height: 300px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI Recommendations Panel -->
+    <div class="card p-3 mb-4">
+        <h6 class="section-title"><i class="fas fa-robot me-2 text-primary"></i>AI Insights & Recommendations</h6>
+        <div id="recommendationsContainer" class="row g-3"></div>
+    </div>
+
+    <!-- Footer with metadata -->
     <div class="footer">
-        <p>AI WhatsApp Logistics Agent v2.0 | DN/PGI/POD Tracking System</p>
-        <p style="margin-top:10px; font-size:12px;">© 2024 Logistics Management Platform</p>
+        <div class="row">
+            <div class="col-md-6 text-md-start">
+                <i class="fas fa-code-branch me-1"></i> v4.0.0 &nbsp;|&nbsp;
+                <i class="fas fa-database me-1"></i> PostgreSQL &nbsp;|&nbsp;
+                <i class="fas fa-sync me-1"></i> <span id="footerRefresh">Just now</span>
+            </div>
+            <div class="col-md-6 text-md-end">
+                <i class="fas fa-cubes me-1"></i> Records: <span id="footerRecords">0</span> &nbsp;|&nbsp;
+                <i class="fas fa-clock me-1"></i> <span id="footerExecTime">0 ms</span> &nbsp;|&nbsp;
+                <i class="fas fa-cloud me-1"></i> <span id="footerEnv">Production</span>
+            </div>
+        </div>
     </div>
 
 </div>
 
+<!-- Bootstrap JS Bundle -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
 <script>
-    // Check for URL parameters and show alerts
-    const urlParams = new URLSearchParams(window.location.search);
-    const message = urlParams.get('message');
-    const error = urlParams.get('error');
-    
-    if (message) {
-        alert('✅ Success: ' + decodeURIComponent(message));
+    // ============================================================
+    // Dashboard JavaScript - v4.0
+    // ============================================================
+
+    let dashboardData = {};
+    let refreshInterval = null;
+
+    // Chart instances
+    let revenueChart, unitsChart, podChart, dailyChart;
+
+    // AG Grid instances
+    let uploadsGrid, warehouseGrid, dealerGrid;
+
+    // Helper: format currency
+    function formatCurrency(value) {
+        if (value >= 1e6) return 'PKR ' + (value / 1e6).toFixed(2) + 'M';
+        if (value >= 1e3) return 'PKR ' + value.toLocaleString();
+        return 'PKR ' + value.toFixed(0);
     }
-    if (error) {
-        alert('❌ Error: ' + decodeURIComponent(error));
+
+    function formatNumber(value) {
+        return value.toLocaleString();
     }
-    
-    // Also check for upload success/failure messages
-    const uploadSuccess = urlParams.get('upload_success');
-    const uploadError = urlParams.get('upload_error');
-    
-    if (uploadSuccess) {
-        alert('✅ Upload Successful: ' + decodeURIComponent(uploadSuccess));
+
+    function formatPercentage(value) {
+        return value.toFixed(1) + '%';
     }
-    if (uploadError) {
-        alert('❌ Upload Failed: ' + decodeURIComponent(uploadError));
+
+    // ============================================================
+    // Fetch dashboard data
+    // ============================================================
+
+    async function fetchDashboard(filters = {}) {
+        try {
+            const params = new URLSearchParams(filters);
+            const response = await fetch('/dashboard/api/data?' + params.toString());
+            if (!response.ok) throw new Error('Network response was not ok');
+            dashboardData = await response.json();
+            renderDashboard(dashboardData);
+            document.getElementById('lastRefresh').innerText = new Date().toLocaleString();
+            document.getElementById('footerRefresh').innerText = new Date().toLocaleString();
+            document.getElementById('footerRecords').innerText = dashboardData.metadata?.record_count || 0;
+            document.getElementById('footerExecTime').innerText = dashboardData.metadata?.execution_time_ms || 'N/A';
+            document.getElementById('footerEnv').innerText = dashboardData.metadata?.environment || 'Production';
+        } catch (error) {
+            console.error('Error fetching dashboard:', error);
+            Swal.fire({
+                icon: 'error',
+                title: 'Data Load Error',
+                text: 'Could not load dashboard data. Please refresh the page.'
+            });
+        }
     }
+
+    // ============================================================
+    // Render all sections
+    // ============================================================
+
+    function renderDashboard(data) {
+        renderAlerts(data.alerts || []);
+        renderKPICards(data.cards || {});
+        renderCharts(data.charts || {});
+        renderUploadsGrid(data.latest_uploads || []);
+        renderWarehouseGrid(data.warehouse || []);
+        renderDealerGrid(data.dealer || []);
+        renderRecommendations(data.recommendations || []);
+        populateFilters(data);
+    }
+
+    // ============================================================
+    // Alerts
+    // ============================================================
+
+    function renderAlerts(alerts) {
+        const container = document.getElementById('alertsContainer');
+        if (!alerts.length) {
+            container.innerHTML = '';
+            return;
+        }
+        let html = '';
+        alerts.forEach(alert => {
+            let cls = 'alert-normal';
+            if (alert.level === 'critical') cls = 'alert-critical';
+            else if (alert.level === 'warning') cls = 'alert-warning';
+            html += `<div class="alert-banner ${cls} mb-2 d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-circle me-2"></i> ${alert.message}</span>
+                <small>${alert.action || ''}</small>
+            </div>`;
+        });
+        container.innerHTML = html;
+    }
+
+    // ============================================================
+    // KPI Cards
+    // ============================================================
+
+    function renderKPICards(cards) {
+        const container = document.getElementById('kpiCards');
+        const keys = Object.keys(cards);
+        if (!keys.length) {
+            container.innerHTML = '<div class="col-12 text-center text-muted">No KPI data available.</div>';
+            return;
+        }
+        let html = '';
+        keys.forEach(key => {
+            const card = cards[key];
+            const icon = card.icon || 'fa-chart-simple';
+            const color = card.color || 'primary';
+            const value = typeof card.value === 'number' ? (key === 'revenue' ? formatCurrency(card.value) : formatNumber(card.value)) : card.value;
+            const trend = card.trend || 0;
+            const trendIcon = trend >= 0 ? 'fa-arrow-up text-success' : 'fa-arrow-down text-danger';
+            const trendText = (trend >= 0 ? '+' : '') + trend.toFixed(1) + '%';
+            const progress = card.progress || 0;
+            const label = key.replace(/_/g, ' ').toUpperCase();
+            html += `
+                <div class="col-xl-3 col-lg-4 col-md-6 col-sm-6">
+                    <div class="kpi-card animate__animated animate__fadeInUp" style="animation-delay: ${Math.random() * 0.3}s">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div>
+                                <div class="kpi-label">${label}</div>
+                                <div class="kpi-value">${value}</div>
+                            </div>
+                            <div class="kpi-icon text-${color}"><i class="fas ${icon}"></i></div>
+                        </div>
+                        <div class="d-flex justify-content-between mt-2">
+                            <span class="kpi-trend ${trend >= 0 ? 'text-success' : 'text-danger'}">
+                                <i class="fas ${trendIcon} me-1"></i>${trendText}
+                            </span>
+                            <span class="text-muted small">Target: ${card.target ? formatNumber(card.target) : 'N/A'}</span>
+                        </div>
+                        <div class="kpi-progress mt-1">
+                            <div class="kpi-progress-bar" style="width: ${progress}%; background: var(--${color});"></div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+    }
+
+    // ============================================================
+    // Charts
+    // ============================================================
+
+    function renderCharts(charts) {
+        // Revenue Chart
+        const revenueCtx = document.getElementById('revenueChart').getContext('2d');
+        if (revenueChart) revenueChart.destroy();
+        revenueChart = new Chart(revenueCtx, {
+            type: 'line',
+            data: {
+                labels: charts.revenue_trend?.labels || [],
+                datasets: [{
+                    label: 'Revenue (PKR)',
+                    data: charts.revenue_trend?.data || [],
+                    borderColor: '#128C7E',
+                    backgroundColor: 'rgba(18,140,126,0.1)',
+                    tension: 0.4,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                }
+            }
+        });
+
+        // Units Chart
+        const unitsCtx = document.getElementById('unitsChart').getContext('2d');
+        if (unitsChart) unitsChart.destroy();
+        unitsChart = new Chart(unitsCtx, {
+            type: 'bar',
+            data: {
+                labels: charts.units_trend?.labels || [],
+                datasets: [
+                    {
+                        label: 'Units',
+                        data: charts.units_trend?.data || [],
+                        backgroundColor: '#25D366',
+                        borderRadius: 4
+                    },
+                    {
+                        label: 'DNs',
+                        data: charts.dn_trend?.data || [],
+                        backgroundColor: '#128C7E',
+                        borderRadius: 4
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { position: 'top' }
+                }
+            }
+        });
+
+        // POD Chart
+        const podCtx = document.getElementById('podChart').getContext('2d');
+        if (podChart) podChart.destroy();
+        podChart = new Chart(podCtx, {
+            type: 'line',
+            data: {
+                labels: charts.pod_trend?.labels || [],
+                datasets: [{
+                    label: 'POD Rate (%)',
+                    data: charts.pod_trend?.data || [],
+                    borderColor: '#ffc107',
+                    backgroundColor: 'rgba(255,193,7,0.1)',
+                    tension: 0.4,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    y: {
+                        min: 0,
+                        max: 100
+                    }
+                }
+            }
+        });
+
+        // Daily Chart
+        const dailyCtx = document.getElementById('dailyChart').getContext('2d');
+        if (dailyChart) dailyChart.destroy();
+        dailyChart = new Chart(dailyCtx, {
+            type: 'bar',
+            data: {
+                labels: charts.daily_trend?.labels || [],
+                datasets: [{
+                    label: 'Daily Revenue (PKR)',
+                    data: charts.daily_trend?.data || [],
+                    backgroundColor: '#17a2b8',
+                    borderRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                }
+            }
+        });
+    }
+
+    // ============================================================
+    // AG Grid Tables
+    // ============================================================
+
+    function renderUploadsGrid(data) {
+        const gridDiv = document.getElementById('uploadsGrid');
+        if (uploadsGrid) { uploadsGrid.destroy(); }
+        const columnDefs = [
+            { field: 'filename', headerName: 'File Name', flex: 2 },
+            { field: 'upload_date', headerName: 'Upload Date', flex: 1.5, valueFormatter: (p) => p.value ? new Date(p.value).toLocaleString() : 'N/A' },
+            { field: 'record_count', headerName: 'Records', flex: 1 },
+            { field: 'batch_id', headerName: 'Batch ID', flex: 1.5 },
+            {
+                headerName: 'Action',
+                flex: 1,
+                cellRenderer: (params) => `<a href="/upload/batch/${params.data.batch_id}" class="btn btn-sm btn-outline-success">View</a>`
+            }
+        ];
+        uploadsGrid = new agGrid.Grid(gridDiv, {
+            columnDefs: columnDefs,
+            rowData: data,
+            pagination: true,
+            paginationPageSize: 5,
+            domLayout: 'autoHeight'
+        });
+    }
+
+    function renderWarehouseGrid(data) {
+        const gridDiv = document.getElementById('warehouseGrid');
+        if (warehouseGrid) { warehouseGrid.destroy(); }
+        const columnDefs = [
+            { field: 'warehouse_name', headerName: 'Warehouse', flex: 2 },
+            { field: 'revenue', headerName: 'Revenue', flex: 1.5, valueFormatter: (p) => formatCurrency(p.value) },
+            { field: 'units', headerName: 'Units', flex: 1, valueFormatter: (p) => formatNumber(p.value) },
+            { field: 'delivery_notes', headerName: 'DNs', flex: 1 },
+            { field: 'otif', headerName: 'OTIF %', flex: 1, valueFormatter: (p) => formatPercentage(p.value) },
+            { field: 'performance_grade', headerName: 'Grade', flex: 0.8 },
+            { field: 'risk_level', headerName: 'Risk', flex: 1, cellStyle: (params) => {
+                if (params.value === 'High') return { color: 'red', fontWeight: 'bold' };
+                if (params.value === 'Medium') return { color: 'orange' };
+                return { color: 'green' };
+            }}
+        ];
+        warehouseGrid = new agGrid.Grid(gridDiv, {
+            columnDefs: columnDefs,
+            rowData: data,
+            pagination: true,
+            paginationPageSize: 5,
+            domLayout: 'autoHeight'
+        });
+    }
+
+    function renderDealerGrid(data) {
+        const gridDiv = document.getElementById('dealerGrid');
+        if (dealerGrid) { dealerGrid.destroy(); }
+        const columnDefs = [
+            { field: 'dealer_name', headerName: 'Dealer', flex: 2 },
+            { field: 'revenue', headerName: 'Revenue', flex: 1.5, valueFormatter: (p) => formatCurrency(p.value) },
+            { field: 'units', headerName: 'Units', flex: 1, valueFormatter: (p) => formatNumber(p.value) },
+            { field: 'delivery_notes', headerName: 'DNs', flex: 1 },
+            { field: 'performance_score', headerName: 'Score', flex: 1, valueFormatter: (p) => p.value ? p.value.toFixed(1) : '0' },
+            { field: 'growth_percentage', headerName: 'Growth %', flex: 1, valueFormatter: (p) => (p.value || 0).toFixed(1) + '%' },
+            { field: 'ai_recommendation', headerName: 'AI Rec', flex: 2 }
+        ];
+        dealerGrid = new agGrid.Grid(gridDiv, {
+            columnDefs: columnDefs,
+            rowData: data,
+            pagination: true,
+            paginationPageSize: 5,
+            domLayout: 'autoHeight'
+        });
+    }
+
+    // ============================================================
+    // AI Recommendations
+    // ============================================================
+
+    function renderRecommendations(recommendations) {
+        const container = document.getElementById('recommendationsContainer');
+        if (!recommendations.length) {
+            container.innerHTML = '<div class="col-12 text-center text-muted">No recommendations available.</div>';
+            return;
+        }
+        let html = '';
+        recommendations.forEach(rec => {
+            const priorityBadge = rec.priority === 'Critical' ? 'bg-danger' : rec.priority === 'High' ? 'bg-warning' : 'bg-info';
+            html += `
+                <div class="col-md-6 col-lg-4">
+                    <div class="card h-100 p-3 border-start border-4 border-${rec.priority === 'Critical' ? 'danger' : rec.priority === 'High' ? 'warning' : 'info'}">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <h6 class="card-title mb-1"><i class="fas fa-robot me-2"></i>${rec.entity || 'N/A'}</h6>
+                            <span class="badge ${priorityBadge}">${rec.priority || 'Normal'}</span>
+                        </div>
+                        <p class="card-text small mt-2">${rec.recommendation || ''}</p>
+                        <div class="mt-2">
+                            <span class="badge bg-secondary">${rec.type || ''}</span>
+                            <span class="badge bg-${rec.risk === 'High' ? 'danger' : rec.risk === 'Medium' ? 'warning' : 'success'} ms-1">${rec.risk || 'Low'}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+    }
+
+    // ============================================================
+    // Populate filter dropdowns
+    // ============================================================
+
+    function populateFilters(data) {
+        // Populate warehouse filter from warehouse data
+        const warehouseSelect = document.getElementById('filterWarehouse');
+        if (data.warehouse && data.warehouse.length) {
+            const options = data.warehouse.map(w => `<option value="${w.warehouse_code}">${w.warehouse_name}</option>`).join('');
+            warehouseSelect.innerHTML = `<option value="">All</option>${options}`;
+        }
+        // Populate dealer filter
+        const dealerSelect = document.getElementById('filterDealer');
+        if (data.dealer && data.dealer.length) {
+            const options = data.dealer.map(d => `<option value="${d.dealer_code}">${d.dealer_name}</option>`).join('');
+            dealerSelect.innerHTML = `<option value="">All</option>${options}`;
+        }
+        // Populate product filter
+        const productSelect = document.getElementById('filterProduct');
+        if (data.product && data.product.length) {
+            const options = data.product.map(p => `<option value="${p.sku}">${p.product_name}</option>`).join('');
+            productSelect.innerHTML = `<option value="">All</option>${options}`;
+        }
+        // Populate city filter
+        const citySelect = document.getElementById('filterCity');
+        if (data.city && data.city.length) {
+            const options = data.city.map(c => `<option value="${c.city}">${c.city}</option>`).join('');
+            citySelect.innerHTML = `<option value="">All</option>${options}`;
+        }
+        // Populate division filter from summary or metadata
+        // (example: we could extract from transport data)
+        // For now, leave as is.
+    }
+
+    // ============================================================
+    // Filter apply / reset
+    // ============================================================
+
+    document.getElementById('applyFilters').addEventListener('click', function() {
+        const filters = {
+            start_date: document.getElementById('filterDateStart').value,
+            end_date: document.getElementById('filterDateEnd').value,
+            warehouse: document.getElementById('filterWarehouse').value,
+            dealer: document.getElementById('filterDealer').value,
+            product: document.getElementById('filterProduct').value,
+            city: document.getElementById('filterCity').value,
+            division: document.getElementById('filterDivision').value,
+            transporter: document.getElementById('filterTransporter').value,
+            status: document.getElementById('filterStatus').value
+        };
+        // Remove empty values
+        Object.keys(filters).forEach(key => {
+            if (!filters[key]) delete filters[key];
+        });
+        fetchDashboard(filters);
+    });
+
+    document.getElementById('resetFilters').addEventListener('click', function() {
+        document.getElementById('filterDateStart').value = '';
+        document.getElementById('filterDateEnd').value = '';
+        document.getElementById('filterWarehouse').value = '';
+        document.getElementById('filterDealer').value = '';
+        document.getElementById('filterProduct').value = '';
+        document.getElementById('filterCity').value = '';
+        document.getElementById('filterDivision').value = '';
+        document.getElementById('filterTransporter').value = '';
+        document.getElementById('filterStatus').value = '';
+        fetchDashboard({});
+    });
+
+    // ============================================================
+    // Live refresh every 30 seconds
+    // ============================================================
+
+    function startLiveRefresh() {
+        if (refreshInterval) clearInterval(refreshInterval);
+        refreshInterval = setInterval(() => {
+            fetchDashboard(getCurrentFilters());
+        }, 30000);
+    }
+
+    function getCurrentFilters() {
+        return {
+            start_date: document.getElementById('filterDateStart').value,
+            end_date: document.getElementById('filterDateEnd').value,
+            warehouse: document.getElementById('filterWarehouse').value,
+            dealer: document.getElementById('filterDealer').value,
+            product: document.getElementById('filterProduct').value,
+            city: document.getElementById('filterCity').value,
+            division: document.getElementById('filterDivision').value,
+            transporter: document.getElementById('filterTransporter').value,
+            status: document.getElementById('filterStatus').value
+        };
+    }
+
+    // ============================================================
+    // Set today's date
+    // ============================================================
+
+    document.getElementById('todayDate').innerText = new Date().toLocaleDateString('en-GB', {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric'
+    });
+
+    // ============================================================
+    // Initial load and refresh
+    // ============================================================
+
+    // Fetch initial data
+    fetchDashboard({});
+    startLiveRefresh();
+
+    // Also support manual refresh via button (optional)
+    // You could add a refresh button if needed.
+
+    // ============================================================
+    // Handle upload success / error alerts (from URL params)
+    // ============================================================
+
+    (function() {
+        const params = new URLSearchParams(window.location.search);
+        const msg = params.get('message');
+        const error = params.get('error');
+        const uploadSuccess = params.get('upload_success');
+        const uploadError = params.get('upload_error');
+
+        if (uploadSuccess) {
+            Swal.fire({
+                icon: 'success',
+                title: 'Upload Successful',
+                text: decodeURIComponent(uploadSuccess),
+                timer: 3000,
+                showConfirmButton: false
+            });
+        }
+        if (uploadError) {
+            Swal.fire({
+                icon: 'error',
+                title: 'Upload Failed',
+                text: decodeURIComponent(uploadError)
+            });
+        }
+        if (message) {
+            Swal.fire({
+                icon: 'info',
+                title: 'Info',
+                text: decodeURIComponent(message),
+                timer: 2000,
+                showConfirmButton: false
+            });
+        }
+        if (error) {
+            Swal.fire({
+                icon: 'error',
+                title: 'Error',
+                text: decodeURIComponent(error)
+            });
+        }
+    })();
+
 </script>
-
 </body>
-
 </html>
