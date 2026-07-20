@@ -1943,3 +1943,602 @@ except Exception as init_error:
     logger.critical(f"ERROR: {type(init_error).__name__}: {init_error}")
     logger.critical(traceback.format_exc())
     raise
+
+# ==========================================================
+# BLOCK 51: DASHBOARD DATA ENDPOINT (Direct PostgreSQL)
+# ==========================================================
+
+print("=" * 60)
+print("🔧 ADDING DASHBOARD DATA ENDPOINT - v16.3")
+print("=" * 60)
+
+from datetime import datetime, timedelta
+from sqlalchemy import func, and_, extract
+import asyncio
+import hashlib
+import json
+
+# Simple in-memory cache for dashboard data (5 sec TTL)
+_dashboard_cache = {}
+_DASHBOARD_CACHE_TTL = 5
+
+def _get_cache_key(filters: Dict[str, Any]) -> str:
+    """Generate cache key from filters."""
+    key = json.dumps(filters, sort_keys=True)
+    return hashlib.md5(key.encode()).hexdigest()
+
+@app.get("/dashboard/api/data")
+async def dashboard_api_data(
+    request: Request,
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    warehouse: Optional[str] = Query(None, description="Warehouse name"),
+    dealer: Optional[str] = Query(None, description="Dealer code"),
+    product: Optional[str] = Query(None, description="Product/material number"),
+    city: Optional[str] = Query(None, description="City"),
+    division: Optional[str] = Query(None, description="Division"),
+    transporter: Optional[str] = Query(None, description="Transporter (if available)"),
+    status: Optional[str] = Query(None, description="Delivery status (Pending/Delivered/In Transit)")
+):
+    """
+    Dashboard data API - returns all KPIs, charts, tables, and AI insights.
+    Queries PostgreSQL directly using SQLAlchemy.
+    """
+    print("🔔 /dashboard/api/data HIT")
+
+    # Build filters dict
+    filters = {
+        "start_date": start_date,
+        "end_date": end_date,
+        "warehouse": warehouse,
+        "dealer": dealer,
+        "product": product,
+        "city": city,
+        "division": division,
+        "transporter": transporter,
+        "status": status
+    }
+    # Remove None values
+    filters = {k: v for k, v in filters.items() if v is not None}
+
+    # Cache check
+    cache_key = _get_cache_key(filters)
+    now = time.time()
+    if cache_key in _dashboard_cache:
+        cached = _dashboard_cache[cache_key]
+        if now - cached["timestamp"] < _DASHBOARD_CACHE_TTL:
+            print("   ├── Returning cached data")
+            return cached["data"]
+
+    try:
+        # Run DB queries in thread to avoid blocking event loop
+        data = await asyncio.to_thread(_fetch_dashboard_data, filters)
+        # Cache
+        _dashboard_cache[cache_key] = {"data": data, "timestamp": now}
+        return data
+    except Exception as e:
+        logger.exception("Dashboard data endpoint error")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "message": "Failed to fetch dashboard data"}
+        )
+
+
+def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Synchronous function that queries PostgreSQL and builds the dashboard JSON.
+    """
+    from app.database import SessionLocal
+    from app.models import DeliveryReport
+
+    with SessionLocal() as session:
+        # Base query for all filters
+        base_query = session.query(DeliveryReport)
+
+        # Apply filters
+        if "start_date" in filters and filters["start_date"]:
+            base_query = base_query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+        if "end_date" in filters and filters["end_date"]:
+            base_query = base_query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+        if "warehouse" in filters:
+            base_query = base_query.filter(DeliveryReport.warehouse == filters["warehouse"])
+        if "dealer" in filters:
+            base_query = base_query.filter(DeliveryReport.dealer_code == filters["dealer"])
+        if "product" in filters:
+            base_query = base_query.filter(DeliveryReport.material_no == filters["product"])
+        if "city" in filters:
+            base_query = base_query.filter(DeliveryReport.ship_to_city == filters["city"])
+        if "division" in filters:
+            base_query = base_query.filter(DeliveryReport.division == filters["division"])
+        if "status" in filters:
+            base_query = base_query.filter(DeliveryReport.delivery_status == filters["status"])
+
+        # --- KPIs (summary) ---
+        total_revenue = base_query.with_entities(func.sum(DeliveryReport.dn_amount)).scalar() or 0.0
+        total_units = base_query.with_entities(func.sum(DeliveryReport.dn_qty)).scalar() or 0
+        total_dn = base_query.with_entities(func.count(DeliveryReport.dn_no)).scalar() or 0
+
+        # Distinct counts
+        dealers = session.query(DeliveryReport.dealer_code).filter(
+            DeliveryReport.dealer_code.isnot(None)
+        ).distinct().all()
+        warehouses = session.query(DeliveryReport.warehouse).filter(
+            DeliveryReport.warehouse.isnot(None)
+        ).distinct().all()
+        cities = session.query(DeliveryReport.ship_to_city).filter(
+            DeliveryReport.ship_to_city.isnot(None)
+        ).distinct().all()
+        products = session.query(DeliveryReport.material_no).filter(
+            DeliveryReport.material_no.isnot(None)
+        ).distinct().all()
+
+        active_dealers = len(dealers)
+        active_warehouses = len(warehouses)
+        active_cities = len(cities)
+        active_products = len(products)
+
+        # Simple growth (compare with previous period - last 30 days vs previous 30 days)
+        # For simplicity, we'll compute based on total revenue difference from last month
+        # We'll get revenue for last 30 days and previous 30 days
+        today = datetime.now().date()
+        last_30_start = today - timedelta(days=30)
+        prev_30_start = today - timedelta(days=60)
+        prev_30_end = last_30_start - timedelta(days=1)
+
+        def get_revenue(start_d, end_d):
+            q = session.query(func.sum(DeliveryReport.dn_amount)).filter(
+                DeliveryReport.dn_create_date >= start_d,
+                DeliveryReport.dn_create_date <= end_d
+            )
+            # Apply same filters as base (except date range)
+            if "warehouse" in filters:
+                q = q.filter(DeliveryReport.warehouse == filters["warehouse"])
+            if "dealer" in filters:
+                q = q.filter(DeliveryReport.dealer_code == filters["dealer"])
+            if "product" in filters:
+                q = q.filter(DeliveryReport.material_no == filters["product"])
+            if "city" in filters:
+                q = q.filter(DeliveryReport.ship_to_city == filters["city"])
+            if "division" in filters:
+                q = q.filter(DeliveryReport.division == filters["division"])
+            if "status" in filters:
+                q = q.filter(DeliveryReport.delivery_status == filters["status"])
+            return q.scalar() or 0.0
+
+        current_30_rev = get_revenue(last_30_start, today)
+        prev_30_rev = get_revenue(prev_30_start, prev_30_end)
+        revenue_growth = ((current_30_rev - prev_30_rev) / (prev_30_rev or 1)) * 100
+
+        # We'll compute unit growth similarly (approximate)
+        def get_units(start_d, end_d):
+            q = session.query(func.sum(DeliveryReport.dn_qty)).filter(
+                DeliveryReport.dn_create_date >= start_d,
+                DeliveryReport.dn_create_date <= end_d
+            )
+            # Apply same filters
+            if "warehouse" in filters:
+                q = q.filter(DeliveryReport.warehouse == filters["warehouse"])
+            if "dealer" in filters:
+                q = q.filter(DeliveryReport.dealer_code == filters["dealer"])
+            if "product" in filters:
+                q = q.filter(DeliveryReport.material_no == filters["product"])
+            if "city" in filters:
+                q = q.filter(DeliveryReport.ship_to_city == filters["city"])
+            if "division" in filters:
+                q = q.filter(DeliveryReport.division == filters["division"])
+            if "status" in filters:
+                q = q.filter(DeliveryReport.delivery_status == filters["status"])
+            return q.scalar() or 0
+
+        current_30_units = get_units(last_30_start, today)
+        prev_30_units = get_units(prev_30_start, prev_30_end)
+        units_growth = ((current_30_units - prev_30_units) / (prev_30_units or 1)) * 100
+
+        # DN growth
+        def get_dn(start_d, end_d):
+            q = session.query(func.count(DeliveryReport.dn_no)).filter(
+                DeliveryReport.dn_create_date >= start_d,
+                DeliveryReport.dn_create_date <= end_d
+            )
+            # Apply same filters
+            if "warehouse" in filters:
+                q = q.filter(DeliveryReport.warehouse == filters["warehouse"])
+            if "dealer" in filters:
+                q = q.filter(DeliveryReport.dealer_code == filters["dealer"])
+            if "product" in filters:
+                q = q.filter(DeliveryReport.material_no == filters["product"])
+            if "city" in filters:
+                q = q.filter(DeliveryReport.ship_to_city == filters["city"])
+            if "division" in filters:
+                q = q.filter(DeliveryReport.division == filters["division"])
+            if "status" in filters:
+                q = q.filter(DeliveryReport.delivery_status == filters["status"])
+            return q.scalar() or 0
+
+        current_30_dn = get_dn(last_30_start, today)
+        prev_30_dn = get_dn(prev_30_start, prev_30_end)
+        dn_growth = ((current_30_dn - prev_30_dn) / (prev_30_dn or 1)) * 100
+
+        # Compute average delivery days (if we have good_issue_date and dn_create_date)
+        # For simplicity, we'll compute average difference in days
+        avg_delivery = base_query.with_entities(
+            func.avg(func.datediff('day', DeliveryReport.dn_create_date, DeliveryReport.good_issue_date))
+        ).scalar() or 0.0
+
+        # POD completion rate (if we have pod_status)
+        pod_completed = base_query.filter(DeliveryReport.pod_status == 'Delivered').count()
+        total_with_pod = base_query.filter(DeliveryReport.pod_status.isnot(None)).count()
+        pod_rate = (pod_completed / (total_with_pod or 1)) * 100
+
+        # For now, we'll set OTIF and other metrics to 0 if not available
+        otif = 0.0  # placeholder
+
+        # Build KPI cards (matching frontend expectations)
+        cards = {
+            "revenue": {
+                "value": total_revenue,
+                "target": 150000000,
+                "trend": revenue_growth,
+                "progress": min((total_revenue / 150000000) * 100, 100),
+                "icon": "fa-chart-line",
+                "color": "primary"
+            },
+            "units": {
+                "value": total_units,
+                "target": 10000,
+                "trend": units_growth,
+                "progress": min((total_units / 10000) * 100, 100),
+                "icon": "fa-box",
+                "color": "success"
+            },
+            "delivery_notes": {
+                "value": total_dn,
+                "target": 5000,
+                "trend": dn_growth,
+                "progress": min((total_dn / 5000) * 100, 100),
+                "icon": "fa-file-invoice",
+                "color": "info"
+            },
+            "dealers": {
+                "value": active_dealers,
+                "target": 200,
+                "trend": 0.0,
+                "progress": min((active_dealers / 200) * 100, 100),
+                "icon": "fa-users",
+                "color": "warning"
+            },
+            "warehouses": {
+                "value": active_warehouses,
+                "target": 50,
+                "trend": 0.0,
+                "progress": min((active_warehouses / 50) * 100, 100),
+                "icon": "fa-warehouse",
+                "color": "danger"
+            },
+            "cities": {
+                "value": active_cities,
+                "target": 100,
+                "trend": 0.0,
+                "progress": min((active_cities / 100) * 100, 100),
+                "icon": "fa-city",
+                "color": "secondary"
+            },
+            "otif": {
+                "value": otif,
+                "target": 95.0,
+                "trend": 0.0,
+                "progress": min((otif / 95) * 100, 100),
+                "icon": "fa-check-circle",
+                "color": "success"
+            },
+            "pod_rate": {
+                "value": pod_rate,
+                "target": 90.0,
+                "trend": 0.0,
+                "progress": min((pod_rate / 90) * 100, 100),
+                "icon": "fa-truck",
+                "color": "info"
+            }
+        }
+
+        # --- Charts: Monthly trends ---
+        # Group by month on dn_create_date
+        monthly_revenue = session.query(
+            func.date_trunc('month', DeliveryReport.dn_create_date).label('month'),
+            func.sum(DeliveryReport.dn_amount).label('revenue')
+        ).group_by('month').order_by('month').all()
+
+        monthly_units = session.query(
+            func.date_trunc('month', DeliveryReport.dn_create_date).label('month'),
+            func.sum(DeliveryReport.dn_qty).label('units')
+        ).group_by('month').order_by('month').all()
+
+        monthly_dn = session.query(
+            func.date_trunc('month', DeliveryReport.dn_create_date).label('month'),
+            func.count(DeliveryReport.dn_no).label('dn')
+        ).group_by('month').order_by('month').all()
+
+        # For POD rate, we need to compute per month from pod_status
+        # Simplified: for each month, count delivered vs total
+        monthly_pod = session.query(
+            func.date_trunc('month', DeliveryReport.dn_create_date).label('month'),
+            func.count(DeliveryReport.id).label('total'),
+            func.sum(func.cast(DeliveryReport.pod_status == 'Delivered', type_=int)).label('delivered')
+        ).group_by('month').order_by('month').all()
+
+        months = [str(m.month) for m in monthly_revenue]  # or format as YYYY-MM
+        revenue_data = [m.revenue for m in monthly_revenue]
+        units_data = [m.units for m in monthly_units]
+        dn_data = [m.dn for m in monthly_dn]
+        pod_data = [(m.delivered / (m.total or 1)) * 100 for m in monthly_pod] if monthly_pod else []
+
+        # --- Daily trends (last 30 days) ---
+        daily_revenue = session.query(
+            DeliveryReport.dn_create_date.label('date'),
+            func.sum(DeliveryReport.dn_amount).label('revenue')
+        ).filter(DeliveryReport.dn_create_date >= last_30_start) \
+         .group_by('date').order_by('date').all()
+
+        daily_dates = [str(d.date) for d in daily_revenue]
+        daily_rev_data = [d.revenue for d in daily_revenue]
+
+        # --- Warehouse performance ---
+        warehouse_query = session.query(
+            DeliveryReport.warehouse,
+            func.sum(DeliveryReport.dn_amount).label('revenue'),
+            func.sum(DeliveryReport.dn_qty).label('units'),
+            func.count(DeliveryReport.dn_no).label('dn'),
+            func.avg(func.datediff('day', DeliveryReport.dn_create_date, DeliveryReport.good_issue_date)).label('avg_delivery')
+        ).filter(DeliveryReport.warehouse.isnot(None))
+        # Apply filters (except warehouse itself)
+        if "start_date" in filters:
+            warehouse_query = warehouse_query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+        if "end_date" in filters:
+            warehouse_query = warehouse_query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+        if "dealer" in filters:
+            warehouse_query = warehouse_query.filter(DeliveryReport.dealer_code == filters["dealer"])
+        if "product" in filters:
+            warehouse_query = warehouse_query.filter(DeliveryReport.material_no == filters["product"])
+        if "city" in filters:
+            warehouse_query = warehouse_query.filter(DeliveryReport.ship_to_city == filters["city"])
+        if "division" in filters:
+            warehouse_query = warehouse_query.filter(DeliveryReport.division == filters["division"])
+        if "status" in filters:
+            warehouse_query = warehouse_query.filter(DeliveryReport.delivery_status == filters["status"])
+        warehouse_data = warehouse_query.group_by(DeliveryReport.warehouse).all()
+
+        warehouse_list = []
+        for w in warehouse_data:
+            # Compute simple grade and risk (placeholder)
+            otif = 0.0
+            avg_del = w.avg_delivery or 0.0
+            grade = "A" if avg_del <= 2 else "B" if avg_del <= 4 else "C"
+            risk = "Low" if avg_del <= 2 else "Medium" if avg_del <= 4 else "High"
+            warehouse_list.append({
+                "warehouse_code": w.warehouse,
+                "warehouse_name": w.warehouse,
+                "revenue": w.revenue or 0.0,
+                "units": w.units or 0,
+                "delivery_notes": w.dn or 0,
+                "average_delivery_days": avg_del,
+                "otif": otif,
+                "performance_grade": grade,
+                "risk_level": risk,
+                "ai_recommendation": "Maintain current operations." if grade in ("A","B") else "Review processes."
+            })
+
+        # --- Dealer performance ---
+        dealer_query = session.query(
+            DeliveryReport.dealer_code,
+            DeliveryReport.customer_name,
+            func.sum(DeliveryReport.dn_amount).label('revenue'),
+            func.sum(DeliveryReport.dn_qty).label('units'),
+            func.count(DeliveryReport.dn_no).label('dn'),
+            func.avg(func.datediff('day', DeliveryReport.dn_create_date, DeliveryReport.good_issue_date)).label('avg_delivery')
+        ).filter(DeliveryReport.dealer_code.isnot(None))
+        # Apply filters (except dealer)
+        if "start_date" in filters:
+            dealer_query = dealer_query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+        if "end_date" in filters:
+            dealer_query = dealer_query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+        if "warehouse" in filters:
+            dealer_query = dealer_query.filter(DeliveryReport.warehouse == filters["warehouse"])
+        if "product" in filters:
+            dealer_query = dealer_query.filter(DeliveryReport.material_no == filters["product"])
+        if "city" in filters:
+            dealer_query = dealer_query.filter(DeliveryReport.ship_to_city == filters["city"])
+        if "division" in filters:
+            dealer_query = dealer_query.filter(DeliveryReport.division == filters["division"])
+        if "status" in filters:
+            dealer_query = dealer_query.filter(DeliveryReport.delivery_status == filters["status"])
+        dealer_data = dealer_query.group_by(DeliveryReport.dealer_code, DeliveryReport.customer_name).all()
+
+        dealer_list = []
+        for d in dealer_data:
+            # Compute performance score (simple)
+            revenue_score = min(d.revenue / 1000000, 1) * 40 if d.revenue else 0
+            units_score = min(d.units / 1000, 1) * 30 if d.units else 0
+            delivery_score = max(0, (5 - (d.avg_delivery or 0)) / 5) * 20
+            perf_score = min(revenue_score + units_score + delivery_score, 100)
+            dealer_list.append({
+                "dealer_name": d.customer_name or d.dealer_code,
+                "dealer_code": d.dealer_code,
+                "revenue": d.revenue or 0.0,
+                "units": d.units or 0,
+                "delivery_notes": d.dn or 0,
+                "average_delivery_days": d.avg_delivery or 0.0,
+                "performance_score": perf_score,
+                "growth_percentage": 0.0,  # placeholder
+                "ai_recommendation": "Top performer – consider loyalty rewards." if perf_score >= 80 else "Needs improvement – provide training."
+            })
+
+        # --- Product performance (simplified) ---
+        product_query = session.query(
+            DeliveryReport.material_no,
+            DeliveryReport.customer_model,
+            func.sum(DeliveryReport.dn_amount).label('revenue'),
+            func.sum(DeliveryReport.dn_qty).label('units'),
+            func.count(DeliveryReport.dn_no).label('dn')
+        ).filter(DeliveryReport.material_no.isnot(None))
+        # Apply filters
+        if "start_date" in filters:
+            product_query = product_query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+        if "end_date" in filters:
+            product_query = product_query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+        if "warehouse" in filters:
+            product_query = product_query.filter(DeliveryReport.warehouse == filters["warehouse"])
+        if "dealer" in filters:
+            product_query = product_query.filter(DeliveryReport.dealer_code == filters["dealer"])
+        if "city" in filters:
+            product_query = product_query.filter(DeliveryReport.ship_to_city == filters["city"])
+        if "division" in filters:
+            product_query = product_query.filter(DeliveryReport.division == filters["division"])
+        if "status" in filters:
+            product_query = product_query.filter(DeliveryReport.delivery_status == filters["status"])
+        product_data = product_query.group_by(DeliveryReport.material_no, DeliveryReport.customer_model).all()
+
+        product_list = []
+        for p in product_data:
+            product_list.append({
+                "product_name": p.customer_model or p.material_no,
+                "sku": p.material_no,
+                "revenue": p.revenue or 0.0,
+                "units": p.units or 0,
+                "slow_moving_flag": p.units < 100 if p.units else False,
+                "fast_moving_flag": p.units > 300 if p.units else False,
+                "growth_percentage": 0.0,
+                "ai_recommendation": "Increase inventory and promote sales." if p.units > 300 else "Monitor performance."
+            })
+
+        # --- City performance (simplified) ---
+        city_query = session.query(
+            DeliveryReport.ship_to_city,
+            func.sum(DeliveryReport.dn_amount).label('revenue'),
+            func.sum(DeliveryReport.dn_qty).label('units'),
+            func.count(DeliveryReport.dn_no).label('dn')
+        ).filter(DeliveryReport.ship_to_city.isnot(None))
+        # Apply filters
+        if "start_date" in filters:
+            city_query = city_query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+        if "end_date" in filters:
+            city_query = city_query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+        if "warehouse" in filters:
+            city_query = city_query.filter(DeliveryReport.warehouse == filters["warehouse"])
+        if "dealer" in filters:
+            city_query = city_query.filter(DeliveryReport.dealer_code == filters["dealer"])
+        if "product" in filters:
+            city_query = city_query.filter(DeliveryReport.material_no == filters["product"])
+        if "division" in filters:
+            city_query = city_query.filter(DeliveryReport.division == filters["division"])
+        if "status" in filters:
+            city_query = city_query.filter(DeliveryReport.delivery_status == filters["status"])
+        city_data = city_query.group_by(DeliveryReport.ship_to_city).all()
+
+        city_list = []
+        for c in city_data:
+            city_list.append({
+                "city": c.ship_to_city,
+                "revenue": c.revenue or 0.0,
+                "units": c.units or 0,
+                "risk_level": "Low"  # placeholder
+            })
+
+        # --- Alerts ---
+        alerts = []
+        if total_dn == 0:
+            alerts.append({
+                "level": "warning",
+                "message": "No delivery notes found. Upload data to see analytics.",
+                "action": "Upload an Excel file using the form above."
+            })
+        else:
+            if total_dn > 0 and pod_rate < 80:
+                alerts.append({
+                    "level": "warning",
+                    "message": f"POD completion rate is {pod_rate:.1f}% below target (80%).",
+                    "action": "Investigate proof of delivery bottlenecks."
+                })
+            if revenue_growth > 5:
+                alerts.append({
+                    "level": "normal",
+                    "message": f"Revenue growth is {revenue_growth:.1f}% – positive trend.",
+                    "action": "Maintain current strategies."
+                })
+            # Add critical alert if no data for last 30 days
+            if current_30_rev == 0:
+                alerts.append({
+                    "level": "critical",
+                    "message": "No revenue in the last 30 days. Check recent deliveries.",
+                    "action": "Verify data import and delivery activity."
+                })
+
+        # --- Recommendations (simple) ---
+        recommendations = []
+        for wh in warehouse_list:
+            if wh["risk_level"] == "High":
+                recommendations.append({
+                    "entity": wh["warehouse_name"],
+                    "type": "warehouse",
+                    "risk": "High",
+                    "recommendation": "Urgent intervention required: capacity and delivery issues.",
+                    "priority": "Critical"
+                })
+        for dlr in dealer_list:
+            if dlr["performance_score"] < 50:
+                recommendations.append({
+                    "entity": dlr["dealer_name"],
+                    "type": "dealer",
+                    "risk": "High",
+                    "recommendation": "Provide additional support and training.",
+                    "priority": "High"
+                })
+        for prod in product_list:
+            if prod["slow_moving_flag"]:
+                recommendations.append({
+                    "entity": prod["product_name"],
+                    "type": "product",
+                    "risk": "Low",
+                    "recommendation": "Consider discounting or discontinuing.",
+                    "priority": "Medium"
+                })
+
+        # --- Metadata ---
+        metadata = {
+            "application_version": "16.3.0",
+            "record_count": total_dn,
+            "last_refresh": datetime.now().isoformat(),
+            "environment": os.getenv("ENVIRONMENT", "production"),
+            "generated_by": "Dashboard API (Direct PostgreSQL)"
+        }
+
+        # Build final JSON
+        dashboard_json = {
+            "cards": cards,
+            "charts": {
+                "revenue_trend": {"labels": months, "data": revenue_data},
+                "units_trend": {"labels": months, "data": units_data},
+                "dn_trend": {"labels": months, "data": dn_data},
+                "pod_trend": {"labels": months, "data": pod_data},
+                "daily_trend": {"labels": daily_dates, "data": daily_rev_data}
+            },
+            "warehouse": warehouse_list,
+            "dealer": dealer_list,
+            "product": product_list,
+            "city": city_list,
+            "alerts": alerts,
+            "recommendations": recommendations,
+            "metadata": metadata,
+            "filters": filters,
+            "exports": {
+                "pdf": "/dashboard/export/pdf",
+                "excel": "/dashboard/export/excel",
+                "pptx": "/dashboard/export/pptx",
+                "csv": "/dashboard/export/csv"
+            }
+        }
+
+        return dashboard_json
+
+print("✅ Dashboard data endpoint added (direct PostgreSQL integration)")
+print("=" * 60)
+
