@@ -1953,7 +1953,7 @@ print("🔧 ADDING DASHBOARD DATA ENDPOINT - v16.3")
 print("=" * 60)
 
 from datetime import datetime, timedelta
-from sqlalchemy import func, and_, extract
+from sqlalchemy import func, and_, extract, Integer
 import asyncio
 import hashlib
 import json
@@ -2078,8 +2078,6 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
         active_products = len(products)
 
         # Simple growth (compare with previous period - last 30 days vs previous 30 days)
-        # For simplicity, we'll compute based on total revenue difference from last month
-        # We'll get revenue for last 30 days and previous 30 days
         today = datetime.now().date()
         last_30_start = today - timedelta(days=30)
         prev_30_start = today - timedelta(days=60)
@@ -2109,13 +2107,11 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
         prev_30_rev = get_revenue(prev_30_start, prev_30_end)
         revenue_growth = ((current_30_rev - prev_30_rev) / (prev_30_rev or 1)) * 100
 
-        # We'll compute unit growth similarly (approximate)
         def get_units(start_d, end_d):
             q = session.query(func.sum(DeliveryReport.dn_qty)).filter(
                 DeliveryReport.dn_create_date >= start_d,
                 DeliveryReport.dn_create_date <= end_d
             )
-            # Apply same filters
             if "warehouse" in filters:
                 q = q.filter(DeliveryReport.warehouse == filters["warehouse"])
             if "dealer" in filters:
@@ -2134,13 +2130,11 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
         prev_30_units = get_units(prev_30_start, prev_30_end)
         units_growth = ((current_30_units - prev_30_units) / (prev_30_units or 1)) * 100
 
-        # DN growth
         def get_dn(start_d, end_d):
             q = session.query(func.count(DeliveryReport.dn_no)).filter(
                 DeliveryReport.dn_create_date >= start_d,
                 DeliveryReport.dn_create_date <= end_d
             )
-            # Apply same filters
             if "warehouse" in filters:
                 q = q.filter(DeliveryReport.warehouse == filters["warehouse"])
             if "dealer" in filters:
@@ -2159,21 +2153,23 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
         prev_30_dn = get_dn(prev_30_start, prev_30_end)
         dn_growth = ((current_30_dn - prev_30_dn) / (prev_30_dn or 1)) * 100
 
-        # Compute average delivery days (if we have good_issue_date and dn_create_date)
-        # For simplicity, we'll compute average difference in days
-        avg_delivery = base_query.with_entities(
-            func.avg(func.datediff('day', DeliveryReport.dn_create_date, DeliveryReport.good_issue_date))
-        ).scalar() or 0.0
+        # Compute average delivery days (PostgreSQL compatible)
+        # Using EXTRACT(DAY FROM AGE(good_issue_date, dn_create_date))
+        avg_delivery_query = base_query.with_entities(
+            func.avg(
+                func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date))
+            )
+        )
+        avg_delivery = avg_delivery_query.scalar() or 0.0
 
-        # POD completion rate (if we have pod_status)
+        # POD completion rate (using pod_status)
         pod_completed = base_query.filter(DeliveryReport.pod_status == 'Delivered').count()
         total_with_pod = base_query.filter(DeliveryReport.pod_status.isnot(None)).count()
         pod_rate = (pod_completed / (total_with_pod or 1)) * 100
 
-        # For now, we'll set OTIF and other metrics to 0 if not available
         otif = 0.0  # placeholder
 
-        # Build KPI cards (matching frontend expectations)
+        # Build KPI cards
         cards = {
             "revenue": {
                 "value": total_revenue,
@@ -2242,7 +2238,6 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
         }
 
         # --- Charts: Monthly trends ---
-        # Group by month on dn_create_date
         monthly_revenue = session.query(
             func.date_trunc('month', DeliveryReport.dn_create_date).label('month'),
             func.sum(DeliveryReport.dn_amount).label('revenue')
@@ -2258,15 +2253,13 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
             func.count(DeliveryReport.dn_no).label('dn')
         ).group_by('month').order_by('month').all()
 
-        # For POD rate, we need to compute per month from pod_status
-        # Simplified: for each month, count delivered vs total
         monthly_pod = session.query(
             func.date_trunc('month', DeliveryReport.dn_create_date).label('month'),
             func.count(DeliveryReport.id).label('total'),
-            func.sum(func.cast(DeliveryReport.pod_status == 'Delivered', type_=int)).label('delivered')
+            func.sum(func.cast(DeliveryReport.pod_status == 'Delivered', Integer)).label('delivered')
         ).group_by('month').order_by('month').all()
 
-        months = [str(m.month) for m in monthly_revenue]  # or format as YYYY-MM
+        months = [str(m.month) for m in monthly_revenue]
         revenue_data = [m.revenue for m in monthly_revenue]
         units_data = [m.units for m in monthly_units]
         dn_data = [m.dn for m in monthly_dn]
@@ -2288,9 +2281,11 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
             func.sum(DeliveryReport.dn_amount).label('revenue'),
             func.sum(DeliveryReport.dn_qty).label('units'),
             func.count(DeliveryReport.dn_no).label('dn'),
-            func.avg(func.datediff('day', DeliveryReport.dn_create_date, DeliveryReport.good_issue_date)).label('avg_delivery')
+            func.avg(
+                func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date))
+            ).label('avg_delivery')
         ).filter(DeliveryReport.warehouse.isnot(None))
-        # Apply filters (except warehouse itself)
+
         if "start_date" in filters:
             warehouse_query = warehouse_query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
         if "end_date" in filters:
@@ -2305,12 +2300,11 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
             warehouse_query = warehouse_query.filter(DeliveryReport.division == filters["division"])
         if "status" in filters:
             warehouse_query = warehouse_query.filter(DeliveryReport.delivery_status == filters["status"])
+
         warehouse_data = warehouse_query.group_by(DeliveryReport.warehouse).all()
 
         warehouse_list = []
         for w in warehouse_data:
-            # Compute simple grade and risk (placeholder)
-            otif = 0.0
             avg_del = w.avg_delivery or 0.0
             grade = "A" if avg_del <= 2 else "B" if avg_del <= 4 else "C"
             risk = "Low" if avg_del <= 2 else "Medium" if avg_del <= 4 else "High"
@@ -2321,7 +2315,7 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
                 "units": w.units or 0,
                 "delivery_notes": w.dn or 0,
                 "average_delivery_days": avg_del,
-                "otif": otif,
+                "otif": 0.0,
                 "performance_grade": grade,
                 "risk_level": risk,
                 "ai_recommendation": "Maintain current operations." if grade in ("A","B") else "Review processes."
@@ -2334,9 +2328,11 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
             func.sum(DeliveryReport.dn_amount).label('revenue'),
             func.sum(DeliveryReport.dn_qty).label('units'),
             func.count(DeliveryReport.dn_no).label('dn'),
-            func.avg(func.datediff('day', DeliveryReport.dn_create_date, DeliveryReport.good_issue_date)).label('avg_delivery')
+            func.avg(
+                func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date))
+            ).label('avg_delivery')
         ).filter(DeliveryReport.dealer_code.isnot(None))
-        # Apply filters (except dealer)
+
         if "start_date" in filters:
             dealer_query = dealer_query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
         if "end_date" in filters:
@@ -2351,11 +2347,11 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
             dealer_query = dealer_query.filter(DeliveryReport.division == filters["division"])
         if "status" in filters:
             dealer_query = dealer_query.filter(DeliveryReport.delivery_status == filters["status"])
+
         dealer_data = dealer_query.group_by(DeliveryReport.dealer_code, DeliveryReport.customer_name).all()
 
         dealer_list = []
         for d in dealer_data:
-            # Compute performance score (simple)
             revenue_score = min(d.revenue / 1000000, 1) * 40 if d.revenue else 0
             units_score = min(d.units / 1000, 1) * 30 if d.units else 0
             delivery_score = max(0, (5 - (d.avg_delivery or 0)) / 5) * 20
@@ -2368,11 +2364,11 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
                 "delivery_notes": d.dn or 0,
                 "average_delivery_days": d.avg_delivery or 0.0,
                 "performance_score": perf_score,
-                "growth_percentage": 0.0,  # placeholder
+                "growth_percentage": 0.0,
                 "ai_recommendation": "Top performer – consider loyalty rewards." if perf_score >= 80 else "Needs improvement – provide training."
             })
 
-        # --- Product performance (simplified) ---
+        # --- Product performance ---
         product_query = session.query(
             DeliveryReport.material_no,
             DeliveryReport.customer_model,
@@ -2380,7 +2376,7 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
             func.sum(DeliveryReport.dn_qty).label('units'),
             func.count(DeliveryReport.dn_no).label('dn')
         ).filter(DeliveryReport.material_no.isnot(None))
-        # Apply filters
+
         if "start_date" in filters:
             product_query = product_query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
         if "end_date" in filters:
@@ -2395,6 +2391,7 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
             product_query = product_query.filter(DeliveryReport.division == filters["division"])
         if "status" in filters:
             product_query = product_query.filter(DeliveryReport.delivery_status == filters["status"])
+
         product_data = product_query.group_by(DeliveryReport.material_no, DeliveryReport.customer_model).all()
 
         product_list = []
@@ -2410,14 +2407,14 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
                 "ai_recommendation": "Increase inventory and promote sales." if p.units > 300 else "Monitor performance."
             })
 
-        # --- City performance (simplified) ---
+        # --- City performance ---
         city_query = session.query(
             DeliveryReport.ship_to_city,
             func.sum(DeliveryReport.dn_amount).label('revenue'),
             func.sum(DeliveryReport.dn_qty).label('units'),
             func.count(DeliveryReport.dn_no).label('dn')
         ).filter(DeliveryReport.ship_to_city.isnot(None))
-        # Apply filters
+
         if "start_date" in filters:
             city_query = city_query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
         if "end_date" in filters:
@@ -2432,6 +2429,7 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
             city_query = city_query.filter(DeliveryReport.division == filters["division"])
         if "status" in filters:
             city_query = city_query.filter(DeliveryReport.delivery_status == filters["status"])
+
         city_data = city_query.group_by(DeliveryReport.ship_to_city).all()
 
         city_list = []
@@ -2440,7 +2438,7 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
                 "city": c.ship_to_city,
                 "revenue": c.revenue or 0.0,
                 "units": c.units or 0,
-                "risk_level": "Low"  # placeholder
+                "risk_level": "Low"
             })
 
         # --- Alerts ---
@@ -2464,7 +2462,6 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
                     "message": f"Revenue growth is {revenue_growth:.1f}% – positive trend.",
                     "action": "Maintain current strategies."
                 })
-            # Add critical alert if no data for last 30 days
             if current_30_rev == 0:
                 alerts.append({
                     "level": "critical",
@@ -2472,7 +2469,7 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
                     "action": "Verify data import and delivery activity."
                 })
 
-        # --- Recommendations (simple) ---
+        # --- Recommendations ---
         recommendations = []
         for wh in warehouse_list:
             if wh["risk_level"] == "High":
@@ -2541,4 +2538,3 @@ def _fetch_dashboard_data(filters: Dict[str, Any]) -> Dict[str, Any]:
 
 print("✅ Dashboard data endpoint added (direct PostgreSQL integration)")
 print("=" * 60)
-
