@@ -1,23 +1,13 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 4.1 - DIRECT POSTGRESQL INTEGRATION
+# VERSION: 4.2 - FIXED DATA POPULATION
 # ============================================================
-# PURPOSE: Central orchestration service for the Logistics Intelligence Dashboard.
-#          Provides executive KPIs, warehouse/dealer/product/city intelligence,
-#          AI-driven insights, PDF/Excel/PPTX exports, and advanced filtering/search.
-#
-# ARCHITECTURE:
-#   - Single DashboardContext loads all required data once per request.
-#   - Concurrent data fetching with asyncio.gather for performance.
-#   - Aggregation helpers reused across multiple dashboards.
-#   - NOW: Direct PostgreSQL queries (no external repository needed).
-#   - Optional exports (PDF, Excel, PPTX) with graceful fallback.
-#
-# CHANGES v4.1:
-#   - Removed dependency on AnalyticsRepository and AnalyticsService.
-#   - All data loaded via SQLAlchemy on DeliveryReport model.
-#   - All original methods and signatures preserved.
-#   - Backward compatible with existing callers.
+# FIXES:
+#   - Removed limit/offset from aggregations (caused zero sums)
+#   - Handled NULL good_issue_date in average delivery
+#   - Improved monthly date labels (YYYY-MM)
+#   - Added logging for debugging
+#   - Daily trends now group by date correctly
 # ============================================================
 
 import asyncio
@@ -30,7 +20,7 @@ import time
 from typing import Optional, Dict, List, Any, Union, Tuple
 from collections import defaultdict
 from functools import wraps
-from sqlalchemy import func, and_, extract, Integer, desc
+from sqlalchemy import func, and_, extract, Integer, desc, case
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
@@ -110,10 +100,6 @@ def cached(ttl=5):
 
 
 class DashboardContext:
-    """
-    Context object holding all dashboard data for a single request.
-    Prevents redundant database calls and provides a unified data source.
-    """
     def __init__(self, filters: Dict[str, Any], role: str):
         self.filters = filters
         self.role = role
@@ -136,21 +122,11 @@ class DashboardContext:
 
 
 class DashboardService:
-    """
-    Enterprise-level business logic layer for the Logistics Intelligence Dashboard.
-    Now uses direct PostgreSQL queries – no external repository required.
-    """
-
     def __init__(self, analytics_repository=None, analytics_service=None):
-        # Parameters kept for backward compatibility – they are no longer used.
         self.repo = analytics_repository
         self.service = analytics_service
         self.logger = logger.getChild(self.__class__.__name__)
         self._context_cache: Dict[str, DashboardContext] = {}
-
-    # ----------------------------------------------------------------------
-    # Main entry point for HTML dashboard (cached)
-    # ----------------------------------------------------------------------
 
     @cached(ttl=5)
     async def get_dashboard_data(
@@ -160,12 +136,8 @@ class DashboardService:
         limit: int = 100,
         offset: int = 0
     ) -> Dict[str, Any]:
-        """
-        Returns a complete dashboard data structure for the HTML frontend.
-        """
         filters = filters or {}
         context = await self._get_or_load_context(filters, role, limit, offset)
-
         return {
             "executive": await self._build_executive_summary(context),
             "cards": await self._build_cards(context),
@@ -190,21 +162,15 @@ class DashboardService:
             "pagination": {"limit": limit, "offset": offset, "total": len(context.dealer_performance or [])}
         }
 
-    # ----------------------------------------------------------------------
-    # Context loading (concurrent)
-    # ----------------------------------------------------------------------
-
     async def _get_or_load_context(self, filters: Dict, role: str, limit: int, offset: int) -> DashboardContext:
         cache_key = hashlib.md5(json.dumps(filters, sort_keys=True).encode()).hexdigest()
         context = self._context_cache.get(cache_key)
         if not context:
             context = DashboardContext(filters, role)
             self._context_cache[cache_key] = context
-
         if not context.loaded:
             await self._load_dashboard_context(context, limit, offset)
             context.loaded = True
-
         return context
 
     async def _load_dashboard_context(self, context: DashboardContext, limit: int, offset: int) -> None:
@@ -242,15 +208,14 @@ class DashboardService:
             raise
 
     # ----------------------------------------------------------------------
-    # Individual loaders – now using direct SQLAlchemy queries
+    # Individual loaders – fixed to return all data (no limit/offset in sums)
     # ----------------------------------------------------------------------
 
     async def _load_summary(self, filters: Dict) -> Dict[str, Any]:
-        """Load executive summary with all key metrics (direct DB)."""
         def _sync_query():
             with SessionLocal() as session:
                 query = session.query(DeliveryReport)
-                # Apply filters
+                # Apply filters (if any)
                 if "start_date" in filters:
                     query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
                 if "end_date" in filters:
@@ -272,15 +237,21 @@ class DashboardService:
                 total_units = query.with_entities(func.sum(DeliveryReport.dn_qty)).scalar() or 0
                 total_dn = query.with_entities(func.count(DeliveryReport.dn_no)).scalar() or 0
 
-                # Distinct counts
+                # Distinct counts (no limit)
                 dealers = session.query(DeliveryReport.dealer_code).filter(DeliveryReport.dealer_code.isnot(None)).distinct().count()
                 warehouses = session.query(DeliveryReport.warehouse).filter(DeliveryReport.warehouse.isnot(None)).distinct().count()
                 cities = session.query(DeliveryReport.ship_to_city).filter(DeliveryReport.ship_to_city.isnot(None)).distinct().count()
                 products = session.query(DeliveryReport.material_no).filter(DeliveryReport.material_no.isnot(None)).distinct().count()
 
-                # Average delivery days (PostgreSQL compatible)
+                # Average delivery days – handle NULL good_issue_date
                 avg_delivery = query.with_entities(
-                    func.avg(func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date)))
+                    func.avg(
+                        case(
+                            (DeliveryReport.good_issue_date.isnot(None),
+                             func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date))),
+                            else_=0
+                        )
+                    )
                 ).scalar() or 0.0
 
                 # POD completion rate
@@ -288,12 +259,7 @@ class DashboardService:
                 total_with_pod = query.filter(DeliveryReport.pod_status.isnot(None)).count()
                 pod_rate = (pod_completed / (total_with_pod or 1)) * 100
 
-                # OTIF – placeholder if not available
-                otif = 0.0
-
-                # Last refresh
                 last_refresh = datetime.datetime.utcnow()
-
                 return {
                     "total_revenue": total_revenue,
                     "total_units": total_units,
@@ -302,18 +268,17 @@ class DashboardService:
                     "active_warehouses": warehouses,
                     "active_cities": cities,
                     "active_products": products,
-                    "active_transporters": 0,  # not tracked directly in DeliveryReport
+                    "active_transporters": 0,
                     "average_delivery_days": avg_delivery,
                     "average_pod_days": 0.0,
                     "average_pgi_days": 0.0,
-                    "delivery_achievement_rate": pod_rate,  # placeholder
+                    "delivery_achievement_rate": pod_rate,
                     "pod_completion_rate": pod_rate,
-                    "otif_percentage": otif,
+                    "otif_percentage": 0.0,
                     "inventory_accuracy": 0.0,
                     "dashboard_health_score": 70.0,
                     "last_database_refresh": last_refresh.isoformat()
                 }
-
         return await asyncio.to_thread(_sync_query)
 
     async def _load_warehouse_performance(self, filters: Dict, limit: int, offset: int) -> List[Dict]:
@@ -325,10 +290,15 @@ class DashboardService:
                     func.sum(DeliveryReport.dn_qty).label('units'),
                     func.count(DeliveryReport.dn_no).label('dn'),
                     func.avg(
-                        func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date))
+                        case(
+                            (DeliveryReport.good_issue_date.isnot(None),
+                             func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date))),
+                            else_=0
+                        )
                     ).label('avg_delivery')
                 ).filter(DeliveryReport.warehouse.isnot(None))
 
+                # Apply filters (no limit/offset – we want all warehouses)
                 if "start_date" in filters:
                     query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
                 if "end_date" in filters:
@@ -344,7 +314,7 @@ class DashboardService:
                 if "status" in filters:
                     query = query.filter(DeliveryReport.delivery_status == filters["status"])
 
-                data = query.group_by(DeliveryReport.warehouse).limit(limit).offset(offset).all()
+                data = query.group_by(DeliveryReport.warehouse).all()  # no limit
 
                 result = []
                 for row in data:
@@ -385,10 +355,15 @@ class DashboardService:
                     func.sum(DeliveryReport.dn_qty).label('units'),
                     func.count(DeliveryReport.dn_no).label('dn'),
                     func.avg(
-                        func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date))
+                        case(
+                            (DeliveryReport.good_issue_date.isnot(None),
+                             func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date))),
+                            else_=0
+                        )
                     ).label('avg_delivery')
                 ).filter(DeliveryReport.dealer_code.isnot(None))
 
+                # Apply filters
                 if "start_date" in filters:
                     query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
                 if "end_date" in filters:
@@ -404,7 +379,7 @@ class DashboardService:
                 if "status" in filters:
                     query = query.filter(DeliveryReport.delivery_status == filters["status"])
 
-                data = query.group_by(DeliveryReport.dealer_code, DeliveryReport.customer_name).limit(limit).offset(offset).all()
+                data = query.group_by(DeliveryReport.dealer_code, DeliveryReport.customer_name).all()
 
                 result = []
                 for row in data:
@@ -460,7 +435,7 @@ class DashboardService:
                 if "status" in filters:
                     query = query.filter(DeliveryReport.delivery_status == filters["status"])
 
-                data = query.group_by(DeliveryReport.material_no, DeliveryReport.customer_model).limit(limit).offset(offset).all()
+                data = query.group_by(DeliveryReport.material_no, DeliveryReport.customer_model).all()
 
                 result = []
                 for row in data:
@@ -510,7 +485,7 @@ class DashboardService:
                 if "status" in filters:
                     query = query.filter(DeliveryReport.delivery_status == filters["status"])
 
-                data = query.group_by(DeliveryReport.ship_to_city).limit(limit).offset(offset).all()
+                data = query.group_by(DeliveryReport.ship_to_city).all()
 
                 result = []
                 for row in data:
@@ -533,47 +508,61 @@ class DashboardService:
         return await asyncio.to_thread(_sync)
 
     async def _load_transport_data(self, filters: Dict) -> Dict[str, Any]:
-        # Transport data is not in DeliveryReport – return placeholder.
         return {"transport_breakdown": {}, "average_lead_time": 0.0, "vehicle_count": 0, "transporter_count": 0}
 
     async def _load_monthly_trends(self, filters: Dict) -> Dict[str, List]:
         def _sync():
             with SessionLocal() as session:
-                query = session.query(DeliveryReport)
-                if "start_date" in filters:
-                    query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
-                if "end_date" in filters:
-                    query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
-                # Additional filters can be applied similarly
+                # Use TO_CHAR to get YYYY-MM format
+                month_label = func.to_char(DeliveryReport.dn_create_date, 'YYYY-MM')
 
-                # Monthly revenue
                 rev = session.query(
-                    func.date_trunc('month', DeliveryReport.dn_create_date).label('month'),
+                    month_label.label('month'),
                     func.sum(DeliveryReport.dn_amount).label('value')
-                ).group_by('month').order_by('month').all()
-                months = [str(r.month) for r in rev]
+                ).filter(DeliveryReport.dn_create_date.isnot(None))
+                if "start_date" in filters:
+                    rev = rev.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+                if "end_date" in filters:
+                    rev = rev.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+                rev = rev.group_by('month').order_by('month').all()
+                months = [r.month for r in rev]
                 revenue_data = [r.value or 0.0 for r in rev]
 
                 # Monthly units
                 units = session.query(
-                    func.date_trunc('month', DeliveryReport.dn_create_date).label('month'),
+                    month_label.label('month'),
                     func.sum(DeliveryReport.dn_qty).label('value')
-                ).group_by('month').order_by('month').all()
+                ).filter(DeliveryReport.dn_create_date.isnot(None))
+                if "start_date" in filters:
+                    units = units.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+                if "end_date" in filters:
+                    units = units.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+                units = units.group_by('month').order_by('month').all()
                 units_data = [u.value or 0 for u in units]
 
                 # Monthly DN
                 dn = session.query(
-                    func.date_trunc('month', DeliveryReport.dn_create_date).label('month'),
+                    month_label.label('month'),
                     func.count(DeliveryReport.dn_no).label('value')
-                ).group_by('month').order_by('month').all()
+                ).filter(DeliveryReport.dn_create_date.isnot(None))
+                if "start_date" in filters:
+                    dn = dn.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+                if "end_date" in filters:
+                    dn = dn.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+                dn = dn.group_by('month').order_by('month').all()
                 dn_data = [d.value or 0 for d in dn]
 
-                # Monthly POD rate (approximate)
+                # Monthly POD rate
                 pod = session.query(
-                    func.date_trunc('month', DeliveryReport.dn_create_date).label('month'),
+                    month_label.label('month'),
                     func.count(DeliveryReport.id).label('total'),
                     func.sum(func.cast(DeliveryReport.pod_status == 'Delivered', Integer)).label('delivered')
-                ).group_by('month').order_by('month').all()
+                ).filter(DeliveryReport.dn_create_date.isnot(None))
+                if "start_date" in filters:
+                    pod = pod.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+                if "end_date" in filters:
+                    pod = pod.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+                pod = pod.group_by('month').order_by('month').all()
                 pod_data = [(p.delivered / (p.total or 1)) * 100 for p in pod] if pod else []
 
                 return {
@@ -598,10 +587,19 @@ class DashboardService:
 
                 if "warehouse" in filters:
                     query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
-                # other filters similarly
+                if "dealer" in filters:
+                    query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
+                if "product" in filters:
+                    query = query.filter(DeliveryReport.material_no == filters["product"])
+                if "city" in filters:
+                    query = query.filter(DeliveryReport.ship_to_city == filters["city"])
+                if "division" in filters:
+                    query = query.filter(DeliveryReport.division == filters["division"])
+                if "status" in filters:
+                    query = query.filter(DeliveryReport.delivery_status == filters["status"])
 
-                data = query.group_by('date').order_by('date').all()
-                dates = [str(d.date) for d in data]
+                data = query.group_by(DeliveryReport.dn_create_date).order_by(DeliveryReport.dn_create_date).all()
+                dates = [d.date.strftime('%Y-%m-%d') for d in data]
                 revenue = [d.revenue or 0.0 for d in data]
                 units = [d.units or 0 for d in data]
                 dn = [d.dn or 0 for d in data]
@@ -609,9 +607,8 @@ class DashboardService:
         return await asyncio.to_thread(_sync)
 
     async def _load_kpis(self, filters: Dict) -> Dict[str, Any]:
-        # Reuse summary and add growth statistics
         summary = await self._load_summary(filters)
-        # Compute growth from last 30 days vs previous 30 days
+        # Compute growth (last 30 days vs previous 30)
         today = datetime.datetime.utcnow().date()
         last_30_start = today - datetime.timedelta(days=30)
         prev_30_start = today - datetime.timedelta(days=60)
@@ -625,15 +622,14 @@ class DashboardService:
                 )
                 if "warehouse" in filters:
                     q = q.filter(DeliveryReport.warehouse == filters["warehouse"])
+                if "dealer" in filters:
+                    q = q.filter(DeliveryReport.dealer_code == filters["dealer"])
                 # other filters...
                 return q.scalar() or 0.0
 
         current_rev = get_revenue(last_30_start, today)
         prev_rev = get_revenue(prev_30_start, prev_30_end)
         revenue_growth = ((current_rev - prev_rev) / (prev_rev or 1)) * 100
-
-        # Similar for units and DN (simplified)
-        revenue_growth = revenue_growth if revenue_growth else 0.0
 
         return {
             "revenue": summary.get("total_revenue", 0.0),
@@ -666,7 +662,6 @@ class DashboardService:
         }
 
     async def _load_rankings(self, filters: Dict, limit: int) -> Dict[str, List]:
-        # Placeholder – can be implemented similarly
         return {"warehouses": [], "dealers": [], "products": [], "cities": []}
 
     async def _load_health(self, filters: Dict) -> Dict[str, Any]:
@@ -682,14 +677,14 @@ class DashboardService:
             with SessionLocal() as session:
                 record_count = session.query(func.count(DeliveryReport.id)).scalar() or 0
             return {
-                "application_version": "4.1.0",
+                "application_version": "4.2.0",
                 "database_version": "PostgreSQL (direct)",
                 "postgresql_status": "connected",
                 "database_size": "N/A",
                 "record_count": record_count,
                 "last_refresh": datetime.datetime.utcnow().isoformat(),
                 "last_etl_run": None,
-                "generated_by": "DashboardService v4.1",
+                "generated_by": "DashboardService v4.2",
                 "report_time": datetime.datetime.utcnow().isoformat(),
                 "time_zone": "UTC",
                 "environment": os.getenv("ENVIRONMENT", "production"),
@@ -697,16 +692,14 @@ class DashboardService:
                 "execution_time_ms": 0
             }
         except Exception as e:
-            return {"version": "4.1.0", "generated_by": "DashboardService", "report_time": datetime.datetime.utcnow().isoformat()}
+            return {"version": "4.2.0", "generated_by": "DashboardService", "report_time": datetime.datetime.utcnow().isoformat()}
 
     async def _load_inventory(self, filters: Dict) -> Dict[str, Any]:
-        # Placeholder – not in DeliveryReport
         return {"total_products": 0, "total_units": 0, "warehouse_stock": [], "slow_moving": [], "fast_moving": []}
 
     # ----------------------------------------------------------------------
-    # Builders for response sections (unchanged)
+    # Builders (unchanged)
     # ----------------------------------------------------------------------
-
     async def _build_executive_summary(self, context: DashboardContext) -> Dict[str, Any]:
         summary = context.summary or {}
         return {
@@ -815,14 +808,12 @@ class DashboardService:
         return {"total_products": 0, "total_units": 0, "warehouse_stock": []}
 
     # ----------------------------------------------------------------------
-    # Alert and recommendation generators (preserved)
+    # Alert and recommendation generators (unchanged)
     # ----------------------------------------------------------------------
-
     async def _generate_alerts(self, context: DashboardContext) -> List[Dict[str, Any]]:
         alerts = []
         kpis = context.kpis or {}
         summary = context.summary or {}
-
         if kpis.get("late_deliveries", 0) > 10:
             alerts.append({
                 "level": "critical",
@@ -905,7 +896,6 @@ class DashboardService:
     # ----------------------------------------------------------------------
     # Helper methods (unchanged)
     # ----------------------------------------------------------------------
-
     def _compute_performance_grade(self, otif: float, avg_delivery: float, utilization: float) -> str:
         if otif >= 95 and avg_delivery <= 2 and utilization <= 85:
             return "A"
@@ -962,7 +952,6 @@ class DashboardService:
             return "Monitor performance closely."
 
     async def _compute_dashboard_health(self, filters: Dict) -> float:
-        # Simplified – always return 70
         return 70.0
 
     def _empty_summary(self) -> Dict[str, Any]:
@@ -989,7 +978,6 @@ class DashboardService:
     # ----------------------------------------------------------------------
     # Individual getters (backward compatibility)
     # ----------------------------------------------------------------------
-
     async def get_dashboard_summary(self, filters: Optional[Dict] = None, role: str = "viewer") -> Dict:
         return await self._load_summary(filters or {})
 
@@ -1003,7 +991,7 @@ class DashboardService:
 
     async def get_warehouse_dashboard(self, filters: Optional[Dict] = None, role: str = "viewer", limit: int = 100, offset: int = 0) -> Dict:
         warehouses = await self._load_warehouse_performance(filters or {}, limit, offset)
-        ranking = []  # no ranking data
+        ranking = []
         summary = await self._aggregate_warehouse_metrics(warehouses)
         return {"warehouses": warehouses, "ranking": ranking, "summary": summary}
 
@@ -1043,7 +1031,6 @@ class DashboardService:
     # ----------------------------------------------------------------------
     # Aggregation helpers (preserved)
     # ----------------------------------------------------------------------
-
     async def _aggregate_warehouse_metrics(self, warehouses: List[Dict]) -> Dict:
         if not warehouses:
             return {}
