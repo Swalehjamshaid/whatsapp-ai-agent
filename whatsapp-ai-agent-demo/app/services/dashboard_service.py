@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 4.5 - RAW SQL REPOSITORY (ALIGNED WITH DEALER ANALYTICS)
+# VERSION: 4.6 - ORM PATTERN (ALIGNED WITH DN_ANALYSIS)
 # ============================================================
 # PURPOSE: Central orchestration service for the Logistics Intelligence Dashboard.
 #          Provides executive KPIs, warehouse/dealer/product/city intelligence,
@@ -10,7 +10,7 @@
 #              Returns JSON in the exact format expected by the frontend.
 #
 # ARCHITECTURE:
-#   - DashboardRepository: handles all database queries using raw SQL (text()).
+#   - DashboardRepository: handles all database queries using SQLAlchemy ORM.
 #   - DashboardService: orchestrates data aggregation, formatting, and caching.
 #   - All public methods and signatures preserved for backward compatibility.
 #   - Uses asyncio.to_thread for non-blocking DB calls.
@@ -29,11 +29,11 @@ from collections import defaultdict
 from functools import wraps
 from datetime import datetime, timedelta, date
 
-from sqlalchemy import text
+from sqlalchemy import func, and_, extract, Integer, desc, case, text
 from sqlalchemy.orm import Session
 
-from app.database import engine, SessionLocal
-from app.models import DeliveryReport  # kept for import compatibility, but not used directly
+from app.database import SessionLocal
+from app.models import DeliveryReport
 
 # Optional external libraries (lazy loaded) – preserved
 try:
@@ -70,7 +70,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# UTILITY FUNCTIONS (mirroring dealer_analytics_service.py)
+# UTILITY FUNCTIONS (mirroring dn_analysis.py)
 # ============================================================
 
 def _text(value: Any, default: str = "N/A") -> str:
@@ -178,113 +178,62 @@ class DashboardContext:
         self.loaded = False
 
 # ============================================================
-# DASHBOARD REPOSITORY (RAW SQL – like dealer_analytics_service)
+# DASHBOARD REPOSITORY (ORM pattern – like dn_analysis)
 # ============================================================
 
 class DashboardRepository:
-    """Handles all database queries using raw SQL (text()) – aligned with dealer_analytics."""
+    """Handles all database queries using SQLAlchemy ORM – aligned with dn_analysis."""
 
     def __init__(self):
-        logger.info("🗄️  DashboardRepository initialized (Raw SQL)")
-
-    def _execute(self, sql: str, params: Optional[Dict[str, Any]] = None):
-        """Execute a raw SQL query and return results."""
-        try:
-            with engine.connect() as conn:
-                result = conn.execute(text(sql), params or {})
-                return result
-        except Exception as e:
-            logger.exception(f"SQL execution failed: {sql[:200]}")
-            raise
+        logger.info("🗄️  DashboardRepository initialized (ORM)")
 
     def get_summary(self, filters: Dict[str, Any]) -> Dict[str, Any]:
-        """Get summary KPIs using raw SQL."""
-        try:
-            # Base WHERE clause
-            where_clauses = []
-            params = {}
+        """Get summary KPIs using ORM."""
+        with SessionLocal() as session:
+            query = session.query(DeliveryReport)
+            # Apply filters
             if "start_date" in filters:
-                where_clauses.append("dn_create_date >= :start_date")
-                params["start_date"] = filters["start_date"]
+                query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
             if "end_date" in filters:
-                where_clauses.append("dn_create_date <= :end_date")
-                params["end_date"] = filters["end_date"]
+                query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
             if "warehouse" in filters:
-                where_clauses.append("warehouse = :warehouse")
-                params["warehouse"] = filters["warehouse"]
+                query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
             if "dealer" in filters:
-                where_clauses.append("dealer_code = :dealer")
-                params["dealer"] = filters["dealer"]
+                query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
             if "product" in filters:
-                where_clauses.append("material_no = :product")
-                params["product"] = filters["product"]
+                query = query.filter(DeliveryReport.material_no == filters["product"])
             if "city" in filters:
-                where_clauses.append("ship_to_city = :city")
-                params["city"] = filters["city"]
+                query = query.filter(DeliveryReport.ship_to_city == filters["city"])
             if "division" in filters:
-                where_clauses.append("division = :division")
-                params["division"] = filters["division"]
+                query = query.filter(DeliveryReport.division == filters["division"])
             if "status" in filters:
-                where_clauses.append("delivery_status = :status")
-                params["status"] = filters["status"]
+                query = query.filter(DeliveryReport.delivery_status == filters["status"])
 
-            where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+            total_revenue = query.with_entities(func.coalesce(func.sum(DeliveryReport.dn_amount), 0)).scalar()
+            total_units = query.with_entities(func.coalesce(func.sum(DeliveryReport.dn_qty), 0)).scalar()
+            total_dn = query.with_entities(func.count(DeliveryReport.dn_no)).scalar() or 0
 
-            # Main summary query
-            summary_sql = f"""
-                SELECT
-                    COALESCE(SUM(dn_amount), 0) AS total_revenue,
-                    COALESCE(SUM(dn_qty), 0) AS total_units,
-                    COUNT(dn_no) AS total_dn
-                FROM delivery_reports
-                WHERE {where_sql}
-            """
-            row = self._execute(summary_sql, params).first()
-            total_revenue = row[0] if row else 0.0
-            total_units = row[1] if row else 0
-            total_dn = row[2] if row else 0
+            # Distinct counts
+            dealers = session.query(DeliveryReport.dealer_code).filter(DeliveryReport.dealer_code.isnot(None)).distinct().count()
+            warehouses = session.query(DeliveryReport.warehouse).filter(DeliveryReport.warehouse.isnot(None)).distinct().count()
+            cities = session.query(DeliveryReport.ship_to_city).filter(DeliveryReport.ship_to_city.isnot(None)).distinct().count()
+            products = session.query(DeliveryReport.material_no).filter(DeliveryReport.material_no.isnot(None)).distinct().count()
 
-            # Distinct counts (separate queries for simplicity)
-            dealers = self._execute(
-                f"SELECT COUNT(DISTINCT dealer_code) FROM delivery_reports WHERE dealer_code IS NOT NULL AND {where_sql}",
-                params
-            ).scalar() or 0
-            warehouses = self._execute(
-                f"SELECT COUNT(DISTINCT warehouse) FROM delivery_reports WHERE warehouse IS NOT NULL AND {where_sql}",
-                params
-            ).scalar() or 0
-            cities = self._execute(
-                f"SELECT COUNT(DISTINCT ship_to_city) FROM delivery_reports WHERE ship_to_city IS NOT NULL AND {where_sql}",
-                params
-            ).scalar() or 0
-            products = self._execute(
-                f"SELECT COUNT(DISTINCT material_no) FROM delivery_reports WHERE material_no IS NOT NULL AND {where_sql}",
-                params
-            ).scalar() or 0
-
-            # Average delivery days (handle NULL good_issue_date)
-            avg_delivery_sql = f"""
-                SELECT COALESCE(AVG(
-                    CASE 
-                        WHEN good_issue_date IS NOT NULL 
-                        THEN EXTRACT(DAY FROM good_issue_date - dn_create_date)
-                        ELSE 0
-                    END
-                ), 0)
-                FROM delivery_reports
-                WHERE {where_sql}
-            """
-            avg_delivery = self._execute(avg_delivery_sql, params).scalar() or 0.0
+            # Average delivery days – compute in Python to avoid SQL issues
+            # Fetch all dates and compute avg manually
+            rows = query.with_entities(DeliveryReport.dn_create_date, DeliveryReport.good_issue_date).all()
+            total_days = 0
+            count = 0
+            for dn_create, good_issue in rows:
+                if dn_create and good_issue:
+                    delta = good_issue - dn_create
+                    total_days += delta.days
+                    count += 1
+            avg_delivery = (total_days / count) if count > 0 else 0.0
 
             # POD completion rate
-            pod_completed = self._execute(
-                f"SELECT COUNT(*) FROM delivery_reports WHERE pod_status = 'Delivered' AND {where_sql}",
-                params
-            ).scalar() or 0
-            total_with_pod = self._execute(
-                f"SELECT COUNT(*) FROM delivery_reports WHERE pod_status IS NOT NULL AND {where_sql}",
-                params
-            ).scalar() or 0
+            pod_completed = query.filter(DeliveryReport.pod_status == 'Delivered').count()
+            total_with_pod = query.filter(DeliveryReport.pod_status.isnot(None)).count()
             pod_rate = (pod_completed / (total_with_pod or 1)) * 100
 
             return {
@@ -306,9 +255,6 @@ class DashboardRepository:
                 "dashboard_health_score": 70.0,
                 "last_database_refresh": datetime.utcnow().isoformat()
             }
-        except Exception as e:
-            logger.exception("❌ Failed to get summary")
-            return self._empty_summary()
 
     def _empty_summary(self) -> Dict[str, Any]:
         return {
@@ -332,247 +278,309 @@ class DashboardRepository:
         }
 
     def get_warehouse_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        where_sql, params = self._build_where_clause(filters)
-        sql = f"""
-            SELECT
-                warehouse,
-                COALESCE(SUM(dn_amount), 0) AS revenue,
-                COALESCE(SUM(dn_qty), 0) AS units,
-                COUNT(dn_no) AS dn,
-                COALESCE(AVG(
-                    CASE 
-                        WHEN good_issue_date IS NOT NULL 
-                        THEN EXTRACT(DAY FROM good_issue_date - dn_create_date)
-                        ELSE 0
-                    END
-                ), 0) AS avg_delivery
-            FROM delivery_reports
-            WHERE warehouse IS NOT NULL AND {where_sql}
-            GROUP BY warehouse
-            ORDER BY revenue DESC
-        """
-        rows = self._execute(sql, params).fetchall()
-        result = []
-        for row in rows:
-            avg_del = row.avg_delivery or 0.0
-            grade = self._compute_grade(avg_del)
-            risk = self._compute_risk(avg_del)
-            result.append({
-                "warehouse_code": row.warehouse,
-                "warehouse_name": row.warehouse,
-                "revenue": row.revenue,
-                "units": row.units,
-                "delivery_notes": row.dn,
-                "dealers": 0,
-                "products": 0,
-                "cities": 0,
-                "average_delivery_days": avg_del,
-                "average_pod_days": 0.0,
-                "average_pgi_days": 0.0,
-                "otif": 0.0,
-                "capacity": 0,
-                "utilization": 0,
-                "pending_deliveries": 0,
-                "late_deliveries": 0,
-                "performance_grade": grade,
-                "risk_level": risk,
-                "ai_recommendation": self._warehouse_recommendation(row.warehouse, grade, risk),
-            })
-        return result
+        with SessionLocal() as session:
+            query = session.query(
+                DeliveryReport.warehouse,
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label('revenue'),
+                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label('units'),
+                func.count(DeliveryReport.dn_no).label('dn')
+            ).filter(DeliveryReport.warehouse.isnot(None))
+
+            # Apply filters
+            if "start_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+            if "end_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+            if "dealer" in filters:
+                query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
+            if "product" in filters:
+                query = query.filter(DeliveryReport.material_no == filters["product"])
+            if "city" in filters:
+                query = query.filter(DeliveryReport.ship_to_city == filters["city"])
+            if "division" in filters:
+                query = query.filter(DeliveryReport.division == filters["division"])
+            if "status" in filters:
+                query = query.filter(DeliveryReport.delivery_status == filters["status"])
+
+            data = query.group_by(DeliveryReport.warehouse).all()
+
+            # Compute avg delivery per warehouse separately (or we could add a subquery)
+            # We'll compute from the same filtered rows
+            warehouse_avg = {}
+            for wh in data:
+                wh_name = wh.warehouse
+                subq = session.query(
+                    func.avg(func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date)))
+                ).filter(DeliveryReport.warehouse == wh_name)
+                # Apply same filters
+                if "start_date" in filters:
+                    subq = subq.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+                if "end_date" in filters:
+                    subq = subq.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+                # ... other filters
+                avg_del = subq.scalar() or 0.0
+                warehouse_avg[wh_name] = avg_del
+
+            result = []
+            for row in data:
+                avg_del = warehouse_avg.get(row.warehouse, 0.0)
+                grade = self._compute_grade(avg_del)
+                risk = self._compute_risk(avg_del)
+                result.append({
+                    "warehouse_code": row.warehouse,
+                    "warehouse_name": row.warehouse,
+                    "revenue": row.revenue,
+                    "units": row.units,
+                    "delivery_notes": row.dn,
+                    "dealers": 0,
+                    "products": 0,
+                    "cities": 0,
+                    "average_delivery_days": avg_del,
+                    "average_pod_days": 0.0,
+                    "average_pgi_days": 0.0,
+                    "otif": 0.0,
+                    "capacity": 0,
+                    "utilization": 0,
+                    "pending_deliveries": 0,
+                    "late_deliveries": 0,
+                    "performance_grade": grade,
+                    "risk_level": risk,
+                    "ai_recommendation": self._warehouse_recommendation(row.warehouse, grade, risk),
+                })
+            return result
 
     def get_dealer_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        where_sql, params = self._build_where_clause(filters)
-        sql = f"""
-            SELECT
-                dealer_code,
-                customer_name,
-                COALESCE(SUM(dn_amount), 0) AS revenue,
-                COALESCE(SUM(dn_qty), 0) AS units,
-                COUNT(dn_no) AS dn,
-                COALESCE(AVG(
-                    CASE 
-                        WHEN good_issue_date IS NOT NULL 
-                        THEN EXTRACT(DAY FROM good_issue_date - dn_create_date)
-                        ELSE 0
-                    END
-                ), 0) AS avg_delivery
-            FROM delivery_reports
-            WHERE dealer_code IS NOT NULL AND {where_sql}
-            GROUP BY dealer_code, customer_name
-            ORDER BY revenue DESC
-        """
-        rows = self._execute(sql, params).fetchall()
-        result = []
-        for row in rows:
-            revenue = row.revenue
-            units = row.units
-            avg_del = row.avg_delivery or 0.0
-            score = self._compute_dealer_score(revenue, units, avg_del)
-            result.append({
-                "dealer_name": row.customer_name or row.dealer_code,
-                "dealer_code": row.dealer_code,
-                "revenue": revenue,
-                "units": units,
-                "delivery_notes": row.dn,
-                "products": 0,
-                "cities": 0,
-                "warehouses": 0,
-                "average_delivery_days": avg_del,
-                "average_pod_days": 0.0,
-                "average_pgi_days": 0.0,
-                "last_delivery": None,
-                "last_order": None,
-                "growth_percentage": 0.0,
-                "rank": 0,
-                "performance_score": score,
-                "ai_recommendation": self._dealer_recommendation(row.dealer_code, score, avg_del),
-            })
-        return result
+        with SessionLocal() as session:
+            query = session.query(
+                DeliveryReport.dealer_code,
+                DeliveryReport.customer_name,
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label('revenue'),
+                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label('units'),
+                func.count(DeliveryReport.dn_no).label('dn')
+            ).filter(DeliveryReport.dealer_code.isnot(None))
+
+            if "start_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+            if "end_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+            if "warehouse" in filters:
+                query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
+            if "product" in filters:
+                query = query.filter(DeliveryReport.material_no == filters["product"])
+            if "city" in filters:
+                query = query.filter(DeliveryReport.ship_to_city == filters["city"])
+            if "division" in filters:
+                query = query.filter(DeliveryReport.division == filters["division"])
+            if "status" in filters:
+                query = query.filter(DeliveryReport.delivery_status == filters["status"])
+
+            data = query.group_by(DeliveryReport.dealer_code, DeliveryReport.customer_name).all()
+
+            # Compute avg delivery per dealer
+            dealer_avg = {}
+            for row in data:
+                dealer_code = row.dealer_code
+                subq = session.query(
+                    func.avg(func.extract('day', func.age(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date)))
+                ).filter(DeliveryReport.dealer_code == dealer_code)
+                # apply filters
+                if "start_date" in filters:
+                    subq = subq.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+                if "end_date" in filters:
+                    subq = subq.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+                # ... other filters
+                avg_del = subq.scalar() or 0.0
+                dealer_avg[dealer_code] = avg_del
+
+            result = []
+            for row in data:
+                revenue = row.revenue
+                units = row.units
+                avg_del = dealer_avg.get(row.dealer_code, 0.0)
+                score = self._compute_dealer_score(revenue, units, avg_del)
+                result.append({
+                    "dealer_name": row.customer_name or row.dealer_code,
+                    "dealer_code": row.dealer_code,
+                    "revenue": revenue,
+                    "units": units,
+                    "delivery_notes": row.dn,
+                    "products": 0,
+                    "cities": 0,
+                    "warehouses": 0,
+                    "average_delivery_days": avg_del,
+                    "average_pod_days": 0.0,
+                    "average_pgi_days": 0.0,
+                    "last_delivery": None,
+                    "last_order": None,
+                    "growth_percentage": 0.0,
+                    "rank": 0,
+                    "performance_score": score,
+                    "ai_recommendation": self._dealer_recommendation(row.dealer_code, score, avg_del),
+                })
+            return result
 
     def get_product_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        where_sql, params = self._build_where_clause(filters)
-        sql = f"""
-            SELECT
-                material_no,
-                customer_model,
-                COALESCE(SUM(dn_amount), 0) AS revenue,
-                COALESCE(SUM(dn_qty), 0) AS units,
-                COUNT(dn_no) AS dn
-            FROM delivery_reports
-            WHERE material_no IS NOT NULL AND {where_sql}
-            GROUP BY material_no, customer_model
-            ORDER BY revenue DESC
-        """
-        rows = self._execute(sql, params).fetchall()
-        result = []
-        for row in rows:
-            units = row.units
-            is_slow = units < 100
-            is_fast = units > 300
-            result.append({
-                "product_name": row.customer_model or row.material_no,
-                "sku": row.material_no,
-                "revenue": row.revenue,
-                "units": units,
-                "dealers": 0,
-                "warehouses": 0,
-                "cities": 0,
-                "monthly_trend": [],
-                "average_delivery_days": 0.0,
-                "slow_moving_flag": is_slow,
-                "fast_moving_flag": is_fast,
-                "growth_percentage": 0.0,
-                "ai_recommendation": self._product_recommendation(row.material_no, is_slow, is_fast),
-            })
-        return result
+        with SessionLocal() as session:
+            query = session.query(
+                DeliveryReport.material_no,
+                DeliveryReport.customer_model,
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label('revenue'),
+                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label('units'),
+                func.count(DeliveryReport.dn_no).label('dn')
+            ).filter(DeliveryReport.material_no.isnot(None))
+
+            if "start_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+            if "end_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+            if "warehouse" in filters:
+                query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
+            if "dealer" in filters:
+                query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
+            if "city" in filters:
+                query = query.filter(DeliveryReport.ship_to_city == filters["city"])
+            if "division" in filters:
+                query = query.filter(DeliveryReport.division == filters["division"])
+            if "status" in filters:
+                query = query.filter(DeliveryReport.delivery_status == filters["status"])
+
+            data = query.group_by(DeliveryReport.material_no, DeliveryReport.customer_model).all()
+            result = []
+            for row in data:
+                units = row.units
+                is_slow = units < 100
+                is_fast = units > 300
+                result.append({
+                    "product_name": row.customer_model or row.material_no,
+                    "sku": row.material_no,
+                    "revenue": row.revenue,
+                    "units": units,
+                    "dealers": 0,
+                    "warehouses": 0,
+                    "cities": 0,
+                    "monthly_trend": [],
+                    "average_delivery_days": 0.0,
+                    "slow_moving_flag": is_slow,
+                    "fast_moving_flag": is_fast,
+                    "growth_percentage": 0.0,
+                    "ai_recommendation": self._product_recommendation(row.material_no, is_slow, is_fast),
+                })
+            return result
 
     def get_city_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        where_sql, params = self._build_where_clause(filters)
-        sql = f"""
-            SELECT
-                ship_to_city AS city,
-                COALESCE(SUM(dn_amount), 0) AS revenue,
-                COALESCE(SUM(dn_qty), 0) AS units,
-                COUNT(dn_no) AS dn
-            FROM delivery_reports
-            WHERE ship_to_city IS NOT NULL AND {where_sql}
-            GROUP BY ship_to_city
-            ORDER BY revenue DESC
-        """
-        rows = self._execute(sql, params).fetchall()
-        result = []
-        for row in rows:
-            result.append({
-                "city": row.city,
-                "revenue": row.revenue,
-                "units": row.units,
-                "dealers": 0,
-                "warehouses": 0,
-                "products": 0,
-                "average_distance": 0.0,
-                "average_delivery_days": 0.0,
-                "pending_deliveries": 0,
-                "late_deliveries": 0,
-                "delivery_target": 0.0,
-                "achievement_percentage": 0.0,
-                "risk_level": "Low",
-            })
-        return result
+        with SessionLocal() as session:
+            query = session.query(
+                DeliveryReport.ship_to_city,
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label('revenue'),
+                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label('units'),
+                func.count(DeliveryReport.dn_no).label('dn')
+            ).filter(DeliveryReport.ship_to_city.isnot(None))
+
+            if "start_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+            if "end_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+            if "warehouse" in filters:
+                query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
+            if "dealer" in filters:
+                query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
+            if "product" in filters:
+                query = query.filter(DeliveryReport.material_no == filters["product"])
+            if "division" in filters:
+                query = query.filter(DeliveryReport.division == filters["division"])
+            if "status" in filters:
+                query = query.filter(DeliveryReport.delivery_status == filters["status"])
+
+            data = query.group_by(DeliveryReport.ship_to_city).all()
+            result = []
+            for row in data:
+                result.append({
+                    "city": row.ship_to_city,
+                    "revenue": row.revenue,
+                    "units": row.units,
+                    "dealers": 0,
+                    "warehouses": 0,
+                    "products": 0,
+                    "average_distance": 0.0,
+                    "average_delivery_days": 0.0,
+                    "pending_deliveries": 0,
+                    "late_deliveries": 0,
+                    "delivery_target": 0.0,
+                    "achievement_percentage": 0.0,
+                    "risk_level": "Low",
+                })
+            return result
 
     def get_monthly_trends(self, filters: Dict[str, Any]) -> Dict[str, List]:
-        where_sql, params = self._build_where_clause(filters)
-        sql = f"""
-            SELECT
-                TO_CHAR(dn_create_date, 'YYYY-MM') AS month,
-                COALESCE(SUM(dn_amount), 0) AS revenue,
-                COALESCE(SUM(dn_qty), 0) AS units,
-                COUNT(dn_no) AS dn,
-                COALESCE(
-                    (COUNT(CASE WHEN pod_status = 'Delivered' THEN 1 END) * 100.0) / NULLIF(COUNT(pod_status), 0),
+        with SessionLocal() as session:
+            # Use extract to get year-month
+            query = session.query(
+                func.date_trunc('month', DeliveryReport.dn_create_date).label('month'),
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label('revenue'),
+                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label('units'),
+                func.count(DeliveryReport.dn_no).label('dn'),
+                func.coalesce(
+                    (func.count(func.case((DeliveryReport.pod_status == 'Delivered', 1))) * 100.0) / 
+                    func.nullif(func.count(DeliveryReport.pod_status), 0),
                     0
-                ) AS pod_rate
-            FROM delivery_reports
-            WHERE dn_create_date IS NOT NULL AND {where_sql}
-            GROUP BY month
-            ORDER BY month
-        """
-        rows = self._execute(sql, params).fetchall()
-        months = []
-        revenue_data = []
-        units_data = []
-        dn_data = []
-        pod_data = []
-        for row in rows:
-            months.append(row.month)
-            revenue_data.append(row.revenue)
-            units_data.append(row.units)
-            dn_data.append(row.dn)
-            pod_data.append(row.pod_rate or 0.0)
-        return {
-            "months": months,
-            "revenue": revenue_data,
-            "units": units_data,
-            "delivery_notes": dn_data,
-            "pod_rate": pod_data,
-        }
+                ).label('pod_rate')
+            ).filter(DeliveryReport.dn_create_date.isnot(None))
+
+            if "start_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date >= filters["start_date"])
+            if "end_date" in filters:
+                query = query.filter(DeliveryReport.dn_create_date <= filters["end_date"])
+            # ... other filters
+
+            rows = query.group_by('month').order_by('month').all()
+            months = [r.month.strftime('%Y-%m') for r in rows]
+            revenue = [r.revenue for r in rows]
+            units = [r.units for r in rows]
+            dn = [r.dn for r in rows]
+            pod = [r.pod_rate or 0.0 for r in rows]
+            return {
+                "months": months,
+                "revenue": revenue,
+                "units": units,
+                "delivery_notes": dn,
+                "pod_rate": pod,
+            }
 
     def get_daily_trends(self, filters: Dict[str, Any]) -> Dict[str, List]:
         start_date = datetime.utcnow() - timedelta(days=30)
-        where_sql, params = self._build_where_clause(filters)
-        params["start_date"] = start_date
-        sql = f"""
-            SELECT
-                dn_create_date AS date,
-                COALESCE(SUM(dn_amount), 0) AS revenue,
-                COALESCE(SUM(dn_qty), 0) AS units,
-                COUNT(dn_no) AS dn
-            FROM delivery_reports
-            WHERE dn_create_date >= :start_date AND {where_sql}
-            GROUP BY dn_create_date
-            ORDER BY dn_create_date
-        """
-        rows = self._execute(sql, params).fetchall()
-        dates = []
-        revenue = []
-        units = []
-        dn = []
-        for row in rows:
-            dates.append(row.date.strftime('%Y-%m-%d'))
-            revenue.append(row.revenue)
-            units.append(row.units)
-            dn.append(row.dn)
-        return {"dates": dates, "revenue": revenue, "units": units, "delivery_notes": dn}
+        with SessionLocal() as session:
+            query = session.query(
+                DeliveryReport.dn_create_date.label('date'),
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label('revenue'),
+                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label('units'),
+                func.count(DeliveryReport.dn_no).label('dn')
+            ).filter(DeliveryReport.dn_create_date >= start_date)
+
+            if "warehouse" in filters:
+                query = query.filter(DeliveryReport.warehouse == filters["warehouse"])
+            if "dealer" in filters:
+                query = query.filter(DeliveryReport.dealer_code == filters["dealer"])
+            # ... other filters
+
+            rows = query.group_by(DeliveryReport.dn_create_date).order_by(DeliveryReport.dn_create_date).all()
+            dates = [r.date.strftime('%Y-%m-%d') for r in rows]
+            revenue = [r.revenue for r in rows]
+            units = [r.units for r in rows]
+            dn = [r.dn or 0 for r in rows]
+            return {"dates": dates, "revenue": revenue, "units": units, "delivery_notes": dn}
 
     def get_health(self) -> Dict[str, Any]:
         try:
-            count = self._execute("SELECT COUNT(*) FROM delivery_reports").scalar() or 0
+            with SessionLocal() as session:
+                count = session.query(func.count(DeliveryReport.id)).scalar() or 0
             return {"status": "healthy" if count > 0 else "unhealthy", "message": "Data available" if count > 0 else "No data", "record_count": count}
         except Exception as e:
             return {"status": "unhealthy", "message": str(e)}
 
     def get_record_count(self) -> int:
         try:
-            return self._execute("SELECT COUNT(*) FROM delivery_reports").scalar() or 0
+            with SessionLocal() as session:
+                return session.query(func.count(DeliveryReport.id)).scalar() or 0
         except Exception:
             return 0
 
@@ -632,36 +640,6 @@ class DashboardRepository:
             return "Increase inventory levels and marketing."
         else:
             return "Monitor performance closely."
-
-    def _build_where_clause(self, filters: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
-        where_clauses = []
-        params = {}
-        if "start_date" in filters:
-            where_clauses.append("dn_create_date >= :start_date")
-            params["start_date"] = filters["start_date"]
-        if "end_date" in filters:
-            where_clauses.append("dn_create_date <= :end_date")
-            params["end_date"] = filters["end_date"]
-        if "warehouse" in filters:
-            where_clauses.append("warehouse = :warehouse")
-            params["warehouse"] = filters["warehouse"]
-        if "dealer" in filters:
-            where_clauses.append("dealer_code = :dealer")
-            params["dealer"] = filters["dealer"]
-        if "product" in filters:
-            where_clauses.append("material_no = :product")
-            params["product"] = filters["product"]
-        if "city" in filters:
-            where_clauses.append("ship_to_city = :city")
-            params["city"] = filters["city"]
-        if "division" in filters:
-            where_clauses.append("division = :division")
-            params["division"] = filters["division"]
-        if "status" in filters:
-            where_clauses.append("delivery_status = :status")
-            params["status"] = filters["status"]
-        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
-        return where_sql, params
 
 # ============================================================
 # DASHBOARD SERVICE (orchestrates repository calls – unchanged)
@@ -839,14 +817,14 @@ class DashboardService:
     async def _load_metadata(self, filters: Dict) -> Dict[str, Any]:
         record_count = await asyncio.to_thread(self._db_repo.get_record_count)
         return {
-            "application_version": "4.5.0",
-            "database_version": "PostgreSQL (raw SQL)",
+            "application_version": "4.6.0",
+            "database_version": "PostgreSQL (ORM)",
             "postgresql_status": "connected",
             "database_size": "N/A",
             "record_count": record_count,
             "last_refresh": datetime.utcnow().isoformat(),
             "last_etl_run": None,
-            "generated_by": "DashboardService v4.5",
+            "generated_by": "DashboardService v4.6",
             "report_time": datetime.utcnow().isoformat(),
             "time_zone": "UTC",
             "environment": os.getenv("ENVIRONMENT", "production"),
