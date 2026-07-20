@@ -1,7 +1,7 @@
 <!-- ===================================================== -->
 <!-- FILE: app/templates/dashboard.html -->
 <!-- PROJECT: AI WhatsApp Customer Service Agent -->
-<!-- VERSION: 4.0 - ENTERPRISE LOGISTICS INTELLIGENCE DASHBOARD -->
+<!-- VERSION: 4.1 - FILTER BAR REMOVED -->
 <!-- ===================================================== -->
 
 <!DOCTYPE html>
@@ -117,14 +117,6 @@
             color: #0c5460;
         }
 
-        .filter-bar {
-            background: white;
-            padding: 1.25rem 1.5rem;
-            border-radius: 16px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-            margin-bottom: 1.5rem;
-        }
-
         .chart-container {
             position: relative;
             height: 280px;
@@ -149,7 +141,6 @@
             flex: 1;
             min-width: 180px;
         }
-        /* Preserve original upload input styles */
         .upload-form input[type="file"],
         .upload-form select,
         .search-form input[type="text"],
@@ -255,72 +246,6 @@
         </div>
     </div>
 
-    <!-- Filter Bar -->
-    <div class="filter-bar">
-        <form id="filterForm" class="row g-3 align-items-end">
-            <div class="col-md-2 col-sm-6">
-                <label class="form-label fw-bold small text-muted">Date Range</label>
-                <input type="date" class="form-control form-control-sm" id="filterDateStart" placeholder="Start">
-            </div>
-            <div class="col-md-2 col-sm-6">
-                <label class="form-label fw-bold small text-muted">&nbsp;</label>
-                <input type="date" class="form-control form-control-sm" id="filterDateEnd" placeholder="End">
-            </div>
-            <div class="col-md-2 col-sm-6">
-                <label class="form-label fw-bold small text-muted">Warehouse</label>
-                <select class="form-select form-select-sm" id="filterWarehouse">
-                    <option value="">All</option>
-                    <!-- populated by JS -->
-                </select>
-            </div>
-            <div class="col-md-2 col-sm-6">
-                <label class="form-label fw-bold small text-muted">Dealer</label>
-                <select class="form-select form-select-sm" id="filterDealer">
-                    <option value="">All</option>
-                </select>
-            </div>
-            <div class="col-md-2 col-sm-6">
-                <label class="form-label fw-bold small text-muted">Product</label>
-                <select class="form-select form-select-sm" id="filterProduct">
-                    <option value="">All</option>
-                </select>
-            </div>
-            <div class="col-md-2 col-sm-6">
-                <label class="form-label fw-bold small text-muted">City</label>
-                <select class="form-select form-select-sm" id="filterCity">
-                    <option value="">All</option>
-                </select>
-            </div>
-            <div class="col-md-2 col-sm-6">
-                <label class="form-label fw-bold small text-muted">Division</label>
-                <select class="form-select form-select-sm" id="filterDivision">
-                    <option value="">All</option>
-                </select>
-            </div>
-            <div class="col-md-2 col-sm-6">
-                <label class="form-label fw-bold small text-muted">Transporter</label>
-                <select class="form-select form-select-sm" id="filterTransporter">
-                    <option value="">All</option>
-                </select>
-            </div>
-            <div class="col-md-2 col-sm-6">
-                <label class="form-label fw-bold small text-muted">Status</label>
-                <select class="form-select form-select-sm" id="filterStatus">
-                    <option value="">All</option>
-                    <option value="Pending">Pending</option>
-                    <option value="Delivered">Delivered</option>
-                    <option value="In Transit">In Transit</option>
-                </select>
-            </div>
-            <div class="col-md-1 col-sm-6">
-                <button type="button" class="btn btn-success btn-sm w-100" id="applyFilters"><i class="fas fa-filter me-1"></i> Apply</button>
-            </div>
-            <div class="col-md-1 col-sm-6">
-                <button type="button" class="btn btn-outline-secondary btn-sm w-100" id="resetFilters"><i class="fas fa-undo me-1"></i> Reset</button>
-            </div>
-        </form>
-    </div>
-
     <!-- KPI Cards (dynamically rendered) -->
     <div id="kpiCards" class="row g-3 mb-4"></div>
 
@@ -361,7 +286,6 @@
         <div class="col-md-6">
             <div class="card p-4">
                 <h6 class="section-title"><i class="fas fa-upload me-2 text-primary"></i>Upload Logistics Report</h6>
-                <!-- EXACTLY THE ORIGINAL UPLOAD FORM -->
                 <form class="upload-form" action="/upload/excel" method="post" enctype="multipart/form-data">
                     <div class="form-group">
                         <label>Excel File (.xlsx, .xls)</label>
@@ -381,7 +305,6 @@
         <div class="col-md-6">
             <div class="card p-4">
                 <h6 class="section-title"><i class="fas fa-search me-2 text-primary"></i>Search Deliveries</h6>
-                <!-- EXACTLY THE ORIGINAL SEARCH FORM -->
                 <form class="search-form" action="/search" method="get">
                     <input type="text" name="q" placeholder="Search by DN, Dealer, Customer, or City..." required>
                     <select name="search_type">
@@ -430,7 +353,7 @@
     <div class="footer">
         <div class="row">
             <div class="col-md-6 text-md-start">
-                <i class="fas fa-code-branch me-1"></i> v4.0.0 &nbsp;|&nbsp;
+                <i class="fas fa-code-branch me-1"></i> v4.1.0 &nbsp;|&nbsp;
                 <i class="fas fa-database me-1"></i> PostgreSQL &nbsp;|&nbsp;
                 <i class="fas fa-sync me-1"></i> <span id="footerRefresh">Just now</span>
             </div>
@@ -449,7 +372,7 @@
 
 <script>
     // ============================================================
-    // Dashboard JavaScript - v4.0
+    // Dashboard JavaScript - v4.1 (Filter Bar Removed)
     // ============================================================
 
     let dashboardData = {};
@@ -480,10 +403,9 @@
     // Fetch dashboard data
     // ============================================================
 
-    async function fetchDashboard(filters = {}) {
+    async function fetchDashboard() {
         try {
-            const params = new URLSearchParams(filters);
-            const response = await fetch('/dashboard/api/data?' + params.toString());
+            const response = await fetch('/dashboard/api/data');
             if (!response.ok) throw new Error('Network response was not ok');
             dashboardData = await response.json();
             renderDashboard(dashboardData);
@@ -514,7 +436,6 @@
         renderWarehouseGrid(data.warehouse || []);
         renderDealerGrid(data.dealer || []);
         renderRecommendations(data.recommendations || []);
-        populateFilters(data);
     }
 
     // ============================================================
@@ -810,98 +731,14 @@
     }
 
     // ============================================================
-    // Populate filter dropdowns
-    // ============================================================
-
-    function populateFilters(data) {
-        // Populate warehouse filter from warehouse data
-        const warehouseSelect = document.getElementById('filterWarehouse');
-        if (data.warehouse && data.warehouse.length) {
-            const options = data.warehouse.map(w => `<option value="${w.warehouse_code}">${w.warehouse_name}</option>`).join('');
-            warehouseSelect.innerHTML = `<option value="">All</option>${options}`;
-        }
-        // Populate dealer filter
-        const dealerSelect = document.getElementById('filterDealer');
-        if (data.dealer && data.dealer.length) {
-            const options = data.dealer.map(d => `<option value="${d.dealer_code}">${d.dealer_name}</option>`).join('');
-            dealerSelect.innerHTML = `<option value="">All</option>${options}`;
-        }
-        // Populate product filter
-        const productSelect = document.getElementById('filterProduct');
-        if (data.product && data.product.length) {
-            const options = data.product.map(p => `<option value="${p.sku}">${p.product_name}</option>`).join('');
-            productSelect.innerHTML = `<option value="">All</option>${options}`;
-        }
-        // Populate city filter
-        const citySelect = document.getElementById('filterCity');
-        if (data.city && data.city.length) {
-            const options = data.city.map(c => `<option value="${c.city}">${c.city}</option>`).join('');
-            citySelect.innerHTML = `<option value="">All</option>${options}`;
-        }
-        // Populate division filter from summary or metadata
-        // (example: we could extract from transport data)
-        // For now, leave as is.
-    }
-
-    // ============================================================
-    // Filter apply / reset
-    // ============================================================
-
-    document.getElementById('applyFilters').addEventListener('click', function() {
-        const filters = {
-            start_date: document.getElementById('filterDateStart').value,
-            end_date: document.getElementById('filterDateEnd').value,
-            warehouse: document.getElementById('filterWarehouse').value,
-            dealer: document.getElementById('filterDealer').value,
-            product: document.getElementById('filterProduct').value,
-            city: document.getElementById('filterCity').value,
-            division: document.getElementById('filterDivision').value,
-            transporter: document.getElementById('filterTransporter').value,
-            status: document.getElementById('filterStatus').value
-        };
-        // Remove empty values
-        Object.keys(filters).forEach(key => {
-            if (!filters[key]) delete filters[key];
-        });
-        fetchDashboard(filters);
-    });
-
-    document.getElementById('resetFilters').addEventListener('click', function() {
-        document.getElementById('filterDateStart').value = '';
-        document.getElementById('filterDateEnd').value = '';
-        document.getElementById('filterWarehouse').value = '';
-        document.getElementById('filterDealer').value = '';
-        document.getElementById('filterProduct').value = '';
-        document.getElementById('filterCity').value = '';
-        document.getElementById('filterDivision').value = '';
-        document.getElementById('filterTransporter').value = '';
-        document.getElementById('filterStatus').value = '';
-        fetchDashboard({});
-    });
-
-    // ============================================================
     // Live refresh every 30 seconds
     // ============================================================
 
     function startLiveRefresh() {
         if (refreshInterval) clearInterval(refreshInterval);
         refreshInterval = setInterval(() => {
-            fetchDashboard(getCurrentFilters());
+            fetchDashboard();
         }, 30000);
-    }
-
-    function getCurrentFilters() {
-        return {
-            start_date: document.getElementById('filterDateStart').value,
-            end_date: document.getElementById('filterDateEnd').value,
-            warehouse: document.getElementById('filterWarehouse').value,
-            dealer: document.getElementById('filterDealer').value,
-            product: document.getElementById('filterProduct').value,
-            city: document.getElementById('filterCity').value,
-            division: document.getElementById('filterDivision').value,
-            transporter: document.getElementById('filterTransporter').value,
-            status: document.getElementById('filterStatus').value
-        };
     }
 
     // ============================================================
@@ -920,11 +757,8 @@
     // ============================================================
 
     // Fetch initial data
-    fetchDashboard({});
+    fetchDashboard();
     startLiveRefresh();
-
-    // Also support manual refresh via button (optional)
-    // You could add a refresh button if needed.
 
     // ============================================================
     // Handle upload success / error alerts (from URL params)
