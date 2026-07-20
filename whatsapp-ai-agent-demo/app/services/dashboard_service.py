@@ -1,10 +1,9 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 4.7 - RAW SQL + DEBUG (FIXED)
+# VERSION: 4.8 - NO DATE ARITHMETIC (DEBUG)
 # ============================================================
-# PURPOSE: Central orchestration service for the Logistics Intelligence Dashboard.
-#          Uses raw SQL (like dealer_analytics_service.py) for reliability.
-#          Includes debug logging to verify data retrieval.
+# PURPOSE: Temporary version to confirm base aggregates work.
+#          All avg_delivery values are set to 0.0.
 # ============================================================
 
 import asyncio
@@ -169,17 +168,16 @@ class DashboardContext:
         self.loaded = False
 
 # ============================================================
-# DASHBOARD REPOSITORY (RAW SQL – like dealer_analytics)
+# DASHBOARD REPOSITORY (RAW SQL – no date arithmetic)
 # ============================================================
 
 class DashboardRepository:
-    """Handles all database queries using raw SQL (text()) – aligned with dealer_analytics."""
+    """Handles all database queries using raw SQL – with avg_delivery = 0 for debugging."""
 
     def __init__(self):
-        logger.info("🗄️  DashboardRepository initialized (Raw SQL)")
+        logger.info("🗄️  DashboardRepository initialized (Raw SQL - debug)")
 
     def _execute(self, sql: str, params: Optional[Dict[str, Any]] = None):
-        """Execute a raw SQL query and return results."""
         try:
             with engine.connect() as conn:
                 result = conn.execute(text(sql), params or {})
@@ -189,9 +187,7 @@ class DashboardRepository:
             raise
 
     def get_summary(self, filters: Dict[str, Any]) -> Dict[str, Any]:
-        """Get summary KPIs using raw SQL – ignoring filters for debugging."""
         try:
-            # TEMPORARY: Ignore all filters to ensure we get data
             sql = """
                 SELECT
                     COALESCE(SUM(dn_amount), 0) AS total_revenue,
@@ -206,22 +202,13 @@ class DashboardRepository:
 
             logger.info(f"🔍 get_summary: total_revenue = {total_revenue}, total_units = {total_units}, total_dn = {total_dn}")
 
-            # Distinct counts (separate queries)
             dealers = self._execute("SELECT COUNT(DISTINCT dealer_code) FROM delivery_reports WHERE dealer_code IS NOT NULL").scalar() or 0
             warehouses = self._execute("SELECT COUNT(DISTINCT warehouse) FROM delivery_reports WHERE warehouse IS NOT NULL").scalar() or 0
             cities = self._execute("SELECT COUNT(DISTINCT ship_to_city) FROM delivery_reports WHERE ship_to_city IS NOT NULL").scalar() or 0
             products = self._execute("SELECT COUNT(DISTINCT material_no) FROM delivery_reports WHERE material_no IS NOT NULL").scalar() or 0
 
-            # Average delivery days (compute in Python from raw data)
-            rows = self._execute("SELECT dn_create_date, good_issue_date FROM delivery_reports WHERE good_issue_date IS NOT NULL").fetchall()
-            total_days = 0
-            count = 0
-            for r in rows:
-                if r.dn_create_date and r.good_issue_date:
-                    delta = r.good_issue_date - r.dn_create_date
-                    total_days += delta.days
-                    count += 1
-            avg_delivery = (total_days / count) if count > 0 else 0.0
+            # Hardcoded 0 for average delivery
+            avg_delivery = 0.0
 
             # POD completion rate
             pod_completed = self._execute("SELECT COUNT(*) FROM delivery_reports WHERE pod_status = 'Delivered'").scalar() or 0
@@ -273,7 +260,6 @@ class DashboardRepository:
         }
 
     def get_warehouse_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        # Simplified: we will build filters properly later; for now, return all
         sql = """
             SELECT
                 warehouse,
@@ -288,13 +274,7 @@ class DashboardRepository:
         rows = self._execute(sql).fetchall()
         result = []
         for row in rows:
-            # Compute avg delivery per warehouse from raw data
-            avg_sql = """
-                SELECT COALESCE(AVG(EXTRACT(DAY FROM good_issue_date - dn_create_date)), 0)
-                FROM delivery_reports
-                WHERE warehouse = :wh AND good_issue_date IS NOT NULL
-            """
-            avg_del = self._execute(avg_sql, {"wh": row.warehouse}).scalar() or 0.0
+            avg_del = 0.0  # hardcoded
             grade = self._compute_grade(avg_del)
             risk = self._compute_risk(avg_del)
             result.append({
@@ -336,12 +316,7 @@ class DashboardRepository:
         rows = self._execute(sql).fetchall()
         result = []
         for row in rows:
-            avg_sql = """
-                SELECT COALESCE(AVG(EXTRACT(DAY FROM good_issue_date - dn_create_date)), 0)
-                FROM delivery_reports
-                WHERE dealer_code = :dc AND good_issue_date IS NOT NULL
-            """
-            avg_del = self._execute(avg_sql, {"dc": row.dealer_code}).scalar() or 0.0
+            avg_del = 0.0
             revenue = row.revenue
             units = row.units
             score = self._compute_dealer_score(revenue, units, avg_del)
@@ -738,14 +713,14 @@ class DashboardService:
     async def _load_metadata(self, filters: Dict) -> Dict[str, Any]:
         record_count = await asyncio.to_thread(self._db_repo.get_record_count)
         return {
-            "application_version": "4.7.0",
-            "database_version": "PostgreSQL (raw SQL)",
+            "application_version": "4.8.0",
+            "database_version": "PostgreSQL (raw SQL - debug)",
             "postgresql_status": "connected",
             "database_size": "N/A",
             "record_count": record_count,
             "last_refresh": datetime.utcnow().isoformat(),
             "last_etl_run": None,
-            "generated_by": "DashboardService v4.7",
+            "generated_by": "DashboardService v4.8",
             "report_time": datetime.utcnow().isoformat(),
             "time_zone": "UTC",
             "environment": os.getenv("ENVIRONMENT", "production"),
