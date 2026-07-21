@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 8.1 - ENTERPRISE LOGISTICS INTELLIGENCE PLATFORM
+# VERSION: 8.2 - ENTERPRISE LOGISTICS INTELLIGENCE PLATFORM
 # ============================================================
 # All business logic, KPIs, and graph generation are in Python.
 # HTML/JS only render the JSON response.
@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from app.database import engine
 from app.models import DeliveryReport
 
-# Optional enterprise libraries (lazy loaded)
+# Optional enterprise libraries
 try:
     import numpy as np
     NUMPY_AVAILABLE = True
@@ -49,26 +49,6 @@ try:
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
-
-try:
-    import altair as alt
-    ALTAIR_AVAILABLE = True
-except ImportError:
-    ALTAIR_AVAILABLE = False
-
-try:
-    from bokeh.plotting import figure
-    from bokeh.embed import json_item
-    BOKEH_AVAILABLE = True
-except ImportError:
-    BOKEH_AVAILABLE = False
-
-try:
-    from pyecharts.charts import Gauge, Funnel, TreeMap, Sunburst, Sankey
-    from pyecharts import options as opts
-    PYECHARTS_AVAILABLE = True
-except ImportError:
-    PYECHARTS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -100,29 +80,6 @@ def _format_number(num: Union[int, float]) -> str:
     if num is None:
         return "0"
     return f"{num:,}"
-
-def _format_date(date_val: Any) -> str:
-    if not date_val:
-        return "N/A"
-    try:
-        if isinstance(date_val, str):
-            for fmt in ['%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f']:
-                try:
-                    dt = datetime.strptime(date_val, fmt)
-                    break
-                except ValueError:
-                    continue
-            else:
-                return date_val
-        elif isinstance(date_val, datetime):
-            dt = date_val
-        elif isinstance(date_val, date):
-            dt = datetime.combine(date_val, datetime.min.time())
-        else:
-            return str(date_val)
-        return dt.strftime("%d-%b-%Y")
-    except Exception:
-        return str(date_val)
 
 # ============================================================
 # CACHE ENGINE
@@ -173,7 +130,7 @@ def cached(ttl=5):
 
 class DashboardRepository:
     def __init__(self):
-        logger.info("🗄️ DashboardRepository v8.1 initialized")
+        logger.info("🗄️ DashboardRepository v8.2 initialized")
 
     def _execute(self, sql: str, params: Optional[Dict[str, Any]] = None):
         try:
@@ -270,6 +227,94 @@ class DashboardRepository:
         }
 
     # ------------------------------------------------------------------
+    # PIPELINE
+    # ------------------------------------------------------------------
+    def get_pipeline(self, filters: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            sql = """
+                SELECT
+                    COUNT(DISTINCT dn_no) AS total_dn,
+                    COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_done,
+                    COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered,
+                    COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_done,
+                    COUNT(DISTINCT CASE WHEN good_issue_date IS NULL THEN dn_no END) AS pending_pgi,
+                    COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN dn_no END) AS pending_delivery
+                FROM delivery_reports
+            """
+            row = self._execute(sql).first()
+            if not row:
+                return {}
+            total_dn = _safe_int(row.total_dn)
+            pgi_done = _safe_int(row.pgi_done)
+            delivered = _safe_int(row.delivered)
+            pod_done = _safe_int(row.pod_done)
+            return {
+                "dn_created": total_dn,
+                "pgi_completed": pgi_done,
+                "delivered": delivered,
+                "pod_received": pod_done,
+                "pgi_achievement": _pct(pgi_done, total_dn),
+                "delivery_achievement": _pct(delivered, total_dn),
+                "pod_achievement": _pct(pod_done, delivered if delivered else 1),
+                "pending_pgi": _safe_int(row.pending_pgi),
+                "pending_delivery": _safe_int(row.pending_delivery),
+                "pending_pod": 0,  # not available
+            }
+        except Exception as e:
+            logger.exception("❌ Pipeline failed")
+            return {}
+
+    # ------------------------------------------------------------------
+    # DIVISION DASHBOARD
+    # ------------------------------------------------------------------
+    def get_division_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        try:
+            sql = """
+                SELECT
+                    division,
+                    COALESCE(SUM(dn_amount), 0) AS revenue,
+                    COALESCE(SUM(dn_qty), 0) AS units,
+                    COUNT(DISTINCT dn_no) AS dn_qty,
+                    COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_qty,
+                    COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivery_qty,
+                    COUNT(DISTINCT CASE WHEN good_issue_date IS NULL THEN dn_no END) AS gap_qty,
+                    COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN dn_amount ELSE 0 END), 0) AS gap_amount
+                FROM delivery_reports
+                WHERE division IS NOT NULL
+                GROUP BY division
+                ORDER BY revenue DESC
+            """
+            rows = self._execute(sql).fetchall()
+            result = []
+            for row in rows:
+                dn_qty = _safe_int(row.dn_qty)
+                pgi_qty = _safe_int(row.pgi_qty)
+                gap_qty = _safe_int(row.gap_qty)
+                revenue = _safe_float(row.revenue)
+                gap_amount = _safe_float(row.gap_amount)
+                pgi_achievement = _pct(pgi_qty, dn_qty)
+                gap_pct = _pct(gap_qty, dn_qty)
+                variance = revenue - gap_amount
+                variance_pct = _pct(variance, revenue) if revenue else 0
+                result.append({
+                    "division": row.division,
+                    "revenue": revenue,
+                    "units": _safe_int(row.units),
+                    "dn_qty": dn_qty,
+                    "pgi_qty": pgi_qty,
+                    "delivery_qty": _safe_int(row.delivery_qty),
+                    "gap_qty": gap_qty,
+                    "gap_amount": gap_amount,
+                    "pgi_achievement": pgi_achievement,
+                    "gap_percentage": gap_pct,
+                    "variance_percentage": variance_pct,
+                })
+            return result
+        except Exception as e:
+            logger.exception("❌ Division failed")
+            return []
+
+    # ------------------------------------------------------------------
     # WAREHOUSE PERFORMANCE
     # ------------------------------------------------------------------
     def get_warehouse_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -286,7 +331,6 @@ class DashboardRepository:
                     COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_completed,
                     COUNT(DISTINCT CASE WHEN good_issue_date IS NULL THEN dn_no END) AS pending_pgi,
                     COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN dn_no END) AS pending_delivery,
-                    COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN 0 END) AS pending_pod, -- placeholder
                     COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN pod_date - good_issue_date END), 0) AS avg_cycle_days
                 FROM delivery_reports
                 WHERE warehouse IS NOT NULL
@@ -308,9 +352,10 @@ class DashboardRepository:
                 avg_cycle = _safe_float(row.avg_cycle_days)
                 pending_pgi = _safe_int(row.pending_pgi)
                 pending_delivery = _safe_int(row.pending_delivery)
-                late_deliveries = 0  # not available yet
+                late_deliveries = 0  # not available
                 grade = "A" if health >= 90 else "B" if health >= 75 else "C"
                 risk = "Low" if health >= 85 else "Medium" if health >= 70 else "High"
+                recommendation = self._warehouse_recommendation(row.warehouse_name, pgi_rate, delivery_rate, pod_rate, health)
                 result.append({
                     "warehouse_name": row.warehouse_name,
                     "revenue": _safe_float(row.revenue),
@@ -320,7 +365,7 @@ class DashboardRepository:
                     "delivery_achievement_rate": delivery_rate,
                     "pod_completion_rate": pod_rate,
                     "average_delivery_days": avg_cycle,
-                    "average_pod_days": 0.0,   # not yet
+                    "average_pod_days": 0.0,
                     "average_logistics_cycle": avg_cycle,
                     "pending_pgi": pending_pgi,
                     "pending_pod": 0,
@@ -329,7 +374,7 @@ class DashboardRepository:
                     "performance_grade": grade,
                     "risk_level": risk,
                     "ranking": 0,
-                    "ai_recommendation": self._warehouse_recommendation(row.warehouse_name, pgi_rate, delivery_rate, pod_rate, health)
+                    "ai_recommendation": recommendation
                 })
             # Sort by health
             result.sort(key=lambda x: x["health_score"], reverse=True)
@@ -401,7 +446,6 @@ class DashboardRepository:
                     "health_score": health,
                     "ranking": 0,
                 })
-            # Sort by health
             result.sort(key=lambda x: x["health_score"], reverse=True)
             for i, d in enumerate(result):
                 d["ranking"] = i + 1
@@ -522,96 +566,7 @@ class DashboardRepository:
         return []
 
     # ------------------------------------------------------------------
-    # PIPELINE (DN → PGI → Delivery → POD)
-    # ------------------------------------------------------------------
-    def get_pipeline(self, filters: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            sql = """
-                SELECT
-                    COUNT(DISTINCT dn_no) AS total_dn,
-                    COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_done,
-                    COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered,
-                    COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_done,
-                    COUNT(DISTINCT CASE WHEN good_issue_date IS NULL THEN dn_no END) AS pending_pgi,
-                    COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN dn_no END) AS pending_delivery,
-                    COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN 0 END) AS pending_pod
-                FROM delivery_reports
-            """
-            row = self._execute(sql).first()
-            if not row:
-                return {}
-            total_dn = _safe_int(row.total_dn)
-            pgi_done = _safe_int(row.pgi_done)
-            delivered = _safe_int(row.delivered)
-            pod_done = _safe_int(row.pod_done)
-            return {
-                "dn_created": total_dn,
-                "pgi_completed": pgi_done,
-                "delivered": delivered,
-                "pod_received": pod_done,
-                "pgi_achievement": _pct(pgi_done, total_dn),
-                "delivery_achievement": _pct(delivered, total_dn),
-                "pod_achievement": _pct(pod_done, delivered if delivered else 1),
-                "pending_pgi": _safe_int(row.pending_pgi),
-                "pending_delivery": _safe_int(row.pending_delivery),
-                "pending_pod": 0,
-            }
-        except Exception as e:
-            logger.exception("❌ Pipeline failed")
-            return {}
-
-    # ------------------------------------------------------------------
-    # DIVISION DASHBOARD
-    # ------------------------------------------------------------------
-    def get_division_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        try:
-            sql = """
-                SELECT
-                    division,
-                    COALESCE(SUM(dn_amount), 0) AS revenue,
-                    COALESCE(SUM(dn_qty), 0) AS units,
-                    COUNT(DISTINCT dn_no) AS dn_qty,
-                    COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_qty,
-                    COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivery_qty,
-                    COUNT(DISTINCT CASE WHEN good_issue_date IS NULL THEN dn_no END) AS gap_qty,
-                    COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN dn_amount ELSE 0 END), 0) AS gap_amount
-                FROM delivery_reports
-                WHERE division IS NOT NULL
-                GROUP BY division
-                ORDER BY revenue DESC
-            """
-            rows = self._execute(sql).fetchall()
-            result = []
-            for row in rows:
-                dn_qty = _safe_int(row.dn_qty)
-                pgi_qty = _safe_int(row.pgi_qty)
-                gap_qty = _safe_int(row.gap_qty)
-                revenue = _safe_float(row.revenue)
-                gap_amount = _safe_float(row.gap_amount)
-                pgi_achievement = _pct(pgi_qty, dn_qty)
-                gap_pct = _pct(gap_qty, dn_qty)
-                variance = revenue - gap_amount
-                variance_pct = _pct(variance, revenue) if revenue else 0
-                result.append({
-                    "division": row.division,
-                    "revenue": revenue,
-                    "units": _safe_int(row.units),
-                    "dn_qty": dn_qty,
-                    "pgi_qty": pgi_qty,
-                    "delivery_qty": _safe_int(row.delivery_qty),
-                    "gap_qty": gap_qty,
-                    "gap_amount": gap_amount,
-                    "pgi_achievement": pgi_achievement,
-                    "gap_percentage": gap_pct,
-                    "variance_percentage": variance_pct,
-                })
-            return result
-        except Exception as e:
-            logger.exception("❌ Division failed")
-            return []
-
-    # ------------------------------------------------------------------
-    # MONTHLY & DAILY TRENDS (already implemented earlier)
+    # MONTHLY & DAILY TRENDS (raw data for Plotly)
     # ------------------------------------------------------------------
     def get_monthly_trends(self, filters: Dict[str, Any]) -> Dict[str, List]:
         sql = """
@@ -683,7 +638,7 @@ class DashboardRepository:
                 "pgi_completed": pgi, "delivered_dns": delivered, "pod_completed": pod}
 
     # ------------------------------------------------------------------
-    # NETWORK (Warehouse → City → Dealer)
+    # NETWORK (NetworkX)
     # ------------------------------------------------------------------
     def get_network_data(self, filters: Dict[str, Any]) -> Dict[str, Any]:
         try:
@@ -735,7 +690,7 @@ class DashboardRepository:
         return alerts
 
     # ------------------------------------------------------------------
-    # AI RECOMMENDATIONS (dynamic)
+    # AI RECOMMENDATIONS
     # ------------------------------------------------------------------
     def get_recommendations(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         recs = []
@@ -757,7 +712,6 @@ class DashboardRepository:
                     "priority": "Critical",
                     "risk": "High"
                 })
-        # Add global recommendations
         summary = self.get_summary(filters)
         if summary.get("pod_completion_rate", 100) < 90:
             recs.append({
@@ -774,7 +728,7 @@ class DashboardRepository:
     # ------------------------------------------------------------------
     def get_metadata(self, filters: Dict[str, Any]) -> Dict[str, Any]:
         return {
-            "application_version": "8.1.0",
+            "application_version": "8.2.0",
             "database_version": "PostgreSQL",
             "postgresql_status": "connected",
             "record_count": self._execute("SELECT COUNT(*) FROM delivery_reports").scalar() or 0,
@@ -807,7 +761,7 @@ class DashboardRepository:
             # 3. POD Achievement
             fig3 = px.bar(x=names, y=pod, title="Warehouse POD Achievement")
             charts["pod_achievement"] = fig3.to_json()
-            # 4. Average Delivery Days
+            # 4. Average Logistics Cycle
             fig4 = px.bar(x=names, y=avg_cycle, title="Warehouse Average Logistics Cycle (days)")
             charts["avg_cycle"] = fig4.to_json()
             # 5. Health Gauge (first warehouse)
@@ -816,7 +770,7 @@ class DashboardRepository:
                                               title={"text": f"Health - {names[0]}"},
                                               gauge={"axis": {"range": [0, 100]}}))
                 charts["health_gauge"] = fig5.to_json()
-            # 6. Radar Chart (multi‑warehouse)
+            # 6. Radar Chart
             radar_fig = go.Figure()
             for i, w in enumerate(warehouses):
                 radar_fig.add_trace(go.Scatterpolar(
@@ -844,7 +798,6 @@ class DashboardRepository:
             charts["revenue_ranking"] = fig.to_json()
             fig2 = px.scatter(x=pod, y=revenues, text=names, title="Dealer POD vs Revenue")
             charts["pod_scatter"] = fig2.to_json()
-            # Treemap for dealer contribution
             fig3 = px.treemap(names=names, values=revenues, title="Dealer Revenue Contribution")
             charts["treemap"] = fig3.to_json()
         return charts
@@ -865,7 +818,6 @@ class DashboardRepository:
             charts["treemap"] = fig.to_json()
             fig2 = px.sunburst(names=names, values=revenues, title="Product Revenue Sunburst")
             charts["sunburst"] = fig2.to_json()
-            # Bubble chart
             fig3 = px.scatter(x=units, y=revenues, text=names, size=revenues, title="Product Units vs Revenue")
             charts["bubble"] = fig3.to_json()
         return charts
@@ -886,7 +838,6 @@ class DashboardRepository:
             charts["revenue"] = fig.to_json()
             fig2 = px.bar(x=names, y=pod, title="City POD Achievement")
             charts["pod"] = fig2.to_json()
-            # Bubble chart
             fig3 = px.scatter(x=pod, y=revenues, text=names, title="City POD vs Revenue")
             charts["bubble"] = fig3.to_json()
         return charts
@@ -898,7 +849,7 @@ class DashboardRepository:
 class DashboardService:
     def __init__(self):
         self._repository = DashboardRepository()
-        logger.info("🚀 DashboardService v8.1 initialized")
+        logger.info("🚀 DashboardService v8.2 initialized")
 
     @cached(ttl=5)
     async def get_dashboard_data(
@@ -931,18 +882,25 @@ class DashboardService:
         product_charts = await asyncio.to_thread(self._repository.get_product_charts, filters)
         city_charts = await asyncio.to_thread(self._repository.get_city_charts, filters)
 
-        # Build cards
+        # Build executive cards
         cards = {
-            "revenue": {"value": summary.get("total_revenue", 0), "target": 150000000, "icon": "fa-chart-line", "color": "primary", "format": "currency", "label": "Revenue"},
-            "units": {"value": summary.get("total_units", 0), "target": 10000, "icon": "fa-box", "color": "success", "format": "number", "label": "Units"},
-            "delivery_notes": {"value": summary.get("total_delivery_notes", 0), "target": 5000, "icon": "fa-file-invoice", "color": "info", "format": "number", "label": "Delivery Notes"},
-            "pgi_achievement": {"value": summary.get("pgi_achievement_rate", 0), "target": 100, "icon": "fa-warehouse", "color": "success", "format": "percentage", "label": "PGI Achievement"},
-            "delivery_achievement": {"value": summary.get("delivery_achievement_rate", 0), "target": 95, "icon": "fa-truck", "color": "warning", "format": "percentage", "label": "Delivery Achievement"},
-            "pod_achievement": {"value": summary.get("pod_completion_rate", 0), "target": 95, "icon": "fa-clipboard-check", "color": "danger", "format": "percentage", "label": "POD Achievement"},
-            "avg_delivery_days": {"value": summary.get("average_delivery_days", 0), "target": 5, "icon": "fa-clock", "color": "info", "format": "days", "label": "Avg Delivery Days"},
-            "health_score": {"value": summary.get("dashboard_health_score", 0), "target": 95, "icon": "fa-heartbeat", "color": "primary", "format": "percentage", "label": "Health Score"},
+            "revenue": {"value": summary.get("total_revenue", 0), "target": 150000000,
+                        "icon": "fa-chart-line", "color": "primary", "format": "currency", "label": "Revenue"},
+            "units": {"value": summary.get("total_units", 0), "target": 10000,
+                      "icon": "fa-box", "color": "success", "format": "number", "label": "Units"},
+            "delivery_notes": {"value": summary.get("total_delivery_notes", 0), "target": 5000,
+                               "icon": "fa-file-invoice", "color": "info", "format": "number", "label": "Delivery Notes"},
+            "pgi_achievement": {"value": summary.get("pgi_achievement_rate", 0), "target": 100,
+                                "icon": "fa-warehouse", "color": "success", "format": "percentage", "label": "PGI Achievement"},
+            "delivery_achievement": {"value": summary.get("delivery_achievement_rate", 0), "target": 95,
+                                     "icon": "fa-truck", "color": "warning", "format": "percentage", "label": "Delivery Achievement"},
+            "pod_achievement": {"value": summary.get("pod_completion_rate", 0), "target": 95,
+                                "icon": "fa-clipboard-check", "color": "danger", "format": "percentage", "label": "POD Achievement"},
+            "avg_delivery_days": {"value": summary.get("average_delivery_days", 0), "target": 5,
+                                  "icon": "fa-clock", "color": "info", "format": "days", "label": "Avg Delivery Days"},
+            "health_score": {"value": summary.get("dashboard_health_score", 0), "target": 95,
+                             "icon": "fa-heartbeat", "color": "primary", "format": "percentage", "label": "Health Score"},
         }
-        # Add progress
         for key, card in cards.items():
             card["progress"] = min((card["value"] / card["target"]) * 100, 100) if card["target"] else 0
 
@@ -982,7 +940,7 @@ class DashboardService:
         }
 
 # ============================================================
-# FASTAPI ROUTER (placed after class definition)
+# FASTAPI ROUTER
 # ============================================================
 
 _dashboard_service = None
@@ -1076,7 +1034,3 @@ async def recommendations(service: DashboardService = Depends(get_dashboard_serv
 @router.get("/metadata")
 async def metadata(service: DashboardService = Depends(get_dashboard_service)):
     return service._repository.get_metadata({})
-
-# ============================================================
-# END OF FILE
-# ============================================================
