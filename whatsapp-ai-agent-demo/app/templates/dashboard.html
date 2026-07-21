@@ -1,7 +1,7 @@
-============================================================ -->
+<!-- ============================================================ -->
 <!-- FILE: app/templates/dashboard.html                           -->
 <!-- PROJECT: WhatsApp AI Agent Demo - Logistics Intelligence    -->
-<!-- VERSION: 5.3 - Integrated with DashboardService             -->
+<!-- VERSION: 6.0 - Enterprise Logistics Intelligence Platform   -->
 <!-- ============================================================ -->
 
 <!DOCTYPE html>
@@ -724,7 +724,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-brand">
             <h5><i class="fas fa-cubes"></i> Logistics IQ</h5>
-            <small>AI-Powered Real-time Analytics</small>
+            <small>Enterprise Intelligence Platform</small>
         </div>
 
         <nav class="sidebar-nav">
@@ -764,7 +764,7 @@
         </nav>
 
         <div class="sidebar-footer">
-            <i class="fas fa-code-branch"></i> v5.3 &nbsp;·&nbsp; <i class="fas fa-database"></i> Live
+            <i class="fas fa-code-branch"></i> v6.0 &nbsp;·&nbsp; <i class="fas fa-database"></i> Enterprise
         </div>
     </aside>
 
@@ -796,12 +796,12 @@
         <div id="alertCenter" class="alert-center"></div>
 
         <!-- ============================================================
-        KPI GRID (dynamic)
+        KPI GRID (dynamic – 30+ KPIs)
         ============================================================ -->
         <div id="kpiGrid" class="kpi-grid"></div>
 
         <!-- ============================================================
-        HEALTH SCORE + DELIVERY + POD
+        HEALTH SUMMARY (executive)
         ============================================================ -->
         <div class="row g-3 mb-4" id="healthSummary">
             <div class="col-md-4">
@@ -810,7 +810,7 @@
                         <div class="fs-small text-muted fw-600">LOGISTICS HEALTH SCORE</div>
                         <div class="d-flex align-items-center gap-2 mt-1">
                             <span class="fw-700" style="font-size:1.8rem;color:#198754;" id="healthScoreNum">--</span>
-                            <span class="badge bg-success" id="healthScoreLabel">Good</span>
+                            <span class="badge" id="healthScoreLabel">Good</span>
                         </div>
                     </div>
                     <i class="fas fa-heartbeat" style="font-size:2.2rem;color:#198754;opacity:0.25;"></i>
@@ -873,7 +873,7 @@
         </div>
 
         <!-- ============================================================
-        CHARTS ROW 2: POD Rate & Daily Delivery
+        CHARTS ROW 2: PGI/Delivery/POD Achievement & Daily Flow
         ============================================================ -->
         <div class="row g-3 mb-4">
             <div class="col-xl-6 col-lg-12">
@@ -906,7 +906,7 @@
         <div class="card-custom p-3 mb-4">
             <div class="card-header-custom">
                 <i class="fas fa-warehouse"></i> Top 5 Warehouse Performance
-                <span class="ms-auto fs-small text-muted">PGI · Delivery · POD · Pending</span>
+                <span class="ms-auto fs-small text-muted">Revenue · PGI · Delivery · POD · Health</span>
             </div>
             <div class="card-body-custom">
                 <div id="warehouseGrid" class="ag-theme-alpine" style="height:280px;"></div>
@@ -949,7 +949,7 @@
         <div class="card-custom p-3 mb-4">
             <div class="card-header-custom">
                 <i class="fas fa-truck"></i> Transporter Performance
-                <span class="ms-auto fs-small text-muted">Units · OTIF · POD · DNs · Score</span>
+                <span class="ms-auto fs-small text-muted">Revenue · Delivery · POD · Score</span>
             </div>
             <div class="card-body-custom">
                 <div id="transporterGrid" class="ag-theme-alpine" style="height:240px;"></div>
@@ -967,7 +967,7 @@
         </div>
 
         <!-- ============================================================
-        LATEST UPDATES (AG Grid)
+        LATEST UPDATES (AG Grid) – placeholder
         ============================================================ -->
         <div class="card-custom p-3 mb-4">
             <div class="card-header-custom"><i class="fas fa-history"></i> Latest Updates</div>
@@ -977,7 +977,7 @@
         </div>
 
         <!-- ============================================================
-        ★ UPLOAD LOGISTICS REPORT (interactive progress) ★
+        UPLOAD + SEARCH (interactive progress)
         ============================================================ -->
         <div class="row g-3 mb-4">
             <div class="col-md-6">
@@ -1007,13 +1007,13 @@
                         <div class="mt-2 fs-small text-success">
                             <i class="fas fa-check-circle"></i> Excel upload active – accepts .xlsx, .xls
                         </div>
+                        <div class="mt-1 fs-small">
+                            <a href="#" class="text-decoration-none"><i class="fas fa-eye"></i> View / Download</a>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <!-- ============================================================
-            SEARCH DELIVERIES
-            ============================================================ -->
             <div class="col-md-6">
                 <div class="card-custom p-3">
                     <div class="card-header-custom"><i class="fas fa-search"></i> Search Deliveries</div>
@@ -1046,7 +1046,7 @@
         ============================================================ -->
         <div class="footer-bar">
             <div>
-                <i class="fas fa-code-branch"></i> v5.3 &nbsp;<span class="divider">|</span>
+                <i class="fas fa-code-branch"></i> v6.0 &nbsp;<span class="divider">|</span>
                 <i class="fas fa-database"></i> PostgreSQL &nbsp;<span class="divider">|</span>
                 <i class="fas fa-sync"></i> <span id="footerRefresh">Just now</span>
             </div>
@@ -1066,7 +1066,7 @@
     </script>
 
     <!-- ============================================================
-    DASHBOARD JAVASCRIPT - v5.3 (Integrated with DashboardService)
+    DASHBOARD JAVASCRIPT - v6.0 (Enterprise)
     ============================================================ -->
     <script>
         // ============================================================
@@ -1102,7 +1102,10 @@
 
         function formatCardValue(key, card) {
             const value = card.value || 0;
-            if (card.format === 'currency' || key === 'revenue') return formatCurrency(value);
+            if (card.format === 'currency' || key === 'revenue' || key === 'revenue_per_dn' || key ===
+                'revenue_per_dealer' || key === 'revenue_per_warehouse' || key === 'revenue_per_city') {
+                return formatCurrency(value);
+            }
             if (card.format === 'percentage') return formatPercentage(value);
             if (card.format === 'days') return formatDays(value);
             return formatNumber(value);
@@ -1159,9 +1162,8 @@
             renderDealerGrid(data.dealer || []);
             renderCityGrid(data.city || []);
             renderProductGrid(data.product || []);
-            renderTransporterGrid(data.transport || {});
+            renderTransporterGrid(data.transport || []);
             renderRecommendations(data.recommendations || []);
-            // "Latest Updates" is not directly provided by service; we can show uploads from metadata if available
             renderUploadsGrid(data.latest_uploads || []);
         }
 
@@ -1172,7 +1174,7 @@
             const container = document.getElementById('alertCenter');
             if (!alerts.length) {
                 container.innerHTML =
-                '<div class="alert-item info"><div class="alert-title">No alerts</div><div class="alert-desc">All systems nominal</div></div>';
+                    '<div class="alert-item info"><div class="alert-title">No alerts</div><div class="alert-desc">All systems nominal</div></div>';
                 return;
             }
             let html = '';
@@ -1345,16 +1347,20 @@
                 }
             });
 
-            // PGI, Delivery, POD Achievement Chart
+            // PGI, Delivery, POD Achievement (3 lines)
             const podCtx = document.getElementById('podChart').getContext('2d');
             if (podChart) podChart.destroy();
+            const pgiData = charts.pgi_trend?.data || [];
+            const deliveryData = charts.delivery_achievement_trend?.data || [];
+            const podData = charts.pod_trend?.data || [];
+            const labels = charts.pod_trend?.labels || [];
             podChart = new Chart(podCtx, {
                 type: 'line',
                 data: {
-                    labels: charts.pod_trend?.labels || [],
+                    labels: labels,
                     datasets: [{
                         label: 'PGI Achievement %',
-                        data: charts.pgi_trend?.data || [],
+                        data: pgiData,
                         borderColor: '#0d6efd',
                         backgroundColor: 'rgba(13,110,253,0.08)',
                         tension: 0.3,
@@ -1363,7 +1369,7 @@
                         pointBackgroundColor: '#0d6efd',
                     }, {
                         label: 'Delivery Achievement %',
-                        data: charts.delivery_achievement_trend?.data || [],
+                        data: deliveryData,
                         borderColor: '#198754',
                         backgroundColor: 'rgba(25,135,84,0.08)',
                         tension: 0.3,
@@ -1372,7 +1378,7 @@
                         pointBackgroundColor: '#198754',
                     }, {
                         label: 'POD Achievement %',
-                        data: charts.pod_trend?.data || [],
+                        data: podData,
                         borderColor: '#ffc107',
                         backgroundColor: 'rgba(255,193,7,0.12)',
                         tension: 0.3,
@@ -1391,32 +1397,40 @@
                 }
             });
 
-            // Daily DN-PGI-POD Flow Chart
+            // Daily DN-PGI-POD Flow (4 bars)
             const dailyCtx = document.getElementById('dailyChart').getContext('2d');
             if (dailyChart) dailyChart.destroy();
             const daily = charts.daily_trend || {};
+            const dailyLabels = daily.labels || [];
+            // Use the new structured data, fallback to previous for compatibility
+            const dnData = daily.delivery_notes || daily.data || [];
+            const pgiCompleted = daily.pgi_completed || [];
+            const deliveredDns = daily.delivered_dns || [];
+            const podCompleted = daily.pod_completed || [];
+            // If any dataset is empty, fill with zeros
+            const fallbackZero = dnData.map(() => 0);
             dailyChart = new Chart(dailyCtx, {
                 type: 'bar',
                 data: {
-                    labels: daily.labels || [],
+                    labels: dailyLabels,
                     datasets: [{
                         label: 'DN Created',
-                        data: daily.delivery_notes || daily.data || [],
+                        data: dnData,
                         backgroundColor: 'rgba(13,110,253,0.70)',
                         borderRadius: 4,
                     }, {
                         label: 'PGI Completed',
-                        data: daily.pgi_completed || [],
+                        data: pgiCompleted.length ? pgiCompleted : fallbackZero,
                         backgroundColor: 'rgba(25,135,84,0.70)',
                         borderRadius: 4,
                     }, {
                         label: 'Delivered',
-                        data: daily.delivered_dns || [],
+                        data: deliveredDns.length ? deliveredDns : fallbackZero,
                         backgroundColor: 'rgba(13,202,240,0.70)',
                         borderRadius: 4,
                     }, {
                         label: 'POD Completed',
-                        data: daily.pod_completed || [],
+                        data: podCompleted.length ? podCompleted : fallbackZero,
                         backgroundColor: 'rgba(255,193,7,0.75)',
                         borderRadius: 4,
                     }]
@@ -1442,23 +1456,21 @@
         }
 
         // ============================================================
-        // AG GRID: WAREHOUSE
+        // AG GRID: WAREHOUSE (enterprise fields)
         // ============================================================
         function renderWarehouseGrid(data) {
             const gridDiv = document.getElementById('warehouseGrid');
             if (warehouseGrid) { warehouseGrid.destroy(); }
             const colDefs = [
-                { field: 'warehouse_name', headerName: 'Warehouse', flex: 2 },
-                { field: 'revenue', headerName: 'Revenue', flex: 1.5, valueFormatter: p => formatCurrency(p.value) },
-                { field: 'delivery_notes', headerName: 'DNs', flex: 1, valueFormatter: p => formatNumber(p.value) },
-                { field: 'pgi_achievement_rate', headerName: 'PGI %', flex: 1, valueFormatter: p => formatPercentage(p.value) },
-                { field: 'delivery_achievement_rate', headerName: 'Delivery %', flex: 1, valueFormatter: p => formatPercentage(p.value) },
-                { field: 'pod_completion_rate', headerName: 'POD %', flex: 1, valueFormatter: p => formatPercentage(p.value) },
-                { field: 'pending_deliveries', headerName: 'Pending', flex: 1, valueFormatter: p => formatNumber(p.value) },
-                { field: 'late_deliveries', headerName: 'Late', flex: 0.8, valueFormatter: p => formatNumber(p.value) },
-                { field: 'average_delivery_days', headerName: 'Avg Days', flex: 1, valueFormatter: p => formatDays(p.value) },
-                { field: 'performance_grade', headerName: 'Grade', flex: 0.8 },
-                { field: 'risk_level', headerName: 'Risk', flex: 1, cellStyle: p => {
+                { field: 'warehouse_name', headerName: 'Warehouse', flex: 1.5 },
+                { field: 'revenue', headerName: 'Revenue', flex: 1.2, valueFormatter: p => formatCurrency(p.value) },
+                { field: 'units', headerName: 'Units', flex: 1, valueFormatter: p => formatNumber(p.value) },
+                { field: 'delivery_notes', headerName: 'DNs', flex: 0.8, valueFormatter: p => formatNumber(p.value) },
+                { field: 'pgi_achievement_rate', headerName: 'PGI %', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'delivery_achievement_rate', headerName: 'Delivery %', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'pod_completion_rate', headerName: 'POD %', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'health_score', headerName: 'Health', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'risk_level', headerName: 'Risk', flex: 0.8, cellStyle: p => {
                         if (p.value === 'High') return { color: 'red', fontWeight: 'bold' };
                         if (p.value === 'Medium') return { color: 'orange' };
                         return { color: 'green' };
@@ -1481,21 +1493,15 @@
             const gridDiv = document.getElementById('dealerGrid');
             if (dealerGrid) { dealerGrid.destroy(); }
             const colDefs = [
-                { field: 'dealer_name', headerName: 'Dealer', flex: 2 },
-                { field: 'revenue', headerName: 'Revenue', flex: 1.5, valueFormatter: p => formatCurrency(p.value) },
-                { field: 'units', headerName: 'Units', flex: 1, valueFormatter: p => formatNumber(p.value) },
-                { field: 'delivery_notes', headerName: 'DNs', flex: 1 },
-                { field: 'pgi_achievement_rate', headerName: 'PGI %', flex: 1, valueFormatter: p => formatPercentage(p.value) },
-                { field: 'pod_completion_rate', headerName: 'POD %', flex: 1, valueFormatter: p => formatPercentage(p.value) },
-                { field: 'pending_pod', headerName: 'Pending POD', flex: 1, valueFormatter: p => formatNumber(p.value) },
-                { field: 'performance_score', headerName: 'Score', flex: 1, valueFormatter: p => p.value ? p.value.toFixed(
-                        1) : '0' },
-                {
-                    field: 'ai_recommendation',
-                    headerName: 'AI Rec',
-                    flex: 2,
-                    tooltipField: 'ai_recommendation',
-                },
+                { field: 'dealer_name', headerName: 'Dealer', flex: 1.5 },
+                { field: 'revenue', headerName: 'Revenue', flex: 1.2, valueFormatter: p => formatCurrency(p.value) },
+                { field: 'units', headerName: 'Units', flex: 0.8, valueFormatter: p => formatNumber(p.value) },
+                { field: 'delivery_notes', headerName: 'DNs', flex: 0.8, valueFormatter: p => formatNumber(p.value) },
+                { field: 'pgi_achievement_rate', headerName: 'PGI %', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'delivery_achievement_rate', headerName: 'Delivery %', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'pod_completion_rate', headerName: 'POD %', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'performance_score', headerName: 'Score', flex: 0.8, valueFormatter: p => p.value ? p.value.toFixed(1) : '0' },
+                { field: 'ai_recommendation', headerName: 'AI Rec', flex: 1.5, tooltipField: 'ai_recommendation' },
             ];
             dealerGrid = new agGrid.Grid(gridDiv, {
                 columnDefs: colDefs,
@@ -1513,14 +1519,15 @@
             const gridDiv = document.getElementById('cityGrid');
             if (cityGrid) { cityGrid.destroy(); }
             const colDefs = [
-                { field: 'city', headerName: 'City', flex: 2 },
-                { field: 'revenue', headerName: 'Revenue', flex: 1.5, valueFormatter: p => formatCurrency(p.value) },
-                { field: 'units', headerName: 'Units', flex: 1, valueFormatter: p => formatNumber(p.value) },
-                { field: 'delivery_notes', headerName: 'DNs', flex: 1 },
-                { field: 'achievement_percentage', headerName: 'Delivery %', flex: 1, valueFormatter: p => formatPercentage(p.value) },
-                { field: 'pod_completion_rate', headerName: 'POD %', flex: 1, valueFormatter: p => formatPercentage(p.value) },
-                { field: 'late_deliveries', headerName: 'Late', flex: 0.8, valueFormatter: p => formatNumber(p.value) },
-                { field: 'risk_level', headerName: 'Risk', flex: 1, cellStyle: p => {
+                { field: 'city', headerName: 'City', flex: 1.5 },
+                { field: 'revenue', headerName: 'Revenue', flex: 1.2, valueFormatter: p => formatCurrency(p.value) },
+                { field: 'units', headerName: 'Units', flex: 0.8, valueFormatter: p => formatNumber(p.value) },
+                { field: 'delivery_notes', headerName: 'DNs', flex: 0.8, valueFormatter: p => formatNumber(p.value) },
+                { field: 'achievement_percentage', headerName: 'Delivery %', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'pod_completion_rate', headerName: 'POD %', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'average_delivery_days', headerName: 'Avg Days', flex: 0.8, valueFormatter: p => formatDays(p.value) },
+                { field: 'health_score', headerName: 'Health', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'risk_level', headerName: 'Risk', flex: 0.8, cellStyle: p => {
                         if (p.value === 'High') return { color: 'red', fontWeight: 'bold' };
                         if (p.value === 'Medium') return { color: 'orange' };
                         return { color: 'green' };
@@ -1543,20 +1550,17 @@
             const gridDiv = document.getElementById('productGrid');
             if (productGrid) { productGrid.destroy(); }
             const colDefs = [
-                { field: 'product_name', headerName: 'Product Model', flex: 2 },
-                { field: 'revenue', headerName: 'Revenue', flex: 1.5, valueFormatter: p => formatCurrency(p.value) },
-                { field: 'units', headerName: 'Units', flex: 1, valueFormatter: p => formatNumber(p.value) },
-                { field: 'delivery_notes', headerName: 'DNs', flex: 1, valueFormatter: p => formatNumber(p.value) },
-                { field: 'pgi_achievement_rate', headerName: 'PGI %', flex: 1, valueFormatter: p => formatPercentage(p.value) },
-                { field: 'pod_completion_rate', headerName: 'POD %', flex: 1, valueFormatter: p => formatPercentage(p.value) },
-                { field: 'slow_moving_flag', headerName: 'Slow', flex: 0.8, cellRenderer: p => p.value ? 'Yes' : '' },
-                { field: 'fast_moving_flag', headerName: 'Fast', flex: 0.8, cellRenderer: p => p.value ? 'Yes' : '' },
-                {
-                    field: 'ai_recommendation',
-                    headerName: 'AI Rec',
-                    flex: 2,
-                    tooltipField: 'ai_recommendation',
-                },
+                { field: 'product_name', headerName: 'Product Model', flex: 1.5 },
+                { field: 'revenue', headerName: 'Revenue', flex: 1.2, valueFormatter: p => formatCurrency(p.value) },
+                { field: 'units', headerName: 'Units', flex: 0.8, valueFormatter: p => formatNumber(p.value) },
+                { field: 'delivery_notes', headerName: 'DNs', flex: 0.8, valueFormatter: p => formatNumber(p.value) },
+                { field: 'pgi_achievement_rate', headerName: 'PGI %', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'pod_completion_rate', headerName: 'POD %', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'abc_class', headerName: 'ABC', flex: 0.5 },
+                { field: 'slow_moving_flag', headerName: 'Slow', flex: 0.6, cellRenderer: p => p.value ? '🐢' : '' },
+                { field: 'fast_moving_flag', headerName: 'Fast', flex: 0.6, cellRenderer: p => p.value ? '🚀' : '' },
+                { field: 'dead_stock_flag', headerName: 'Dead', flex: 0.6, cellRenderer: p => p.value ? '💀' : '' },
+                { field: 'ai_recommendation', headerName: 'AI Rec', flex: 1.5, tooltipField: 'ai_recommendation' },
             ];
             productGrid = new agGrid.Grid(gridDiv, {
                 columnDefs: colDefs,
@@ -1568,24 +1572,26 @@
         }
 
         // ============================================================
-        // AG GRID: TRANSPORTER (data may be empty)
+        // AG GRID: TRANSPORTER (new enterprise fields)
         // ============================================================
         function renderTransporterGrid(data) {
             const gridDiv = document.getElementById('transporterGrid');
             if (transporterGrid) { transporterGrid.destroy(); }
-            // If data is empty or not an array, show empty
-            const rowData = Array.isArray(data) ? data : [];
             const colDefs = [
-                { field: 'transporter_name', headerName: 'Transporter', flex: 2 },
-                { field: 'units', headerName: 'Units', flex: 1, valueFormatter: p => formatNumber(p.value) },
-                { field: 'otif', headerName: 'OTIF', flex: 1, valueFormatter: p => formatPercentage(p.value) },
-                { field: 'pod', headerName: 'POD', flex: 1, valueFormatter: p => p.value ? p.value.toFixed(1) : '0' },
-                { field: 'delivery_notes', headerName: 'DNs', flex: 1, valueFormatter: p => formatNumber(p.value) },
-                { field: 'score', headerName: 'Score', flex: 1, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'transporter_name', headerName: 'Transporter', flex: 1.5 },
+                { field: 'revenue', headerName: 'Revenue', flex: 1.2, valueFormatter: p => formatCurrency(p.value) },
+                { field: 'units', headerName: 'Units', flex: 0.8, valueFormatter: p => formatNumber(p.value) },
+                { field: 'delivery_notes', headerName: 'DNs', flex: 0.8, valueFormatter: p => formatNumber(p.value) },
+                { field: 'delivery_achievement_rate', headerName: 'Delivery %', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'pod_completion_rate', headerName: 'POD %', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'average_delivery_days', headerName: 'Avg Days', flex: 0.8, valueFormatter: p => formatDays(p.value) },
+                { field: 'score', headerName: 'Score', flex: 0.8, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'performance_grade', headerName: 'Grade', flex: 0.6 },
+                { field: 'ai_recommendation', headerName: 'AI Rec', flex: 1.5, tooltipField: 'ai_recommendation' },
             ];
             transporterGrid = new agGrid.Grid(gridDiv, {
                 columnDefs: colDefs,
-                rowData: rowData,
+                rowData: data,
                 pagination: true,
                 paginationPageSize: 5,
                 domLayout: 'autoHeight',
