@@ -1,810 +1,1704 @@
-<!-- ===================================================== -->
-<!-- FILE: app/templates/dashboard.html -->
-<!-- PROJECT: AI WhatsApp Customer Service Agent -->
-<!-- VERSION: 4.1 - FILTER BAR REMOVED -->
-<!-- ===================================================== -->
+<!-- ============================================================ -->
+<!-- FILE: app/templates/dashboard.html                           -->
+<!-- PROJECT: Logistics Intelligence Dashboard                    -->
+<!-- VERSION: 5.3 - Interactive Upload with Progress Bar         -->
+<!-- ============================================================ -->
 
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Logistics Intelligence Dashboard</title>
 
     <!-- Bootstrap 5 CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
     <!-- Font Awesome 6 -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet" />
     <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js">
+    </script>
     <!-- AG Grid -->
-    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js">
+    </script>
     <!-- SweetAlert2 -->
-    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11">
+    </script>
     <!-- Animate.css -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" rel="stylesheet" />
 
     <style>
-        /* Custom Variables */
+        /* ============================================================
+                   CUSTOM VARIABLES & RESET
+                   ============================================================ */
         :root {
-            --primary: #128C7E;
-            --primary-light: #25D366;
-            --bg-light: #f8f9fa;
+            --primary: #0d6efd;
+            --primary-dark: #0a58ca;
+            --primary-light: #cfe2ff;
+            --sidebar-width: 260px;
+            --bg-body: #f0f2f6;
+            --card-radius: 16px;
+            --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.06);
+            --shadow-hover: 0 12px 30px rgba(0, 0, 0, 0.10);
+            --transition: 0.25s ease;
+        }
+
+        * {
+            box-sizing: border-box;
         }
 
         body {
-            background: var(--bg-light);
+            background: var(--bg-body);
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            overflow-x: hidden;
         }
 
-        .navbar-brand {
-            font-weight: 700;
-            color: var(--primary) !important;
+        /* ============================================================
+                   SIDEBAR
+                   ============================================================ */
+        .sidebar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: var(--sidebar-width);
+            height: 100vh;
+            background: #ffffff;
+            border-right: 1px solid #e9ecef;
+            padding: 1.25rem 0 1.5rem 0;
+            overflow-y: auto;
+            z-index: 1050;
+            transition: transform var(--transition);
+            box-shadow: 2px 0 12px rgba(0, 0, 0, 0.04);
+            display: flex;
+            flex-direction: column;
         }
 
-        .bg-primary-custom {
-            background: linear-gradient(135deg, var(--primary), var(--primary-light));
+        .sidebar-brand {
+            padding: 0 1.5rem 1.25rem 1.5rem;
+            border-bottom: 1px solid #e9ecef;
+            margin-bottom: 1rem;
         }
-
-        .card {
-            border: none;
-            border-radius: 16px;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-        .card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 12px 30px rgba(0,0,0,0.1);
-        }
-
-        .kpi-card {
-            border-left: 5px solid var(--primary);
-            background: white;
-            padding: 1rem 1.25rem;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-            height: 100%;
-        }
-        .kpi-card .kpi-icon {
-            font-size: 2rem;
-            opacity: 0.6;
-        }
-        .kpi-card .kpi-value {
-            font-size: 1.8rem;
+        .sidebar-brand h5 {
             font-weight: 700;
             color: #1a1a2e;
+            margin: 0;
+            font-size: 1.2rem;
         }
-        .kpi-card .kpi-label {
-            font-size: 0.85rem;
+        .sidebar-brand h5 i {
+            color: var(--primary);
+            margin-right: 8px;
+        }
+        .sidebar-brand small {
+            display: block;
+            font-size: 0.7rem;
             color: #6c757d;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .kpi-card .kpi-trend {
-            font-size: 0.85rem;
-            font-weight: 600;
-        }
-        .kpi-card .kpi-progress {
-            height: 6px;
-            border-radius: 3px;
-            background: #e9ecef;
-        }
-        .kpi-card .kpi-progress-bar {
-            height: 100%;
-            border-radius: 3px;
-            background: var(--primary);
-            width: 0%;
+            font-weight: 400;
+            margin-top: 2px;
+            letter-spacing: 0.3px;
         }
 
-        .alert-banner {
-            border-radius: 12px;
-            padding: 0.8rem 1.5rem;
+        .sidebar-nav {
+            flex: 1;
+            padding: 0 0.75rem;
+        }
+        .sidebar-nav .nav-item {
+            margin-bottom: 2px;
+        }
+        .sidebar-nav .nav-link {
+            display: flex;
+            align-items: center;
+            padding: 0.6rem 1rem;
+            border-radius: 10px;
+            color: #4a4a5a;
+            font-weight: 500;
+            font-size: 0.9rem;
+            transition: all var(--transition);
+            text-decoration: none;
+            gap: 12px;
+        }
+        .sidebar-nav .nav-link i {
+            width: 20px;
+            text-align: center;
+            font-size: 1rem;
+            color: #6c757d;
+            transition: color var(--transition);
+        }
+        .sidebar-nav .nav-link:hover {
+            background: var(--primary-light);
+            color: var(--primary-dark);
+        }
+        .sidebar-nav .nav-link:hover i {
+            color: var(--primary);
+        }
+        .sidebar-nav .nav-link.active {
+            background: var(--primary);
+            color: #fff;
+            box-shadow: 0 4px 12px rgba(13, 110, 253, 0.30);
+        }
+        .sidebar-nav .nav-link.active i {
+            color: #fff;
+        }
+
+        .sidebar-footer {
+            padding: 1rem 1.5rem 0 1.5rem;
+            border-top: 1px solid #e9ecef;
+            font-size: 0.75rem;
+            color: #adb5bd;
+            text-align: center;
+        }
+
+        /* ============================================================
+                   MAIN CONTENT
+                   ============================================================ */
+        .main-content {
+            margin-left: var(--sidebar-width);
+            padding: 1.5rem 2rem 2rem 2rem;
+            min-height: 100vh;
+            transition: margin var(--transition);
+        }
+
+        /* ============================================================
+                   TOP BAR
+                   ============================================================ */
+        .topbar {
+            background: #ffffff;
+            border-radius: var(--card-radius);
+            padding: 0.9rem 1.5rem;
+            box-shadow: var(--shadow-sm);
+            margin-bottom: 1.5rem;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        .topbar-left .hamburger {
+            display: none;
+            background: none;
+            border: none;
+            font-size: 1.4rem;
+            color: #1a1a2e;
+            padding: 0;
+            cursor: pointer;
+        }
+        .topbar-left h4 {
+            margin: 0;
+            font-weight: 600;
+            color: #1a1a2e;
+            font-size: 1.25rem;
+        }
+        .topbar-left h4 i {
+            color: var(--primary);
+            margin-right: 8px;
+        }
+        .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 1.25rem;
+            flex-wrap: wrap;
+        }
+        .topbar-right .badge-date {
+            background: #f8f9fa;
+            padding: 0.4rem 1rem;
+            border-radius: 30px;
+            font-size: 0.8rem;
+            color: #495057;
             font-weight: 500;
         }
-        .alert-critical {
-            background: #f8d7da;
-            border-left: 6px solid #dc3545;
-            color: #721c24;
+        .topbar-right .badge-date i {
+            margin-right: 6px;
+            color: var(--primary);
         }
-        .alert-warning {
-            background: #fff3cd;
-            border-left: 6px solid #ffc107;
-            color: #856404;
+        .topbar-right .user-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--primary-light);
+            padding: 0.3rem 1rem 0.3rem 0.8rem;
+            border-radius: 30px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--primary-dark);
         }
-        .alert-normal {
-            background: #d1ecf1;
-            border-left: 6px solid #17a2b8;
-            color: #0c5460;
-        }
-
-        .chart-container {
-            position: relative;
-            height: 280px;
-            width: 100%;
+        .topbar-right .user-badge i {
+            font-size: 1.1rem;
         }
 
-        .section-title {
+        /* ============================================================
+                   CARDS
+                   ============================================================ */
+        .card-custom {
+            background: #ffffff;
+            border: none;
+            border-radius: var(--card-radius);
+            box-shadow: var(--shadow-sm);
+            transition: all var(--transition);
+            height: 100%;
+        }
+        .card-custom:hover {
+            box-shadow: var(--shadow-hover);
+            transform: translateY(-2px);
+        }
+        .card-custom .card-header-custom {
+            padding: 1rem 1.25rem 0.5rem 1.25rem;
             font-weight: 600;
+            font-size: 0.9rem;
             color: #1a1a2e;
-            border-left: 6px solid var(--primary);
-            padding-left: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid #f0f0f0;
+            margin: 0 1.25rem 0.75rem 1.25rem;
+            padding-left: 0;
+            padding-right: 0;
+        }
+        .card-custom .card-header-custom i {
+            color: var(--primary);
+        }
+        .card-custom .card-body-custom {
+            padding: 0.5rem 1.25rem 1.25rem 1.25rem;
+        }
+
+        /* ============================================================
+                   KPI CARDS
+                   ============================================================ */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
             margin-bottom: 1.5rem;
         }
-
-        .upload-form, .search-form {
+        .kpi-tile {
+            background: #ffffff;
+            border-radius: var(--card-radius);
+            padding: 1rem 1.25rem;
+            box-shadow: var(--shadow-sm);
+            transition: all var(--transition);
+            border-left: 4px solid var(--primary);
+            position: relative;
+            overflow: hidden;
+        }
+        .kpi-tile:hover {
+            box-shadow: var(--shadow-hover);
+            transform: translateY(-2px);
+        }
+        .kpi-tile .kpi-label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: #6c757d;
+            font-weight: 600;
+            margin-bottom: 2px;
+        }
+        .kpi-tile .kpi-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #1a1a2e;
+            line-height: 1.2;
+        }
+        .kpi-tile .kpi-meta {
             display: flex;
-            gap: 15px;
             flex-wrap: wrap;
+            align-items: center;
+            gap: 0.5rem 1rem;
+            margin-top: 4px;
+            font-size: 0.75rem;
+            color: #6c757d;
+        }
+        .kpi-tile .kpi-meta .trend-up {
+            color: #198754;
+        }
+        .kpi-tile .kpi-meta .trend-down {
+            color: #dc3545;
+        }
+        .kpi-tile .kpi-meta .target-badge {
+            background: #f8f9fa;
+            padding: 0.1rem 0.6rem;
+            border-radius: 12px;
+            font-weight: 500;
+            font-size: 0.7rem;
+        }
+        .kpi-tile .kpi-progress {
+            height: 4px;
+            border-radius: 2px;
+            background: #e9ecef;
+            margin-top: 8px;
+            overflow: hidden;
+        }
+        .kpi-tile .kpi-progress .bar {
+            height: 100%;
+            border-radius: 2px;
+            background: var(--primary);
+            transition: width 0.8s ease;
+        }
+        .kpi-tile .kpi-icon-bg {
+            position: absolute;
+            right: 12px;
+            top: 12px;
+            font-size: 2rem;
+            opacity: 0.10;
+            color: var(--primary);
+        }
+
+        .kpi-tile.border-primary {
+            border-left-color: #0d6efd;
+        }
+        .kpi-tile.border-success {
+            border-left-color: #198754;
+        }
+        .kpi-tile.border-warning {
+            border-left-color: #ffc107;
+        }
+        .kpi-tile.border-danger {
+            border-left-color: #dc3545;
+        }
+        .kpi-tile.border-info {
+            border-left-color: #0dcaf0;
+        }
+        .kpi-tile.border-purple {
+            border-left-color: #6f42c1;
+        }
+        .kpi-tile.border-teal {
+            border-left-color: #20c997;
+        }
+        .kpi-tile.border-pink {
+            border-left-color: #d63384;
+        }
+
+        /* ============================================================
+                   HEALTH SCORE
+                   ============================================================ */
+        .health-score {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            background: #e8f5e9;
+            padding: 0.4rem 1.2rem 0.4rem 1rem;
+            border-radius: 40px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            color: #1a1a2e;
+        }
+        .health-score .score-num {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #198754;
+        }
+        .health-score .score-label {
+            font-weight: 400;
+            color: #495057;
+            font-size: 0.75rem;
+        }
+
+        /* ============================================================
+                   ALERT CENTER
+                   ============================================================ */
+        .alert-center {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+        .alert-item {
+            background: #ffffff;
+            border-radius: 12px;
+            padding: 0.75rem 1rem;
+            box-shadow: var(--shadow-sm);
+            border-left: 4px solid #ffc107;
+            display: flex;
+            flex-direction: column;
+            transition: all var(--transition);
+        }
+        .alert-item:hover {
+            box-shadow: var(--shadow-hover);
+        }
+        .alert-item .alert-title {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #6c757d;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+        .alert-item .alert-desc {
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: #1a1a2e;
+        }
+        .alert-item .alert-detail {
+            font-size: 0.8rem;
+            color: #6c757d;
+        }
+        .alert-item .alert-badge {
+            align-self: flex-start;
+            margin-top: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            padding: 0.1rem 0.6rem;
+            border-radius: 12px;
+        }
+        .alert-item.critical {
+            border-left-color: #dc3545;
+        }
+        .alert-item.warning {
+            border-left-color: #ffc107;
+        }
+        .alert-item.success {
+            border-left-color: #198754;
+        }
+        .alert-item.info {
+            border-left-color: #0dcaf0;
+        }
+
+        /* ============================================================
+                   CHARTS
+                   ============================================================ */
+        .chart-wrapper {
+            position: relative;
+            height: 260px;
+            width: 100%;
+        }
+        .chart-wrapper-sm {
+            height: 200px;
+        }
+
+        /* ============================================================
+                   TABLES (AG Grid)
+                   ============================================================ */
+        .ag-theme-alpine {
+            --ag-header-background-color: #f8f9fa;
+            --ag-header-foreground-color: #1a1a2e;
+            --ag-header-font-weight: 600;
+            --ag-font-size: 13px;
+            --ag-border-color: #e9ecef;
+            --ag-row-hover-color: #f0f7ff;
+        }
+        .ag-theme-alpine .ag-root-wrapper {
+            border-radius: 12px;
+            border: 1px solid #e9ecef;
+        }
+
+        /* ============================================================
+                   UPLOAD / SEARCH FORMS
+                   ============================================================ */
+        .form-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
             align-items: flex-end;
         }
-        .upload-form .form-group, .search-form .form-group {
+        .form-toolbar .form-group {
             flex: 1;
-            min-width: 180px;
+            min-width: 160px;
         }
-        .upload-form input[type="file"],
-        .upload-form select,
-        .search-form input[type="text"],
-        .search-form select {
-            width: 100%;
-            padding: 10px 12px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            font-size: 14px;
+        .form-toolbar .form-group label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #495057;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            margin-bottom: 2px;
+        }
+        .form-toolbar .form-control,
+        .form-toolbar .form-select {
+            border: 1px solid #dee2e6;
+            border-radius: 10px;
+            padding: 0.5rem 0.9rem;
+            font-size: 0.9rem;
+            transition: border-color var(--transition);
+            background: #fff;
+        }
+        .form-toolbar .form-control:focus,
+        .form-toolbar .form-select:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.15);
+        }
+        .form-toolbar .btn-upload,
+        .form-toolbar .btn-search {
+            background: var(--primary);
+            color: #fff;
+            border: none;
+            padding: 0.5rem 1.6rem;
+            border-radius: 10px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            transition: all var(--transition);
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .form-toolbar .btn-upload:hover,
+        .form-toolbar .btn-search:hover {
+            background: var(--primary-dark);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(13, 110, 253, 0.30);
+        }
+        .form-toolbar .btn-upload i,
+        .form-toolbar .btn-search i {
+            margin-right: 6px;
+        }
+
+        .upload-highlight {
+            border: 2px solid #0d6efd;
+            border-radius: var(--card-radius);
+            background: #f8fbff;
             transition: border-color 0.3s;
         }
-        .upload-form input[type="file"]:focus,
-        .upload-form select:focus,
-        .search-form input:focus,
-        .search-form select:focus {
-            outline: none;
-            border-color: #25D366;
+        .upload-highlight:hover {
+            border-color: #0a58ca;
         }
-        .upload-form button, .search-form button {
-            background: #25D366;
-            color: white;
-            border: none;
-            padding: 10px 24px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 14px;
+        .upload-highlight .card-header-custom {
+            color: var(--primary-dark);
+        }
+
+        /* ============================================================
+                   AI RECOMMENDATIONS
+                   ============================================================ */
+        .rec-card {
+            background: #ffffff;
+            border-radius: 12px;
+            padding: 1rem 1.25rem;
+            box-shadow: var(--shadow-sm);
+            border-left: 4px solid var(--primary);
+            transition: all var(--transition);
+            height: 100%;
+        }
+        .rec-card:hover {
+            box-shadow: var(--shadow-hover);
+            transform: translateY(-2px);
+        }
+        .rec-card .rec-title {
+            font-weight: 600;
+            font-size: 0.85rem;
+            color: #1a1a2e;
+        }
+        .rec-card .rec-text {
+            font-size: 0.85rem;
+            color: #495057;
+            margin-top: 4px;
+        }
+        .rec-card .rec-meta {
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .rec-card .rec-meta .badge {
             font-weight: 500;
-            transition: background 0.3s;
-        }
-        .upload-form button:hover, .search-form button:hover {
-            background: #128C7E;
+            font-size: 0.7rem;
         }
 
-        /* AG Grid container */
-        .ag-theme-alpine {
-            height: 400px;
+        /* ============================================================
+                   RESPONSIVE
+                   ============================================================ */
+        @media (max-width: 991.98px) {
+            .sidebar {
+                transform: translateX(-100%);
+            }
+            .sidebar.open {
+                transform: translateX(0);
+            }
+            .main-content {
+                margin-left: 0;
+                padding: 1rem;
+            }
+            .topbar-left .hamburger {
+                display: block;
+            }
+            .topbar-left h4 {
+                font-size: 1rem;
+            }
+            .kpi-grid {
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            }
+            .alert-center {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 575.98px) {
+            .kpi-grid {
+                grid-template-columns: 1fr 1fr;
+                gap: 0.6rem;
+            }
+            .kpi-tile .kpi-value {
+                font-size: 1.2rem;
+            }
+            .alert-center {
+                grid-template-columns: 1fr;
+            }
+            .topbar-right .badge-date {
+                font-size: 0.7rem;
+                padding: 0.2rem 0.7rem;
+            }
+            .topbar-right .user-badge {
+                font-size: 0.75rem;
+                padding: 0.2rem 0.7rem 0.2rem 0.5rem;
+            }
+            .form-toolbar .form-group {
+                min-width: 100%;
+            }
+            .form-toolbar .btn-upload,
+            .form-toolbar .btn-search {
+                width: 100%;
+                justify-content: center;
+            }
+            .main-content {
+                padding: 0.75rem;
+            }
+        }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
             width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.30);
+            z-index: 1040;
+        }
+        .sidebar-overlay.active {
+            display: block;
         }
 
-        .footer {
-            background: white;
-            padding: 1.5rem;
-            border-radius: 16px;
+        /* ============================================================
+                   FOOTER
+                   ============================================================ */
+        .footer-bar {
+            background: #ffffff;
+            border-radius: var(--card-radius);
+            padding: 1rem 1.5rem;
             margin-top: 2rem;
-            text-align: center;
+            box-shadow: var(--shadow-sm);
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.8rem;
             color: #6c757d;
-            font-size: 0.9rem;
-            box-shadow: 0 -2px 8px rgba(0,0,0,0.04);
+        }
+        .footer-bar i {
+            margin-right: 4px;
+        }
+        .footer-bar .divider {
+            color: #dee2e6;
+            margin: 0 0.5rem;
         }
 
-        /* Responsive tweaks */
-        @media (max-width: 768px) {
-            .kpi-card .kpi-value {
-                font-size: 1.4rem;
-            }
-            .chart-container {
-                height: 200px;
-            }
+        /* SweetAlert2 progress bar override for better visibility */
+        .swal2-popup .progress {
+            height: 20px;
+            border-radius: 30px;
+            background: #e9ecef;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+        .swal2-popup .progress-bar {
+            font-size: 12px;
+            font-weight: 600;
+            line-height: 20px;
+            color: #fff;
+            background-color: #0d6efd;
+            transition: width 0.3s ease;
+            border-radius: 30px;
         }
     </style>
 </head>
 
 <body>
 
-<div class="container-fluid px-4 py-3">
+    <!-- ============================================================
+    SIDEBAR OVERLAY (mobile)
+    ============================================================ -->
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
 
-    <!-- Navigation -->
-    <nav class="navbar navbar-expand-lg navbar-light bg-white rounded-3 shadow-sm mb-4 px-3">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="#">
-                <i class="fas fa-cubes me-2 text-success"></i> Logistics Intelligence
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <li class="nav-item"><a class="nav-link active" href="/dashboard"><i class="fas fa-tachometer-alt me-1"></i> Dashboard</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/upload-center"><i class="fas fa-upload me-1"></i> Upload Center</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/logistics-status"><i class="fas fa-truck me-1"></i> Logistics Analytics</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/status"><i class="fas fa-server me-1"></i> System Status</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/webhook"><i class="fab fa-whatsapp me-1"></i> WhatsApp</a></li>
-                </ul>
+    <!-- ============================================================
+    SIDEBAR
+    ============================================================ -->
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-brand">
+            <h5><i class="fas fa-cubes"></i> Logistics IQ</h5>
+            <small>AI-Powered Real-time Analytics</small>
+        </div>
+
+        <nav class="sidebar-nav">
+            <div class="nav-item">
+                <a class="nav-link active" href="#"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+            </div>
+            <div class="nav-item">
+                <a class="nav-link" href="#"><i class="fas fa-upload"></i> Upload Center</a>
+            </div>
+            <div class="nav-item">
+                <a class="nav-link" href="#"><i class="fas fa-chart-line"></i> Logistics Analytics</a>
+            </div>
+            <div class="nav-item">
+                <a class="nav-link" href="#"><i class="fas fa-warehouse"></i> Warehouse Intelligence</a>
+            </div>
+            <div class="nav-item">
+                <a class="nav-link" href="#"><i class="fas fa-users"></i> Dealer Intelligence</a>
+            </div>
+            <div class="nav-item">
+                <a class="nav-link" href="#"><i class="fas fa-city"></i> City Intelligence</a>
+            </div>
+            <div class="nav-item">
+                <a class="nav-link" href="#"><i class="fas fa-box"></i> Product Intelligence</a>
+            </div>
+            <div class="nav-item">
+                <a class="nav-link" href="#"><i class="fas fa-truck"></i> Transport Performance</a>
+            </div>
+            <div class="nav-item">
+                <a class="nav-link" href="#"><i class="fas fa-robot"></i> AI Insights</a>
+            </div>
+            <div class="nav-item">
+                <a class="nav-link" href="#"><i class="fas fa-file-alt"></i> Reports</a>
+            </div>
+            <div class="nav-item">
+                <a class="nav-link" href="#"><i class="fas fa-server"></i> System Status</a>
+            </div>
+        </nav>
+
+        <div class="sidebar-footer">
+            <i class="fas fa-code-branch"></i> v5.3 &nbsp;·&nbsp; <i class="fas fa-database"></i> Live
+        </div>
+    </aside>
+
+    <!-- ============================================================
+    MAIN CONTENT
+    ============================================================ -->
+    <main class="main-content" id="mainContent">
+
+        <!-- ============================================================
+        TOP BAR
+        ============================================================ -->
+        <div class="topbar">
+            <div class="topbar-left">
+                <button class="hamburger" id="hamburgerBtn" aria-label="Toggle sidebar">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <h4><i class="fas fa-chart-pie"></i> Logistics Intelligence Center</h4>
+            </div>
+            <div class="topbar-right">
+                <span class="badge-date"><i class="fas fa-calendar-day"></i> <span id="todayDate"></span></span>
+                <span class="badge-date"><i class="fas fa-sync-alt"></i> <span id="lastRefresh">Just now</span></span>
+                <span class="user-badge"><i class="fas fa-user-circle"></i> Viewer</span>
             </div>
         </div>
-    </nav>
 
-    <!-- Alerts Banner -->
-    <div id="alertsContainer" class="mb-3"></div>
+        <!-- ============================================================
+        ALERT CENTER
+        ============================================================ -->
+        <div id="alertCenter" class="alert-center"></div>
 
-    <!-- Executive Header -->
-    <div class="bg-primary-custom text-white p-4 rounded-4 mb-4 shadow">
-        <div class="row align-items-center">
-            <div class="col-md-8">
-                <h1 class="display-6 fw-bold"><i class="fas fa-chart-pie me-2"></i> Logistics Intelligence Center</h1>
-                <p class="lead mb-0">AI-powered real-time logistics analytics & recommendations</p>
-            </div>
-            <div class="col-md-4 text-md-end mt-3 mt-md-0">
-                <div><i class="fas fa-sync-alt me-1"></i> Last Updated: <span id="lastRefresh">Just now</span></div>
-                <div><i class="fas fa-user me-1"></i> User: Viewer</div>
-                <div><i class="fas fa-calendar-day me-1"></i> <span id="todayDate"></span></div>
-            </div>
-        </div>
-    </div>
+        <!-- ============================================================
+        KPI GRID
+        ============================================================ -->
+        <div id="kpiGrid" class="kpi-grid"></div>
 
-    <!-- KPI Cards (dynamically rendered) -->
-    <div id="kpiCards" class="row g-3 mb-4"></div>
-
-    <!-- Row: Charts -->
-    <div class="row g-3 mb-4">
-        <div class="col-xl-6 col-lg-12">
-            <div class="card p-3 h-100">
-                <h6 class="section-title"><i class="fas fa-chart-line me-2 text-primary"></i>Revenue Trend</h6>
-                <div class="chart-container"><canvas id="revenueChart"></canvas></div>
-            </div>
-        </div>
-        <div class="col-xl-6 col-lg-12">
-            <div class="card p-3 h-100">
-                <h6 class="section-title"><i class="fas fa-boxes me-2 text-success"></i>Units & DN Trend</h6>
-                <div class="chart-container"><canvas id="unitsChart"></canvas></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Row: More Charts -->
-    <div class="row g-3 mb-4">
-        <div class="col-xl-6 col-lg-12">
-            <div class="card p-3 h-100">
-                <h6 class="section-title"><i class="fas fa-percent me-2 text-warning"></i>POD Rate Trend</h6>
-                <div class="chart-container"><canvas id="podChart"></canvas></div>
-            </div>
-        </div>
-        <div class="col-xl-6 col-lg-12">
-            <div class="card p-3 h-100">
-                <h6 class="section-title"><i class="fas fa-truck me-2 text-info"></i>Daily Delivery Trend</h6>
-                <div class="chart-container"><canvas id="dailyChart"></canvas></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Upload & Search Forms (unchanged) -->
-    <div class="row g-3 mb-4">
-        <div class="col-md-6">
-            <div class="card p-4">
-                <h6 class="section-title"><i class="fas fa-upload me-2 text-primary"></i>Upload Logistics Report</h6>
-                <form class="upload-form" action="/upload/excel" method="post" enctype="multipart/form-data">
-                    <div class="form-group">
-                        <label>Excel File (.xlsx, .xls)</label>
-                        <input type="file" name="file" accept=".xlsx,.xls" required>
+        <!-- ============================================================
+        HEALTH SCORE + OTIF + POD
+        ============================================================ -->
+        <div class="row g-3 mb-4" id="healthSummary">
+            <div class="col-md-4">
+                <div class="card-custom p-3 d-flex align-items-center justify-content-between">
+                    <div>
+                        <div class="fs-small text-muted fw-600">LOGISTICS HEALTH SCORE</div>
+                        <div class="d-flex align-items-center gap-2 mt-1">
+                            <span class="fw-700" style="font-size:1.8rem;color:#198754;" id="healthScoreNum">89%</span>
+                            <span class="badge bg-success">Good</span>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label>Skip Duplicates</label>
-                        <select name="skip_duplicates">
-                            <option value="true">Yes - Skip existing DNs</option>
-                            <option value="false">No - Update existing DNs</option>
-                        </select>
+                    <i class="fas fa-heartbeat" style="font-size:2.2rem;color:#198754;opacity:0.25;"></i>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card-custom p-3 d-flex align-items-center justify-content-between">
+                    <div>
+                        <div class="fs-small text-muted fw-600">OTIF</div>
+                        <div class="d-flex align-items-center gap-2 mt-1">
+                            <span class="fw-700" style="font-size:1.8rem;" id="otifNum">82.0%</span>
+                            <span class="badge bg-warning text-dark">Target: 95%</span>
+                        </div>
+                        <div class="fs-small text-muted mt-1"><i class="fas fa-arrow-down text-danger"></i> 86% vs target</div>
                     </div>
-                    <button type="submit">⬆ Upload & Import</button>
-                </form>
+                    <i class="fas fa-check-circle" style="font-size:2rem;color:#ffc107;opacity:0.25;"></i>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card-custom p-3 d-flex align-items-center justify-content-between">
+                    <div>
+                        <div class="fs-small text-muted fw-600">POD RATE</div>
+                        <div class="d-flex align-items-center gap-2 mt-1">
+                            <span class="fw-700" style="font-size:1.8rem;" id="podRateNum">80.3%</span>
+                            <span class="badge bg-danger">Target: 90%</span>
+                        </div>
+                        <div class="fs-small text-muted mt-1"><i class="fas fa-arrow-down text-danger"></i> 89% vs target</div>
+                    </div>
+                    <i class="fas fa-clipboard-check" style="font-size:2rem;color:#dc3545;opacity:0.25;"></i>
+                </div>
             </div>
         </div>
-        <div class="col-md-6">
-            <div class="card p-4">
-                <h6 class="section-title"><i class="fas fa-search me-2 text-primary"></i>Search Deliveries</h6>
-                <form class="search-form" action="/search" method="get">
-                    <input type="text" name="q" placeholder="Search by DN, Dealer, Customer, or City..." required>
-                    <select name="search_type">
-                        <option value="all">All</option>
-                        <option value="dn">DN Number</option>
-                        <option value="dealer">Dealer Code</option>
-                        <option value="city">City</option>
-                        <option value="warehouse">Warehouse</option>
-                        <option value="division">Division</option>
-                    </select>
-                    <button type="submit">🔍 Search</button>
-                </form>
+
+        <!-- ============================================================
+        CHARTS ROW 1: Revenue & Units/DN
+        ============================================================ -->
+        <div class="row g-3 mb-4">
+            <div class="col-xl-6 col-lg-12">
+                <div class="card-custom p-3">
+                    <div class="card-header-custom">
+                        <i class="fas fa-chart-line"></i> Revenue Trend
+                        <span class="ms-auto fs-small text-muted">Day · Week · Month · Year</span>
+                    </div>
+                    <div class="card-body-custom">
+                        <div class="chart-wrapper"><canvas id="revenueChart"></canvas></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-xl-6 col-lg-12">
+                <div class="card-custom p-3">
+                    <div class="card-header-custom">
+                        <i class="fas fa-boxes"></i> Units &amp; DN Trend
+                        <span class="ms-auto fs-small text-muted">Units · DNs</span>
+                    </div>
+                    <div class="card-body-custom">
+                        <div class="chart-wrapper"><canvas id="unitsChart"></canvas></div>
+                    </div>
+                </div>
             </div>
         </div>
-    </div>
 
-    <!-- Latest Uploads Table (AG Grid) -->
-    <div class="card p-3 mb-4">
-        <h6 class="section-title"><i class="fas fa-history me-2 text-primary"></i>Latest Uploads</h6>
-        <div id="uploadsGrid" class="ag-theme-alpine" style="height: 300px;"></div>
-    </div>
-
-    <!-- Warehouse & Dealer Intelligence Cards -->
-    <div class="row g-3 mb-4">
-        <div class="col-xl-6">
-            <div class="card p-3 h-100">
-                <h6 class="section-title"><i class="fas fa-warehouse me-2 text-primary"></i>Warehouse Intelligence</h6>
-                <div id="warehouseGrid" class="ag-theme-alpine" style="height: 300px;"></div>
+        <!-- ============================================================
+        CHARTS ROW 2: POD Rate & Daily Delivery
+        ============================================================ -->
+        <div class="row g-3 mb-4">
+            <div class="col-xl-6 col-lg-12">
+                <div class="card-custom p-3">
+                    <div class="card-header-custom">
+                        <i class="fas fa-percent"></i> POD Rate Trend
+                        <span class="ms-auto fs-small text-muted">Last 12 months</span>
+                    </div>
+                    <div class="card-body-custom">
+                        <div class="chart-wrapper"><canvas id="podChart"></canvas></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-xl-6 col-lg-12">
+                <div class="card-custom p-3">
+                    <div class="card-header-custom">
+                        <i class="fas fa-truck"></i> Daily Delivery Trend
+                        <span class="ms-auto fs-small text-muted">Revenue per day</span>
+                    </div>
+                    <div class="card-body-custom">
+                        <div class="chart-wrapper"><canvas id="dailyChart"></canvas></div>
+                    </div>
+                </div>
             </div>
         </div>
-        <div class="col-xl-6">
-            <div class="card p-3 h-100">
-                <h6 class="section-title"><i class="fas fa-users me-2 text-success"></i>Dealer Intelligence</h6>
-                <div id="dealerGrid" class="ag-theme-alpine" style="height: 300px;"></div>
+
+        <!-- ============================================================
+        TOP 5 WAREHOUSE PERFORMANCE
+        ============================================================ -->
+        <div class="card-custom p-3 mb-4">
+            <div class="card-header-custom">
+                <i class="fas fa-warehouse"></i> Top 5 Warehouse Performance
+                <span class="ms-auto fs-small text-muted">Revenue · OTIF · DNs · POD</span>
+            </div>
+            <div class="card-body-custom">
+                <div id="warehouseGrid" class="ag-theme-alpine" style="height:280px;"></div>
             </div>
         </div>
-    </div>
 
-    <!-- AI Recommendations Panel -->
-    <div class="card p-3 mb-4">
-        <h6 class="section-title"><i class="fas fa-robot me-2 text-primary"></i>AI Insights & Recommendations</h6>
-        <div id="recommendationsContainer" class="row g-3"></div>
-    </div>
-
-    <!-- Footer with metadata -->
-    <div class="footer">
-        <div class="row">
-            <div class="col-md-6 text-md-start">
-                <i class="fas fa-code-branch me-1"></i> v4.1.0 &nbsp;|&nbsp;
-                <i class="fas fa-database me-1"></i> PostgreSQL &nbsp;|&nbsp;
-                <i class="fas fa-sync me-1"></i> <span id="footerRefresh">Just now</span>
+        <!-- ============================================================
+        TOP 5 DEALERS + TOP 5 CITIES + TOP 5 PRODUCTS
+        ============================================================ -->
+        <div class="row g-3 mb-4">
+            <div class="col-xl-4 col-lg-6">
+                <div class="card-custom p-3 h-100">
+                    <div class="card-header-custom"><i class="fas fa-users"></i> Top 5 Dealers</div>
+                    <div class="card-body-custom">
+                        <div id="dealerGrid" class="ag-theme-alpine" style="height:260px;"></div>
+                    </div>
+                </div>
             </div>
-            <div class="col-md-6 text-md-end">
-                <i class="fas fa-cubes me-1"></i> Records: <span id="footerRecords">0</span> &nbsp;|&nbsp;
-                <i class="fas fa-clock me-1"></i> <span id="footerExecTime">0 ms</span> &nbsp;|&nbsp;
-                <i class="fas fa-cloud me-1"></i> <span id="footerEnv">Production</span>
+            <div class="col-xl-4 col-lg-6">
+                <div class="card-custom p-3 h-100">
+                    <div class="card-header-custom"><i class="fas fa-city"></i> Top 5 Cities Performance</div>
+                    <div class="card-body-custom">
+                        <div id="cityGrid" class="ag-theme-alpine" style="height:260px;"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-xl-4 col-lg-12">
+                <div class="card-custom p-3 h-100">
+                    <div class="card-header-custom"><i class="fas fa-box"></i> Top 5 Products</div>
+                    <div class="card-body-custom">
+                        <div id="productGrid" class="ag-theme-alpine" style="height:260px;"></div>
+                    </div>
+                </div>
             </div>
         </div>
-    </div>
 
-</div>
+        <!-- ============================================================
+        TRANSPORTER PERFORMANCE
+        ============================================================ -->
+        <div class="card-custom p-3 mb-4">
+            <div class="card-header-custom">
+                <i class="fas fa-truck"></i> Transporter Performance
+                <span class="ms-auto fs-small text-muted">Units · OTIF · POD · DNs · Score</span>
+            </div>
+            <div class="card-body-custom">
+                <div id="transporterGrid" class="ag-theme-alpine" style="height:240px;"></div>
+            </div>
+        </div>
 
-<!-- Bootstrap JS Bundle -->
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+        <!-- ============================================================
+        AI INSIGHTS & RECOMMENDATIONS
+        ============================================================ -->
+        <div class="card-custom p-3 mb-4">
+            <div class="card-header-custom"><i class="fas fa-robot"></i> AI Insights &amp; Recommendations</div>
+            <div class="card-body-custom">
+                <div id="recommendationsContainer" class="row g-3"></div>
+            </div>
+        </div>
 
-<script>
-    // ============================================================
-    // Dashboard JavaScript - v4.1 (Filter Bar Removed)
-    // ============================================================
+        <!-- ============================================================
+        LATEST UPDATES
+        ============================================================ -->
+        <div class="card-custom p-3 mb-4">
+            <div class="card-header-custom"><i class="fas fa-history"></i> Latest Updates</div>
+            <div class="card-body-custom">
+                <div id="uploadsGrid" class="ag-theme-alpine" style="height:220px;"></div>
+            </div>
+        </div>
 
-    let dashboardData = {};
-    let refreshInterval = null;
-
-    // Chart instances
-    let revenueChart, unitsChart, podChart, dailyChart;
-
-    // AG Grid instances
-    let uploadsGrid, warehouseGrid, dealerGrid;
-
-    // Helper: format currency
-    function formatCurrency(value) {
-        if (value >= 1e6) return 'PKR ' + (value / 1e6).toFixed(2) + 'M';
-        if (value >= 1e3) return 'PKR ' + value.toLocaleString();
-        return 'PKR ' + value.toFixed(0);
-    }
-
-    function formatNumber(value) {
-        return value.toLocaleString();
-    }
-
-    function formatPercentage(value) {
-        return value.toFixed(1) + '%';
-    }
-
-    // ============================================================
-    // Fetch dashboard data
-    // ============================================================
-
-    async function fetchDashboard() {
-        try {
-            const response = await fetch('/dashboard/api/data');
-            if (!response.ok) throw new Error('Network response was not ok');
-            dashboardData = await response.json();
-            renderDashboard(dashboardData);
-            document.getElementById('lastRefresh').innerText = new Date().toLocaleString();
-            document.getElementById('footerRefresh').innerText = new Date().toLocaleString();
-            document.getElementById('footerRecords').innerText = dashboardData.metadata?.record_count || 0;
-            document.getElementById('footerExecTime').innerText = dashboardData.metadata?.execution_time_ms || 'N/A';
-            document.getElementById('footerEnv').innerText = dashboardData.metadata?.environment || 'Production';
-        } catch (error) {
-            console.error('Error fetching dashboard:', error);
-            Swal.fire({
-                icon: 'error',
-                title: 'Data Load Error',
-                text: 'Could not load dashboard data. Please refresh the page.'
-            });
-        }
-    }
-
-    // ============================================================
-    // Render all sections
-    // ============================================================
-
-    function renderDashboard(data) {
-        renderAlerts(data.alerts || []);
-        renderKPICards(data.cards || {});
-        renderCharts(data.charts || {});
-        renderUploadsGrid(data.latest_uploads || []);
-        renderWarehouseGrid(data.warehouse || []);
-        renderDealerGrid(data.dealer || []);
-        renderRecommendations(data.recommendations || []);
-    }
-
-    // ============================================================
-    // Alerts
-    // ============================================================
-
-    function renderAlerts(alerts) {
-        const container = document.getElementById('alertsContainer');
-        if (!alerts.length) {
-            container.innerHTML = '';
-            return;
-        }
-        let html = '';
-        alerts.forEach(alert => {
-            let cls = 'alert-normal';
-            if (alert.level === 'critical') cls = 'alert-critical';
-            else if (alert.level === 'warning') cls = 'alert-warning';
-            html += `<div class="alert-banner ${cls} mb-2 d-flex justify-content-between align-items-center">
-                <span><i class="fas fa-circle me-2"></i> ${alert.message}</span>
-                <small>${alert.action || ''}</small>
-            </div>`;
-        });
-        container.innerHTML = html;
-    }
-
-    // ============================================================
-    // KPI Cards
-    // ============================================================
-
-    function renderKPICards(cards) {
-        const container = document.getElementById('kpiCards');
-        const keys = Object.keys(cards);
-        if (!keys.length) {
-            container.innerHTML = '<div class="col-12 text-center text-muted">No KPI data available.</div>';
-            return;
-        }
-        let html = '';
-        keys.forEach(key => {
-            const card = cards[key];
-            const icon = card.icon || 'fa-chart-simple';
-            const color = card.color || 'primary';
-            const value = typeof card.value === 'number' ? (key === 'revenue' ? formatCurrency(card.value) : formatNumber(card.value)) : card.value;
-            const trend = card.trend || 0;
-            const trendIcon = trend >= 0 ? 'fa-arrow-up text-success' : 'fa-arrow-down text-danger';
-            const trendText = (trend >= 0 ? '+' : '') + trend.toFixed(1) + '%';
-            const progress = card.progress || 0;
-            const label = key.replace(/_/g, ' ').toUpperCase();
-            html += `
-                <div class="col-xl-3 col-lg-4 col-md-6 col-sm-6">
-                    <div class="kpi-card animate__animated animate__fadeInUp" style="animation-delay: ${Math.random() * 0.3}s">
-                        <div class="d-flex justify-content-between align-items-start">
-                            <div>
-                                <div class="kpi-label">${label}</div>
-                                <div class="kpi-value">${value}</div>
+        <!-- ============================================================
+        ★ UPLOAD LOGISTICS REPORT (with interactive progress) ★
+        ============================================================ -->
+        <div class="row g-3 mb-4">
+            <div class="col-md-6">
+                <div class="card-custom p-3 upload-highlight">
+                    <div class="card-header-custom">
+                        <i class="fas fa-upload text-primary"></i> Upload Logistics Report
+                        <span class="ms-auto fs-small text-muted"><i class="fas fa-check-circle text-success"></i> Excel supported</span>
+                    </div>
+                    <div class="card-body-custom">
+                        <!-- Added id="uploadForm" for JavaScript interception -->
+                        <form class="form-toolbar" id="uploadForm" action="/upload/excel" method="post" enctype="multipart/form-data">
+                            <div class="form-group" style="flex:2;">
+                                <label><i class="fas fa-file-excel"></i> Excel File (.xlsx, .xls)</label>
+                                <input type="file" name="file" accept=".xlsx,.xls" class="form-control" required />
+                                <small class="text-muted" style="font-size:0.7rem;">Choose File – No file chosen</small>
                             </div>
-                            <div class="kpi-icon text-${color}"><i class="fas ${icon}"></i></div>
-                        </div>
-                        <div class="d-flex justify-content-between mt-2">
-                            <span class="kpi-trend ${trend >= 0 ? 'text-success' : 'text-danger'}">
-                                <i class="fas ${trendIcon} me-1"></i>${trendText}
-                            </span>
-                            <span class="text-muted small">Target: ${card.target ? formatNumber(card.target) : 'N/A'}</span>
-                        </div>
-                        <div class="kpi-progress mt-1">
-                            <div class="kpi-progress-bar" style="width: ${progress}%; background: var(--${color});"></div>
+                            <div class="form-group">
+                                <label><i class="fas fa-copy"></i> Skip Duplicates</label>
+                                <select name="skip_duplicates" class="form-select">
+                                    <option value="true">Yes – Skip existing DNs</option>
+                                    <option value="false">No – Update existing DNs</option>
+                                </select>
+                            </div>
+                            <button type="submit" class="btn-upload">
+                                <i class="fas fa-arrow-up"></i> Upload &amp; Import
+                            </button>
+                        </form>
+                        <div class="mt-2 fs-small text-success">
+                            <i class="fas fa-check-circle"></i> Excel upload active – accepts .xlsx, .xls
                         </div>
                     </div>
                 </div>
-            `;
-        });
-        container.innerHTML = html;
-    }
+            </div>
 
-    // ============================================================
-    // Charts
-    // ============================================================
+            <!-- ============================================================
+            SEARCH DELIVERIES
+            ============================================================ -->
+            <div class="col-md-6">
+                <div class="card-custom p-3">
+                    <div class="card-header-custom"><i class="fas fa-search"></i> Search Deliveries</div>
+                    <div class="card-body-custom">
+                        <form class="form-toolbar" action="/search" method="get">
+                            <div class="form-group" style="flex:2;">
+                                <label>Search</label>
+                                <input type="text" name="q" class="form-control" placeholder="DN, Dealer, Customer, or City..." required />
+                            </div>
+                            <div class="form-group">
+                                <label>Type</label>
+                                <select name="search_type" class="form-select">
+                                    <option value="all">All</option>
+                                    <option value="dn">DN Number</option>
+                                    <option value="dealer">Dealer Code</option>
+                                    <option value="city">City</option>
+                                    <option value="warehouse">Warehouse</option>
+                                    <option value="division">Division</option>
+                                </select>
+                            </div>
+                            <button type="submit" class="btn-search"><i class="fas fa-search"></i> Search</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-    function renderCharts(charts) {
-        // Revenue Chart
-        const revenueCtx = document.getElementById('revenueChart').getContext('2d');
-        if (revenueChart) revenueChart.destroy();
-        revenueChart = new Chart(revenueCtx, {
-            type: 'line',
-            data: {
-                labels: charts.revenue_trend?.labels || [],
-                datasets: [{
-                    label: 'Revenue (PKR)',
-                    data: charts.revenue_trend?.data || [],
-                    borderColor: '#128C7E',
-                    backgroundColor: 'rgba(18,140,126,0.1)',
-                    tension: 0.4,
-                    fill: true
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false }
-                }
+        <!-- ============================================================
+        FOOTER
+        ============================================================ -->
+        <div class="footer-bar">
+            <div>
+                <i class="fas fa-code-branch"></i> v5.3 &nbsp;<span class="divider">|</span>
+                <i class="fas fa-database"></i> PostgreSQL &nbsp;<span class="divider">|</span>
+                <i class="fas fa-sync"></i> <span id="footerRefresh">Just now</span>
+            </div>
+            <div>
+                <i class="fas fa-cubes"></i> Records: <span id="footerRecords">0</span> &nbsp;<span class="divider">|</span>
+                <i class="fas fa-clock"></i> <span id="footerExecTime">0 ms</span> &nbsp;<span class="divider">|</span>
+                <i class="fas fa-cloud"></i> <span id="footerEnv">Production</span>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- ============================================================
+    BOOTSTRAP JS BUNDLE
+    ============================================================ -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js">
+    </script>
+
+    <!-- ============================================================
+    DASHBOARD JAVASCRIPT - v5.3
+    ============================================================ -->
+    <script>
+        // ============================================================
+        // GLOBALS
+        // ============================================================
+        let dashboardData = {};
+        let refreshInterval = null;
+
+        let revenueChart, unitsChart, podChart, dailyChart;
+
+        let warehouseGrid, dealerGrid, cityGrid, productGrid, transporterGrid, uploadsGrid;
+
+        // ============================================================
+        // HELPERS
+        // ============================================================
+        function formatCurrency(value) {
+            if (value >= 1e6) return 'PKR ' + (value / 1e6).toFixed(2) + 'M';
+            if (value >= 1e3) return 'PKR ' + value.toLocaleString();
+            return 'PKR ' + value.toFixed(0);
+        }
+
+        function formatNumber(value) {
+            return value.toLocaleString();
+        }
+
+        function formatPercentage(value) {
+            return value.toFixed(1) + '%';
+        }
+
+        function stars(rating) {
+            const full = Math.floor(rating);
+            const half = rating - full >= 0.5 ? 1 : 0;
+            const empty = 5 - full - half;
+            return '★'.repeat(full) + (half ? '½' : '') + '☆'.repeat(empty);
+        }
+
+        // ============================================================
+        // FETCH DATA
+        // ============================================================
+        async function fetchDashboard() {
+            try {
+                const response = await fetch('/dashboard/api/data');
+                if (!response.ok) throw new Error('Network response was not ok');
+                dashboardData = await response.json();
+                renderDashboard(dashboardData);
+                document.getElementById('lastRefresh').innerText = new Date().toLocaleString();
+                document.getElementById('footerRefresh').innerText = new Date().toLocaleString();
+                document.getElementById('footerRecords').innerText = dashboardData.metadata?.record_count || 0;
+                document.getElementById('footerExecTime').innerText = dashboardData.metadata?.execution_time_ms || 'N/A';
+                document.getElementById('footerEnv').innerText = dashboardData.metadata?.environment || 'Production';
+            } catch (error) {
+                console.error('Error fetching dashboard:', error);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Data Load Error',
+                    text: 'Could not load dashboard data. Please refresh the page.'
+                });
             }
-        });
+        }
 
-        // Units Chart
-        const unitsCtx = document.getElementById('unitsChart').getContext('2d');
-        if (unitsChart) unitsChart.destroy();
-        unitsChart = new Chart(unitsCtx, {
-            type: 'bar',
-            data: {
-                labels: charts.units_trend?.labels || [],
-                datasets: [
-                    {
+        // ============================================================
+        // RENDER ALL
+        // ============================================================
+        function renderDashboard(data) {
+            renderAlerts(data.alerts || []);
+            renderKPIs(data.cards || {});
+            renderHealthSummary(data.health || {});
+            renderCharts(data.charts || {});
+            renderWarehouseGrid(data.warehouse || []);
+            renderDealerGrid(data.dealer || []);
+            renderCityGrid(data.cities || []);
+            renderProductGrid(data.products || []);
+            renderTransporterGrid(data.transporters || []);
+            renderRecommendations(data.recommendations || []);
+            renderUploadsGrid(data.latest_uploads || []);
+        }
+
+        // ============================================================
+        // ALERTS
+        // ============================================================
+        function renderAlerts(alerts) {
+            const container = document.getElementById('alertCenter');
+            if (!alerts.length) {
+                container.innerHTML = '';
+                return;
+            }
+            let html = '';
+            alerts.forEach(a => {
+                const cls = a.level === 'critical' ? 'critical' :
+                    a.level === 'warning' ? 'warning' :
+                    a.level === 'success' ? 'success' : 'info';
+                const badgeCls = a.level === 'critical' ? 'bg-danger' :
+                    a.level === 'warning' ? 'bg-warning text-dark' :
+                    a.level === 'success' ? 'bg-success' : 'bg-info text-dark';
+                html += `
+                        <div class="alert-item ${cls}">
+                            <div class="alert-title">${a.title || 'Alert'}</div>
+                            <div class="alert-desc">${a.message}</div>
+                            <div class="alert-detail">${a.detail || ''}</div>
+                            <span class="alert-badge ${badgeCls}">${a.level || 'info'}</span>
+                        </div>
+                    `;
+            });
+            container.innerHTML = html;
+        }
+
+        // ============================================================
+        // KPI CARDS
+        // ============================================================
+        function renderKPIs(cards) {
+            const container = document.getElementById('kpiGrid');
+            const keys = Object.keys(cards);
+            if (!keys.length) {
+                container.innerHTML = '<div class="col-12 text-center text-muted">No KPI data available.</div>';
+                return;
+            }
+            let html = '';
+            keys.forEach(key => {
+                const c = cards[key];
+                const icon = c.icon || 'fa-chart-simple';
+                const border = c.border || 'primary';
+                const value = typeof c.value === 'number' ?
+                    (key === 'revenue' ? formatCurrency(c.value) : formatNumber(c.value)) :
+                    c.value;
+                const trend = c.trend || 0;
+                const trendCls = trend >= 0 ? 'trend-up' : 'trend-down';
+                const trendIcon = trend >= 0 ? 'fa-arrow-up' : 'fa-arrow-down';
+                const trendText = (trend >= 0 ? '+' : '') + trend.toFixed(1) + '%';
+                const target = c.target ? formatNumber(c.target) : 'N/A';
+                const progress = Math.min(Math.max(c.progress || 0, 0), 100);
+                const label = key.replace(/_/g, ' ').toUpperCase();
+
+                html += `
+                        <div class="kpi-tile border-${border} animate__animated animate__fadeInUp">
+                            <div class="kpi-icon-bg"><i class="fas ${icon}"></i></div>
+                            <div class="kpi-label">${label}</div>
+                            <div class="kpi-value">${value}</div>
+                            <div class="kpi-meta">
+                                <span class="${trendCls}"><i class="fas ${trendIcon}"></i> ${trendText}</span>
+                                <span class="target-badge">Target: ${target}</span>
+                            </div>
+                            <div class="kpi-progress">
+                                <div class="bar" style="width:${progress}%;"></div>
+                            </div>
+                        </div>
+                    `;
+            });
+            container.innerHTML = html;
+        }
+
+        // ============================================================
+        // HEALTH SUMMARY
+        // ============================================================
+        function renderHealthSummary(health) {
+            document.getElementById('healthScoreNum').innerText = health.score || '89%';
+            document.getElementById('otifNum').innerText = health.otif || '82.0%';
+            document.getElementById('podRateNum').innerText = health.pod || '80.3%';
+        }
+
+        // ============================================================
+        // CHARTS
+        // ============================================================
+        function renderCharts(charts) {
+            // Revenue
+            const revCtx = document.getElementById('revenueChart').getContext('2d');
+            if (revenueChart) revenueChart.destroy();
+            revenueChart = new Chart(revCtx, {
+                type: 'line',
+                data: {
+                    labels: charts.revenue_trend?.labels || [],
+                    datasets: [{
+                        label: 'Revenue (PKR)',
+                        data: charts.revenue_trend?.data || [],
+                        borderColor: '#0d6efd',
+                        backgroundColor: 'rgba(13,110,253,0.08)',
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 3,
+                        pointBackgroundColor: '#0d6efd',
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: function(value) {
+                                    if (value >= 1e6) return (value / 1e6).toFixed(1) + 'M';
+                                    if (value >= 1e3) return (value / 1e3).toFixed(0) + 'K';
+                                    return value;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Units & DN
+            const unitsCtx = document.getElementById('unitsChart').getContext('2d');
+            if (unitsChart) unitsChart.destroy();
+            unitsChart = new Chart(unitsCtx, {
+                type: 'bar',
+                data: {
+                    labels: charts.units_trend?.labels || [],
+                    datasets: [{
                         label: 'Units',
                         data: charts.units_trend?.data || [],
-                        backgroundColor: '#25D366',
-                        borderRadius: 4
-                    },
-                    {
+                        backgroundColor: 'rgba(13,110,253,0.7)',
+                        borderRadius: 4,
+                    }, {
                         label: 'DNs',
                         data: charts.dn_trend?.data || [],
-                        backgroundColor: '#128C7E',
-                        borderRadius: 4
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { position: 'top' }
-                }
-            }
-        });
-
-        // POD Chart
-        const podCtx = document.getElementById('podChart').getContext('2d');
-        if (podChart) podChart.destroy();
-        podChart = new Chart(podCtx, {
-            type: 'line',
-            data: {
-                labels: charts.pod_trend?.labels || [],
-                datasets: [{
-                    label: 'POD Rate (%)',
-                    data: charts.pod_trend?.data || [],
-                    borderColor: '#ffc107',
-                    backgroundColor: 'rgba(255,193,7,0.1)',
-                    tension: 0.4,
-                    fill: true
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false }
+                        backgroundColor: 'rgba(25,135,84,0.7)',
+                        borderRadius: 4,
+                    }]
                 },
-                scales: {
-                    y: {
-                        min: 0,
-                        max: 100
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'top', labels: { usePointStyle: true, padding: 16 } }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: function(value) {
+                                    if (value >= 1e6) return (value / 1e6).toFixed(1) + 'M';
+                                    if (value >= 1e3) return (value / 1e3).toFixed(0) + 'K';
+                                    return value;
+                                }
+                            }
+                        }
                     }
                 }
-            }
-        });
+            });
 
-        // Daily Chart
-        const dailyCtx = document.getElementById('dailyChart').getContext('2d');
-        if (dailyChart) dailyChart.destroy();
-        dailyChart = new Chart(dailyCtx, {
-            type: 'bar',
-            data: {
-                labels: charts.daily_trend?.labels || [],
-                datasets: [{
-                    label: 'Daily Revenue (PKR)',
-                    data: charts.daily_trend?.data || [],
-                    backgroundColor: '#17a2b8',
-                    borderRadius: 4
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false }
+            // POD
+            const podCtx = document.getElementById('podChart').getContext('2d');
+            if (podChart) podChart.destroy();
+            podChart = new Chart(podCtx, {
+                type: 'line',
+                data: {
+                    labels: charts.pod_trend?.labels || [],
+                    datasets: [{
+                        label: 'POD Rate %',
+                        data: charts.pod_trend?.data || [],
+                        borderColor: '#ffc107',
+                        backgroundColor: 'rgba(255,193,7,0.12)',
+                        tension: 0.3,
+                        fill: true,
+                        pointRadius: 3,
+                        pointBackgroundColor: '#ffc107',
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { min: 0, max: 100, ticks: { callback: function(v) { return v + '%'; } } }
+                    }
                 }
-            }
-        });
-    }
+            });
 
-    // ============================================================
-    // AG Grid Tables
-    // ============================================================
-
-    function renderUploadsGrid(data) {
-        const gridDiv = document.getElementById('uploadsGrid');
-        if (uploadsGrid) { uploadsGrid.destroy(); }
-        const columnDefs = [
-            { field: 'filename', headerName: 'File Name', flex: 2 },
-            { field: 'upload_date', headerName: 'Upload Date', flex: 1.5, valueFormatter: (p) => p.value ? new Date(p.value).toLocaleString() : 'N/A' },
-            { field: 'record_count', headerName: 'Records', flex: 1 },
-            { field: 'batch_id', headerName: 'Batch ID', flex: 1.5 },
-            {
-                headerName: 'Action',
-                flex: 1,
-                cellRenderer: (params) => `<a href="/upload/batch/${params.data.batch_id}" class="btn btn-sm btn-outline-success">View</a>`
-            }
-        ];
-        uploadsGrid = new agGrid.Grid(gridDiv, {
-            columnDefs: columnDefs,
-            rowData: data,
-            pagination: true,
-            paginationPageSize: 5,
-            domLayout: 'autoHeight'
-        });
-    }
-
-    function renderWarehouseGrid(data) {
-        const gridDiv = document.getElementById('warehouseGrid');
-        if (warehouseGrid) { warehouseGrid.destroy(); }
-        const columnDefs = [
-            { field: 'warehouse_name', headerName: 'Warehouse', flex: 2 },
-            { field: 'revenue', headerName: 'Revenue', flex: 1.5, valueFormatter: (p) => formatCurrency(p.value) },
-            { field: 'units', headerName: 'Units', flex: 1, valueFormatter: (p) => formatNumber(p.value) },
-            { field: 'delivery_notes', headerName: 'DNs', flex: 1 },
-            { field: 'otif', headerName: 'OTIF %', flex: 1, valueFormatter: (p) => formatPercentage(p.value) },
-            { field: 'performance_grade', headerName: 'Grade', flex: 0.8 },
-            { field: 'risk_level', headerName: 'Risk', flex: 1, cellStyle: (params) => {
-                if (params.value === 'High') return { color: 'red', fontWeight: 'bold' };
-                if (params.value === 'Medium') return { color: 'orange' };
-                return { color: 'green' };
-            }}
-        ];
-        warehouseGrid = new agGrid.Grid(gridDiv, {
-            columnDefs: columnDefs,
-            rowData: data,
-            pagination: true,
-            paginationPageSize: 5,
-            domLayout: 'autoHeight'
-        });
-    }
-
-    function renderDealerGrid(data) {
-        const gridDiv = document.getElementById('dealerGrid');
-        if (dealerGrid) { dealerGrid.destroy(); }
-        const columnDefs = [
-            { field: 'dealer_name', headerName: 'Dealer', flex: 2 },
-            { field: 'revenue', headerName: 'Revenue', flex: 1.5, valueFormatter: (p) => formatCurrency(p.value) },
-            { field: 'units', headerName: 'Units', flex: 1, valueFormatter: (p) => formatNumber(p.value) },
-            { field: 'delivery_notes', headerName: 'DNs', flex: 1 },
-            { field: 'performance_score', headerName: 'Score', flex: 1, valueFormatter: (p) => p.value ? p.value.toFixed(1) : '0' },
-            { field: 'growth_percentage', headerName: 'Growth %', flex: 1, valueFormatter: (p) => (p.value || 0).toFixed(1) + '%' },
-            { field: 'ai_recommendation', headerName: 'AI Rec', flex: 2 }
-        ];
-        dealerGrid = new agGrid.Grid(gridDiv, {
-            columnDefs: columnDefs,
-            rowData: data,
-            pagination: true,
-            paginationPageSize: 5,
-            domLayout: 'autoHeight'
-        });
-    }
-
-    // ============================================================
-    // AI Recommendations
-    // ============================================================
-
-    function renderRecommendations(recommendations) {
-        const container = document.getElementById('recommendationsContainer');
-        if (!recommendations.length) {
-            container.innerHTML = '<div class="col-12 text-center text-muted">No recommendations available.</div>';
-            return;
+            // Daily
+            const dailyCtx = document.getElementById('dailyChart').getContext('2d');
+            if (dailyChart) dailyChart.destroy();
+            dailyChart = new Chart(dailyCtx, {
+                type: 'bar',
+                data: {
+                    labels: charts.daily_trend?.labels || [],
+                    datasets: [{
+                        label: 'Daily Revenue',
+                        data: charts.daily_trend?.data || [],
+                        backgroundColor: 'rgba(13,202,240,0.7)',
+                        borderRadius: 4,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: function(value) {
+                                    if (value >= 1e6) return (value / 1e6).toFixed(1) + 'M';
+                                    if (value >= 1e3) return (value / 1e3).toFixed(0) + 'K';
+                                    return value;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
         }
-        let html = '';
-        recommendations.forEach(rec => {
-            const priorityBadge = rec.priority === 'Critical' ? 'bg-danger' : rec.priority === 'High' ? 'bg-warning' : 'bg-info';
-            html += `
-                <div class="col-md-6 col-lg-4">
-                    <div class="card h-100 p-3 border-start border-4 border-${rec.priority === 'Critical' ? 'danger' : rec.priority === 'High' ? 'warning' : 'info'}">
-                        <div class="d-flex justify-content-between align-items-start">
-                            <h6 class="card-title mb-1"><i class="fas fa-robot me-2"></i>${rec.entity || 'N/A'}</h6>
-                            <span class="badge ${priorityBadge}">${rec.priority || 'Normal'}</span>
+
+        // ============================================================
+        // AG GRID: WAREHOUSE
+        // ============================================================
+        function renderWarehouseGrid(data) {
+            const gridDiv = document.getElementById('warehouseGrid');
+            if (warehouseGrid) { warehouseGrid.destroy(); }
+            const colDefs = [
+                { field: 'warehouse_name', headerName: 'Warehouse', flex: 2 },
+                { field: 'revenue', headerName: 'Revenue', flex: 1.5, valueFormatter: p => formatCurrency(p.value) },
+                { field: 'otif', headerName: 'OTIF', flex: 1, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'dns', headerName: 'DNs', flex: 1, valueFormatter: p => formatNumber(p.value) },
+                { field: 'pod', headerName: 'POD', flex: 1, valueFormatter: p => formatPercentage(p.value) },
+            ];
+            warehouseGrid = new agGrid.Grid(gridDiv, {
+                columnDefs: colDefs,
+                rowData: data,
+                pagination: true,
+                paginationPageSize: 5,
+                domLayout: 'autoHeight',
+            });
+        }
+
+        // ============================================================
+        // AG GRID: DEALER
+        // ============================================================
+        function renderDealerGrid(data) {
+            const gridDiv = document.getElementById('dealerGrid');
+            if (dealerGrid) { dealerGrid.destroy(); }
+            const colDefs = [
+                { field: 'dealer_name', headerName: 'Dealer', flex: 2 },
+                { field: 'revenue', headerName: 'Revenue', flex: 1.5, valueFormatter: p => formatCurrency(p.value) },
+                { field: 'units', headerName: 'Units', flex: 1, valueFormatter: p => formatNumber(p.value) },
+                { field: 'dns', headerName: 'DNs', flex: 1 },
+                { field: 'performance', headerName: 'Performance', flex: 1.2, valueFormatter: p => stars(p.value || 4) },
+            ];
+            dealerGrid = new agGrid.Grid(gridDiv, {
+                columnDefs: colDefs,
+                rowData: data,
+                pagination: true,
+                paginationPageSize: 5,
+                domLayout: 'autoHeight',
+            });
+        }
+
+        // ============================================================
+        // AG GRID: CITY
+        // ============================================================
+        function renderCityGrid(data) {
+            const gridDiv = document.getElementById('cityGrid');
+            if (cityGrid) { cityGrid.destroy(); }
+            const colDefs = [
+                { field: 'city_name', headerName: 'City', flex: 2 },
+                { field: 'revenue', headerName: 'Revenue', flex: 1.5, valueFormatter: p => formatCurrency(p.value) },
+                { field: 'units', headerName: 'Units %', flex: 1, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'dns', headerName: 'DNs %', flex: 1, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'performance', headerName: 'Rating', flex: 1, valueFormatter: p => stars(p.value || 4) },
+            ];
+            cityGrid = new agGrid.Grid(gridDiv, {
+                columnDefs: colDefs,
+                rowData: data,
+                pagination: true,
+                paginationPageSize: 5,
+                domLayout: 'autoHeight',
+            });
+        }
+
+        // ============================================================
+        // AG GRID: PRODUCT
+        // ============================================================
+        function renderProductGrid(data) {
+            const gridDiv = document.getElementById('productGrid');
+            if (productGrid) { productGrid.destroy(); }
+            const colDefs = [
+                { field: 'product_name', headerName: 'Product Model', flex: 2 },
+                { field: 'revenue', headerName: 'Revenue', flex: 1.5, valueFormatter: p => formatCurrency(p.value) },
+                { field: 'units', headerName: 'Units', flex: 1, valueFormatter: p => formatNumber(p.value) },
+                { field: 'dns', headerName: 'DNs', flex: 1 },
+                { field: 'performance', headerName: 'Rating', flex: 1, valueFormatter: p => stars(p.value || 4) },
+            ];
+            productGrid = new agGrid.Grid(gridDiv, {
+                columnDefs: colDefs,
+                rowData: data,
+                pagination: true,
+                paginationPageSize: 5,
+                domLayout: 'autoHeight',
+            });
+        }
+
+        // ============================================================
+        // AG GRID: TRANSPORTER
+        // ============================================================
+        function renderTransporterGrid(data) {
+            const gridDiv = document.getElementById('transporterGrid');
+            if (transporterGrid) { transporterGrid.destroy(); }
+            const colDefs = [
+                { field: 'transporter_name', headerName: 'Transporter', flex: 2 },
+                { field: 'units', headerName: 'Units', flex: 1, valueFormatter: p => formatNumber(p.value) },
+                { field: 'otif', headerName: 'OTIF', flex: 1, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'pod', headerName: 'POD', flex: 1, valueFormatter: p => p.value.toFixed(1) },
+                { field: 'dns', headerName: 'DNs', flex: 1, valueFormatter: p => formatPercentage(p.value) },
+                { field: 'score', headerName: 'Score', flex: 1, valueFormatter: p => formatPercentage(p.value) },
+            ];
+            transporterGrid = new agGrid.Grid(gridDiv, {
+                columnDefs: colDefs,
+                rowData: data,
+                pagination: true,
+                paginationPageSize: 5,
+                domLayout: 'autoHeight',
+            });
+        }
+
+        // ============================================================
+        // AG GRID: UPLOADS
+        // ============================================================
+        function renderUploadsGrid(data) {
+            const gridDiv = document.getElementById('uploadsGrid');
+            if (uploadsGrid) { uploadsGrid.destroy(); }
+            const colDefs = [
+                { field: 'filename', headerName: 'File Name', flex: 2 },
+                { field: 'uploaded_at', headerName: 'Uploaded At', flex: 1.5, valueFormatter: p => p.value ? new Date(p
+                        .value).toLocaleString() : 'N/A' },
+                { field: 'rows', headerName: 'Rows', flex: 1 },
+                { field: 'inserted', headerName: 'Inserted', flex: 1 },
+                { field: 'skipped', headerName: 'Skipped', flex: 1 },
+                { field: 'status', headerName: 'Status', flex: 1, cellStyle: p => p.value === 'Success' ? { color: '#198754',
+                        fontWeight: '600' } : { color: '#dc3545' } },
+            ];
+            uploadsGrid = new agGrid.Grid(gridDiv, {
+                columnDefs: colDefs,
+                rowData: data,
+                pagination: true,
+                paginationPageSize: 5,
+                domLayout: 'autoHeight',
+            });
+        }
+
+        // ============================================================
+        // AI RECOMMENDATIONS
+        // ============================================================
+        function renderRecommendations(recommendations) {
+            const container = document.getElementById('recommendationsContainer');
+            if (!recommendations.length) {
+                container.innerHTML = '<div class="col-12 text-center text-muted">No AI recommendations available.</div>';
+                return;
+            }
+            let html = '';
+            recommendations.forEach(rec => {
+                const priority = rec.priority || 'Normal';
+                const badgeCls = priority === 'Critical' ? 'bg-danger' :
+                    priority === 'High' ? 'bg-warning text-dark' : 'bg-info text-dark';
+                html += `
+                        <div class="col-md-6 col-lg-4">
+                            <div class="rec-card">
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <div class="rec-title">${rec.entity || 'Insight'}</div>
+                                    <span class="badge ${badgeCls}">${priority}</span>
+                                </div>
+                                <div class="rec-text">${rec.recommendation || ''}</div>
+                                <div class="rec-meta">
+                                    <span class="badge bg-secondary">${rec.type || ''}</span>
+                                    <span class="badge ${rec.risk === 'High' ? 'bg-danger' : rec.risk === 'Medium' ? 'bg-warning text-dark' : 'bg-success'}">${rec.risk || 'Low'}</span>
+                                </div>
+                            </div>
                         </div>
-                        <p class="card-text small mt-2">${rec.recommendation || ''}</p>
-                        <div class="mt-2">
-                            <span class="badge bg-secondary">${rec.type || ''}</span>
-                            <span class="badge bg-${rec.risk === 'High' ? 'danger' : rec.risk === 'Medium' ? 'warning' : 'success'} ms-1">${rec.risk || 'Low'}</span>
-                        </div>
+                    `;
+            });
+            container.innerHTML = html;
+        }
+
+        // ============================================================
+        // ★ INTERACTIVE UPLOAD WITH PROGRESS BAR ★
+        // ============================================================
+        document.getElementById('uploadForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const formData = new FormData(this);
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', this.action, true);
+
+            // Show SweetAlert2 modal with progress bar
+            Swal.fire({
+                title: 'Uploading Logistics Report',
+                html: `
+                    <div class="text-start mb-2"><i class="fas fa-spinner fa-spin me-2"></i> Processing your file...</div>
+                    <div class="progress">
+                        <div id="uploadProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
                     </div>
-                </div>
-            `;
+                    <div id="uploadStatusText" class="mt-2 text-muted" style="font-size: 0.9rem;">Initializing...</div>
+                `,
+                allowOutsideClick: false,
+                showConfirmButton: false,
+                didOpen: () => {
+                    Swal.showLoading();
+                }
+            });
+
+            // Track upload progress
+            xhr.upload.onprogress = function(event) {
+                if (event.lengthComputable) {
+                    const percent = Math.round((event.loaded / event.total) * 100);
+                    const progressBar = document.getElementById('uploadProgressBar');
+                    const statusText = document.getElementById('uploadStatusText');
+
+                    if (progressBar) {
+                        progressBar.style.width = percent + '%';
+                        progressBar.setAttribute('aria-valuenow', percent);
+                        progressBar.textContent = percent + '%';
+                        // Remove animation when near completion to show solid fill
+                        if (percent >= 100) {
+                            progressBar.classList.remove('progress-bar-animated');
+                        }
+                    }
+                    if (statusText) {
+                        if (percent < 100) {
+                            statusText.textContent = `⬆ Uploading... ${percent}% complete`;
+                        } else {
+                            statusText.textContent = '⏳ Upload complete. Server is processing the file...';
+                        }
+                    }
+                }
+            };
+
+            // Handle response
+            xhr.onload = function() {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    // Success
+                    Swal.fire({
+                        icon: 'success',
+                        title: '✅ Upload Successful!',
+                        text: 'File has been imported successfully. The dashboard will now refresh.',
+                        confirmButtonText: 'OK',
+                        confirmButtonColor: '#0d6efd',
+                    }).then(() => {
+                        window.location.reload(); // Reload to show updated data
+                    });
+                } else {
+                    // Error from server
+                    let errorMsg = 'There was an error processing your file. Please try again.';
+                    try {
+                        const json = JSON.parse(xhr.responseText);
+                        if (json.message) errorMsg = json.message;
+                    } catch (_) { /* ignore */ }
+                    Swal.fire({
+                        icon: 'error',
+                        title: '❌ Upload Failed',
+                        text: errorMsg,
+                        confirmButtonText: 'OK',
+                        confirmButtonColor: '#dc3545',
+                    });
+                }
+            };
+
+            xhr.onerror = function() {
+                Swal.fire({
+                    icon: 'error',
+                    title: '❌ Network Error',
+                    text: 'Could not connect to the server. Please check your network connection.',
+                    confirmButtonText: 'OK',
+                    confirmButtonColor: '#dc3545',
+                });
+            };
+
+            // Send the form data
+            xhr.send(formData);
         });
-        container.innerHTML = html;
-    }
 
-    // ============================================================
-    // Live refresh every 30 seconds
-    // ============================================================
-
-    function startLiveRefresh() {
-        if (refreshInterval) clearInterval(refreshInterval);
-        refreshInterval = setInterval(() => {
-            fetchDashboard();
-        }, 30000);
-    }
-
-    // ============================================================
-    // Set today's date
-    // ============================================================
-
-    document.getElementById('todayDate').innerText = new Date().toLocaleDateString('en-GB', {
-        weekday: 'short',
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric'
-    });
-
-    // ============================================================
-    // Initial load and refresh
-    // ============================================================
-
-    // Fetch initial data
-    fetchDashboard();
-    startLiveRefresh();
-
-    // ============================================================
-    // Handle upload success / error alerts (from URL params)
-    // ============================================================
-
-    (function() {
-        const params = new URLSearchParams(window.location.search);
-        const msg = params.get('message');
-        const error = params.get('error');
-        const uploadSuccess = params.get('upload_success');
-        const uploadError = params.get('upload_error');
-
-        if (uploadSuccess) {
-            Swal.fire({
-                icon: 'success',
-                title: 'Upload Successful',
-                text: decodeURIComponent(uploadSuccess),
-                timer: 3000,
-                showConfirmButton: false
-            });
+        // ============================================================
+        // LIVE REFRESH
+        // ============================================================
+        function startLiveRefresh() {
+            if (refreshInterval) clearInterval(refreshInterval);
+            refreshInterval = setInterval(fetchDashboard, 30000);
         }
-        if (uploadError) {
-            Swal.fire({
-                icon: 'error',
-                title: 'Upload Failed',
-                text: decodeURIComponent(uploadError)
-            });
-        }
-        if (message) {
-            Swal.fire({
-                icon: 'info',
-                title: 'Info',
-                text: decodeURIComponent(message),
-                timer: 2000,
-                showConfirmButton: false
-            });
-        }
-        if (error) {
-            Swal.fire({
-                icon: 'error',
-                title: 'Error',
-                text: decodeURIComponent(error)
-            });
-        }
-    })();
 
-</script>
+        // ============================================================
+        // SIDEBAR TOGGLE (mobile)
+        // ============================================================
+        document.getElementById('hamburgerBtn').addEventListener('click', function() {
+            document.getElementById('sidebar').classList.toggle('open');
+            document.getElementById('sidebarOverlay').classList.toggle('active');
+        });
+        document.getElementById('sidebarOverlay').addEventListener('click', function() {
+            document.getElementById('sidebar').classList.remove('open');
+            document.getElementById('sidebarOverlay').classList.remove('active');
+        });
+
+        // ============================================================
+        // TODAY DATE
+        // ============================================================
+        document.getElementById('todayDate').innerText = new Date().toLocaleDateString('en-GB', {
+            weekday: 'short',
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric'
+        });
+
+        // ============================================================
+        // INIT
+        // ============================================================
+        fetchDashboard();
+        startLiveRefresh();
+
+        // ============================================================
+        // URL PARAMS (fallback for standard form submission)
+        // ============================================================
+        (function() {
+            const params = new URLSearchParams(window.location.search);
+            const uploadSuccess = params.get('upload_success');
+            const uploadError = params.get('upload_error');
+            const message = params.get('message');
+            const error = params.get('error');
+
+            if (uploadSuccess) {
+                Swal.fire({ icon: 'success', title: 'Upload Successful', text: decodeURIComponent(uploadSuccess),
+                    timer: 3000, showConfirmButton: false });
+            }
+            if (uploadError) {
+                Swal.fire({ icon: 'error', title: 'Upload Failed', text: decodeURIComponent(uploadError) });
+            }
+            if (message) {
+                Swal.fire({ icon: 'info', title: 'Info', text: decodeURIComponent(message), timer: 2000,
+                    showConfirmButton: false });
+            }
+            if (error) {
+                Swal.fire({ icon: 'error', title: 'Error', text: decodeURIComponent(error) });
+            }
+        })();
+    </script>
+
 </body>
+
 </html>
