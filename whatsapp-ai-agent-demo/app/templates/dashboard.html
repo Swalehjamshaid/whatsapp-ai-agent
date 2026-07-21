@@ -1,13 +1,13 @@
 <!-- ============================================================
      FILE: app/templates/dashboard.html
-     VERSION: 9.3 – SELF‑CONTAINED VIBRANT UI (FIXED AG GRID & NULL CHECKS)
+     VERSION: 11.8 – ENTERPRISE LOGISTICS COMMAND CENTER (FULL PLOTLY, AG GRID & EXCEL UPLOAD)
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Logistics IQ – Enterprise Intelligence Platform</title>
+  <title>Haier Pakistan – Enterprise Logistics Command Center</title>
 
   <!-- Bootstrap 5 (CDN) -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
@@ -24,15 +24,13 @@
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
   <!-- ============================================================
-  ALL STYLES (Inline – replaces external dashboard.css)
+  ALL STYLES (Inline Enterprise Corporate Design Tokens)
   ============================================================ -->
   <style>
-    /* ---- Variables & Design Tokens ---- */
     :root {
-      --color-primary: #0a6bff;
-      --color-primary-dark: #0050d0;
-      --color-primary-light: #e6f0ff;
-      --color-primary-gradient: linear-gradient(135deg, #0a6bff, #7c3aed);
+      --color-primary: #0B192C;
+      --color-primary-dark: #07111c;
+      --color-primary-light: #e2e8f0;
       --color-success: #10b981;
       --color-warning: #f59e0b;
       --color-danger: #ef4444;
@@ -48,15 +46,14 @@
       --color-gray-800: #1e293b;
       --color-gray-900: #0f172a;
       --font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
-      --radius-lg: 16px;
-      --radius-md: 10px;
-      --shadow-sm: 0 2px 8px rgba(0,0,0,0.06);
-      --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
-      --shadow-lg: 0 8px 32px rgba(0,0,0,0.12);
-      --transition-base: 0.25s ease;
+      --radius-lg: 12px;
+      --radius-md: 8px;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.05);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+      --shadow-lg: 0 10px 25px rgba(0,0,0,0.1);
+      --transition-base: 0.2s ease;
     }
 
-    /* Dark Mode Overrides */
     [data-theme="dark"] {
       --color-gray-50: #0f172a;
       --color-gray-100: #1e293b;
@@ -73,18 +70,16 @@
 
     body {
       font-family: var(--font-family);
-      background: linear-gradient(135deg, #f0f4ff 0%, #fdf2f8 100%);
-      background-attachment: fixed;
+      background: #F8FAFC;
       color: var(--color-gray-800);
       min-height: 100vh;
       -webkit-font-smoothing: antialiased;
     }
     [data-theme="dark"] body {
-      background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+      background: #090d16;
       color: var(--color-gray-800);
     }
 
-    /* ---- Layout ---- */
     .container-fluid { padding: 0; }
     .main-content {
       margin-left: 260px;
@@ -96,13 +91,11 @@
     /* ---- Sidebar ---- */
     .sidebar {
       position: fixed;
-      top: 0;
-      left: 0;
+      top: 0; left: 0;
       width: 260px;
       height: 100vh;
-      background: rgba(255,255,255,0.85);
-      backdrop-filter: blur(8px);
-      border-right: 1px solid rgba(0,0,0,0.04);
+      background: #0B192C;
+      border-right: 1px solid rgba(255,255,255,0.08);
       padding: 1.25rem 0;
       overflow-y: auto;
       z-index: 1050;
@@ -110,50 +103,47 @@
       display: flex;
       flex-direction: column;
     }
-    [data-theme="dark"] .sidebar {
-      background: rgba(15,23,42,0.9);
-      border-right-color: rgba(255,255,255,0.04);
-    }
+    .sidebar-brand { padding: 0 1.5rem 1.25rem; border-bottom: 1px solid rgba(255,255,255,0.1); }
+    .sidebar-brand h5 { font-size: 1.15rem; font-weight: 700; color: #FFFFFF; margin: 0; }
+    .sidebar-brand h5 i { color: #38bdf8; margin-right: 0.5rem; }
+    .sidebar-brand small { font-size: 0.7rem; color: #94a3b8; letter-spacing: 0.05em; text-transform: uppercase; }
 
-    .sidebar-brand { padding: 0 1.5rem 1.25rem; border-bottom: 1px solid var(--color-gray-200); }
-    .sidebar-brand h5 { font-size: 1.25rem; font-weight: 700; color: var(--color-gray-900); }
-    .sidebar-brand h5 i { color: var(--color-primary); margin-right: 0.5rem; }
-    .sidebar-brand small { font-size: 0.75rem; color: var(--color-gray-500); }
-
-    .sidebar-nav { flex: 1; padding: 0 0.75rem; }
+    .sidebar-nav { flex: 1; padding: 1rem 0.75rem; }
     .sidebar-nav .nav-link {
       display: flex; align-items: center;
-      padding: 0.6rem 1rem;
+      padding: 0.65rem 1rem;
       border-radius: var(--radius-md);
-      color: var(--color-gray-600);
+      color: #94a3b8;
       font-weight: 500;
-      font-size: 0.875rem;
+      font-size: 0.85rem;
       transition: all 0.15s ease;
       text-decoration: none;
-      gap: 0.5rem;
+      gap: 0.75rem;
+      margin-bottom: 0.25rem;
     }
-    .sidebar-nav .nav-link i { width: 20px; text-align: center; }
-    .sidebar-nav .nav-link:hover { background: var(--color-primary-light); color: var(--color-primary); }
+    .sidebar-nav .nav-link i { width: 18px; text-align: center; color: #64748b; }
+    .sidebar-nav .nav-link:hover { background: rgba(255,255,255,0.05); color: #FFFFFF; }
+    .sidebar-nav .nav-link:hover i { color: #38bdf8; }
     .sidebar-nav .nav-link.active {
-      background: linear-gradient(135deg, #0a6bff, #7c3aed);
-      color: white;
-      box-shadow: 0 4px 16px rgba(10,107,255,0.3);
+      background: #1e293b;
+      color: #FFFFFF;
+      border-left: 4px solid #38bdf8;
     }
+    .sidebar-nav .nav-link.active i { color: #38bdf8; }
     .sidebar-footer {
       padding: 0.75rem 1.5rem;
-      border-top: 1px solid var(--color-gray-200);
-      font-size: 0.75rem;
-      color: var(--color-gray-500);
+      border-top: 1px solid rgba(255,255,255,0.08);
+      font-size: 0.7rem;
+      color: #64748b;
       text-align: center;
     }
 
     /* ---- Top Bar ---- */
     .topbar {
-      background: rgba(255,255,255,0.6);
-      backdrop-filter: blur(12px);
-      border: 1px solid rgba(255,255,255,0.2);
+      background: #FFFFFF;
+      border: 1px solid var(--color-gray-200);
       border-radius: var(--radius-lg);
-      padding: 0.6rem 1.5rem;
+      padding: 0.75rem 1.5rem;
       box-shadow: var(--shadow-sm);
       margin-bottom: 1.5rem;
       display: flex;
@@ -161,219 +151,151 @@
       align-items: center;
       justify-content: space-between;
     }
-    [data-theme="dark"] .topbar { background: rgba(15,23,42,0.7); border-color: rgba(255,255,255,0.05); }
+    [data-theme="dark"] .topbar { background: #1e293b; border-color: #334155; }
 
     .topbar-left { display: flex; align-items: center; gap: 1rem; }
     .topbar-left .hamburger { display: none; background: none; border: none; font-size: 1.25rem; color: var(--color-gray-700); cursor: pointer; }
-    .topbar-left h4 { font-size: 1.125rem; font-weight: 600; margin: 0; color: var(--color-gray-900); }
-    .topbar-left h4 i { color: var(--color-primary); margin-right: 0.5rem; }
+    .topbar-left h4 { font-size: 1.1rem; font-weight: 700; margin: 0; color: var(--color-gray-900); }
+    .topbar-left h4 i { color: #0284c7; margin-right: 0.5rem; }
 
     .topbar-right { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
-    .badge-date { background: var(--color-gray-100); padding: 0.2rem 0.8rem; border-radius: 9999px; font-size: 0.75rem; color: var(--color-gray-600); }
-    .badge-date i { margin-right: 0.25rem; color: var(--color-primary); }
-    .user-badge { display: flex; align-items: center; gap: 0.25rem; background: var(--color-primary-light); padding: 0.2rem 0.8rem 0.2rem 0.6rem; border-radius: 9999px; font-size: 0.875rem; color: var(--color-primary); font-weight: 500; }
+    .badge-date { background: var(--color-gray-100); padding: 0.3rem 0.8rem; border-radius: 9999px; font-size: 0.75rem; color: var(--color-gray-600); }
+    .badge-date i { margin-right: 0.25rem; color: #0284c7; }
+    .user-badge { display: flex; align-items: center; gap: 0.35rem; background: #e0f2fe; padding: 0.3rem 0.8rem; border-radius: 9999px; font-size: 0.8rem; color: #0369a1; font-weight: 600; }
     .btn-theme { background: var(--color-gray-100); border: none; border-radius: 9999px; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; color: var(--color-gray-600); transition: all 0.15s ease; cursor: pointer; }
     .btn-theme:hover { background: var(--color-gray-200); color: var(--color-gray-800); }
 
-    /* ---- Cards ---- */
+    /* ---- Cards & Layout ---- */
     .card {
-      background: rgba(255,255,255,0.7);
-      backdrop-filter: blur(8px);
-      border: 1px solid rgba(255,255,255,0.2);
+      background: #FFFFFF;
+      border: 1px solid var(--color-gray-200);
       border-radius: var(--radius-lg);
       box-shadow: var(--shadow-sm);
-      transition: transform 0.2s ease, box-shadow 0.3s ease;
-      position: relative;
-      overflow: hidden;
-      margin-bottom: 0;
+      margin-bottom: 1rem;
+      transition: box-shadow 0.2s ease;
     }
-    .card:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg); }
-    .card::before {
-      content: '';
-      position: absolute;
-      top: 0; left: 0; right: 0;
-      height: 4px;
-      background: linear-gradient(90deg, #0a6bff, #7c3aed, #06b6d4, #10b981);
-      border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-      opacity: 0.7;
-    }
-    [data-theme="dark"] .card { background: rgba(30,41,59,0.7); border-color: rgba(255,255,255,0.05); box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+    .card:hover { box-shadow: var(--shadow-md); }
+    [data-theme="dark"] .card { background: #1e293b; border-color: #334155; }
 
     .card-header {
-      background: linear-gradient(135deg, #0a6bff, #7c3aed) !important;
-      border: none !important;
-      color: white !important;
-      padding: 0.8rem 1.25rem !important;
-      font-weight: 600;
-      letter-spacing: 0.02em;
+      background: #FFFFFF !important;
+      border-bottom: 1px solid var(--color-gray-200) !important;
+      color: var(--color-gray-950) !important;
+      padding: 0.9rem 1.25rem !important;
+      font-weight: 700;
+      font-size: 0.95rem;
       border-radius: var(--radius-lg) var(--radius-lg) 0 0 !important;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
     }
-    .card-header i { color: white !important; margin-right: 0.5rem; }
+    [data-theme="dark"] .card-header { background: #1e293b !important; border-bottom-color: #334155 !important; color: #FFFFFF !important; }
+    .card-header i { color: #0284c7; }
 
     /* ---- KPI Cards ---- */
     .kpi-card {
-      background: rgba(255,255,255,0.8);
-      backdrop-filter: blur(4px);
-      border: 1px solid rgba(255,255,255,0.3);
+      background: #FFFFFF;
+      border: 1px solid var(--color-gray-200);
+      border-left: 5px solid #0284c7;
       border-radius: var(--radius-lg);
-      padding: 1.2rem 1.5rem;
+      padding: 1.1rem 1.25rem;
       box-shadow: var(--shadow-sm);
-      transition: all 0.2s ease;
-      border-left: 6px solid var(--color-primary);
+      height: 100%;
     }
-    .kpi-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-md); }
-    .kpi-card .kpi-value {
-      font-size: 2rem;
-      font-weight: 700;
-      background: linear-gradient(135deg, #0a6bff, #7c3aed);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-    [data-theme="dark"] .kpi-card { background: rgba(30,41,59,0.7); border-color: rgba(255,255,255,0.05); }
-    [data-theme="dark"] .kpi-card .kpi-value {
-      background: linear-gradient(135deg, #3b82f6, #a78bfa);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
+    .kpi-card h6 { font-size: 0.75rem; text-transform: uppercase; font-weight: 700; color: var(--color-gray-500); margin-bottom: 0.5rem; }
+    .kpi-card .kpi-value { font-size: 1.65rem; font-weight: 800; color: var(--color-gray-900); margin: 0; }
+    [data-theme="dark"] .kpi-card { background: #1e293b; border-color: #334155; }
+    [data-theme="dark"] .kpi-card .kpi-value { color: #FFFFFF; }
 
     /* ---- Empty States ---- */
     .empty-state {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 2.5rem 1.5rem;
-      color: #94a3b8;
-      text-align: center;
-      background: rgba(255,255,255,0.3);
-      border-radius: 12px;
-      border: 2px dashed #e2e8f0;
-      transition: all 0.3s ease;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 2.5rem 1.5rem; color: var(--color-gray-400); text-align: center;
+      background: var(--color-gray-50); border-radius: var(--radius-md); border: 2px dashed var(--color-gray-200);
     }
-    .empty-state i { font-size: 2.5rem; margin-bottom: 0.75rem; color: #cbd5e1; transition: color 0.3s ease; }
-    .empty-state:hover i { color: #0a6bff; }
-    .empty-state p { margin: 0; font-size: 0.95rem; font-weight: 500; }
-    .empty-state small { font-size: 0.8rem; color: #94a3b8; }
-    [data-theme="dark"] .empty-state { background: rgba(30,41,59,0.3); border-color: #334155; }
-    [data-theme="dark"] .empty-state i { color: #475569; }
-    [data-theme="dark"] .empty-state:hover i { color: #3b82f6; }
+    .empty-state i { font-size: 2.2rem; margin-bottom: 0.5rem; color: var(--color-gray-300); }
+    [data-theme="dark"] .empty-state { background: #0f172a; border-color: #334155; }
 
-    /* ---- Pipeline ---- */
+    /* ---- Pipeline Flow ---- */
     .pipeline-stage {
-      background: rgba(255,255,255,0.6);
-      backdrop-filter: blur(4px);
-      border: 1px solid rgba(255,255,255,0.3);
-      border-radius: 12px;
-      padding: 0.6rem 1.2rem;
-      min-width: 130px;
-      transition: all 0.2s ease;
-      box-shadow: var(--shadow-sm);
-      text-align: center;
+      background: var(--color-gray-50);
+      border: 1px solid var(--color-gray-200);
+      border-radius: var(--radius-md);
+      padding: 0.75rem 1rem; min-width: 140px; text-align: center;
     }
-    .pipeline-stage:hover { transform: scale(1.03); box-shadow: 0 8px 24px rgba(10,107,255,0.12); }
-    .pipeline-stage .stage-label { font-size: 0.75rem; color: var(--color-gray-500); text-transform: uppercase; letter-spacing: 0.04em; }
-    .pipeline-stage .stage-value { font-size: 1.25rem; font-weight: 700; color: var(--color-gray-900); }
-    .pipeline-arrow { font-size: 1.8rem; color: #94a3b8; font-weight: 300; }
-    [data-theme="dark"] .pipeline-stage { background: rgba(30,41,59,0.5); border-color: #334155; }
+    .pipeline-stage .stage-label { font-size: 0.7rem; color: var(--color-gray-500); text-transform: uppercase; font-weight: 700; }
+    .pipeline-stage .stage-value { font-size: 1.35rem; font-weight: 800; color: var(--color-gray-900); }
+    .pipeline-arrow { font-size: 1.5rem; color: var(--color-gray-400); font-weight: 300; }
+    [data-theme="dark"] .pipeline-stage { background: #0f172a; border-color: #334155; }
+    [data-theme="dark"] .pipeline-stage .stage-value { color: #FFFFFF; }
 
-    /* ---- Upload & Search ---- */
-    .upload-highlight {
-      border: 2px solid #0a6bff;
-      background: rgba(10,107,255,0.05) !important;
-      border-radius: var(--radius-lg);
-    }
-    [data-theme="dark"] .upload-highlight { background: rgba(10,107,255,0.08) !important; border-color: #3b82f6; }
+    /* ---- Toolbar & Uploads ---- */
+    .upload-highlight { border: 2px dashed #0284c7; background: #f0f9ff; }
+    [data-theme="dark"] .upload-highlight { background: rgba(2, 132, 199, 0.05); border-color: #0369a1; }
 
     .btn-upload, .btn-search {
-      background: linear-gradient(135deg, #0a6bff, #7c3aed);
-      border: none;
-      padding: 0.5rem 1.6rem;
-      border-radius: 10px;
-      font-weight: 600;
-      color: white;
-      transition: all 0.25s ease;
+      background: #0B192C; border: none; padding: 0.5rem 1.5rem;
+      border-radius: var(--radius-md); font-weight: 600; font-size: 0.85rem; color: white;
+      transition: background 0.15s ease;
     }
-    .btn-upload:hover, .btn-search:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(10,107,255,0.35); color: white; }
+    .btn-upload:hover, .btn-search:hover { background: #1e293b; color: white; }
 
     .form-toolbar { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; }
     .form-toolbar .form-group { flex: 1; min-width: 160px; }
-    .form-toolbar .form-control, .form-toolbar .form-select {
-      border: 1px solid var(--color-gray-300);
-      border-radius: var(--radius-md);
-      padding: 0.4rem 0.8rem;
-      font-size: 0.875rem;
-      transition: border-color 0.15s ease;
-      background: #fff;
+    .form-control, .form-select {
+      border: 1px solid var(--color-gray-300); border-radius: var(--radius-md);
+      padding: 0.45rem 0.75rem; font-size: 0.85rem; background: #fff; color: var(--color-gray-800);
     }
-    .form-toolbar .form-control:focus, .form-toolbar .form-select:focus {
-      border-color: var(--color-primary);
-      box-shadow: 0 0 0 3px rgba(10,107,255,0.15);
+    [data-theme="dark"] .form-control, [data-theme="dark"] .form-select {
+      background: #0f172a; border-color: #334155; color: #f8fafc;
     }
 
     /* ---- AG Grid ---- */
     .ag-theme-alpine {
-      --ag-background-color: var(--color-gray-50);
+      --ag-background-color: transparent;
       --ag-foreground-color: var(--color-gray-800);
       --ag-border-color: var(--color-gray-200);
       --ag-header-background-color: var(--color-gray-100);
       --ag-header-foreground-color: var(--color-gray-700);
-      --ag-row-hover-color: var(--color-primary-light);
-      --ag-font-size: 0.875rem;
+      --ag-row-hover-color: var(--color-gray-100);
+      --ag-font-size: 0.85rem;
       --ag-font-family: var(--font-family);
+    }
+    [data-theme="dark"] .ag-theme-alpine {
+      --ag-background-color: #1e293b;
+      --ag-foreground-color: #f8fafc;
+      --ag-border-color: #334155;
+      --ag-header-background-color: #0f172a;
+      --ag-header-foreground-color: #94a3b8;
+      --ag-row-hover-color: #334155;
     }
     .ag-theme-alpine .ag-root-wrapper { border-radius: var(--radius-md); border: 1px solid var(--color-gray-200); }
 
     /* ---- Alerts & Recommendations ---- */
-    .alert-item { border-radius: var(--radius-md); border-left: 4px solid var(--color-warning); background: var(--color-gray-50); padding: 0.5rem 1rem; box-shadow: var(--shadow-sm); }
-    .alert-item.critical { border-left-color: var(--color-danger); }
-    .alert-item.success { border-left-color: var(--color-success); }
-    .alert-item.info { border-left-color: var(--color-info); }
+    .alert-item { border-radius: var(--radius-md); border-left: 4px solid var(--color-warning); background: var(--color-gray-50); padding: 0.75rem 1rem; font-size: 0.85rem; }
+    .alert-item.critical { border-left-color: var(--color-danger); background: #fef2f2; }
+    .alert-item.success { border-left-color: var(--color-success); background: #f0fdf4; }
+    [data-theme="dark"] .alert-item { background: #0f172a; }
+    [data-theme="dark"] .alert-item.critical { background: rgba(239, 68, 68, 0.1); }
 
     .rec-card {
-      background: var(--color-gray-50);
-      border-radius: var(--radius-md);
-      padding: 1rem;
-      border-left: 4px solid var(--color-primary);
-      box-shadow: var(--shadow-sm);
-      transition: all var(--transition-base);
+      background: var(--color-gray-50); border-radius: var(--radius-md); padding: 0.85rem 1rem;
+      border-left: 4px solid #0284c7; font-size: 0.85rem; margin-bottom: 0.5rem;
     }
-    .rec-card:hover { box-shadow: var(--shadow-md); }
+    [data-theme="dark"] .rec-card { background: #0f172a; }
 
     /* ---- Footer ---- */
     .footer-bar {
-      background: rgba(255,255,255,0.5);
-      backdrop-filter: blur(4px);
-      border-radius: 12px;
-      padding: 0.8rem 1.5rem;
-      border: 1px solid rgba(255,255,255,0.2);
-      text-align: center;
-      font-size: 0.75rem;
-      color: var(--color-gray-500);
+      background: #FFFFFF; border-radius: var(--radius-lg); padding: 0.75rem 1.5rem;
+      border: 1px solid var(--color-gray-200); text-align: center; font-size: 0.75rem; color: var(--color-gray-500);
     }
-    [data-theme="dark"] .footer-bar { background: rgba(15,23,42,0.5); border-color: rgba(255,255,255,0.05); }
+    [data-theme="dark"] .footer-bar { background: #1e293b; border-color: #334155; }
 
-    /* ---- Animations ---- */
-    @keyframes fadeInUp {
-      from { opacity: 0; transform: translateY(20px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-    .card, .kpi-card, .pipeline-stage, .empty-state {
-      animation: fadeInUp 0.5s ease both;
-    }
-
-    /* ---- Responsive ---- */
     @media (max-width: 991.98px) {
       .sidebar { transform: translateX(-100%); }
       .sidebar.open { transform: translateX(0); }
       .main-content { margin-left: 0; padding: 1rem; }
       .topbar-left .hamburger { display: block; }
-    }
-    @media (max-width: 575.98px) {
-      .kpi-card .kpi-value { font-size: 1.5rem; }
-      .pipeline-stage { min-width: 80px; padding: 0.4rem 0.8rem; }
-      .form-toolbar .form-group { min-width: 100%; }
-      .form-toolbar .btn-upload, .form-toolbar .btn-search { width: 100%; justify-content: center; }
     }
   </style>
 </head>
@@ -382,26 +304,24 @@
 <div id="app" class="container-fluid px-0">
 
   <!-- ============================================================
-  SIDEBAR
+  SIDEBAR (Pure Logistics Navigation)
   ============================================================ -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
-      <h5><i class="fas fa-cubes"></i> Logistics IQ</h5>
-      <small>Enterprise Intelligence</small>
+      <h5><i class="fas fa-cubes"></i> Haier Logistics</h5>
+      <small>Enterprise Command Center</small>
     </div>
     <nav class="sidebar-nav">
-      <a class="nav-link active" href="#"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
-      <a class="nav-link" href="#"><i class="fas fa-upload"></i> Upload Center</a>
-      <a class="nav-link" href="#"><i class="fas fa-chart-line"></i> Analytics</a>
-      <a class="nav-link" href="#"><i class="fas fa-warehouse"></i> Warehouse</a>
-      <a class="nav-link" href="#"><i class="fas fa-users"></i> Dealers</a>
-      <a class="nav-link" href="#"><i class="fas fa-city"></i> Cities</a>
-      <a class="nav-link" href="#"><i class="fas fa-box"></i> Products</a>
-      <a class="nav-link" href="#"><i class="fas fa-robot"></i> AI Insights</a>
-      <a class="nav-link" href="#"><i class="fas fa-file-alt"></i> Reports</a>
-      <a class="nav-link" href="#"><i class="fas fa-server"></i> Status</a>
+      <a class="nav-link active" href="#"><i class="fas fa-tachometer-alt"></i> Executive Dashboard</a>
+      <a class="nav-link" href="#uploadSection"><i class="fas fa-upload"></i> Excel Import Center</a>
+      <a class="nav-link" href="#warehouseGrid"><i class="fas fa-warehouse"></i> Warehouse Performance</a>
+      <a class="nav-link" href="#dealerGrid"><i class="fas fa-users"></i> Key Accounts (Dealers)</a>
+      <a class="nav-link" href="#cityGrid"><i class="fas fa-city"></i> City Hub Logistics</a>
+      <a class="nav-link" href="#productGrid"><i class="fas fa-box"></i> SKU / Models Shipped</a>
+      <a class="nav-link" href="#trendCharts"><i class="fas fa-chart-line"></i> Daily Operations Trend</a>
+      <a class="nav-link" href="#alertsContainer"><i class="fas fa-exclamation-triangle"></i> Management Alerts</a>
     </nav>
-    <div class="sidebar-footer">v9.3 · Enterprise</div>
+    <div class="sidebar-footer">v11.8 · SAP / Fabric Standard</div>
   </aside>
 
   <!-- ============================================================
@@ -413,125 +333,86 @@
     <div class="topbar">
       <div class="topbar-left">
         <button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button>
-        <h4><i class="fas fa-chart-pie"></i> Executive Command Center</h4>
+        <h4><i class="fas fa-chart-pie"></i> Logistics Operations Command Center</h4>
       </div>
       <div class="topbar-right">
         <span class="badge-date"><i class="fas fa-calendar-day"></i> <span id="todayDate"></span></span>
         <span class="badge-date"><i class="fas fa-sync-alt"></i> <span id="lastRefresh">Just now</span></span>
-        <span class="user-badge"><i class="fas fa-user-circle"></i> Viewer</span>
+        <span class="user-badge"><i class="fas fa-user-circle"></i> Logistics Director</span>
         <button class="btn-theme" id="themeToggle"><i class="fas fa-moon"></i></button>
       </div>
     </div>
 
-    <!-- Welcome Banner (hidden when data exists) -->
-    <div id="welcomeBanner" class="alert alert-info text-center mb-4" style="display:none;">
-      <i class="fas fa-rocket fa-2x"></i>
-      <h4>Welcome to Logistics IQ</h4>
-      <p>Upload your first Excel file to see real‑time analytics.</p>
-    </div>
-
-    <!-- KPI CARDS -->
+    <!-- KPI CARDS SECTION -->
     <section id="kpiCards" class="row g-3 mb-4"></section>
 
-    <!-- PIPELINE -->
+    <!-- PIPELINE STAGES -->
     <section class="row g-3 mb-4">
       <div class="col-12">
         <div class="card">
-          <div class="card-header"><i class="fas fa-route"></i> Executive Logistics Pipeline</div>
+          <div class="card-header"><i class="fas fa-route"></i> End-to-End Logistics Fulfillment Pipeline</div>
           <div class="card-body" id="pipelineContainer">
-            <div class="empty-state"><i class="fas fa-sitemap"></i><p>No pipeline data available</p><small>Upload data to see the logistics flow</small></div>
+            <div class="empty-state"><i class="fas fa-sitemap"></i><p>No pipeline data available</p><small>Upload logistics report to populate workflow stages</small></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- DIVISION DASHBOARD -->
-    <section class="row g-3 mb-4">
-      <div class="col-12">
-        <div class="card">
-          <div class="card-header"><i class="fas fa-layer-group"></i> Division Dashboard</div>
-          <div class="card-body" id="divisionContainer">
-            <div class="empty-state"><i class="fas fa-chart-pie"></i><p>No division data available</p><small>Upload data to see division performance</small></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- WAREHOUSE & CHARTS -->
+    <!-- WAREHOUSE PERFORMANCE & CHARTS -->
     <section class="row g-3 mb-4">
       <div class="col-xl-6">
         <div class="card">
-          <div class="card-header"><i class="fas fa-warehouse"></i> Warehouse Performance</div>
+          <div class="card-header"><i class="fas fa-warehouse"></i> Warehouse Fulfillment Ranking</div>
           <div class="card-body">
-            <div id="warehouseGrid" class="ag-theme-alpine" style="height:400px;"></div>
+            <div id="warehouseGrid" class="ag-theme-alpine" style="height:380px;"></div>
           </div>
         </div>
       </div>
       <div class="col-xl-6">
         <div class="card">
-          <div class="card-header"><i class="fas fa-chart-bar"></i> Warehouse Charts</div>
+          <div class="card-header"><i class="fas fa-chart-bar"></i> Network Volume Analytics</div>
           <div class="card-body" id="warehouseCharts">
-            <div class="empty-state"><i class="fas fa-chart-simple"></i><p>No charts available</p><small>Upload data to generate visualizations</small></div>
+            <div class="empty-state"><i class="fas fa-chart-simple"></i><p>No charts available</p><small>Upload data to render interactive Plotly analytics</small></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- DEALER & PRODUCT -->
+    <!-- DEALER & PRODUCT PERFORMANCE -->
     <section class="row g-3 mb-4">
       <div class="col-xl-6">
         <div class="card">
-          <div class="card-header"><i class="fas fa-users"></i> Dealer Performance</div>
+          <div class="card-header"><i class="fas fa-users"></i> Key Dealer Account Deliveries</div>
           <div class="card-body">
-            <div id="dealerGrid" class="ag-theme-alpine" style="height:400px;"></div>
+            <div id="dealerGrid" class="ag-theme-alpine" style="height:380px;"></div>
           </div>
         </div>
       </div>
       <div class="col-xl-6">
         <div class="card">
-          <div class="card-header"><i class="fas fa-box"></i> Product Performance</div>
+          <div class="card-header"><i class="fas fa-box"></i> Top Shipped Customer Models / SKUs</div>
           <div class="card-body">
-            <div id="productGrid" class="ag-theme-alpine" style="height:400px;"></div>
+            <div id="productGrid" class="ag-theme-alpine" style="height:380px;"></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- CITY & NETWORK -->
+    <!-- CITY & DAILY TRENDS -->
     <section class="row g-3 mb-4">
       <div class="col-xl-6">
         <div class="card">
-          <div class="card-header"><i class="fas fa-city"></i> City Performance</div>
+          <div class="card-header"><i class="fas fa-city"></i> City Destination Hub Performance</div>
           <div class="card-body">
-            <div id="cityGrid" class="ag-theme-alpine" style="height:400px;"></div>
+            <div id="cityGrid" class="ag-theme-alpine" style="height:380px;"></div>
           </div>
         </div>
       </div>
       <div class="col-xl-6">
         <div class="card">
-          <div class="card-header"><i class="fas fa-project-diagram"></i> Supply Chain Network</div>
-          <div class="card-body" id="networkContainer">
-            <div class="empty-state"><i class="fas fa-network-wired"></i><p>No network data available</p><small>Upload data to visualize the supply chain</small></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- MONTHLY & DAILY TRENDS -->
-    <section class="row g-3 mb-4">
-      <div class="col-xl-6">
-        <div class="card">
-          <div class="card-header"><i class="fas fa-chart-line"></i> Monthly Trends</div>
-          <div class="card-body" id="monthlyTrends">
-            <div class="empty-state"><i class="fas fa-calendar-alt"></i><p>No monthly data</p><small>Upload data to see monthly trends</small></div>
-          </div>
-        </div>
-      </div>
-      <div class="col-xl-6">
-        <div class="card">
-          <div class="card-header"><i class="fas fa-chart-area"></i> Daily Trends</div>
-          <div class="card-body" id="dailyTrends">
-            <div class="empty-state"><i class="fas fa-clock"></i><p>No daily data</p><small>Upload data to see daily trends</small></div>
+          <div class="card-header"><i class="fas fa-chart-line"></i> 30-Day Operational Trend (DN, PGI, POD)</div>
+          <div class="card-body" id="trendCharts">
+            <div class="empty-state"><i class="fas fa-clock"></i><p>No daily operational trends available</p><small>Upload current operations data</small></div>
           </div>
         </div>
       </div>
@@ -541,69 +422,66 @@
     <section class="row g-3 mb-4">
       <div class="col-xl-6">
         <div class="card">
-          <div class="card-header"><i class="fas fa-exclamation-triangle"></i> Executive Alerts</div>
+          <div class="card-header"><i class="fas fa-exclamation-triangle text-warning"></i> Management Alert Panel</div>
           <div class="card-body" id="alertsContainer">
-            <div class="empty-state"><i class="fas fa-bell-slash"></i><p>No alerts</p><small>All systems nominal</small></div>
+            <div class="empty-state"><i class="fas fa-bell-slash"></i><p>No active logistics alerts</p><small>All supply chain metrics within target SLAs</small></div>
           </div>
         </div>
       </div>
       <div class="col-xl-6">
         <div class="card">
-          <div class="card-header"><i class="fas fa-robot"></i> AI Recommendations</div>
+          <div class="card-header"><i class="fas fa-robot text-primary"></i> AI Operational Recommendations</div>
           <div class="card-body" id="recommendationsContainer">
-            <div class="empty-state"><i class="fas fa-lightbulb"></i><p>No recommendations yet</p><small>AI insights will appear after data upload</small></div>
+            <div class="empty-state"><i class="fas fa-lightbulb"></i><p>No AI recommendations generated</p><small>Insights will appear following data upload</small></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- UPLOAD & SEARCH -->
-    <section class="row g-3 mb-4">
+    <!-- EXCEL UPLOAD CENTER & SEARCH -->
+    <section id="uploadSection" class="row g-3 mb-4">
       <div class="col-md-6">
         <div class="card upload-highlight">
-          <div class="card-header"><i class="fas fa-upload text-primary"></i> Upload Logistics Report <span class="ms-auto fs-small text-muted"><i class="fas fa-check-circle text-success"></i> Excel supported</span></div>
+          <div class="card-header"><i class="fas fa-file-excel text-success"></i> Upload Logistics Excel Report</div>
           <div class="card-body">
-            <form class="form-toolbar" id="uploadForm" action="/upload/excel" method="post" enctype="multipart/form-data">
+            <form class="form-toolbar" id="uploadForm" action="/dashboard/api/upload" method="post" enctype="multipart/form-data">
               <div class="form-group" style="flex:2;">
-                <label class="upload-label"><i class="fas fa-file-excel"></i> Excel File (.xlsx, .xls)</label>
+                <label class="form-label fw-bold small"><i class="fas fa-file-upload"></i> Select Excel (.xlsx, .xls)</label>
                 <input type="file" name="file" accept=".xlsx,.xls" class="form-control" required />
-                <small class="text-muted" style="font-size:0.7rem;">Choose File – No file chosen</small>
+                <small class="text-muted" style="font-size:0.7rem;">Supported format: SAP Delivery &amp; PGI/POD report</small>
               </div>
               <div class="form-group">
-                <label class="upload-label"><i class="fas fa-copy"></i> Skip Duplicates</label>
+                <label class="form-label fw-bold small"><i class="fas fa-copy"></i> Duplicate Handling</label>
                 <select name="skip_duplicates" class="form-select">
-                  <option value="true">Yes – Skip existing DNs</option>
-                  <option value="false">No – Update existing DNs</option>
+                  <option value="true">Skip Existing DNs</option>
+                  <option value="false">Update Existing DNs</option>
                 </select>
               </div>
-              <button type="submit" class="btn-upload"><i class="fas fa-arrow-up"></i> Upload &amp; Import</button>
+              <button type="submit" class="btn-upload"><i class="fas fa-arrow-up me-1"></i> Import Excel</button>
             </form>
-            <div class="mt-2 fs-small text-success"><i class="fas fa-check-circle"></i> Excel upload active – accepts .xlsx, .xls</div>
-            <div class="mt-1 fs-small"><a href="#" class="text-decoration-none"><i class="fas fa-eye"></i> View / Download</a></div>
           </div>
         </div>
       </div>
       <div class="col-md-6">
-        <div class="card search-panel">
-          <div class="card-header"><i class="fas fa-search"></i> Search Deliveries</div>
+        <div class="card">
+          <div class="card-header"><i class="fas fa-search"></i> Instant Delivery Note Lookup</div>
           <div class="card-body">
-            <form class="form-toolbar" action="/search" method="get">
+            <form class="form-toolbar" id="searchForm" onsubmit="event.preventDefault(); alert('Use command filters above for granular tracking.');">
               <div class="form-group" style="flex:2;">
-                <label>Search</label>
-                <input type="text" name="q" class="form-control" placeholder="DN, Dealer, Customer, or City..." required />
+                <label class="form-label fw-bold small">Search Criteria</label>
+                <input type="text" id="searchInput" class="form-control" placeholder="Enter DN Number, Dealer, or City..." />
               </div>
               <div class="form-group">
-                <label>Type</label>
-                <select name="search_type" class="form-select">
-                  <option value="all">All</option>
-                  <option value="dn">DN Number</option>
-                  <option value="dealer">Dealer Code</option>
-                  <option value="city">City</option>
-                  <option value="warehouse">Warehouse</option>
-                  <option value="division">Division</option>
+                <label class="form-label fw-bold small">Filter Target</label>
+                <select id="searchType" class="form-select">
+                  <option value="all">All Fields</option>
+                  <option value="dn">Delivery Note</option>
+                  <option value="dealer">Dealer</option>
+                  <option value="city">Destination City</option>
+                  <option value="warehouse">Warehouse Hub</option>
                 </select>
               </div>
-              <button type="submit" class="btn-search"><i class="fas fa-search"></i> Search</button>
+              <button type="submit" class="btn-search"><i class="fas fa-search me-1"></i> Search</button>
             </form>
           </div>
         </div>
@@ -614,11 +492,11 @@
     <section class="row g-3 mb-4">
       <div class="col-12">
         <div class="card">
-          <div class="card-header"><i class="fas fa-history"></i> Upload History</div>
+          <div class="card-header"><i class="fas fa-history"></i> System Upload &amp; Import History</div>
           <div class="card-body">
-            <div id="uploadsGrid" class="ag-theme-alpine" style="height:220px;"></div>
+            <div id="uploadsGrid" class="ag-theme-alpine" style="height:200px;"></div>
             <div id="uploadHistoryPlaceholder" class="empty-state" style="margin-top:0.5rem; display:none;">
-              <i class="fas fa-upload"></i><p>Upload history will appear after your first import</p>
+              <i class="fas fa-upload"></i><p>No import history recorded yet</p>
             </div>
           </div>
         </div>
@@ -635,45 +513,45 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
 <!-- ============================================================
-  ALL JAVASCRIPT (Fixed for modern AG Grid v30+ & Null checks)
-  ============================================================ -->
+     APPLICATION JAVASCRIPT (Enterprise API Sync & Rendering)
+     ============================================================ -->
 <script>
 (function() {
     const API_URL = '/dashboard/api/data';
 
     // ---- Formatting helpers ----
-    function formatCurrency(v) {
-        if (v >= 1e6) return 'PKR ' + (v/1e6).toFixed(2) + 'M';
-        if (v >= 1e3) return 'PKR ' + v.toLocaleString();
-        return 'PKR ' + (v||0).toFixed(0);
-    }
-    function formatNumber(v) { return (v||0).toLocaleString(); }
-    function formatPct(v) { return (v||0).toFixed(1) + '%'; }
-    function formatDays(v) { return (v||0).toFixed(1) + ' days'; }
+    function formatNumber(v) { return (v || 0).toLocaleString(); }
+    function formatPct(v) { return (v || 0).toFixed(1) + '%'; }
+    function formatDays(v) { return (v || 0).toFixed(1) + ' Days'; }
 
     // ---- Render KPI Cards ----
     function renderKPIs(cards) {
         const container = document.getElementById('kpiCards');
         if (!container) return;
         if (!cards || typeof cards !== 'object') {
-            container.innerHTML = '<div class="col-12"><div class="empty-state"><p>No KPI data available</p></div></div>';
+            container.innerHTML = '<div class="col-12"><div class="empty-state"><p>No operational KPIs available</p></div></div>';
             return;
         }
-        container.innerHTML = Object.entries(cards).map(([key, card]) => `
-            <div class="col-md-3 col-lg-3 mb-3">
-                <div class="card kpi-card">
-                    <div class="card-body">
-                        <h6 class="text-muted"><i class="fas ${card.icon || 'fa-chart-bar'}"></i> ${card.label || key}</h6>
-                        <h3 class="kpi-value">${card.format === 'currency' ? formatCurrency(card.value) :
-                           card.format === 'percentage' ? formatPct(card.value) :
-                           card.format === 'days' ? formatDays(card.value) :
-                           formatNumber(card.value)}</h3>
-                        <small>Target: ${formatNumber(card.target)}</small>
-                        <div class="progress mt-2"><div class="progress-bar" style="width:${Math.min(100, card.progress || 0)}%"></div></div>
+        
+        const cardConfig = [
+            { key: 'total_dn', label: 'Total Delivery Notes', icon: 'fa-file-invoice', fmt: v => formatNumber(v) + ' DNs' },
+            { key: 'total_units', label: 'Total Quantity Shipped', icon: 'fa-boxes', fmt: v => formatNumber(v) + ' Units' },
+            { key: 'health_score', label: 'Operations Health Score', icon: 'fa-heartbeat', fmt: v => formatPct(v) },
+            { key: 'avg_cycle', label: 'Avg Delivery Cycle', icon: 'fa-clock', fmt: v => formatDays(v) }
+        ];
+
+        container.innerHTML = cardConfig.map(cfg => {
+            const dataObj = cards[cfg.key] || { value: 0 };
+            return `
+                <div class="col-md-3 col-sm-6 mb-3">
+                    <div class="card kpi-card">
+                        <h6><i class="fas ${cfg.icon} me-1 text-primary"></i> ${cfg.label}</h6>
+                        <h3 class="kpi-value">${cfg.fmt(dataObj.value || 0)}</h3>
+                        <small class="text-muted">Target SLA: Optimal &le; 5.8d</small>
                     </div>
                 </div>
-            </div>
-        `).join('');
+            `;
+        }).join('');
     }
 
     // ---- Render Pipeline ----
@@ -681,14 +559,14 @@
         const container = document.getElementById('pipelineContainer');
         if (!container) return;
         if (!pipeline || !pipeline.dn_created) {
-            container.innerHTML = '<div class="empty-state"><i class="fas fa-sitemap"></i><p>No pipeline data available</p><small>Upload data to see the logistics flow</small></div>';
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-sitemap"></i><p>No pipeline data available</p><small>Upload logistics report to view fulfillment flow</small></div>';
             return;
         }
         const stages = [
             { label: 'DN Created', value: pipeline.dn_created || 0 },
             { label: 'PGI Completed', value: pipeline.pgi_completed || 0, pct: pipeline.pgi_achievement || 0 },
             { label: 'Delivered', value: pipeline.delivered || 0, pct: pipeline.delivery_achievement || 0 },
-            { label: 'POD Received', value: pipeline.pod_received || 0, pct: pipeline.pod_achievement || 0 },
+            { label: 'POD Received', value: pipeline.pod_received || 0, pct: pipeline.pod_achievement || 0 }
         ];
         let html = '<div class="d-flex flex-wrap align-items-center justify-content-center gap-2">';
         stages.forEach((s, idx) => {
@@ -696,40 +574,16 @@
                 <div class="pipeline-stage">
                     <div class="stage-label">${s.label}</div>
                     <div class="stage-value">${formatNumber(s.value)}</div>
-                    ${s.pct !== undefined ? `<small class="text-muted">${formatPct(s.pct)}</small>` : ''}
+                    ${s.pct !== undefined ? `<small class="text-muted fw-bold">${formatPct(s.pct)}</small>` : ''}
                 </div>
             `;
-            if (idx < stages.length - 1) html += `<span class="pipeline-arrow">→</span>`;
+            if (idx < stages.length - 1) html += `<span class="pipeline-arrow px-2">→</span>`;
         });
         html += '</div>';
         container.innerHTML = html;
     }
 
-    // ---- Render Division Dashboard ----
-    function renderDivision(divisions) {
-        const container = document.getElementById('divisionContainer');
-        if (!container) return;
-        const divArray = Array.isArray(divisions) ? divisions : Object.values(divisions || {});
-        if (!divArray.length) {
-            container.innerHTML = '<div class="empty-state"><i class="fas fa-chart-pie"></i><p>No division data available</p><small>Upload data to see division performance</small></div>';
-            return;
-        }
-        let html = '<div class="d-flex flex-wrap gap-3">';
-        divArray.forEach(d => {
-            html += `
-                <div class="division-tag p-3 border rounded bg-light" style="flex: 1; min-width: 200px;">
-                    <strong>${d.division || 'Division'}</strong><hr class="my-1">
-                    Rev: ${formatCurrency(d.revenue)}<br>
-                    PGI: ${formatPct(d.pgi_achievement)}<br>
-                    Gap: ${formatPct(d.gap_percentage)}
-                </div>
-            `;
-        });
-        html += '</div>';
-        container.innerHTML = html;
-    }
-
-    // ---- AG Grid helper (Supports AG Grid v30+ and older fallback) ----
+    // ---- AG Grid helper ----
     function renderAGGrid(containerId, data, colDefs) {
         const gridDiv = document.getElementById(containerId);
         if (!gridDiv) return;
@@ -741,7 +595,7 @@
                     columnDefs: colDefs,
                     rowData: data || [],
                     pagination: true,
-                    paginationPageSize: 10,
+                    paginationPageSize: 8,
                     domLayout: 'autoHeight',
                 });
             } else if (typeof agGrid !== 'undefined' && agGrid.Grid) {
@@ -749,7 +603,7 @@
                     columnDefs: colDefs,
                     rowData: data || [],
                     pagination: true,
-                    paginationPageSize: 10,
+                    paginationPageSize: 8,
                     domLayout: 'autoHeight',
                 });
             }
@@ -758,194 +612,134 @@
         }
     }
 
-    // ---- Plotly Charts ----
-    function renderPlotlyCharts(containerId, chartDict) {
+    // ---- Plotly Chart Renderer ----
+    function renderPlotlyFromJson(containerId, chartJson) {
         const div = document.getElementById(containerId);
         if (!div) return;
         div.innerHTML = '';
-        if (!chartDict || typeof chartDict !== 'object') return;
+        if (!chartJson) return;
         
-        Object.entries(chartDict).forEach(([key, jsonStr]) => {
-            if (!jsonStr) return;
-            const subDiv = document.createElement('div');
-            subDiv.style.height = '300px';
-            subDiv.style.width = '100%';
-            subDiv.className = 'mb-3';
-            div.appendChild(subDiv);
-            try {
-                const fig = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
-                Plotly.newPlot(subDiv, fig.data, fig.layout || {});
-            } catch(e) { console.warn('Plotly error for ' + key, e); }
-        });
-    }
-
-    // ---- Network ----
-    function renderNetwork(network) {
-        const container = document.getElementById('networkContainer');
-        if (!container) return;
-        if (!network || !network.nodes || !network.nodes.length) {
-            container.innerHTML = '<div class="empty-state"><i class="fas fa-network-wired"></i><p>No network data available</p><small>Upload data to visualize the supply chain</small></div>';
-            return;
+        const subDiv = document.createElement('div');
+        subDiv.style.height = '360px';
+        subDiv.style.width = '100%';
+        div.appendChild(subDiv);
+        
+        try {
+            const fig = typeof chartJson === 'string' ? JSON.parse(chartJson) : chartJson;
+            Plotly.newPlot(subDiv, fig.data, fig.layout || {}, { responsive: true, displayModeBar: false });
+        } catch(e) {
+            console.warn('Plotly render error for ' + containerId, e);
         }
-        container.innerHTML = `
-            <p><strong>Nodes:</strong> ${network.nodes.length} &nbsp;|&nbsp; <strong>Edges:</strong> ${network.edges?.length || 0}</p>
-            <pre style="max-height:300px; overflow:auto; background:#f8f9fa; padding:10px; border-radius:8px;">${JSON.stringify(network, null, 2)}</pre>
-        `;
     }
 
-    // ---- Alerts ----
+    // ---- Alerts & Recommendations ----
     function renderAlerts(alerts) {
         const container = document.getElementById('alertsContainer');
         if (!container) return;
         const alertList = Array.isArray(alerts) ? alerts : Object.values(alerts || {});
         if (!alertList.length) {
-            container.innerHTML = '<div class="empty-state"><i class="fas fa-bell-slash"></i><p>No alerts</p><small>All systems nominal</small></div>';
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-bell-slash"></i><p>No active logistics alerts</p><small>All operations within threshold limits</small></div>';
             return;
         }
         container.innerHTML = alertList.map(a => `
-            <div class="alert-item ${a.level === 'critical' ? 'critical' : ''} mb-2">
-                <strong>${a.title || 'Alert'}</strong> ${a.message || ''}<br>
-                <small>${a.action || ''}</small>
+            <div class="alert-item ${a.severity === 'CRITICAL' ? 'critical' : ''} mb-2">
+                <i class="fas fa-exclamation-circle me-1"></i> <strong>[${a.source || 'Network'}]</strong> ${a.message || ''}
             </div>
         `).join('');
     }
 
-    // ---- AI Recommendations ----
     function renderRecommendations(recs) {
         const container = document.getElementById('recommendationsContainer');
         if (!container) return;
         const recList = Array.isArray(recs) ? recs : Object.values(recs || {});
         if (!recList.length) {
-            container.innerHTML = '<div class="empty-state"><i class="fas fa-lightbulb"></i><p>No recommendations yet</p><small>AI insights will appear after data upload</small></div>';
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-lightbulb"></i><p>No recommendations generated</p><small>AI engine active</small></div>';
             return;
         }
         container.innerHTML = recList.map(r => `
             <div class="rec-card mb-2">
-                <h6><span class="badge bg-${r.priority === 'Critical' ? 'danger' : 'warning'}">${r.priority || 'Info'}</span> ${r.entity || ''}</h6>
-                <p class="mb-0">${r.recommendation || ''}</p>
+                <strong><span class="badge bg-${r.priority === 'Critical' ? 'danger' : 'primary'}">${r.priority || 'Info'}</span> ${r.warehouse || r.category || ''}</strong>
+                <p class="mb-0 mt-1">${r.recommendation || ''}</p>
             </div>
         `).join('');
     }
 
-    // ---- Upload History ----
-    function renderUploadsGrid(data) {
-        const gridDiv = document.getElementById('uploadsGrid');
-        const placeholder = document.getElementById('uploadHistoryPlaceholder');
-        if (!gridDiv) return;
-        
-        if (!data || !data.length) {
-            gridDiv.innerHTML = '';
-            if (placeholder) placeholder.style.display = 'block';
-            return;
-        }
-        if (placeholder) placeholder.style.display = 'none';
-        
-        const colDefs = [
-            { field: 'filename', headerName: 'File Name', flex: 2 },
-            { field: 'uploaded_at', headerName: 'Uploaded At', flex: 1.5, valueFormatter: p => p.value ? new Date(p.value).toLocaleString() : 'N/A' },
-            { field: 'rows', headerName: 'Rows', flex: 1 },
-            { field: 'inserted', headerName: 'Inserted', flex: 1 },
-            { field: 'skipped', headerName: 'Skipped', flex: 1 },
-            { field: 'status', headerName: 'Status', flex: 1, cellStyle: p => p.value === 'Success' ? { color: '#198754', fontWeight: '600' } : { color: '#dc3545' } },
-        ];
-        
-        renderAGGrid('uploadsGrid', data, colDefs);
-    }
-
-    // ---- Master load function ----
+    // ---- Master Data Loader ----
     async function loadDashboard() {
         try {
             const res = await fetch(API_URL);
-            if (!res.ok) throw new Error('Network response was not ok: ' + res.statusText);
+            if (!res.ok) throw new Error('Failed to load dashboard data: ' + res.statusText);
             const data = await res.json();
 
             renderKPIs(data.cards || {});
             renderPipeline(data.pipeline || {});
-            renderDivision(data.division || []);
 
+            // 1. Warehouse Grid
             renderAGGrid('warehouseGrid', data.warehouse || [], [
-                { field: 'warehouse_name', headerName: 'Warehouse' },
-                { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
-                { field: 'pgi_achievement_rate', headerName: 'PGI %', valueFormatter: p => formatPct(p.value) },
-                { field: 'pod_completion_rate', headerName: 'POD %', valueFormatter: p => formatPct(p.value) },
-                { field: 'health_score', headerName: 'Health', valueFormatter: p => formatPct(p.value) },
-                { field: 'risk_level', headerName: 'Risk' },
-                { field: 'ranking', headerName: 'Rank' },
+                { field: 'ranking', headerName: 'Rank', width: 75, pinned: 'left' },
+                { field: 'warehouse_name', headerName: 'Warehouse', flex: 1.5 },
+                { field: 'delivery_notes', headerName: 'Total DNs', width: 105, valueFormatter: p => formatNumber(p.value) },
+                { field: 'units', headerName: 'Units Shipped', width: 120, valueFormatter: p => formatNumber(p.value) },
+                { field: 'average_logistics_cycle', headerName: 'Cycle Days', width: 110, valueFormatter: p => formatDays(p.value) },
+                { field: 'health_score', headerName: 'Health %', width: 100, valueFormatter: p => formatPct(p.value) }
             ]);
 
+            // 2. Dealer Grid
             renderAGGrid('dealerGrid', data.dealer || [], [
-                { field: 'dealer_name', headerName: 'Dealer' },
-                { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
-                { field: 'units', headerName: 'Units' },
-                { field: 'pod_completion_rate', headerName: 'POD %', valueFormatter: p => formatPct(p.value) },
-                { field: 'health_score', headerName: 'Health', valueFormatter: p => formatPct(p.value) },
-                { field: 'ranking', headerName: 'Rank' },
+                { field: 'dealer_name', headerName: 'Dealer Account', flex: 1.5 },
+                { field: 'delivery_notes', headerName: 'DN Count', width: 100, valueFormatter: p => formatNumber(p.value) },
+                { field: 'units', headerName: 'Units', width: 95, valueFormatter: p => formatNumber(p.value) },
+                { field: 'avg_cycle_days', headerName: 'Cycle Days', width: 110, valueFormatter: p => formatDays(p.value) }
             ]);
 
+            // 3. Product Grid
             renderAGGrid('productGrid', data.product || [], [
-                { field: 'product_name', headerName: 'Product' },
-                { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
-                { field: 'units', headerName: 'Units' },
-                { field: 'abc_class', headerName: 'ABC' },
-                { field: 'slow_moving_flag', headerName: 'Slow', cellRenderer: p => p.value ? '🐢' : '' },
-                { field: 'fast_moving_flag', headerName: 'Fast', cellRenderer: p => p.value ? '🚀' : '' },
-                { field: 'dead_stock_flag', headerName: 'Dead', cellRenderer: p => p.value ? '💀' : '' },
+                { field: 'product_name', headerName: 'Customer Model / SKU', flex: 1.5 },
+                { field: 'delivery_notes', headerName: 'DN Count', width: 100, valueFormatter: p => formatNumber(p.value) },
+                { field: 'units', headerName: 'Total Units', width: 110, valueFormatter: p => formatNumber(p.value) }
             ]);
 
+            // 4. City Grid
             renderAGGrid('cityGrid', data.city || [], [
-                { field: 'city', headerName: 'City' },
-                { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
-                { field: 'units', headerName: 'Units' },
-                { field: 'pod_completion_rate', headerName: 'POD %', valueFormatter: p => formatPct(p.value) },
-                { field: 'health_score', headerName: 'Health', valueFormatter: p => formatPct(p.value) },
+                { field: 'city', headerName: 'Destination City', flex: 1.5 },
+                { field: 'delivery_notes', headerName: 'DN Count', width: 100, valueFormatter: p => formatNumber(p.value) },
+                { field: 'units', headerName: 'Units Shipped', width: 115, valueFormatter: p => formatNumber(p.value) },
+                { field: 'avg_cycle_days', headerName: 'Cycle Days', width: 110, valueFormatter: p => formatDays(p.value) }
             ]);
 
-            renderPlotlyCharts('warehouseCharts', data.warehouse_charts || {});
-
-            const monthly = data.monthly_trends || {};
-            if (monthly.months && monthly.months.length) {
-                const trace1 = { x: monthly.months, y: monthly.revenue, name: 'Revenue', type: 'scatter', mode: 'lines+markers' };
-                const trace2 = { x: monthly.months, y: monthly.delivery_notes, name: 'DN', type: 'scatter', mode: 'lines+markers', yaxis: 'y2' };
-                Plotly.newPlot('monthlyTrends', [trace1, trace2], { title: 'Revenue & DN Trend', yaxis: {title: 'Revenue'}, yaxis2: {title: 'DN', overlaying: 'y', side: 'right'} });
-            } else {
-                const el = document.getElementById('monthlyTrends');
-                if (el) el.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-alt"></i><p>No monthly data</p><small>Upload data to see monthly trends</small></div>';
-            }
-            
-            const daily = data.daily_trends || {};
-            if (daily.dates && daily.dates.length) {
-                const trace1 = { x: daily.dates, y: daily.revenue, name: 'Revenue', type: 'scatter', mode: 'lines+markers' };
-                const trace2 = { x: daily.dates, y: daily.delivery_notes, name: 'DN', type: 'scatter', mode: 'lines+markers', yaxis: 'y2' };
-                Plotly.newPlot('dailyTrends', [trace1, trace2], { title: 'Daily Revenue & DN', yaxis: {title: 'Revenue'}, yaxis2: {title: 'DN', overlaying: 'y', side: 'right'} });
-            } else {
-                const el = document.getElementById('dailyTrends');
-                if (el) el.innerHTML = '<div class="empty-state"><i class="fas fa-clock"></i><p>No daily data</p><small>Upload data to see daily trends</small></div>';
+            // 5. Render Warehouse Charts (Volume ranking bar chart)
+            if (data.warehouse_charts && data.warehouse_charts.delivery_performance) {
+                renderPlotlyFromJson('warehouseCharts', data.warehouse_charts.delivery_performance);
             }
 
-            renderNetwork(data.network || {});
+            // 6. Render Daily Operations Trend Chart
+            if (data.trend_charts && data.trend_charts.daily_operations) {
+                renderPlotlyFromJson('trendCharts', data.trend_charts.daily_operations);
+            }
+
             renderAlerts(data.alerts || []);
             renderRecommendations(data.recommendations || []);
-            renderUploadsGrid(data.latest_uploads || []);
 
+            // Footer Metadata
             const footerEl = document.getElementById('footer');
             if (footerEl) {
                 footerEl.innerHTML = `
-                    <i class="fas fa-code-branch"></i> v9.3 &nbsp;|&nbsp;
+                    <i class="fas fa-code-branch"></i> v11.8 &nbsp;|&nbsp;
                     <i class="fas fa-database"></i> PostgreSQL &nbsp;|&nbsp;
-                    <i class="fas fa-sync"></i> ${new Date().toLocaleString()} &nbsp;|&nbsp;
-                    <i class="fas fa-cubes"></i> Records: ${data.metadata?.record_count || 0} &nbsp;|&nbsp;
-                    <i class="fas fa-cloud"></i> ${data.metadata?.environment || 'Production'}
+                    <i class="fas fa-sync"></i> ${new Date().toLocaleTimeString()} &nbsp;|&nbsp;
+                    <i class="fas fa-cubes"></i> Active Records: ${formatNumber(data.metadata?.record_count || 0)} &nbsp;|&nbsp;
+                    <i class="fas fa-shield-alt text-success"></i> SAP Logistics Engine Verified
                 `;
             }
             const refreshEl = document.getElementById('lastRefresh');
-            if (refreshEl) refreshEl.innerText = new Date().toLocaleString();
+            if (refreshEl) refreshEl.innerText = new Date().toLocaleTimeString();
 
         } catch(e) {
-            console.error('Dashboard load error:', e);
+            console.error('Enterprise dashboard synchronization error:', e);
         }
     }
 
-    // ---- DOM Ready Execution ----
+    // ---- DOM Initialization & Event Handlers ----
     document.addEventListener('DOMContentLoaded', function() {
         const themeToggle = document.getElementById('themeToggle');
         if (themeToggle) {
@@ -972,6 +766,7 @@
             });
         }
 
+        // Excel Upload Form Handling with SweetAlert2 Progress
         const uploadForm = document.getElementById('uploadForm');
         if (uploadForm) {
             uploadForm.addEventListener('submit', function(e) {
@@ -979,17 +774,17 @@
                 const formData = new FormData(this);
                 const fileInput = this.querySelector('input[type="file"]');
                 if (!fileInput || !fileInput.files.length) {
-                    Swal.fire({ icon: 'warning', title: 'No File Selected', text: 'Please choose an Excel file.' });
+                    Swal.fire({ icon: 'warning', title: 'No File Selected', text: 'Please choose an Excel file (.xlsx, .xls).' });
                     return;
                 }
                 const xhr = new XMLHttpRequest();
                 xhr.open('POST', this.action, true);
                 Swal.fire({
-                    title: 'Uploading Logistics Report',
+                    title: 'Importing Logistics Report',
                     html: `
-                        <div class="text-start mb-2"><i class="fas fa-spinner fa-spin me-2"></i> Processing...</div>
-                        <div class="progress"><div id="uploadProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" style="width:0%;">0%</div></div>
-                        <div id="uploadStatusText" class="mt-2 text-muted">Starting...</div>
+                        <div class="text-start mb-2"><i class="fas fa-spinner fa-spin me-2"></i> Processing SAP Delivery Records...</div>
+                        <div class="progress"><div id="uploadProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" style="width:0%;">0%</div></div>
+                        <div id="uploadStatusText" class="mt-2 text-muted small">Uploading to server...</div>
                     `,
                     allowOutsideClick: false, showConfirmButton: false
                 });
@@ -998,31 +793,26 @@
                         const pct = Math.round((event.loaded / event.total) * 100);
                         const bar = document.getElementById('uploadProgressBar');
                         const statusText = document.getElementById('uploadStatusText');
-                        if (bar) {
-                            bar.style.width = pct + '%';
-                            bar.textContent = pct + '%';
-                        }
-                        if (statusText) {
-                            statusText.textContent = pct < 100 ? `Uploading ${pct}%` : 'Processing...';
-                        }
+                        if (bar) { bar.style.width = pct + '%'; bar.textContent = pct + '%'; }
+                        if (statusText) { statusText.textContent = pct < 100 ? `Uploading ${pct}%` : 'Ingesting records into PostgreSQL...'; }
                     }
                 };
                 xhr.onload = function() {
                     if (xhr.status >= 200 && xhr.status < 300) {
-                        Swal.fire({ icon: 'success', title: 'Upload Successful', text: 'File imported. Dashboard will refresh.', timer: 2000, showConfirmButton: false })
+                        Swal.fire({ icon: 'success', title: 'Import Successful', text: 'Logistics data successfully updated. Refreshing command center.', timer: 2200, showConfirmButton: false })
                             .then(() => window.location.reload());
                     } else {
-                        let msg = 'Upload failed.';
-                        try { const json = JSON.parse(xhr.responseText); if (json.message) msg = json.message; } catch(e) {}
-                        Swal.fire({ icon: 'error', title: 'Upload Failed', text: msg });
+                        let msg = 'File import failed.';
+                        try { const json = JSON.parse(xhr.responseText); if (json.detail) msg = json.detail; } catch(e) {}
+                        Swal.fire({ icon: 'error', title: 'Import Failed', text: msg });
                     }
                 };
-                xhr.onerror = function() { Swal.fire({ icon: 'error', title: 'Network Error' }); };
+                xhr.onerror = function() { Swal.fire({ icon: 'error', title: 'Network Error', text: 'Could not connect to the backend server.' }); };
                 xhr.send(formData);
             });
         }
 
-        // Load data immediately and interval refresh
+        // Initial Load & Polling Interval
         loadDashboard();
         setInterval(loadDashboard, 30000);
     });
