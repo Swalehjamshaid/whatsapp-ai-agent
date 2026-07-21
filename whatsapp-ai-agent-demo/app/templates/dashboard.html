@@ -1,7 +1,7 @@
 <!-- ============================================================ -->
 <!-- FILE: app/templates/dashboard.html                           -->
 <!-- PROJECT: WhatsApp AI Agent Demo - Logistics Intelligence    -->
-<!-- VERSION: 5.3 - Integrated with DashboardService             -->
+<!-- VERSION: 5.0 - Integrated with DashboardService v5.0        -->
 <!-- ============================================================ -->
 
 <!DOCTYPE html>
@@ -764,7 +764,7 @@
         </nav>
 
         <div class="sidebar-footer">
-            <i class="fas fa-code-branch"></i> v5.3 &nbsp;·&nbsp; <i class="fas fa-database"></i> Live
+            <i class="fas fa-code-branch"></i> v5.0 &nbsp;·&nbsp; <i class="fas fa-database"></i> Live
         </div>
     </aside>
 
@@ -967,12 +967,13 @@
         </div>
 
         <!-- ============================================================
-        LATEST UPDATES (AG Grid)
+        LATEST UPDATES (AG Grid) – placeholder, can be populated from a separate endpoint
         ============================================================ -->
         <div class="card-custom p-3 mb-4">
             <div class="card-header-custom"><i class="fas fa-history"></i> Latest Updates</div>
             <div class="card-body-custom">
                 <div id="uploadsGrid" class="ag-theme-alpine" style="height:220px;"></div>
+                <div class="text-muted small mt-2 text-center">Upload history will appear here after your first import.</div>
             </div>
         </div>
 
@@ -1046,7 +1047,7 @@
         ============================================================ -->
         <div class="footer-bar">
             <div>
-                <i class="fas fa-code-branch"></i> v5.3 &nbsp;<span class="divider">|</span>
+                <i class="fas fa-code-branch"></i> v5.0 &nbsp;<span class="divider">|</span>
                 <i class="fas fa-database"></i> PostgreSQL &nbsp;<span class="divider">|</span>
                 <i class="fas fa-sync"></i> <span id="footerRefresh">Just now</span>
             </div>
@@ -1066,7 +1067,7 @@
     </script>
 
     <!-- ============================================================
-    DASHBOARD JAVASCRIPT - v5.3 (Integrated with DashboardService)
+    DASHBOARD JAVASCRIPT - v5.0 (Integrated with DashboardService)
     ============================================================ -->
     <script>
         // ============================================================
@@ -1139,9 +1140,10 @@
             renderDealerGrid(data.dealer || []);
             renderCityGrid(data.city || []);
             renderProductGrid(data.product || []);
-            renderTransporterGrid(data.transport || {});
+            renderTransporterGrid(data.transport?.transporters || []);
             renderRecommendations(data.recommendations || []);
-            // "Latest Updates" is not directly provided by service; we can show uploads from metadata if available
+            // Latest uploads – if you have a dedicated endpoint, you can fetch it separately.
+            // For now we keep it empty.
             renderUploadsGrid(data.latest_uploads || []);
         }
 
@@ -1495,12 +1497,11 @@
         }
 
         // ============================================================
-        // AG GRID: TRANSPORTER (data may be empty)
+        // AG GRID: TRANSPORTER
         // ============================================================
         function renderTransporterGrid(data) {
             const gridDiv = document.getElementById('transporterGrid');
             if (transporterGrid) { transporterGrid.destroy(); }
-            // If data is empty or not an array, show empty
             const rowData = Array.isArray(data) ? data : [];
             const colDefs = [
                 { field: 'transporter_name', headerName: 'Transporter', flex: 2 },
@@ -1628,10 +1629,18 @@
 
             xhr.onload = function() {
                 if (xhr.status >= 200 && xhr.status < 300) {
+                    // Parse response to get details if available
+                    let successMsg = 'File has been imported successfully. The dashboard will now refresh.';
+                    try {
+                        const json = JSON.parse(xhr.responseText);
+                        if (json.message) successMsg = json.message;
+                        if (json.inserted) successMsg += ` (${json.inserted} rows inserted)`;
+                    } catch (_) {}
+
                     Swal.fire({
                         icon: 'success',
                         title: '✅ Upload Successful!',
-                        text: 'File has been imported successfully. The dashboard will now refresh.',
+                        text: successMsg,
                         confirmButtonText: 'OK',
                         confirmButtonColor: '#0d6efd',
                     }).then(() => {
