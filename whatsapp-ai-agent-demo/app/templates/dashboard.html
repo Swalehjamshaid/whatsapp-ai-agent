@@ -1,6 +1,6 @@
 <!-- ============================================================
      FILE: app/templates/dashboard.html
-     VERSION: 9.2 – SELF‑CONTAINED VIBRANT UI (NO EXTERNAL DEPS)
+     VERSION: 9.3 – SELF‑CONTAINED VIBRANT UI (FIXED AG GRID & NULL CHECKS)
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
@@ -401,7 +401,7 @@
       <a class="nav-link" href="#"><i class="fas fa-file-alt"></i> Reports</a>
       <a class="nav-link" href="#"><i class="fas fa-server"></i> Status</a>
     </nav>
-    <div class="sidebar-footer">v9.2 · Enterprise</div>
+    <div class="sidebar-footer">v9.3 · Enterprise</div>
   </aside>
 
   <!-- ============================================================
@@ -464,7 +464,6 @@
           <div class="card-header"><i class="fas fa-warehouse"></i> Warehouse Performance</div>
           <div class="card-body">
             <div id="warehouseGrid" class="ag-theme-alpine" style="height:400px;"></div>
-            <div class="empty-state" style="margin-top:0.5rem;"><i class="fas fa-building"></i><p>Upload data to see warehouse performance</p></div>
           </div>
         </div>
       </div>
@@ -485,7 +484,6 @@
           <div class="card-header"><i class="fas fa-users"></i> Dealer Performance</div>
           <div class="card-body">
             <div id="dealerGrid" class="ag-theme-alpine" style="height:400px;"></div>
-            <div class="empty-state" style="margin-top:0.5rem;"><i class="fas fa-user-tie"></i><p>Upload data to see dealer performance</p></div>
           </div>
         </div>
       </div>
@@ -494,7 +492,6 @@
           <div class="card-header"><i class="fas fa-box"></i> Product Performance</div>
           <div class="card-body">
             <div id="productGrid" class="ag-theme-alpine" style="height:400px;"></div>
-            <div class="empty-state" style="margin-top:0.5rem;"><i class="fas fa-cube"></i><p>Upload data to see product performance</p></div>
           </div>
         </div>
       </div>
@@ -507,7 +504,6 @@
           <div class="card-header"><i class="fas fa-city"></i> City Performance</div>
           <div class="card-body">
             <div id="cityGrid" class="ag-theme-alpine" style="height:400px;"></div>
-            <div class="empty-state" style="margin-top:0.5rem;"><i class="fas fa-location-dot"></i><p>Upload data to see city performance</p></div>
           </div>
         </div>
       </div>
@@ -621,7 +617,7 @@
           <div class="card-header"><i class="fas fa-history"></i> Upload History</div>
           <div class="card-body">
             <div id="uploadsGrid" class="ag-theme-alpine" style="height:220px;"></div>
-            <div id="uploadHistoryPlaceholder" class="empty-state" style="margin-top:0.5rem;">
+            <div id="uploadHistoryPlaceholder" class="empty-state" style="margin-top:0.5rem; display:none;">
               <i class="fas fa-upload"></i><p>Upload history will appear after your first import</p>
             </div>
           </div>
@@ -639,7 +635,7 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
 <!-- ============================================================
-  ALL JAVASCRIPT (Inline – replaces external dashboard.js)
+  ALL JAVASCRIPT (Fixed for modern AG Grid v30+ & Null checks)
   ============================================================ -->
 <script>
 (function() {
@@ -658,17 +654,22 @@
     // ---- Render KPI Cards ----
     function renderKPIs(cards) {
         const container = document.getElementById('kpiCards');
+        if (!container) return;
+        if (!cards || typeof cards !== 'object') {
+            container.innerHTML = '<div class="col-12"><div class="empty-state"><p>No KPI data available</p></div></div>';
+            return;
+        }
         container.innerHTML = Object.entries(cards).map(([key, card]) => `
-            <div class="col-md-3 col-lg-3">
+            <div class="col-md-3 col-lg-3 mb-3">
                 <div class="card kpi-card">
                     <div class="card-body">
-                        <h6 class="text-muted"><i class="fas ${card.icon}"></i> ${card.label}</h6>
+                        <h6 class="text-muted"><i class="fas ${card.icon || 'fa-chart-bar'}"></i> ${card.label || key}</h6>
                         <h3 class="kpi-value">${card.format === 'currency' ? formatCurrency(card.value) :
-                             card.format === 'percentage' ? formatPct(card.value) :
-                             card.format === 'days' ? formatDays(card.value) :
-                             formatNumber(card.value)}</h3>
+                           card.format === 'percentage' ? formatPct(card.value) :
+                           card.format === 'days' ? formatDays(card.value) :
+                           formatNumber(card.value)}</h3>
                         <small>Target: ${formatNumber(card.target)}</small>
-                        <div class="progress mt-2"><div class="progress-bar" style="width:${Math.min(100, card.progress)}%"></div></div>
+                        <div class="progress mt-2"><div class="progress-bar" style="width:${Math.min(100, card.progress || 0)}%"></div></div>
                     </div>
                 </div>
             </div>
@@ -678,6 +679,7 @@
     // ---- Render Pipeline ----
     function renderPipeline(pipeline) {
         const container = document.getElementById('pipelineContainer');
+        if (!container) return;
         if (!pipeline || !pipeline.dn_created) {
             container.innerHTML = '<div class="empty-state"><i class="fas fa-sitemap"></i><p>No pipeline data available</p><small>Upload data to see the logistics flow</small></div>';
             return;
@@ -688,7 +690,7 @@
             { label: 'Delivered', value: pipeline.delivered || 0, pct: pipeline.delivery_achievement || 0 },
             { label: 'POD Received', value: pipeline.pod_received || 0, pct: pipeline.pod_achievement || 0 },
         ];
-        let html = '<div class="d-flex flex-wrap align-items-center justify-content-center">';
+        let html = '<div class="d-flex flex-wrap align-items-center justify-content-center gap-2">';
         stages.forEach((s, idx) => {
             html += `
                 <div class="pipeline-stage">
@@ -706,15 +708,17 @@
     // ---- Render Division Dashboard ----
     function renderDivision(divisions) {
         const container = document.getElementById('divisionContainer');
-        if (!divisions || !divisions.length) {
+        if (!container) return;
+        const divArray = Array.isArray(divisions) ? divisions : Object.values(divisions || {});
+        if (!divArray.length) {
             container.innerHTML = '<div class="empty-state"><i class="fas fa-chart-pie"></i><p>No division data available</p><small>Upload data to see division performance</small></div>';
             return;
         }
-        let html = '<div class="d-flex flex-wrap">';
-        divisions.forEach(d => {
+        let html = '<div class="d-flex flex-wrap gap-3">';
+        divArray.forEach(d => {
             html += `
-                <div class="division-tag">
-                    <strong>${d.division}</strong><br>
+                <div class="division-tag p-3 border rounded bg-light" style="flex: 1; min-width: 200px;">
+                    <strong>${d.division || 'Division'}</strong><hr class="my-1">
                     Rev: ${formatCurrency(d.revenue)}<br>
                     PGI: ${formatPct(d.pgi_achievement)}<br>
                     Gap: ${formatPct(d.gap_percentage)}
@@ -725,39 +729,60 @@
         container.innerHTML = html;
     }
 
-    // ---- AG Grid helper ----
+    // ---- AG Grid helper (Supports AG Grid v30+ and older fallback) ----
     function renderAGGrid(containerId, data, colDefs) {
         const gridDiv = document.getElementById(containerId);
         if (!gridDiv) return;
-        new agGrid.Grid(gridDiv, {
-            columnDefs: colDefs,
-            rowData: data,
-            pagination: true,
-            paginationPageSize: 10,
-            domLayout: 'autoHeight',
-        });
+        gridDiv.innerHTML = ''; 
+        
+        try {
+            if (typeof agGrid !== 'undefined' && agGrid.createGrid) {
+                agGrid.createGrid(gridDiv, {
+                    columnDefs: colDefs,
+                    rowData: data || [],
+                    pagination: true,
+                    paginationPageSize: 10,
+                    domLayout: 'autoHeight',
+                });
+            } else if (typeof agGrid !== 'undefined' && agGrid.Grid) {
+                new agGrid.Grid(gridDiv, {
+                    columnDefs: colDefs,
+                    rowData: data || [],
+                    pagination: true,
+                    paginationPageSize: 10,
+                    domLayout: 'autoHeight',
+                });
+            }
+        } catch (err) {
+            console.warn('AG Grid rendering error for ' + containerId, err);
+        }
     }
 
     // ---- Plotly Charts ----
     function renderPlotlyCharts(containerId, chartDict) {
         const div = document.getElementById(containerId);
+        if (!div) return;
         div.innerHTML = '';
+        if (!chartDict || typeof chartDict !== 'object') return;
+        
         Object.entries(chartDict).forEach(([key, jsonStr]) => {
             if (!jsonStr) return;
             const subDiv = document.createElement('div');
             subDiv.style.height = '300px';
             subDiv.style.width = '100%';
+            subDiv.className = 'mb-3';
             div.appendChild(subDiv);
             try {
-                const fig = JSON.parse(jsonStr);
-                Plotly.newPlot(subDiv, fig.data, fig.layout);
-            } catch(e) { console.warn('Plotly error', e); }
+                const fig = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
+                Plotly.newPlot(subDiv, fig.data, fig.layout || {});
+            } catch(e) { console.warn('Plotly error for ' + key, e); }
         });
     }
 
     // ---- Network ----
     function renderNetwork(network) {
         const container = document.getElementById('networkContainer');
+        if (!container) return;
         if (!network || !network.nodes || !network.nodes.length) {
             container.innerHTML = '<div class="empty-state"><i class="fas fa-network-wired"></i><p>No network data available</p><small>Upload data to visualize the supply chain</small></div>';
             return;
@@ -771,13 +796,15 @@
     // ---- Alerts ----
     function renderAlerts(alerts) {
         const container = document.getElementById('alertsContainer');
-        if (!alerts || !alerts.length) {
+        if (!container) return;
+        const alertList = Array.isArray(alerts) ? alerts : Object.values(alerts || {});
+        if (!alertList.length) {
             container.innerHTML = '<div class="empty-state"><i class="fas fa-bell-slash"></i><p>No alerts</p><small>All systems nominal</small></div>';
             return;
         }
-        container.innerHTML = alerts.map(a => `
-            <div class="alert-item ${a.level === 'critical' ? 'critical' : ''}">
-                <strong>${a.title}</strong> ${a.message}<br>
+        container.innerHTML = alertList.map(a => `
+            <div class="alert-item ${a.level === 'critical' ? 'critical' : ''} mb-2">
+                <strong>${a.title || 'Alert'}</strong> ${a.message || ''}<br>
                 <small>${a.action || ''}</small>
             </div>
         `).join('');
@@ -786,14 +813,16 @@
     // ---- AI Recommendations ----
     function renderRecommendations(recs) {
         const container = document.getElementById('recommendationsContainer');
-        if (!recs || !recs.length) {
+        if (!container) return;
+        const recList = Array.isArray(recs) ? recs : Object.values(recs || {});
+        if (!recList.length) {
             container.innerHTML = '<div class="empty-state"><i class="fas fa-lightbulb"></i><p>No recommendations yet</p><small>AI insights will appear after data upload</small></div>';
             return;
         }
-        container.innerHTML = recs.map(r => `
-            <div class="rec-card">
-                <h6><span class="badge bg-${r.priority === 'Critical' ? 'danger' : 'warning'}">${r.priority}</span> ${r.entity}</h6>
-                <p>${r.recommendation}</p>
+        container.innerHTML = recList.map(r => `
+            <div class="rec-card mb-2">
+                <h6><span class="badge bg-${r.priority === 'Critical' ? 'danger' : 'warning'}">${r.priority || 'Info'}</span> ${r.entity || ''}</h6>
+                <p class="mb-0">${r.recommendation || ''}</p>
             </div>
         `).join('');
     }
@@ -801,13 +830,16 @@
     // ---- Upload History ----
     function renderUploadsGrid(data) {
         const gridDiv = document.getElementById('uploadsGrid');
-        if (window.uploadsGrid) { window.uploadsGrid.destroy(); }
+        const placeholder = document.getElementById('uploadHistoryPlaceholder');
+        if (!gridDiv) return;
+        
         if (!data || !data.length) {
             gridDiv.innerHTML = '';
-            const placeholder = document.getElementById('uploadHistoryPlaceholder');
             if (placeholder) placeholder.style.display = 'block';
             return;
         }
+        if (placeholder) placeholder.style.display = 'none';
+        
         const colDefs = [
             { field: 'filename', headerName: 'File Name', flex: 2 },
             { field: 'uploaded_at', headerName: 'Uploaded At', flex: 1.5, valueFormatter: p => p.value ? new Date(p.value).toLocaleString() : 'N/A' },
@@ -816,23 +848,22 @@
             { field: 'skipped', headerName: 'Skipped', flex: 1 },
             { field: 'status', headerName: 'Status', flex: 1, cellStyle: p => p.value === 'Success' ? { color: '#198754', fontWeight: '600' } : { color: '#dc3545' } },
         ];
-        window.uploadsGrid = new agGrid.Grid(gridDiv, { columnDefs: colDefs, rowData: data, pagination: true, paginationPageSize: 5, domLayout: 'autoHeight' });
-        const placeholder = document.getElementById('uploadHistoryPlaceholder');
-        if (placeholder) placeholder.style.display = 'none';
+        
+        renderAGGrid('uploadsGrid', data, colDefs);
     }
 
     // ---- Master load function ----
     async function loadDashboard() {
         try {
             const res = await fetch(API_URL);
+            if (!res.ok) throw new Error('Network response was not ok: ' + res.statusText);
             const data = await res.json();
 
             renderKPIs(data.cards || {});
             renderPipeline(data.pipeline || {});
             renderDivision(data.division || []);
 
-            // AG Grid: Warehouse
-            const warehouseCols = [
+            renderAGGrid('warehouseGrid', data.warehouse || [], [
                 { field: 'warehouse_name', headerName: 'Warehouse' },
                 { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
                 { field: 'pgi_achievement_rate', headerName: 'PGI %', valueFormatter: p => formatPct(p.value) },
@@ -840,22 +871,18 @@
                 { field: 'health_score', headerName: 'Health', valueFormatter: p => formatPct(p.value) },
                 { field: 'risk_level', headerName: 'Risk' },
                 { field: 'ranking', headerName: 'Rank' },
-            ];
-            renderAGGrid('warehouseGrid', data.warehouse || [], warehouseCols);
+            ]);
 
-            // Dealer
-            const dealerCols = [
+            renderAGGrid('dealerGrid', data.dealer || [], [
                 { field: 'dealer_name', headerName: 'Dealer' },
                 { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
                 { field: 'units', headerName: 'Units' },
                 { field: 'pod_completion_rate', headerName: 'POD %', valueFormatter: p => formatPct(p.value) },
                 { field: 'health_score', headerName: 'Health', valueFormatter: p => formatPct(p.value) },
                 { field: 'ranking', headerName: 'Rank' },
-            ];
-            renderAGGrid('dealerGrid', data.dealer || [], dealerCols);
+            ]);
 
-            // Product
-            const productCols = [
+            renderAGGrid('productGrid', data.product || [], [
                 { field: 'product_name', headerName: 'Product' },
                 { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
                 { field: 'units', headerName: 'Units' },
@@ -863,41 +890,36 @@
                 { field: 'slow_moving_flag', headerName: 'Slow', cellRenderer: p => p.value ? '🐢' : '' },
                 { field: 'fast_moving_flag', headerName: 'Fast', cellRenderer: p => p.value ? '🚀' : '' },
                 { field: 'dead_stock_flag', headerName: 'Dead', cellRenderer: p => p.value ? '💀' : '' },
-            ];
-            renderAGGrid('productGrid', data.product || [], productCols);
+            ]);
 
-            // City
-            const cityCols = [
+            renderAGGrid('cityGrid', data.city || [], [
                 { field: 'city', headerName: 'City' },
                 { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
                 { field: 'units', headerName: 'Units' },
                 { field: 'pod_completion_rate', headerName: 'POD %', valueFormatter: p => formatPct(p.value) },
                 { field: 'health_score', headerName: 'Health', valueFormatter: p => formatPct(p.value) },
-            ];
-            renderAGGrid('cityGrid', data.city || [], cityCols);
+            ]);
 
-            // Charts
             renderPlotlyCharts('warehouseCharts', data.warehouse_charts || {});
-            renderPlotlyCharts('dealerCharts', data.dealer_charts || {});
-            renderPlotlyCharts('productCharts', data.product_charts || {});
-            renderPlotlyCharts('cityCharts', data.city_charts || {});
 
-            // Monthly & Daily Trends
             const monthly = data.monthly_trends || {};
             if (monthly.months && monthly.months.length) {
                 const trace1 = { x: monthly.months, y: monthly.revenue, name: 'Revenue', type: 'scatter', mode: 'lines+markers' };
-                const trace2 = { x: monthly.months, y: monthly.delivery_notes, name: 'DN', type: 'scatter', mode: 'lines+markers' };
-                Plotly.newPlot('monthlyTrends', [trace1, trace2], { title: 'Revenue & DN Trend', barmode: 'group' });
+                const trace2 = { x: monthly.months, y: monthly.delivery_notes, name: 'DN', type: 'scatter', mode: 'lines+markers', yaxis: 'y2' };
+                Plotly.newPlot('monthlyTrends', [trace1, trace2], { title: 'Revenue & DN Trend', yaxis: {title: 'Revenue'}, yaxis2: {title: 'DN', overlaying: 'y', side: 'right'} });
             } else {
-                document.getElementById('monthlyTrends').innerHTML = '<div class="empty-state"><i class="fas fa-calendar-alt"></i><p>No monthly data</p><small>Upload data to see monthly trends</small></div>';
+                const el = document.getElementById('monthlyTrends');
+                if (el) el.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-alt"></i><p>No monthly data</p><small>Upload data to see monthly trends</small></div>';
             }
+            
             const daily = data.daily_trends || {};
             if (daily.dates && daily.dates.length) {
                 const trace1 = { x: daily.dates, y: daily.revenue, name: 'Revenue', type: 'scatter', mode: 'lines+markers' };
-                const trace2 = { x: daily.dates, y: daily.delivery_notes, name: 'DN', type: 'scatter', mode: 'lines+markers' };
-                Plotly.newPlot('dailyTrends', [trace1, trace2], { title: 'Daily Revenue & DN' });
+                const trace2 = { x: daily.dates, y: daily.delivery_notes, name: 'DN', type: 'scatter', mode: 'lines+markers', yaxis: 'y2' };
+                Plotly.newPlot('dailyTrends', [trace1, trace2], { title: 'Daily Revenue & DN', yaxis: {title: 'Revenue'}, yaxis2: {title: 'DN', overlaying: 'y', side: 'right'} });
             } else {
-                document.getElementById('dailyTrends').innerHTML = '<div class="empty-state"><i class="fas fa-clock"></i><p>No daily data</p><small>Upload data to see daily trends</small></div>';
+                const el = document.getElementById('dailyTrends');
+                if (el) el.innerHTML = '<div class="empty-state"><i class="fas fa-clock"></i><p>No daily data</p><small>Upload data to see daily trends</small></div>';
             }
 
             renderNetwork(data.network || {});
@@ -905,85 +927,105 @@
             renderRecommendations(data.recommendations || []);
             renderUploadsGrid(data.latest_uploads || []);
 
-            // Footer
-            document.getElementById('footer').innerHTML = `
-                <i class="fas fa-code-branch"></i> v9.2 &nbsp;|&nbsp;
-                <i class="fas fa-database"></i> PostgreSQL &nbsp;|&nbsp;
-                <i class="fas fa-sync"></i> ${new Date().toLocaleString()} &nbsp;|&nbsp;
-                <i class="fas fa-cubes"></i> Records: ${data.metadata?.record_count || 0} &nbsp;|&nbsp;
-                <i class="fas fa-cloud"></i> ${data.metadata?.environment || 'Production'}
-            `;
-            document.getElementById('lastRefresh').innerText = new Date().toLocaleString();
+            const footerEl = document.getElementById('footer');
+            if (footerEl) {
+                footerEl.innerHTML = `
+                    <i class="fas fa-code-branch"></i> v9.3 &nbsp;|&nbsp;
+                    <i class="fas fa-database"></i> PostgreSQL &nbsp;|&nbsp;
+                    <i class="fas fa-sync"></i> ${new Date().toLocaleString()} &nbsp;|&nbsp;
+                    <i class="fas fa-cubes"></i> Records: ${data.metadata?.record_count || 0} &nbsp;|&nbsp;
+                    <i class="fas fa-cloud"></i> ${data.metadata?.environment || 'Production'}
+                `;
+            }
+            const refreshEl = document.getElementById('lastRefresh');
+            if (refreshEl) refreshEl.innerText = new Date().toLocaleString();
 
         } catch(e) {
             console.error('Dashboard load error:', e);
-            document.body.innerHTML = '<div class="alert alert-danger m-3">Failed to load dashboard. See console.</div>';
         }
     }
 
-    // ---- Theme toggle ----
-    document.getElementById('themeToggle').addEventListener('click', function() {
-        document.documentElement.setAttribute('data-theme',
-            document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'
-        );
-        this.innerHTML = document.documentElement.getAttribute('data-theme') === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
-    });
-
-    // ---- Sidebar toggle ----
-    document.getElementById('hamburgerBtn').addEventListener('click', function() {
-        document.querySelector('.sidebar').classList.toggle('open');
-    });
-
-    // ---- Today's date ----
-    document.getElementById('todayDate').innerText = new Date().toLocaleDateString('en-GB', {
-        weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
-    });
-
-    // ---- Interactive Upload (preserved) ----
-    document.getElementById('uploadForm').addEventListener('submit', function(e) {
-        e.preventDefault();
-        const formData = new FormData(this);
-        const fileInput = this.querySelector('input[type="file"]');
-        if (!fileInput.files.length) {
-            Swal.fire({ icon: 'warning', title: 'No File Selected', text: 'Please choose an Excel file.' });
-            return;
+    // ---- DOM Ready Execution ----
+    document.addEventListener('DOMContentLoaded', function() {
+        const themeToggle = document.getElementById('themeToggle');
+        if (themeToggle) {
+            themeToggle.addEventListener('click', function() {
+                const currentTheme = document.documentElement.getAttribute('data-theme');
+                const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+                document.documentElement.setAttribute('data-theme', newTheme);
+                this.innerHTML = newTheme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+            });
         }
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', this.action, true);
-        Swal.fire({
-            title: 'Uploading Logistics Report',
-            html: `
-                <div class="text-start mb-2"><i class="fas fa-spinner fa-spin me-2"></i> Processing...</div>
-                <div class="progress"><div id="uploadProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" style="width:0%;">0%</div></div>
-                <div id="uploadStatusText" class="mt-2 text-muted">Starting...</div>
-            `,
-            allowOutsideClick: false, showConfirmButton: false
-        });
-        xhr.upload.onprogress = function(event) {
-            if (event.lengthComputable) {
-                const pct = Math.round((event.loaded / event.total) * 100);
-                document.getElementById('uploadProgressBar').style.width = pct + '%';
-                document.getElementById('uploadProgressBar').textContent = pct + '%';
-                document.getElementById('uploadStatusText').textContent = pct < 100 ? `Uploading ${pct}%` : 'Processing...';
-            }
-        };
-        xhr.onload = function() {
-            if (xhr.status >= 200 && xhr.status < 300) {
-                Swal.fire({ icon: 'success', title: 'Upload Successful', text: 'File imported. Dashboard will refresh.', timer: 2000, showConfirmButton: false })
-                    .then(() => window.location.reload());
-            } else {
-                let msg = 'Upload failed.';
-                try { const json = JSON.parse(xhr.responseText); if (json.message) msg = json.message; } catch(e) {}
-                Swal.fire({ icon: 'error', title: 'Upload Failed', text: msg });
-            }
-        };
-        xhr.onerror = function() { Swal.fire({ icon: 'error', title: 'Network Error' }); };
-        xhr.send(formData);
-    });
 
-    // ---- Auto-refresh ----
-    loadDashboard();
-    setInterval(loadDashboard, 30000);
+        const hamburgerBtn = document.getElementById('hamburgerBtn');
+        if (hamburgerBtn) {
+            hamburgerBtn.addEventListener('click', function() {
+                const sidebar = document.querySelector('.sidebar');
+                if (sidebar) sidebar.classList.toggle('open');
+            });
+        }
+
+        const todayDateEl = document.getElementById('todayDate');
+        if (todayDateEl) {
+            todayDateEl.innerText = new Date().toLocaleDateString('en-GB', {
+                weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
+            });
+        }
+
+        const uploadForm = document.getElementById('uploadForm');
+        if (uploadForm) {
+            uploadForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                const formData = new FormData(this);
+                const fileInput = this.querySelector('input[type="file"]');
+                if (!fileInput || !fileInput.files.length) {
+                    Swal.fire({ icon: 'warning', title: 'No File Selected', text: 'Please choose an Excel file.' });
+                    return;
+                }
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', this.action, true);
+                Swal.fire({
+                    title: 'Uploading Logistics Report',
+                    html: `
+                        <div class="text-start mb-2"><i class="fas fa-spinner fa-spin me-2"></i> Processing...</div>
+                        <div class="progress"><div id="uploadProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" style="width:0%;">0%</div></div>
+                        <div id="uploadStatusText" class="mt-2 text-muted">Starting...</div>
+                    `,
+                    allowOutsideClick: false, showConfirmButton: false
+                });
+                xhr.upload.onprogress = function(event) {
+                    if (event.lengthComputable) {
+                        const pct = Math.round((event.loaded / event.total) * 100);
+                        const bar = document.getElementById('uploadProgressBar');
+                        const statusText = document.getElementById('uploadStatusText');
+                        if (bar) {
+                            bar.style.width = pct + '%';
+                            bar.textContent = pct + '%';
+                        }
+                        if (statusText) {
+                            statusText.textContent = pct < 100 ? `Uploading ${pct}%` : 'Processing...';
+                        }
+                    }
+                };
+                xhr.onload = function() {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        Swal.fire({ icon: 'success', title: 'Upload Successful', text: 'File imported. Dashboard will refresh.', timer: 2000, showConfirmButton: false })
+                            .then(() => window.location.reload());
+                    } else {
+                        let msg = 'Upload failed.';
+                        try { const json = JSON.parse(xhr.responseText); if (json.message) msg = json.message; } catch(e) {}
+                        Swal.fire({ icon: 'error', title: 'Upload Failed', text: msg });
+                    }
+                };
+                xhr.onerror = function() { Swal.fire({ icon: 'error', title: 'Network Error' }); };
+                xhr.send(formData);
+            });
+        }
+
+        // Load data immediately and interval refresh
+        loadDashboard();
+        setInterval(loadDashboard, 30000);
+    });
 })();
 </script>
 
