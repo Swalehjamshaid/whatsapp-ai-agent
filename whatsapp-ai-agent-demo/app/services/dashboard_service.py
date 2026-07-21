@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 11.0 - ENTERPRISE SUPPLY CHAIN INTELLIGENCE PLATFORM (DISTANCE-TIERED PGI/POD ENGINE)
+# VERSION: 11.1 - ENTERPRISE SUPPLY CHAIN INTELLIGENCE PLATFORM (GEO & DISTANCE-TIERED INTEGRATION)
 # ============================================================
 
 import hashlib
@@ -893,7 +893,7 @@ class ResponseBuilder:
 class DashboardService:
     def __init__(self):
         self._repo = DashboardRepository()
-        logger.info("🚀 DashboardService v11.0 initialized with Distance-Tiered PGI/POD Architecture")
+        logger.info("🚀 DashboardService v11.1 initialized with GeoService & Distance-Tiered PGI/POD Integration")
 
     @cached(ttl=5)
     async def get_dashboard_data(
@@ -940,7 +940,7 @@ class DashboardService:
         city_charts = GraphEngine.get_city_charts(city)
 
         metadata = {
-            "application_version": "11.0.0",
+            "application_version": "11.1.0",
             "database_version": "PostgreSQL",
             "postgresql_status": "connected",
             "record_count": record_count,
