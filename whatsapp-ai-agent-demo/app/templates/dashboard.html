@@ -17,6 +17,7 @@
     <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
     <!-- SweetAlert2 -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <!-- Custom CSS -->
     <link href="/static/css/dashboard.css" rel="stylesheet" />
 </head>
 <body>
@@ -58,7 +59,7 @@
                 </div>
             </div>
 
-            <!-- Welcome / No Data Placeholder (hidden when data loads) -->
+            <!-- Welcome Banner (hidden when data exists) -->
             <div id="welcomeBanner" class="alert alert-info text-center mb-4" style="display:none;">
                 <i class="fas fa-rocket fa-2x"></i>
                 <h4>Welcome to Logistics IQ</h4>
@@ -196,7 +197,7 @@
                 </div>
             </section>
 
-            <!-- Upload & Search -->
+            <!-- Upload & Search (Preserved) -->
             <section class="row g-3 mb-4">
                 <div class="col-md-6">
                     <div class="card upload-highlight">
