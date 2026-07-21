@@ -335,7 +335,6 @@ class BusinessRuleEngine:
             "active_warehouses": raw.get("warehouses", 0),
             "active_cities": raw.get("cities", 0),
             "active_products": raw.get("products", 0),
-            "average_delivery_days": raw.get("avg_delivery_days", 0.0),
             "avg_delivery_days": raw.get("avg_delivery_days", 0.0),
             "avg_pgi_days": raw.get("avg_pgi_days", 0.0),
             "avg_pod_days": raw.get("avg_pod_days", 0.0),
