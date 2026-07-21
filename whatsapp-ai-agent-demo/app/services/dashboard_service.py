@@ -569,8 +569,8 @@ class GraphEngine:
     def _apply_corporate_layout(fig, title: str, x_title: str = "", y_title: str = "") -> go.Figure:
         fig.update_layout(
             title=dict(text=title, font=dict(family="Plus Jakarta Sans, sans-serif", size=15, color="#FFFFFF"), x=0.02, y=0.95),
-            paper_bgcolor="transparent",
-            plot_bgcolor="transparent",
+            paper_bgcolor="rgba(0,0,0,0)",   # FIX: replaced 'transparent' to avoid backend error
+            plot_bgcolor="rgba(0,0,0,0)",    # FIX: replaced 'transparent'
             font=dict(family="Plus Jakarta Sans, sans-serif", size=12, color="#94A3B8"),
             margin=dict(l=60, r=30, t=50, b=40),
             hoverlabel=dict(bgcolor="#0F172A", font_size=12, font_color="#FFFFFF"),
