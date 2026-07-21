@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 14.0 - ENTERPRISE WAREHOUSE INTELLIGENCE PLATFORM
+# VERSION: 15.0 - ENTERPRISE WAREHOUSE INTELLIGENCE PLATFORM
 # ============================================================
 
 import hashlib
@@ -14,6 +14,7 @@ from collections import defaultdict, Counter
 from functools import wraps
 from datetime import datetime, timedelta, date
 from dataclasses import dataclass, field
+from enum import Enum
 
 from sqlalchemy import text
 from fastapi import APIRouter, Depends, Query, HTTPException
@@ -63,6 +64,7 @@ except ImportError:
 try:
     from sklearn.cluster import KMeans
     from sklearn.preprocessing import StandardScaler
+    from sklearn.ensemble import IsolationForest
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
@@ -76,16 +78,33 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# CONFIGURATION & CONSTANTS
+# CONFIGURATION, ENUMERATIONS & CONSTANTS
 # ============================================================
 
 class DashboardConfig:
-    VERSION: str = "14.0.0"
+    VERSION: str = "15.0.0"
     CACHE_TTL_SECONDS: int = 5
     DEFAULT_CURRENCY: str = "PKR"
-    MAX_RECORDS_LIMIT: int = 5000
+    MAX_RECORDS_LIMIT: int = 10000
     TARGET_CYCLE_DAYS: float = 5.0
     TARGET_PGI_DAYS: float = 1.0
+
+class WarehouseTier(str, Enum):
+    TIER_1 = "Tier 1 - National Hub"
+    TIER_2 = "Tier 2 - Regional Distribution"
+    TIER_3 = "Tier 3 - Local Fulfillment"
+
+class RiskLevel(str, Enum):
+    LOW = "Low Risk"
+    MEDIUM = "Medium Risk"
+    HIGH = "High Risk"
+    CRITICAL = "Critical Risk"
+
+class SLAStatus(str, Enum):
+    ON_TIME = "On Time"
+    SLIGHTLY_DELAYED = "Slightly Delayed"
+    DELAYED = "Delayed"
+    CRITICAL_DELAY = "Critical Delay"
 
 # ============================================================
 # UTILITY FUNCTIONS
@@ -115,7 +134,7 @@ def _pct(numerator: float, denominator: float) -> float:
 class GeospatialDistanceEngine:
     """
     Handles enterprise distance matrices, geospatial coordinate lookups,
-    and fallback distance routing for Pakistan regional warehouses.
+    and routing distance calculations for regional Pakistan warehouses.
     """
     _WAREHOUSE_COORDINATES = {
         "Lahore WH": (31.5497, 74.3436),
@@ -151,7 +170,6 @@ class GeospatialDistanceEngine:
             except Exception:
                 pass
 
-        # Fallback heuristic matrix for Pakistan logistics network
         matrix = {
             ("Lahore WH", "Karachi"): 1200.0,
             ("Lahore WH", "Islamabad"): 380.0,
@@ -174,7 +192,7 @@ class GeospatialDistanceEngine:
         return matrix.get((warehouse, city), 350.0)
 
 # ============================================================
-# CACHE ENGINE
+# CACHING LAYER
 # ============================================================
 
 class InMemoryCacheEngine:
@@ -217,7 +235,7 @@ def cached(ttl: int = 5):
     return decorator
 
 # ============================================================
-# 1. DATABASE REPOSITORY LAYER
+# 1. REPOSITORY LAYER
 # ============================================================
 
 class DashboardRepository:
@@ -256,6 +274,7 @@ class DashboardRepository:
         warehouses_count = self._execute_query("SELECT COUNT(DISTINCT warehouse) FROM delivery_reports WHERE warehouse IS NOT NULL").scalar() or 0
         dealers_count = self._execute_query("SELECT COUNT(DISTINCT dealer_code) FROM delivery_reports WHERE dealer_code IS NOT NULL").scalar() or 0
         cities_count = self._execute_query("SELECT COUNT(DISTINCT ship_to_city) FROM delivery_reports WHERE ship_to_city IS NOT NULL").scalar() or 0
+        products_count = self._execute_query("SELECT COUNT(DISTINCT material_no) FROM delivery_reports WHERE material_no IS NOT NULL").scalar() or 0
 
         return {
             "total_dn": _safe_int(row.total_dn),
@@ -268,7 +287,8 @@ class DashboardRepository:
             "avg_pod_days": _safe_float(row.avg_pod_days),
             "warehouses_count": warehouses_count,
             "dealers_count": dealers_count,
-            "cities_count": cities_count
+            "cities_count": cities_count,
+            "products_count": products_count
         }
 
     def fetch_warehouse_execution_rows(self) -> List[Any]:
@@ -288,6 +308,35 @@ class DashboardRepository:
             FROM delivery_reports
             WHERE warehouse IS NOT NULL
             GROUP BY warehouse, ship_to_city, pgi_days, pod_days, delivery_days
+        """
+        return self._execute_query(sql).fetchall()
+
+    def fetch_city_execution_rows(self) -> List[Any]:
+        sql = """
+            SELECT
+                ship_to_city AS city,
+                COALESCE(SUM(dn_qty), 0) AS units,
+                COUNT(DISTINCT dn_no) AS delivery_notes,
+                COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_cycle_days
+            FROM delivery_reports
+            WHERE ship_to_city IS NOT NULL
+            GROUP BY ship_to_city
+            ORDER BY delivery_notes DESC
+        """
+        return self._execute_query(sql).fetchall()
+
+    def fetch_dealer_execution_rows(self) -> List[Any]:
+        sql = """
+            SELECT
+                dealer_code,
+                customer_name AS dealer_name,
+                COALESCE(SUM(dn_qty), 0) AS units,
+                COUNT(DISTINCT dn_no) AS delivery_notes,
+                COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_cycle_days
+            FROM delivery_reports
+            WHERE dealer_code IS NOT NULL
+            GROUP BY dealer_code, customer_name
+            ORDER BY delivery_notes DESC
         """
         return self._execute_query(sql).fetchall()
 
@@ -330,12 +379,12 @@ class DashboardRepository:
         return self._execute_query("SELECT COUNT(*) FROM delivery_reports").scalar() or 0
 
 # ============================================================
-# 2. WAREHOUSE BUSINESS RULES & TARGET ENGINE
+# 2. BUSINESS RULE & SLA ENGINE
 # ============================================================
 
-class WarehouseBusinessRulesEngine:
+class DeliverySLAEngine:
     """
-    Implements distance-based delivery target rules and shipment status classification.
+    Implements distance-based delivery targets and SLA classification.
     """
     @staticmethod
     def get_target_days(distance_km: float) -> int:
@@ -353,25 +402,24 @@ class WarehouseBusinessRulesEngine:
             return 6
 
     @classmethod
-    def classify_shipment_status(cls, actual_days: float, target_days: float) -> str:
+    def classify_sla_status(cls, actual_days: float, target_days: float) -> str:
         diff = actual_days - target_days
         if diff <= 0:
-            return "🟢 On Time"
+            return SLAStatus.ON_TIME.value
         elif diff <= 1:
-            return "🟡 Slightly Delayed"
+            return SLAStatus.SLIGHTLY_DELAYED.value
         elif diff <= 3:
-            return "🟠 Delayed"
+            return SLAStatus.DELAYED.value
         else:
-            return "🔴 Critical Delay"
+            return SLAStatus.CRITICAL_DELAY.value
 
 # ============================================================
-# 3. WAREHOUSE ANALYTICS & PERFORMANCE SCORE ENGINE
+# 3. WAREHOUSE, CITY & DEALER INTELLIGENCE ENGINES
 # ============================================================
 
-class WarehouseAnalyticsEngine:
+class WarehouseIntelligenceEngine:
     """
-    Aggregates warehouse performance, computes AI scores (40% Cycle, 25% PGI, 20% POD, 10% Pending, 5% Volume),
-    and builds comprehensive scorecards.
+    Aggregates warehouse performance, computes AI scores (40% Cycle, 25% PGI, 20% POD, 10% Pending, 5% Volume).
     """
     @staticmethod
     def calculate_ai_score(cycle_days: float, pgi_days: float, pod_days: float, pending_work: int, volume: int, max_volume: int) -> Tuple[float, str]:
@@ -418,7 +466,7 @@ class WarehouseAnalyticsEngine:
             w_name = row.warehouse_name
             city = row.ship_to_city
             dist = GeospatialDistanceEngine.calculate_distance(w_name, city)
-            target = WarehouseBusinessRulesEngine.get_target_days(dist)
+            target = DeliverySLAEngine.get_target_days(dist)
 
             st = wh_stats[w_name]
             st["units"] += _safe_int(row.units)
@@ -493,15 +541,38 @@ class WarehouseAnalyticsEngine:
             w["ranking"] = i + 1
         return result
 
+class CityIntelligenceEngine:
+    @staticmethod
+    def process_cities(rows: List[Any]) -> List[Dict[str, Any]]:
+        result = []
+        for row in rows:
+            result.append({
+                "city": row.city,
+                "units": _safe_int(row.units),
+                "delivery_notes": _safe_int(row.delivery_notes),
+                "avg_cycle_days": round(_safe_float(row.avg_cycle_days), 1),
+            })
+        return result
+
+class DealerIntelligenceEngine:
+    @staticmethod
+    def process_dealers(rows: List[Any]) -> List[Dict[str, Any]]:
+        result = []
+        for row in rows:
+            result.append({
+                "dealer_name": row.dealer_name or row.dealer_code,
+                "dealer_code": row.dealer_code,
+                "units": _safe_int(row.units),
+                "delivery_notes": _safe_int(row.delivery_notes),
+                "avg_cycle_days": round(_safe_float(row.avg_cycle_days), 1),
+            })
+        return result
+
 # ============================================================
-# 4. AI ANALYTICS & ROOT CAUSE ENGINE
+# 4. AI ANALYTICS, FORECAST & PREDICTION ENGINES
 # ============================================================
 
 class AIAnalyticsEngine:
-    """
-    Generates executive summaries, root cause analyses, operational risks,
-    and improvement plans for warehouses.
-    """
     @staticmethod
     def generate_ai_insights(warehouses: List[Dict[str, Any]]) -> Dict[str, str]:
         if not warehouses:
@@ -533,6 +604,7 @@ class AIAnalyticsEngine:
             "warehouse_needing_immediate_attention": f"{worst_wh['warehouse_name']} due to delayed cycle times."
         }
 
+class RootCauseAnalysisEngine:
     @staticmethod
     def generate_root_cause_analysis(warehouses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         analysis = []
@@ -559,14 +631,43 @@ class AIAnalyticsEngine:
                 })
         return analysis
 
+class OperationalRiskEngine:
+    @staticmethod
+    def evaluate_risks(warehouses: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        risks = []
+        for w in warehouses:
+            if w["delay_pct"] > 25.0:
+                risks.append({
+                    "warehouse": w["warehouse_name"],
+                    "risk_level": RiskLevel.CRITICAL.value,
+                    "description": f"High delay rate of {w['delay_pct']}% threatens regional service agreements."
+                })
+            elif w["pending_pgi"] > 40:
+                risks.append({
+                    "warehouse": w["warehouse_name"],
+                    "risk_level": RiskLevel.HIGH.value,
+                    "description": f"Pending PGI backlog of {w['pending_pgi']} units causes fulfillment queues."
+                })
+        return risks
+
+class ForecastEngine:
+    @staticmethod
+    def generate_forecast(daily_trends: Dict[str, List]) -> Dict[str, Any]:
+        dns = daily_trends.get("dn", [])
+        if not dns:
+            return {"projected_next_7_days": 0, "trend_direction": "Stable"}
+        
+        avg_daily = sum(dns[-7:]) / min(len(dns), 7) if dns else 0
+        return {
+            "projected_next_7_days": round(avg_daily * 7, 0),
+            "trend_direction": "Upward" if len(dns) > 1 and dns[-1] > dns[0] else "Stable"
+        }
+
 # ============================================================
 # 5. ALERT ENGINE
 # ============================================================
 
 class AlertEngine:
-    """
-    Generates critical, warning, and informational alerts based on warehouse thresholds.
-    """
     @staticmethod
     def generate_alerts(warehouses: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         alerts = []
@@ -658,7 +759,7 @@ class GraphEngine:
 class DashboardService:
     """
     Master service orchestrator combining repository, analytics, AI insights,
-    alert engine, and graph generation.
+    alert engine, forecast engine, and graph generation.
     """
     def __init__(self):
         self._repo = DashboardRepository()
@@ -677,6 +778,8 @@ class DashboardService:
         try:
             raw_sum = self._repo.fetch_executive_summary_data()
             raw_wh = self._repo.fetch_warehouse_execution_rows()
+            raw_ct = self._repo.fetch_city_execution_rows()
+            raw_dl = self._repo.fetch_dealer_execution_rows()
             raw_ag = self._repo.fetch_delivery_aging_rows()
             raw_dai = self._repo.fetch_daily_trend_rows()
             record_count = self._repo.fetch_total_record_count()
@@ -684,9 +787,12 @@ class DashboardService:
             logger.error(f"❌ Database execution error: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Database execution error: {str(e)}")
 
-        warehouses = WarehouseAnalyticsEngine.process_warehouse_statistics(raw_wh)
+        warehouses = WarehouseIntelligenceEngine.process_warehouse_statistics(raw_wh)
+        cities = CityIntelligenceEngine.process_cities(raw_ct)
+        dealers = DealerIntelligenceEngine.process_dealers(raw_dl)
         insights = AIAnalyticsEngine.generate_ai_insights(warehouses)
-        root_causes = AIAnalyticsEngine.generate_root_cause_analysis(warehouses)
+        root_causes = RootCauseAnalysisEngine.generate_root_cause_analysis(warehouses)
+        risks = OperationalRiskEngine.evaluate_risks(warehouses)
         alerts = AlertEngine.generate_alerts(warehouses)
 
         aging_total = sum(_safe_int(r.count) for r in raw_ag) or 1
@@ -703,6 +809,7 @@ class DashboardService:
             pgi.append(_safe_int(row.pgi_completed))
             delivered.append(_safe_int(row.delivered_dns))
         daily_trends_raw = {"dates": dates_list, "dn": dns, "units": units, "pgi": pgi, "delivered": delivered}
+        forecast = ForecastEngine.generate_forecast(daily_trends_raw)
 
         total_dn = raw_sum.get("total_dn", 0)
         delivered_dns = raw_sum.get("delivered_dns", 0)
@@ -711,15 +818,25 @@ class DashboardService:
         cards = {
             "active_warehouses": raw_sum.get("warehouses_count", 0),
             "total_delivery_notes": total_dn,
+            "total_dn": total_dn,
             "total_quantity_delivered": raw_sum.get("total_units", 0),
+            "total_quantity": raw_sum.get("total_units", 0),
+            "total_units": raw_sum.get("total_units", 0),
             "average_delivery_days": raw_sum.get("avg_delivery_days", 0.0),
+            "avg_delivery_days": raw_sum.get("avg_delivery_days", 0.0),
             "average_pgi_days": raw_sum.get("avg_pgi_days", 0.0),
+            "avg_pgi_days": raw_sum.get("avg_pgi_days", 0.0),
             "average_pod_days": raw_sum.get("avg_pod_days", 0.0),
+            "avg_pod_days": raw_sum.get("avg_pod_days", 0.0),
             "ontime_delivery_pct": on_time_pct,
+            "active_cities": raw_sum.get("cities_count", 0),
+            "active_dealers": raw_sum.get("dealers_count", 0),
+            "active_models": raw_sum.get("products_count", 0),
             "pending_pgi": sum(w["pending_pgi"] for w in warehouses),
             "pending_pod": sum(w["pending_pod"] for w in warehouses),
             "best_warehouse": warehouses[0]["warehouse_name"] if warehouses else "Lahore",
             "worst_warehouse": warehouses[-1]["warehouse_name"] if warehouses else "Multan",
+            "slowest_warehouse": warehouses[-1]["warehouse_name"] if warehouses else "Multan",
             "critical_delays": sum(1 for w in warehouses if w["overall_score"] < 50.0)
         }
 
@@ -738,10 +855,14 @@ class DashboardService:
             "pod_ranking": sorted(warehouses, key=lambda x: x["average_pod"]),
             "overall_cycle_ranking": sorted(warehouses, key=lambda x: x["average_cycle"]),
             "warehouse_share": [{"warehouse": w["warehouse_name"], "delivery_notes": w["delivery_notes"], "percentage": _pct(w["delivery_notes"], total_dn)} for w in warehouses],
+            "city": cities,
+            "dealer": dealers,
             "ai_insights": insights,
             "executive_insights": [{"title": k.replace("_", " ").title(), "description": v} for k, v in insights.items()],
             "root_cause_analysis": root_causes,
             "recommendations": root_causes,
+            "operational_risks": risks,
+            "forecast": forecast,
             "aging_buckets": aging_buckets,
             "scorecard": warehouses,
             "warehouse_charts": warehouse_charts,
