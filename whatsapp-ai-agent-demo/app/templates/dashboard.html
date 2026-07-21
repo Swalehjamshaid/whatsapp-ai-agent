@@ -1,13 +1,18 @@
 <!-- ============================================================
      FILE: app/templates/dashboard.html
-     VERSION: 11.8 – ENTERPRISE LOGISTICS COMMAND CENTER (FULL PLOTLY, AG GRID & EXCEL UPLOAD)
+     VERSION: 11.9 – HAQ EXECUTIVE LOGISTICS COMMAND SUITE (PREMIUM UI)
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Haier Pakistan – Enterprise Logistics Command Center</title>
+  <title>Haier Pakistan – Executive Logistics Command Suite</title>
+
+  <!-- Google Fonts: Plus Jakarta Sans & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
   <!-- Bootstrap 5 (CDN) -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
@@ -24,277 +29,272 @@
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
   <!-- ============================================================
-  ALL STYLES (Inline Enterprise Corporate Design Tokens)
+  PREMIUM GLASSMORPHIC ENTERPRISE DESIGN TOKENS
   ============================================================ -->
   <style>
     :root {
-      --color-primary: #0B192C;
-      --color-primary-dark: #07111c;
-      --color-primary-light: #e2e8f0;
-      --color-success: #10b981;
-      --color-warning: #f59e0b;
-      --color-danger: #ef4444;
-      --color-info: #06b6d4;
-      --color-gray-50: #f8fafc;
-      --color-gray-100: #f1f5f9;
-      --color-gray-200: #e2e8f0;
-      --color-gray-300: #cbd5e1;
-      --color-gray-400: #94a3b8;
-      --color-gray-500: #64748b;
-      --color-gray-600: #475569;
-      --color-gray-700: #334155;
-      --color-gray-800: #1e293b;
-      --color-gray-900: #0f172a;
-      --font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
-      --radius-lg: 12px;
-      --radius-md: 8px;
-      --shadow-sm: 0 1px 3px rgba(0,0,0,0.05);
-      --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
-      --shadow-lg: 0 10px 25px rgba(0,0,0,0.1);
-      --transition-base: 0.2s ease;
+      --color-primary: #0F172A;
+      --color-primary-accent: #0284C7;
+      --color-gradient-brand: linear-gradient(135deg, #0F172A 0%, #1E3A8A 100%);
+      --color-gradient-accent: linear-gradient(135deg, #0284C7 0%, #0369A1 100%);
+      --color-success: #059669;
+      --color-warning: #D97706;
+      --color-danger: #DC2626;
+      --color-bg: #F1F5F9;
+      --color-surface: #FFFFFF;
+      --color-text-main: #1E293B;
+      --color-text-muted: #64748B;
+      --color-border: #E2E8F0;
+      --font-family: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
+      --radius-lg: 16px;
+      --radius-md: 10px;
+      --shadow-subtle: 0 4px 20px -2px rgba(15, 23, 42, 0.05);
+      --shadow-card: 0 10px 30px -5px rgba(15, 23, 42, 0.08);
+      --transition-smooth: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
     [data-theme="dark"] {
-      --color-gray-50: #0f172a;
-      --color-gray-100: #1e293b;
-      --color-gray-200: #334155;
-      --color-gray-300: #475569;
-      --color-gray-400: #64748b;
-      --color-gray-500: #94a3b8;
-      --color-gray-600: #cbd5e1;
-      --color-gray-700: #e2e8f0;
-      --color-gray-800: #f1f5f9;
-      --color-gray-900: #f8fafc;
-      --color-primary-light: #1e293b;
+      --color-bg: #0B0F17;
+      --color-surface: #131C2E;
+      --color-text-main: #F8FAFC;
+      --color-text-muted: #94A3B8;
+      --color-border: #1E293B;
+      --shadow-subtle: 0 4px 20px -2px rgba(0, 0, 0, 0.3);
+      --shadow-card: 0 10px 30px -5px rgba(0, 0, 0, 0.5);
     }
 
     body {
       font-family: var(--font-family);
-      background: #F8FAFC;
-      color: var(--color-gray-800);
+      background-color: var(--color-bg);
+      color: var(--color-text-main);
       min-height: 100vh;
       -webkit-font-smoothing: antialiased;
-    }
-    [data-theme="dark"] body {
-      background: #090d16;
-      color: var(--color-gray-800);
+      transition: background-color 0.3s ease, color 0.3s ease;
     }
 
     .container-fluid { padding: 0; }
     .main-content {
-      margin-left: 260px;
-      padding: 1.5rem 2rem;
+      margin-left: 280px;
+      padding: 2rem;
       min-height: 100vh;
-      transition: margin var(--transition-base);
+      transition: margin var(--transition-smooth);
     }
 
-    /* ---- Sidebar ---- */
+    /* ---- Executive Sidebar ---- */
     .sidebar {
       position: fixed;
       top: 0; left: 0;
-      width: 260px;
+      width: 280px;
       height: 100vh;
-      background: #0B192C;
-      border-right: 1px solid rgba(255,255,255,0.08);
-      padding: 1.25rem 0;
+      background: var(--color-surface);
+      border-right: 1px solid var(--color-border);
+      padding: 1.5rem 1rem;
       overflow-y: auto;
       z-index: 1050;
-      transition: transform var(--transition-base);
+      transition: transform var(--transition-smooth);
       display: flex;
       flex-direction: column;
+      box-shadow: 4px 0 24px rgba(0,0,0,0.02);
     }
-    .sidebar-brand { padding: 0 1.5rem 1.25rem; border-bottom: 1px solid rgba(255,255,255,0.1); }
-    .sidebar-brand h5 { font-size: 1.15rem; font-weight: 700; color: #FFFFFF; margin: 0; }
-    .sidebar-brand h5 i { color: #38bdf8; margin-right: 0.5rem; }
-    .sidebar-brand small { font-size: 0.7rem; color: #94a3b8; letter-spacing: 0.05em; text-transform: uppercase; }
+    .sidebar-brand {
+      padding: 0 0.75rem 1.5rem;
+      border-bottom: 1px solid var(--color-border);
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .brand-icon {
+      width: 40px; height: 40px;
+      background: var(--color-gradient-accent);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-size: 1.15rem;
+      box-shadow: 0 4px 12px rgba(2, 132, 199, 0.25);
+    }
+    .sidebar-brand h5 { font-size: 1.1rem; font-weight: 800; color: var(--color-text-main); margin: 0; letter-spacing: -0.01em; }
+    .sidebar-brand small { font-size: 0.7rem; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; }
 
-    .sidebar-nav { flex: 1; padding: 1rem 0.75rem; }
+    .sidebar-nav { flex: 1; padding: 1.25rem 0; display: flex; flex-direction: column; gap: 0.35rem; }
     .sidebar-nav .nav-link {
       display: flex; align-items: center;
-      padding: 0.65rem 1rem;
+      padding: 0.75rem 1rem;
       border-radius: var(--radius-md);
-      color: #94a3b8;
-      font-weight: 500;
-      font-size: 0.85rem;
-      transition: all 0.15s ease;
+      color: var(--color-text-muted);
+      font-weight: 600;
+      font-size: 0.875rem;
+      transition: var(--transition-smooth);
       text-decoration: none;
-      gap: 0.75rem;
-      margin-bottom: 0.25rem;
+      gap: 0.85rem;
     }
-    .sidebar-nav .nav-link i { width: 18px; text-align: center; color: #64748b; }
-    .sidebar-nav .nav-link:hover { background: rgba(255,255,255,0.05); color: #FFFFFF; }
-    .sidebar-nav .nav-link:hover i { color: #38bdf8; }
+    .sidebar-nav .nav-link i { width: 20px; text-align: center; font-size: 1rem; transition: transform 0.2s ease; }
+    .sidebar-nav .nav-link:hover { background: rgba(2, 132, 199, 0.08); color: var(--color-primary-accent); }
+    .sidebar-nav .nav-link:hover i { transform: scale(1.1); }
     .sidebar-nav .nav-link.active {
-      background: #1e293b;
+      background: var(--color-gradient-brand);
       color: #FFFFFF;
-      border-left: 4px solid #38bdf8;
+      box-shadow: 0 6px 16px rgba(15, 23, 42, 0.2);
     }
-    .sidebar-nav .nav-link.active i { color: #38bdf8; }
+    .sidebar-nav .nav-link.active i { color: #38BDF8; }
     .sidebar-footer {
-      padding: 0.75rem 1.5rem;
-      border-top: 1px solid rgba(255,255,255,0.08);
-      font-size: 0.7rem;
-      color: #64748b;
+      padding: 1rem 0.75rem;
+      border-top: 1px solid var(--color-border);
+      font-size: 0.725rem;
+      color: var(--color-text-muted);
       text-align: center;
+      font-weight: 500;
     }
 
-    /* ---- Top Bar ---- */
+    /* ---- Glassmorphic Topbar ---- */
     .topbar {
-      background: #FFFFFF;
-      border: 1px solid var(--color-gray-200);
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
       border-radius: var(--radius-lg);
-      padding: 0.75rem 1.5rem;
-      box-shadow: var(--shadow-sm);
-      margin-bottom: 1.5rem;
+      padding: 1rem 1.75rem;
+      box-shadow: var(--shadow-subtle);
+      margin-bottom: 2rem;
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
+      backdrop-filter: blur(12px);
     }
-    [data-theme="dark"] .topbar { background: #1e293b; border-color: #334155; }
-
     .topbar-left { display: flex; align-items: center; gap: 1rem; }
-    .topbar-left .hamburger { display: none; background: none; border: none; font-size: 1.25rem; color: var(--color-gray-700); cursor: pointer; }
-    .topbar-left h4 { font-size: 1.1rem; font-weight: 700; margin: 0; color: var(--color-gray-900); }
-    .topbar-left h4 i { color: #0284c7; margin-right: 0.5rem; }
+    .topbar-left .hamburger { display: none; background: none; border: none; font-size: 1.25rem; color: var(--color-text-main); cursor: pointer; }
+    .topbar-left h4 { font-size: 1.2rem; font-weight: 800; margin: 0; color: var(--color-text-main); letter-spacing: -0.02em; }
+    .topbar-left h4 i { color: var(--color-primary-accent); margin-right: 0.5rem; }
 
-    .topbar-right { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
-    .badge-date { background: var(--color-gray-100); padding: 0.3rem 0.8rem; border-radius: 9999px; font-size: 0.75rem; color: var(--color-gray-600); }
-    .badge-date i { margin-right: 0.25rem; color: #0284c7; }
-    .user-badge { display: flex; align-items: center; gap: 0.35rem; background: #e0f2fe; padding: 0.3rem 0.8rem; border-radius: 9999px; font-size: 0.8rem; color: #0369a1; font-weight: 600; }
-    .btn-theme { background: var(--color-gray-100); border: none; border-radius: 9999px; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; color: var(--color-gray-600); transition: all 0.15s ease; cursor: pointer; }
-    .btn-theme:hover { background: var(--color-gray-200); color: var(--color-gray-800); }
+    .topbar-right { display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap; }
+    .badge-date { background: var(--color-bg); padding: 0.35rem 0.9rem; border-radius: 9999px; font-size: 0.775rem; color: var(--color-text-muted); font-weight: 600; border: 1px solid var(--color-border); }
+    .badge-date i { margin-right: 0.35rem; color: var(--color-primary-accent); }
+    .user-badge { display: flex; align-items: center; gap: 0.4rem; background: rgba(2, 132, 199, 0.1); padding: 0.35rem 1rem 0.35rem 0.75rem; border-radius: 9999px; font-size: 0.825rem; color: var(--color-primary-accent); font-weight: 700; border: 1px solid rgba(2, 132, 199, 0.2); }
+    .btn-theme { background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 9999px; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; color: var(--color-text-muted); transition: var(--transition-smooth); cursor: pointer; }
+    .btn-theme:hover { background: var(--color-border); color: var(--color-text-main); transform: rotate(15deg); }
 
-    /* ---- Cards & Layout ---- */
+    /* ---- Executive Cards ---- */
     .card {
-      background: #FFFFFF;
-      border: 1px solid var(--color-gray-200);
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
       border-radius: var(--radius-lg);
-      box-shadow: var(--shadow-sm);
-      margin-bottom: 1rem;
-      transition: box-shadow 0.2s ease;
+      box-shadow: var(--shadow-card);
+      margin-bottom: 1.5rem;
+      transition: transform var(--transition-smooth), box-shadow var(--transition-smooth);
     }
-    .card:hover { box-shadow: var(--shadow-md); }
-    [data-theme="dark"] .card { background: #1e293b; border-color: #334155; }
-
+    .card:hover { transform: translateY(-3px); box-shadow: 0 15px 35px -5px rgba(15, 23, 42, 0.12); }
+    
     .card-header {
-      background: #FFFFFF !important;
-      border-bottom: 1px solid var(--color-gray-200) !important;
-      color: var(--color-gray-950) !important;
-      padding: 0.9rem 1.25rem !important;
-      font-weight: 700;
-      font-size: 0.95rem;
+      background: transparent !important;
+      border-bottom: 1px solid var(--color-border) !important;
+      color: var(--color-text-main) !important;
+      padding: 1.25rem 1.5rem !important;
+      font-weight: 800;
+      font-size: 1.05rem;
+      letter-spacing: -0.01em;
       border-radius: var(--radius-lg) var(--radius-lg) 0 0 !important;
       display: flex;
       align-items: center;
-      gap: 0.5rem;
+      gap: 0.75rem;
     }
-    [data-theme="dark"] .card-header { background: #1e293b !important; border-bottom-color: #334155 !important; color: #FFFFFF !important; }
-    .card-header i { color: #0284c7; }
+    .card-header i { color: var(--color-primary-accent); font-size: 1.15rem; }
 
-    /* ---- KPI Cards ---- */
+    /* ---- Premium KPI Cards ---- */
     .kpi-card {
-      background: #FFFFFF;
-      border: 1px solid var(--color-gray-200);
-      border-left: 5px solid #0284c7;
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-left: 5px solid var(--color-primary-accent);
       border-radius: var(--radius-lg);
-      padding: 1.1rem 1.25rem;
-      box-shadow: var(--shadow-sm);
+      padding: 1.35rem 1.5rem;
+      box-shadow: var(--shadow-card);
       height: 100%;
+      position: relative;
+      overflow: hidden;
+      transition: var(--transition-smooth);
     }
-    .kpi-card h6 { font-size: 0.75rem; text-transform: uppercase; font-weight: 700; color: var(--color-gray-500); margin-bottom: 0.5rem; }
-    .kpi-card .kpi-value { font-size: 1.65rem; font-weight: 800; color: var(--color-gray-900); margin: 0; }
-    [data-theme="dark"] .kpi-card { background: #1e293b; border-color: #334155; }
-    [data-theme="dark"] .kpi-card .kpi-value { color: #FFFFFF; }
+    .kpi-card:hover { transform: translateY(-4px); border-left-color: #0F172A; }
+    .kpi-card h6 { font-size: 0.75rem; text-transform: uppercase; font-weight: 700; color: var(--color-text-muted); margin-bottom: 0.65rem; letter-spacing: 0.05em; }
+    .kpi-card .kpi-value { font-size: 2rem; font-weight: 800; color: var(--color-text-main); margin: 0; letter-spacing: -0.03em; }
 
     /* ---- Empty States ---- */
     .empty-state {
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      padding: 2.5rem 1.5rem; color: var(--color-gray-400); text-align: center;
-      background: var(--color-gray-50); border-radius: var(--radius-md); border: 2px dashed var(--color-gray-200);
+      padding: 3rem 2rem; color: var(--color-text-muted); text-align: center;
+      background: var(--color-bg); border-radius: var(--radius-md); border: 2px dashed var(--color-border);
     }
-    .empty-state i { font-size: 2.2rem; margin-bottom: 0.5rem; color: var(--color-gray-300); }
-    [data-theme="dark"] .empty-state { background: #0f172a; border-color: #334155; }
+    .empty-state i { font-size: 2.5rem; margin-bottom: 0.75rem; color: var(--color-text-muted); opacity: 0.5; }
 
     /* ---- Pipeline Flow ---- */
     .pipeline-stage {
-      background: var(--color-gray-50);
-      border: 1px solid var(--color-gray-200);
+      background: var(--color-bg);
+      border: 1px solid var(--color-border);
       border-radius: var(--radius-md);
-      padding: 0.75rem 1rem; min-width: 140px; text-align: center;
+      padding: 1rem 1.25rem; min-width: 155px; text-align: center;
+      transition: var(--transition-smooth);
     }
-    .pipeline-stage .stage-label { font-size: 0.7rem; color: var(--color-gray-500); text-transform: uppercase; font-weight: 700; }
-    .pipeline-stage .stage-value { font-size: 1.35rem; font-weight: 800; color: var(--color-gray-900); }
-    .pipeline-arrow { font-size: 1.5rem; color: var(--color-gray-400); font-weight: 300; }
-    [data-theme="dark"] .pipeline-stage { background: #0f172a; border-color: #334155; }
-    [data-theme="dark"] .pipeline-stage .stage-value { color: #FFFFFF; }
+    .pipeline-stage:hover { transform: scale(1.03); border-color: var(--color-primary-accent); }
+    .pipeline-stage .stage-label { font-size: 0.725rem; color: var(--color-text-muted); text-transform: uppercase; font-weight: 700; letter-spacing: 0.05em; }
+    .pipeline-stage .stage-value { font-size: 1.5rem; font-weight: 800; color: var(--color-text-main); margin-top: 0.25rem; }
+    .pipeline-arrow { font-size: 1.5rem; color: var(--color-text-muted); font-weight: 300; opacity: 0.6; }
 
-    /* ---- Toolbar & Uploads ---- */
-    .upload-highlight { border: 2px dashed #0284c7; background: #f0f9ff; }
-    [data-theme="dark"] .upload-highlight { background: rgba(2, 132, 199, 0.05); border-color: #0369a1; }
-
+    /* ---- Excel Upload & Search Panels ---- */
+    .upload-highlight { border: 2px dashed var(--color-primary-accent); background: rgba(2, 132, 199, 0.03); }
+    
     .btn-upload, .btn-search {
-      background: #0B192C; border: none; padding: 0.5rem 1.5rem;
-      border-radius: var(--radius-md); font-weight: 600; font-size: 0.85rem; color: white;
-      transition: background 0.15s ease;
+      background: var(--color-gradient-brand); border: none; padding: 0.6rem 1.75rem;
+      border-radius: var(--radius-md); font-weight: 700; font-size: 0.875rem; color: white;
+      transition: var(--transition-smooth); box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2);
     }
-    .btn-upload:hover, .btn-search:hover { background: #1e293b; color: white; }
+    .btn-upload:hover, .btn-search:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(15, 23, 42, 0.3); color: white; }
 
     .form-toolbar { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; }
-    .form-toolbar .form-group { flex: 1; min-width: 160px; }
+    .form-toolbar .form-group { flex: 1; min-width: 180px; }
     .form-control, .form-select {
-      border: 1px solid var(--color-gray-300); border-radius: var(--radius-md);
-      padding: 0.45rem 0.75rem; font-size: 0.85rem; background: #fff; color: var(--color-gray-800);
+      border: 1px solid var(--color-border); border-radius: var(--radius-md);
+      padding: 0.6rem 1rem; font-size: 0.875rem; background: var(--color-surface); color: var(--color-text-main);
+      font-weight: 500; transition: var(--transition-smooth);
     }
-    [data-theme="dark"] .form-control, [data-theme="dark"] .form-select {
-      background: #0f172a; border-color: #334155; color: #f8fafc;
+    .form-control:focus, .form-select:focus {
+      border-color: var(--color-primary-accent);
+      box-shadow: 0 0 0 4px rgba(2, 132, 199, 0.15);
+      background: var(--color-surface);
+      color: var(--color-text-main);
     }
+    label { font-size: 0.775rem; font-weight: 700; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.35rem; display: block; }
 
-    /* ---- AG Grid ---- */
+    /* ---- AG Grid Customization ---- */
     .ag-theme-alpine {
-      --ag-background-color: transparent;
-      --ag-foreground-color: var(--color-gray-800);
-      --ag-border-color: var(--color-gray-200);
-      --ag-header-background-color: var(--color-gray-100);
-      --ag-header-foreground-color: var(--color-gray-700);
-      --ag-row-hover-color: var(--color-gray-100);
-      --ag-font-size: 0.85rem;
+      --ag-background-color: var(--color-surface);
+      --ag-foreground-color: var(--color-text-main);
+      --ag-border-color: var(--color-border);
+      --ag-header-background-color: var(--color-bg);
+      --ag-header-foreground-color: var(--color-text-main);
+      --ag-row-hover-color: rgba(2, 132, 199, 0.06);
+      --ag-font-size: 0.875rem;
       --ag-font-family: var(--font-family);
     }
-    [data-theme="dark"] .ag-theme-alpine {
-      --ag-background-color: #1e293b;
-      --ag-foreground-color: #f8fafc;
-      --ag-border-color: #334155;
-      --ag-header-background-color: #0f172a;
-      --ag-header-foreground-color: #94a3b8;
-      --ag-row-hover-color: #334155;
-    }
-    .ag-theme-alpine .ag-root-wrapper { border-radius: var(--radius-md); border: 1px solid var(--color-gray-200); }
+    .ag-theme-alpine .ag-root-wrapper { border-radius: var(--radius-md); border: 1px solid var(--color-border); box-shadow: var(--shadow-subtle); }
+    .ag-theme-alpine .ag-header-cell-label { font-weight: 800; font-size: 0.8rem; text-transform: uppercase; color: var(--color-text-muted); }
 
     /* ---- Alerts & Recommendations ---- */
-    .alert-item { border-radius: var(--radius-md); border-left: 4px solid var(--color-warning); background: var(--color-gray-50); padding: 0.75rem 1rem; font-size: 0.85rem; }
-    .alert-item.critical { border-left-color: var(--color-danger); background: #fef2f2; }
-    .alert-item.success { border-left-color: var(--color-success); background: #f0fdf4; }
-    [data-theme="dark"] .alert-item { background: #0f172a; }
-    [data-theme="dark"] .alert-item.critical { background: rgba(239, 68, 68, 0.1); }
+    .alert-item { border-radius: var(--radius-md); border-left: 4px solid var(--color-warning); background: var(--color-bg); padding: 0.9rem 1.25rem; font-size: 0.875rem; font-weight: 500; border-top: 1px solid var(--color-border); border-right: 1px solid var(--color-border); border-bottom: 1px solid var(--color-border); }
+    .alert-item.critical { border-left-color: var(--color-danger); background: rgba(220, 38, 38, 0.05); }
+    .alert-item.success { border-left-color: var(--color-success); background: rgba(5, 150, 105, 0.05); }
 
     .rec-card {
-      background: var(--color-gray-50); border-radius: var(--radius-md); padding: 0.85rem 1rem;
-      border-left: 4px solid #0284c7; font-size: 0.85rem; margin-bottom: 0.5rem;
+      background: var(--color-bg); border-radius: var(--radius-md); padding: 1rem 1.25rem;
+      border-left: 4px solid var(--color-primary-accent); font-size: 0.875rem; margin-bottom: 0.75rem;
+      border-top: 1px solid var(--color-border); border-right: 1px solid var(--color-border); border-bottom: 1px solid var(--color-border);
     }
-    [data-theme="dark"] .rec-card { background: #0f172a; }
 
     /* ---- Footer ---- */
     .footer-bar {
-      background: #FFFFFF; border-radius: var(--radius-lg); padding: 0.75rem 1.5rem;
-      border: 1px solid var(--color-gray-200); text-align: center; font-size: 0.75rem; color: var(--color-gray-500);
+      background: var(--color-surface); border-radius: var(--radius-lg); padding: 1rem 2rem;
+      border: 1px solid var(--color-border); text-align: center; font-size: 0.775rem; color: var(--color-text-muted);
+      font-weight: 600; box-shadow: var(--shadow-subtle);
     }
-    [data-theme="dark"] .footer-bar { background: #1e293b; border-color: #334155; }
 
     @media (max-width: 991.98px) {
       .sidebar { transform: translateX(-100%); }
       .sidebar.open { transform: translateX(0); }
-      .main-content { margin-left: 0; padding: 1rem; }
+      .main-content { margin-left: 0; padding: 1.25rem; }
       .topbar-left .hamburger { display: block; }
     }
   </style>
@@ -304,199 +304,210 @@
 <div id="app" class="container-fluid px-0">
 
   <!-- ============================================================
-  SIDEBAR (Pure Logistics Navigation)
+  EXECUTIVE SIDEBAR
   ============================================================ -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
-      <h5><i class="fas fa-cubes"></i> Haier Logistics</h5>
-      <small>Enterprise Command Center</small>
+      <div class="brand-icon"><i class="fas fa-cube"></i></div>
+      <div>
+        <h5>Haier Logistics</h5>
+        <small>Command Center</small>
+      </div>
     </div>
     <nav class="sidebar-nav">
-      <a class="nav-link active" href="#"><i class="fas fa-tachometer-alt"></i> Executive Dashboard</a>
-      <a class="nav-link" href="#uploadSection"><i class="fas fa-upload"></i> Excel Import Center</a>
-      <a class="nav-link" href="#warehouseGrid"><i class="fas fa-warehouse"></i> Warehouse Performance</a>
-      <a class="nav-link" href="#dealerGrid"><i class="fas fa-users"></i> Key Accounts (Dealers)</a>
-      <a class="nav-link" href="#cityGrid"><i class="fas fa-city"></i> City Hub Logistics</a>
-      <a class="nav-link" href="#productGrid"><i class="fas fa-box"></i> SKU / Models Shipped</a>
-      <a class="nav-link" href="#trendCharts"><i class="fas fa-chart-line"></i> Daily Operations Trend</a>
-      <a class="nav-link" href="#alertsContainer"><i class="fas fa-exclamation-triangle"></i> Management Alerts</a>
+      <a class="nav-link active" href="#"><i class="fas fa-chart-line"></i> Dashboard Suite</a>
+      <a class="nav-link" href="#uploadSection"><i class="fas fa-cloud-upload-alt"></i> Excel Import Center</a>
+      <a class="nav-link" href="#warehouseGrid"><i class="fas fa-warehouse"></i> Warehouse Hubs</a>
+      <a class="nav-link" href="#dealerGrid"><i class="fas fa-handshake"></i> Key Accounts</a>
+      <a class="nav-link" href="#cityGrid"><i class="fas fa-map-marked-alt"></i> Destination Hubs</a>
+      <a class="nav-link" href="#productGrid"><i class="fas fa-boxes-stacked"></i> SKU / Models</a>
+      <a class="nav-link" href="#trendCharts"><i class="fas fa-wave-square"></i> Operational Trends</a>
+      <a class="nav-link" href="#alertsContainer"><i class="fas fa-shield-halved"></i> Management Alerts</a>
     </nav>
-    <div class="sidebar-footer">v11.8 · SAP / Fabric Standard</div>
+    <div class="sidebar-footer">v11.9 · Enterprise BI Standard</div>
   </aside>
 
   <!-- ============================================================
-  MAIN CONTENT
+  MAIN CONTENT AREA
   ============================================================ -->
   <main class="main-content" id="mainContent">
 
-    <!-- TOP BAR -->
+    <!-- TOPBAR -->
     <div class="topbar">
       <div class="topbar-left">
         <button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button>
-        <h4><i class="fas fa-chart-pie"></i> Logistics Operations Command Center</h4>
+        <h4><i class="fas fa-tachometer-alt"></i> Logistics Operations Command Center</h4>
       </div>
       <div class="topbar-right">
         <span class="badge-date"><i class="fas fa-calendar-day"></i> <span id="todayDate"></span></span>
-        <span class="badge-date"><i class="fas fa-sync-alt"></i> <span id="lastRefresh">Just now</span></span>
-        <span class="user-badge"><i class="fas fa-user-circle"></i> Logistics Director</span>
+        <span class="badge-date"><i class="fas fa-arrows-rotate"></i> <span id="lastRefresh">Just now</span></span>
+        <span class="user-badge"><i class="fas fa-user-tie"></i> Logistics Director</span>
         <button class="btn-theme" id="themeToggle"><i class="fas fa-moon"></i></button>
       </div>
     </div>
 
-    <!-- KPI CARDS SECTION -->
+    <!-- KPI CARDS -->
     <section id="kpiCards" class="row g-3 mb-4"></section>
 
-    <!-- PIPELINE STAGES -->
+    <!-- PIPELINE FULFILLMENT -->
     <section class="row g-3 mb-4">
       <div class="col-12">
         <div class="card">
-          <div class="card-header"><i class="fas fa-route"></i> End-to-End Logistics Fulfillment Pipeline</div>
-          <div class="card-body" id="pipelineContainer">
-            <div class="empty-state"><i class="fas fa-sitemap"></i><p>No pipeline data available</p><small>Upload logistics report to populate workflow stages</small></div>
+          <div class="card-header"><i class="fas fa-route"></i> End-to-End Supply Chain Fulfillment Pipeline</div>
+          <div class="card-body p-4" id="pipelineContainer">
+            <div class="empty-state"><i class="fas fa-sitemap"></i><p>Pipeline awaiting data synchronization</p><small>Upload your SAP logistics spreadsheet to populate metrics</small></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- WAREHOUSE PERFORMANCE & CHARTS -->
+    <!-- WAREHOUSE GRID & CHARTS -->
     <section class="row g-3 mb-4">
       <div class="col-xl-6">
-        <div class="card">
+        <div class="card h-100 mb-0">
           <div class="card-header"><i class="fas fa-warehouse"></i> Warehouse Fulfillment Ranking</div>
           <div class="card-body">
-            <div id="warehouseGrid" class="ag-theme-alpine" style="height:380px;"></div>
+            <div id="warehouseGrid" class="ag-theme-alpine" style="height:410px;"></div>
           </div>
         </div>
       </div>
       <div class="col-xl-6">
-        <div class="card">
-          <div class="card-header"><i class="fas fa-chart-bar"></i> Network Volume Analytics</div>
+        <div class="card h-100 mb-0">
+          <div class="card-header"><i class="fas fa-chart-column"></i> Network Volume Distribution</div>
           <div class="card-body" id="warehouseCharts">
-            <div class="empty-state"><i class="fas fa-chart-simple"></i><p>No charts available</p><small>Upload data to render interactive Plotly analytics</small></div>
+            <div class="empty-state"><i class="fas fa-chart-simple"></i><p>Charts initializing...</p><small>Interactive Plotly visualization will render automatically</small></div>
           </div>
         </div>
       </div>
     </section>
+
+    <div class="my-4"></div>
 
     <!-- DEALER & PRODUCT PERFORMANCE -->
     <section class="row g-3 mb-4">
       <div class="col-xl-6">
-        <div class="card">
+        <div class="card h-100 mb-0">
           <div class="card-header"><i class="fas fa-users"></i> Key Dealer Account Deliveries</div>
           <div class="card-body">
-            <div id="dealerGrid" class="ag-theme-alpine" style="height:380px;"></div>
+            <div id="dealerGrid" class="ag-theme-alpine" style="height:410px;"></div>
           </div>
         </div>
       </div>
       <div class="col-xl-6">
-        <div class="card">
+        <div class="card h-100 mb-0">
           <div class="card-header"><i class="fas fa-box"></i> Top Shipped Customer Models / SKUs</div>
           <div class="card-body">
-            <div id="productGrid" class="ag-theme-alpine" style="height:380px;"></div>
+            <div id="productGrid" class="ag-theme-alpine" style="height:410px;"></div>
           </div>
         </div>
       </div>
     </section>
+
+    <div class="my-4"></div>
 
     <!-- CITY & DAILY TRENDS -->
     <section class="row g-3 mb-4">
       <div class="col-xl-6">
-        <div class="card">
+        <div class="card h-100 mb-0">
           <div class="card-header"><i class="fas fa-city"></i> City Destination Hub Performance</div>
           <div class="card-body">
-            <div id="cityGrid" class="ag-theme-alpine" style="height:380px;"></div>
+            <div id="cityGrid" class="ag-theme-alpine" style="height:410px;"></div>
           </div>
         </div>
       </div>
       <div class="col-xl-6">
-        <div class="card">
+        <div class="card h-100 mb-0">
           <div class="card-header"><i class="fas fa-chart-line"></i> 30-Day Operational Trend (DN, PGI, POD)</div>
           <div class="card-body" id="trendCharts">
-            <div class="empty-state"><i class="fas fa-clock"></i><p>No daily operational trends available</p><small>Upload current operations data</small></div>
+            <div class="empty-state"><i class="fas fa-clock"></i><p>Trend analysis awaiting data</p><small>Upload dataset to view timeline curves</small></div>
           </div>
         </div>
       </div>
     </section>
+
+    <div class="my-4"></div>
 
     <!-- ALERTS & RECOMMENDATIONS -->
     <section class="row g-3 mb-4">
       <div class="col-xl-6">
-        <div class="card">
-          <div class="card-header"><i class="fas fa-exclamation-triangle text-warning"></i> Management Alert Panel</div>
+        <div class="card h-100 mb-0">
+          <div class="card-header"><i class="fas fa-triangle-exclamation text-warning"></i> Management Alert Panel</div>
           <div class="card-body" id="alertsContainer">
-            <div class="empty-state"><i class="fas fa-bell-slash"></i><p>No active logistics alerts</p><small>All supply chain metrics within target SLAs</small></div>
+            <div class="empty-state"><i class="fas fa-shield-check"></i><p>All network metrics operating within target thresholds</p><small>No anomalies detected</small></div>
           </div>
         </div>
       </div>
       <div class="col-xl-6">
-        <div class="card">
-          <div class="card-header"><i class="fas fa-robot text-primary"></i> AI Operational Recommendations</div>
+        <div class="card h-100 mb-0">
+          <div class="card-header"><i class="fas fa-wand-magic-sparkles text-primary"></i> AI Operational Recommendations</div>
           <div class="card-body" id="recommendationsContainer">
-            <div class="empty-state"><i class="fas fa-lightbulb"></i><p>No AI recommendations generated</p><small>Insights will appear following data upload</small></div>
+            <div class="empty-state"><i class="fas fa-lightbulb"></i><p>AI engine on standby</p><small>Smart insights will generate upon data upload</small></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- EXCEL UPLOAD CENTER & SEARCH -->
+    <div class="my-4"></div>
+
+    <!-- EXCEL UPLOAD CENTER & LOOKUP -->
     <section id="uploadSection" class="row g-3 mb-4">
       <div class="col-md-6">
-        <div class="card upload-highlight">
+        <div class="card upload-highlight h-100 mb-0">
           <div class="card-header"><i class="fas fa-file-excel text-success"></i> Upload Logistics Excel Report</div>
           <div class="card-body">
-            <form class="form-toolbar" id="uploadForm" action="/dashboard/api/upload" method="post" enctype="multipart/form-data">
-              <div class="form-group" style="flex:2;">
-                <label class="form-label fw-bold small"><i class="fas fa-file-upload"></i> Select Excel (.xlsx, .xls)</label>
+            <form class="form-toolbar flex-column align-items-stretch" id="uploadForm" action="/dashboard/api/upload" method="post" enctype="multipart/form-data">
+              <div class="form-group w-100 mb-3">
+                <label><i class="fas fa-file-arrow-up me-1"></i> Select SAP Excel Report (.xlsx, .xls)</label>
                 <input type="file" name="file" accept=".xlsx,.xls" class="form-control" required />
-                <small class="text-muted" style="font-size:0.7rem;">Supported format: SAP Delivery &amp; PGI/POD report</small>
+                <small class="text-muted mt-1 d-block" style="font-size:0.725rem;">Standard format containing Delivery Notes, PGI, and POD records.</small>
               </div>
-              <div class="form-group">
-                <label class="form-label fw-bold small"><i class="fas fa-copy"></i> Duplicate Handling</label>
+              <div class="form-group w-100 mb-3">
+                <label><i class="fas fa-clone me-1"></i> Duplicate Strategy</label>
                 <select name="skip_duplicates" class="form-select">
-                  <option value="true">Skip Existing DNs</option>
-                  <option value="false">Update Existing DNs</option>
+                  <option value="true">Skip Existing DNs (Recommended)</option>
+                  <option value="false">Update Existing DN Records</option>
                 </select>
               </div>
-              <button type="submit" class="btn-upload"><i class="fas fa-arrow-up me-1"></i> Import Excel</button>
+              <button type="submit" class="btn-upload w-100 py-2"><i class="fas fa-cloud-arrow-up me-2"></i> Import &amp; Process Data</button>
             </form>
           </div>
         </div>
       </div>
       <div class="col-md-6">
-        <div class="card">
-          <div class="card-header"><i class="fas fa-search"></i> Instant Delivery Note Lookup</div>
-          <div class="card-body">
-            <form class="form-toolbar" id="searchForm" onsubmit="event.preventDefault(); alert('Use command filters above for granular tracking.');">
-              <div class="form-group" style="flex:2;">
-                <label class="form-label fw-bold small">Search Criteria</label>
-                <input type="text" id="searchInput" class="form-control" placeholder="Enter DN Number, Dealer, or City..." />
+        <div class="card h-100 mb-0">
+          <div class="card-header"><i class="fas fa-magnifying-glass"></i> Instant Delivery Lookup</div>
+          <div class="card-body d-flex flex-column justify-content-center">
+            <form class="form-toolbar flex-column align-items-stretch" id="searchForm" onsubmit="event.preventDefault(); Swal.fire('Quick Lookup', 'Use AG Grid column filters or sidebar filters for data segmentation.', 'info');">
+              <div class="form-group w-100 mb-3">
+                <label>Search Query Parameter</label>
+                <input type="text" id="searchInput" class="form-control" placeholder="Enter DN Number, Dealer Name, or City..." />
               </div>
-              <div class="form-group">
-                <label class="form-label fw-bold small">Filter Target</label>
+              <div class="form-group w-100 mb-3">
+                <label>Filter Target Entity</label>
                 <select id="searchType" class="form-select">
-                  <option value="all">All Fields</option>
-                  <option value="dn">Delivery Note</option>
-                  <option value="dealer">Dealer</option>
-                  <option value="city">Destination City</option>
-                  <option value="warehouse">Warehouse Hub</option>
+                  <option value="all">Entire Network Database</option>
+                  <option value="dn">Delivery Note Number</option>
+                  <option value="dealer">Dealer / Customer Party</option>
+                  <option value="city">Destination City Hub</option>
+                  <option value="warehouse">Fulfillment Warehouse</option>
                 </select>
               </div>
-              <button type="submit" class="btn-search"><i class="fas fa-search me-1"></i> Search</button>
+              <button type="submit" class="btn-search w-100 py-2"><i class="fas fa-search me-2"></i> Execute Query</button>
             </form>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- UPLOAD HISTORY -->
+    <!-- UPLOAD HISTORY LOG -->
     <section class="row g-3 mb-4">
       <div class="col-12">
         <div class="card">
-          <div class="card-header"><i class="fas fa-history"></i> System Upload &amp; Import History</div>
+          <div class="card-header"><i class="fas fa-clock-rotate-left"></i> System Ingestion &amp; Import History</div>
           <div class="card-body">
-            <div id="uploadsGrid" class="ag-theme-alpine" style="height:200px;"></div>
-            <div id="uploadHistoryPlaceholder" class="empty-state" style="margin-top:0.5rem; display:none;">
-              <i class="fas fa-upload"></i><p>No import history recorded yet</p>
+            <div id="uploadsGrid" class="ag-theme-alpine" style="height:210px;"></div>
+            <div id="uploadHistoryPlaceholder" class="empty-state py-4" style="display:none;">
+              <i class="fas fa-folder-open"></i><p>No import audit logs recorded</p>
             </div>
           </div>
         </div>
@@ -513,18 +524,16 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
 <!-- ============================================================
-     APPLICATION JAVASCRIPT (Enterprise API Sync & Rendering)
+     APPLICATION JAVASCRIPT (Enterprise UI & API Integration)
      ============================================================ -->
 <script>
 (function() {
     const API_URL = '/dashboard/api/data';
 
-    // ---- Formatting helpers ----
     function formatNumber(v) { return (v || 0).toLocaleString(); }
     function formatPct(v) { return (v || 0).toFixed(1) + '%'; }
     function formatDays(v) { return (v || 0).toFixed(1) + ' Days'; }
 
-    // ---- Render KPI Cards ----
     function renderKPIs(cards) {
         const container = document.getElementById('kpiCards');
         if (!container) return;
@@ -534,32 +543,31 @@
         }
         
         const cardConfig = [
-            { key: 'total_dn', label: 'Total Delivery Notes', icon: 'fa-file-invoice', fmt: v => formatNumber(v) + ' DNs' },
-            { key: 'total_units', label: 'Total Quantity Shipped', icon: 'fa-boxes', fmt: v => formatNumber(v) + ' Units' },
-            { key: 'health_score', label: 'Operations Health Score', icon: 'fa-heartbeat', fmt: v => formatPct(v) },
-            { key: 'avg_cycle', label: 'Avg Delivery Cycle', icon: 'fa-clock', fmt: v => formatDays(v) }
+            { key: 'total_dn', label: 'Total Delivery Notes', icon: 'fa-file-invoice-dollar', fmt: v => formatNumber(v) + ' DNs' },
+            { key: 'total_units', label: 'Total Units Shipped', icon: 'fa-boxes-packing', fmt: v => formatNumber(v) + ' Units' },
+            { key: 'health_score', label: 'Operations Health Score', icon: 'fa-heart-pulse', fmt: v => formatPct(v) },
+            { key: 'avg_cycle', label: 'Avg Delivery Cycle', icon: 'fa-stopwatch', fmt: v => formatDays(v) }
         ];
 
         container.innerHTML = cardConfig.map(cfg => {
             const dataObj = cards[cfg.key] || { value: 0 };
             return `
-                <div class="col-md-3 col-sm-6 mb-3">
+                <div class="col-xl-3 col-md-6 mb-3">
                     <div class="card kpi-card">
-                        <h6><i class="fas ${cfg.icon} me-1 text-primary"></i> ${cfg.label}</h6>
+                        <h6><i class="fas ${cfg.icon} me-2 text-info"></i> ${cfg.label}</h6>
                         <h3 class="kpi-value">${cfg.fmt(dataObj.value || 0)}</h3>
-                        <small class="text-muted">Target SLA: Optimal &le; 5.8d</small>
+                        <small class="text-muted fw-bold" style="font-size:0.7rem;">SLA Benchmark &le; 5.8 Days</small>
                     </div>
                 </div>
             `;
         }).join('');
     }
 
-    // ---- Render Pipeline ----
     function renderPipeline(pipeline) {
         const container = document.getElementById('pipelineContainer');
         if (!container) return;
         if (!pipeline || !pipeline.dn_created) {
-            container.innerHTML = '<div class="empty-state"><i class="fas fa-sitemap"></i><p>No pipeline data available</p><small>Upload logistics report to view fulfillment flow</small></div>';
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-sitemap"></i><p>Pipeline awaiting data synchronization</p><small>Upload your SAP logistics spreadsheet to populate metrics</small></div>';
             return;
         }
         const stages = [
@@ -568,22 +576,21 @@
             { label: 'Delivered', value: pipeline.delivered || 0, pct: pipeline.delivery_achievement || 0 },
             { label: 'POD Received', value: pipeline.pod_received || 0, pct: pipeline.pod_achievement || 0 }
         ];
-        let html = '<div class="d-flex flex-wrap align-items-center justify-content-center gap-2">';
+        let html = '<div class="d-flex flex-wrap align-items-center justify-content-center gap-3">';
         stages.forEach((s, idx) => {
             html += `
                 <div class="pipeline-stage">
                     <div class="stage-label">${s.label}</div>
                     <div class="stage-value">${formatNumber(s.value)}</div>
-                    ${s.pct !== undefined ? `<small class="text-muted fw-bold">${formatPct(s.pct)}</small>` : ''}
+                    ${s.pct !== undefined ? `<span class="badge bg-primary bg-opacity-10 text-primary mt-1" style="font-size:0.7rem;">${formatPct(s.pct)} Achieved</span>` : ''}
                 </div>
             `;
-            if (idx < stages.length - 1) html += `<span class="pipeline-arrow px-2">→</span>`;
+            if (idx < stages.length - 1) html += `<span class="pipeline-arrow px-1"><i class="fas fa-chevron-right"></i></span>`;
         });
         html += '</div>';
         container.innerHTML = html;
     }
 
-    // ---- AG Grid helper ----
     function renderAGGrid(containerId, data, colDefs) {
         const gridDiv = document.getElementById(containerId);
         if (!gridDiv) return;
@@ -612,7 +619,6 @@
         }
     }
 
-    // ---- Plotly Chart Renderer ----
     function renderPlotlyFromJson(containerId, chartJson) {
         const div = document.getElementById(containerId);
         if (!div) return;
@@ -620,30 +626,36 @@
         if (!chartJson) return;
         
         const subDiv = document.createElement('div');
-        subDiv.style.height = '360px';
+        subDiv.style.height = '375px';
         subDiv.style.width = '100%';
         div.appendChild(subDiv);
         
         try {
             const fig = typeof chartJson === 'string' ? JSON.parse(chartJson) : chartJson;
+            // Inject dark mode awareness into layout if needed
+            if (fig.layout) {
+                const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+                fig.layout.paper_bgcolor = isDark ? '#131C2E' : '#FFFFFF';
+                fig.layout.plot_bgcolor = isDark ? '#0B0F17' : '#F8FAFC';
+                fig.layout.font = { color: isDark ? '#F8FAFC' : '#1E293B', family: 'Plus Jakarta Sans, sans-serif' };
+            }
             Plotly.newPlot(subDiv, fig.data, fig.layout || {}, { responsive: true, displayModeBar: false });
         } catch(e) {
             console.warn('Plotly render error for ' + containerId, e);
         }
     }
 
-    // ---- Alerts & Recommendations ----
     function renderAlerts(alerts) {
         const container = document.getElementById('alertsContainer');
         if (!container) return;
         const alertList = Array.isArray(alerts) ? alerts : Object.values(alerts || {});
         if (!alertList.length) {
-            container.innerHTML = '<div class="empty-state"><i class="fas fa-bell-slash"></i><p>No active logistics alerts</p><small>All operations within threshold limits</small></div>';
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-shield-check"></i><p>All network metrics operating within target thresholds</p><small>No anomalies detected</small></div>';
             return;
         }
         container.innerHTML = alertList.map(a => `
             <div class="alert-item ${a.severity === 'CRITICAL' ? 'critical' : ''} mb-2">
-                <i class="fas fa-exclamation-circle me-1"></i> <strong>[${a.source || 'Network'}]</strong> ${a.message || ''}
+                <i class="fas fa-triangle-exclamation me-2 text-warning"></i> <strong>[${a.source || 'Network'}]</strong> ${a.message || ''}
             </div>
         `).join('');
     }
@@ -653,18 +665,20 @@
         if (!container) return;
         const recList = Array.isArray(recs) ? recs : Object.values(recs || {});
         if (!recList.length) {
-            container.innerHTML = '<div class="empty-state"><i class="fas fa-lightbulb"></i><p>No recommendations generated</p><small>AI engine active</small></div>';
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-lightbulb"></i><p>AI engine on standby</p><small>Smart insights will generate upon data upload</small></div>';
             return;
         }
         container.innerHTML = recList.map(r => `
             <div class="rec-card mb-2">
-                <strong><span class="badge bg-${r.priority === 'Critical' ? 'danger' : 'primary'}">${r.priority || 'Info'}</span> ${r.warehouse || r.category || ''}</strong>
-                <p class="mb-0 mt-1">${r.recommendation || ''}</p>
+                <div class="d-flex align-items-center mb-1">
+                    <span class="badge bg-${r.priority === 'Critical' ? 'danger' : 'primary'} me-2">${r.priority || 'Info'}</span>
+                    <strong>${r.warehouse || r.category || 'Optimization Notice'}</strong>
+                </div>
+                <p class="mb-0 text-muted" style="font-size:0.825rem;">${r.recommendation || ''}</p>
             </div>
         `).join('');
     }
 
-    // ---- Master Data Loader ----
     async function loadDashboard() {
         try {
             const res = await fetch(API_URL);
@@ -674,7 +688,6 @@
             renderKPIs(data.cards || {});
             renderPipeline(data.pipeline || {});
 
-            // 1. Warehouse Grid
             renderAGGrid('warehouseGrid', data.warehouse || [], [
                 { field: 'ranking', headerName: 'Rank', width: 75, pinned: 'left' },
                 { field: 'warehouse_name', headerName: 'Warehouse', flex: 1.5 },
@@ -684,7 +697,6 @@
                 { field: 'health_score', headerName: 'Health %', width: 100, valueFormatter: p => formatPct(p.value) }
             ]);
 
-            // 2. Dealer Grid
             renderAGGrid('dealerGrid', data.dealer || [], [
                 { field: 'dealer_name', headerName: 'Dealer Account', flex: 1.5 },
                 { field: 'delivery_notes', headerName: 'DN Count', width: 100, valueFormatter: p => formatNumber(p.value) },
@@ -692,14 +704,12 @@
                 { field: 'avg_cycle_days', headerName: 'Cycle Days', width: 110, valueFormatter: p => formatDays(p.value) }
             ]);
 
-            // 3. Product Grid
             renderAGGrid('productGrid', data.product || [], [
                 { field: 'product_name', headerName: 'Customer Model / SKU', flex: 1.5 },
                 { field: 'delivery_notes', headerName: 'DN Count', width: 100, valueFormatter: p => formatNumber(p.value) },
                 { field: 'units', headerName: 'Total Units', width: 110, valueFormatter: p => formatNumber(p.value) }
             ]);
 
-            // 4. City Grid
             renderAGGrid('cityGrid', data.city || [], [
                 { field: 'city', headerName: 'Destination City', flex: 1.5 },
                 { field: 'delivery_notes', headerName: 'DN Count', width: 100, valueFormatter: p => formatNumber(p.value) },
@@ -707,12 +717,10 @@
                 { field: 'avg_cycle_days', headerName: 'Cycle Days', width: 110, valueFormatter: p => formatDays(p.value) }
             ]);
 
-            // 5. Render Warehouse Charts (Volume ranking bar chart)
             if (data.warehouse_charts && data.warehouse_charts.delivery_performance) {
                 renderPlotlyFromJson('warehouseCharts', data.warehouse_charts.delivery_performance);
             }
 
-            // 6. Render Daily Operations Trend Chart
             if (data.trend_charts && data.trend_charts.daily_operations) {
                 renderPlotlyFromJson('trendCharts', data.trend_charts.daily_operations);
             }
@@ -720,15 +728,13 @@
             renderAlerts(data.alerts || []);
             renderRecommendations(data.recommendations || []);
 
-            // Footer Metadata
             const footerEl = document.getElementById('footer');
             if (footerEl) {
                 footerEl.innerHTML = `
-                    <i class="fas fa-code-branch"></i> v11.8 &nbsp;|&nbsp;
-                    <i class="fas fa-database"></i> PostgreSQL &nbsp;|&nbsp;
-                    <i class="fas fa-sync"></i> ${new Date().toLocaleTimeString()} &nbsp;|&nbsp;
-                    <i class="fas fa-cubes"></i> Active Records: ${formatNumber(data.metadata?.record_count || 0)} &nbsp;|&nbsp;
-                    <i class="fas fa-shield-alt text-success"></i> SAP Logistics Engine Verified
+                    <i class="fas fa-shield-halved text-success me-1"></i> Haier Pakistan Logistics Suite v11.9 &nbsp;|&nbsp;
+                    <i class="fas fa-database text-primary ms-2 me-1"></i> PostgreSQL &nbsp;|&nbsp;
+                    <i class="fas fa-clock text-muted ms-2 me-1"></i> Synced: ${new Date().toLocaleTimeString()} &nbsp;|&nbsp;
+                    <i class="fas fa-cubes text-info ms-2 me-1"></i> Records: ${formatNumber(data.metadata?.record_count || 0)}
                 `;
             }
             const refreshEl = document.getElementById('lastRefresh');
@@ -739,7 +745,6 @@
         }
     }
 
-    // ---- DOM Initialization & Event Handlers ----
     document.addEventListener('DOMContentLoaded', function() {
         const themeToggle = document.getElementById('themeToggle');
         if (themeToggle) {
@@ -748,6 +753,7 @@
                 const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
                 document.documentElement.setAttribute('data-theme', newTheme);
                 this.innerHTML = newTheme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+                loadDashboard(); // Refresh plots with updated theme colors
             });
         }
 
@@ -766,7 +772,6 @@
             });
         }
 
-        // Excel Upload Form Handling with SweetAlert2 Progress
         const uploadForm = document.getElementById('uploadForm');
         if (uploadForm) {
             uploadForm.addEventListener('submit', function(e) {
@@ -782,9 +787,9 @@
                 Swal.fire({
                     title: 'Importing Logistics Report',
                     html: `
-                        <div class="text-start mb-2"><i class="fas fa-spinner fa-spin me-2"></i> Processing SAP Delivery Records...</div>
-                        <div class="progress"><div id="uploadProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" style="width:0%;">0%</div></div>
-                        <div id="uploadStatusText" class="mt-2 text-muted small">Uploading to server...</div>
+                        <div class="text-start mb-2"><i class="fas fa-spinner fa-spin me-2 text-primary"></i> Ingesting SAP Delivery Records...</div>
+                        <div class="progress" style="height: 10px; border-radius: 5px;"><div id="uploadProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" style="width:0%;">0%</div></div>
+                        <div id="uploadStatusText" class="mt-2 text-muted small">Uploading stream to server...</div>
                     `,
                     allowOutsideClick: false, showConfirmButton: false
                 });
@@ -794,12 +799,12 @@
                         const bar = document.getElementById('uploadProgressBar');
                         const statusText = document.getElementById('uploadStatusText');
                         if (bar) { bar.style.width = pct + '%'; bar.textContent = pct + '%'; }
-                        if (statusText) { statusText.textContent = pct < 100 ? `Uploading ${pct}%` : 'Ingesting records into PostgreSQL...'; }
+                        if (statusText) { statusText.textContent = pct < 100 ? `Uploading ${pct}%` : 'Processing database transactions...'; }
                     }
                 };
                 xhr.onload = function() {
                     if (xhr.status >= 200 && xhr.status < 300) {
-                        Swal.fire({ icon: 'success', title: 'Import Successful', text: 'Logistics data successfully updated. Refreshing command center.', timer: 2200, showConfirmButton: false })
+                        Swal.fire({ icon: 'success', title: 'Import Successful', text: 'Logistics records updated successfully. Refreshing command suite.', timer: 2200, showConfirmButton: false })
                             .then(() => window.location.reload());
                     } else {
                         let msg = 'File import failed.';
@@ -807,12 +812,11 @@
                         Swal.fire({ icon: 'error', title: 'Import Failed', text: msg });
                     }
                 };
-                xhr.onerror = function() { Swal.fire({ icon: 'error', title: 'Network Error', text: 'Could not connect to the backend server.' }); };
+                xhr.onerror = function() { Swal.fire({ icon: 'error', title: 'Network Error', text: 'Could not connect to backend server.' }); };
                 xhr.send(formData);
             });
         }
 
-        // Initial Load & Polling Interval
         loadDashboard();
         setInterval(loadDashboard, 30000);
     });
