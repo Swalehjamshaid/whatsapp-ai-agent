@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 10.0 - ENTERPRISE SUPPLY CHAIN INTELLIGENCE PLATFORM (SEQUENTIAL ENGINE)
+# VERSION: 11.0 - ENTERPRISE SUPPLY CHAIN INTELLIGENCE PLATFORM (DISTANCE-TIERED PGI/POD ENGINE)
 # ============================================================
 
 import hashlib
@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 
 from app.database import engine
 from app.models import DeliveryReport
+from app.services.geo_service import GeoService
 
 # Optional enterprise libraries
 try:
@@ -25,19 +26,6 @@ try:
     NUMPY_AVAILABLE = True
 except ImportError:
     NUMPY_AVAILABLE = False
-
-try:
-    from scipy import stats
-    from scipy.signal import savgol_filter
-    SCIPY_AVAILABLE = True
-except ImportError:
-    SCIPY_AVAILABLE = False
-
-try:
-    import networkx as nx
-    NETWORKX_AVAILABLE = True
-except ImportError:
-    NETWORKX_AVAILABLE = False
 
 try:
     import plotly.graph_objects as go
@@ -127,7 +115,7 @@ def cached(ttl=5):
     return decorator
 
 # ============================================================
-# 1. DATABASE REPOSITORY (Strictly Sequential to Prevent Cursor Closures)
+# 1. DATABASE REPOSITORY (Sequential Execution & Distance-Tiered Analytics)
 # ============================================================
 
 class DashboardRepository:
@@ -230,14 +218,64 @@ class DashboardRepository:
                 COALESCE(SUM(dn_amount), 0) AS revenue,
                 COALESCE(SUM(dn_qty), 0) AS units,
                 COUNT(DISTINCT dn_no) AS delivery_notes,
+                COALESCE(AVG(shipping_distance_km), 0) AS avg_distance,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_completed,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NULL THEN dn_no END) AS pending_pgi,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN dn_no END) AS pending_delivery,
+                
+                -- Distance-tiered PGI evaluation
+                COUNT(DISTINCT CASE 
+                    WHEN good_issue_date IS NOT NULL AND (good_issue_date::date - dn_create_date::date) <= 
+                        CASE 
+                            WHEN shipping_distance_km <= 100 THEN 1
+                            WHEN shipping_distance_km <= 250 THEN 1
+                            WHEN shipping_distance_km <= 450 THEN 2
+                            WHEN shipping_distance_km <= 700 THEN 3
+                            WHEN shipping_distance_km <= 900 THEN 4
+                            ELSE 5
+                        END 
+                    THEN dn_no END) AS on_time_pgis,
+                COUNT(DISTINCT CASE 
+                    WHEN good_issue_date IS NOT NULL AND (good_issue_date::date - dn_create_date::date) > 
+                        CASE 
+                            WHEN shipping_distance_km <= 100 THEN 1
+                            WHEN shipping_distance_km <= 250 THEN 1
+                            WHEN shipping_distance_km <= 450 THEN 2
+                            WHEN shipping_distance_km <= 700 THEN 3
+                            WHEN shipping_distance_km <= 900 THEN 4
+                            ELSE 5
+                        END 
+                    THEN dn_no END) AS late_pgis,
+
+                -- Distance-tiered POD evaluation
+                COUNT(DISTINCT CASE 
+                    WHEN pod_date IS NOT NULL AND (pod_date::date - good_issue_date::date) <= 
+                        CASE 
+                            WHEN shipping_distance_km <= 100 THEN 1
+                            WHEN shipping_distance_km <= 250 THEN 2
+                            WHEN shipping_distance_km <= 450 THEN 3
+                            WHEN shipping_distance_km <= 700 THEN 4
+                            WHEN shipping_distance_km <= 900 THEN 5
+                            ELSE 6
+                        END 
+                    THEN dn_no END) AS on_time_pods,
+                COUNT(DISTINCT CASE 
+                    WHEN pod_date IS NOT NULL AND (pod_date::date - good_issue_date::date) > 
+                        CASE 
+                            WHEN shipping_distance_km <= 100 THEN 1
+                            WHEN shipping_distance_km <= 250 THEN 2
+                            WHEN shipping_distance_km <= 450 THEN 3
+                            WHEN shipping_distance_km <= 700 THEN 4
+                            WHEN shipping_distance_km <= 900 THEN 5
+                            ELSE 6
+                        END 
+                    THEN dn_no END) AS late_pods,
+
                 COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_cycle_days,
-                COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND good_issue_date IS NOT NULL THEN (good_issue_date::date - dn_create_date::date) END), 0) AS avg_delivery_days,
-                COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_pod_days
+                COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND good_issue_date IS NOT NULL THEN (good_issue_date::date - dn_create_date::date) END), 0) AS actual_pgi_days,
+                COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS actual_pod_days
             FROM delivery_reports
             WHERE warehouse IS NOT NULL
             GROUP BY warehouse
@@ -414,7 +452,7 @@ class BusinessRuleEngine:
         }
 
 # ============================================================
-# 3. ANALYTICS ENGINE
+# 3. ANALYTICS ENGINE (Distance-Tiered Warehouse & Cycle Metrics)
 # ============================================================
 
 class AnalyticsEngine:
@@ -451,59 +489,80 @@ class AnalyticsEngine:
         result = []
         for row in rows:
             dn = _safe_int(row.delivery_notes)
-            pgi = _safe_int(row.pgi_completed)
+            revenue = _safe_float(row.revenue)
+            units = _safe_int(row.units)
+            avg_distance = _safe_float(row.avg_distance)
+            
+            on_time_pgis = _safe_int(row.on_time_pgis)
+            late_pgis = _safe_int(row.late_pgis)
+            pgi_rate = _pct(on_time_pgis, dn)
+            
             delivered = _safe_int(row.delivered_dns)
-            pod = _safe_int(row.pod_completed)
-            pgi_rate = _pct(pgi, dn)
+            on_time_pods = _safe_int(row.on_time_pods)
+            late_pods = _safe_int(row.late_pods)
+            pod_rate = _pct(on_time_pods, delivered if delivered else 1)
+            
             delivery_rate = _pct(delivered, dn)
-            pod_rate = _pct(pod, delivered if delivered else 1)
             health = round((pgi_rate * 0.35) + (delivery_rate * 0.35) + (pod_rate * 0.30), 2)
+            
             avg_cycle = _safe_float(row.avg_cycle_days)
-            avg_delivery = _safe_float(row.avg_delivery_days)
-            avg_pod = _safe_float(row.avg_pod_days)
+            actual_pgi_days = _safe_float(row.actual_pgi_days)
+            actual_pod_days = _safe_float(row.actual_pod_days)
+            standard_pgi_days = GeoService.get_standard_pgi_days(avg_distance)
+            standard_pod_days = GeoService.get_standard_pod_days(avg_distance)
+            
+            pgi_delay_pct = _pct(late_pgis, dn)
+            pod_delay_pct = _pct(late_pods, delivered if delivered else 1)
+            
             pending_pgi = _safe_int(row.pending_pgi)
             pending_delivery = _safe_int(row.pending_delivery)
             
-            # Grades according to exact prompt rules
-            if health >= 95: grade = "Outstanding"
-            elif health >= 90: grade = "Excellent"
-            elif health >= 85: grade = "Good"
-            elif health >= 80: grade = "Needs Improvement"
+            # PGI Achievement Standards
+            if pgi_rate >= 98: grade = "Outstanding"
+            elif pgi_rate >= 95: grade = "Excellent"
+            elif pgi_rate >= 90: grade = "Good"
+            elif pgi_rate >= 85: grade = "Needs Improvement"
             else: grade = "Critical"
 
-            # Risk levels according to exact prompt rules
             if health >= 95: risk = "Very Low Risk"
             elif health >= 90: risk = "Low Risk"
             elif health >= 85: risk = "Medium Risk"
             elif health >= 80: risk = "High Risk"
             else: risk = "Critical Risk"
             
-            # Recommendation logic
-            rec = "Maintain dispatch standards."
-            if health < 80:
-                rec = "Critical warehouse delay. Immediate management intervention required."
+            # AI Recommendation Logic based on distance standards & POD thresholds
+            rec = "Warehouse operating efficiently."
+            if pgi_rate < 95:
+                rec = "Review warehouse dispatch process and increase dispatch planning."
+            elif actual_pgi_days > standard_pgi_days:
+                rec = "Increase warehouse manpower to match distance-tiered PGI standards."
+            elif pgi_delay_pct > 10:
+                rec = "Escalate to Warehouse Manager regarding late PGI occurrences."
             elif pod_rate < 85:
-                rec = "Improve POD follow-up and document collection."
-            elif pgi_rate < 90:
-                rec = "Review PGI process and increase dispatch planning."
-            else:
-                rec = "Warehouse operating efficiently."
+                rec = "Critical POD delay. Audit TMS documentation and dealer sign/stamps."
 
             result.append({
                 "warehouse_name": row.warehouse_name,
-                "revenue": _safe_float(row.revenue),
-                "units": _safe_int(row.units),
+                "revenue": revenue,
+                "units": units,
                 "delivery_notes": dn,
+                "average_distance": round(avg_distance, 1),
+                "standard_pgi_days": standard_pgi_days,
+                "standard_pod_days": standard_pod_days,
+                "actual_pgi_days": round(actual_pgi_days, 1),
+                "actual_pod_days": round(actual_pod_days, 1),
+                "average_logistics_cycle": round(avg_cycle, 1),
                 "pgi_achievement_rate": pgi_rate,
                 "delivery_achievement_rate": delivery_rate,
                 "pod_completion_rate": pod_rate,
-                "average_delivery_days": avg_delivery,
-                "average_pod_days": avg_pod,
-                "average_logistics_cycle": avg_cycle,
+                "on_time_pgis": on_time_pgis,
+                "late_pgis": late_pgis,
+                "pgi_delay_percentage": pgi_delay_pct,
+                "on_time_pods": on_time_pods,
+                "late_pods": late_pods,
+                "pod_delay_percentage": pod_delay_pct,
                 "pending_pgi": pending_pgi,
                 "pending_delivery": pending_delivery,
-                "pending_pod": 0,
-                "late_deliveries": 0,
                 "health_score": health,
                 "performance_grade": grade,
                 "risk_level": risk,
@@ -644,6 +703,7 @@ class AnalyticsEngine:
     def process_network(rows: List[Any]) -> Dict[str, Any]:
         if not NETWORKX_AVAILABLE:
             return {"nodes": [], "edges": []}
+        import networkx as nx
         G = nx.Graph()
         for row in rows:
             w, c, d = row.warehouse, row.ship_to_city, row.dealer_code
@@ -670,12 +730,13 @@ class GraphEngine:
         delivery = [w["delivery_achievement_rate"] for w in warehouses]
         pod = [w["pod_completion_rate"] for w in warehouses]
         avg_cycle = [w["average_logistics_cycle"] for w in warehouses]
+        pgi_ach = [w["pgi_achievement_rate"] for w in warehouses]
         
         charts = {}
         fig = px.bar(x=revenues, y=names, orientation='h', title="Warehouse Revenue Ranking")
         charts["revenue_ranking"] = fig.to_json()
-        fig2 = px.bar(x=names, y=delivery, title="Warehouse Delivery Achievement")
-        charts["delivery_achievement"] = fig2.to_json()
+        fig2 = px.bar(x=names, y=pgi_ach, title="Warehouse Distance-Tiered PGI Achievement")
+        charts["pgi_achievement"] = fig2.to_json()
         fig3 = px.bar(x=names, y=pod, title="Warehouse POD Achievement")
         charts["pod_achievement"] = fig3.to_json()
         fig4 = px.bar(x=names, y=avg_cycle, title="Warehouse Average Logistics Cycle (days)")
@@ -732,6 +793,14 @@ class RecommendationEngine:
                     "priority": "Critical" if wh["pod_completion_rate"] < 75 else "High",
                     "risk": "High" if wh["pod_completion_rate"] < 75 else "Medium"
                 })
+            if wh.get("pgi_achievement_rate", 100) < 90:
+                recs.append({
+                    "entity": wh["warehouse_name"],
+                    "type": "warehouse_pgi",
+                    "recommendation": f"{wh['warehouse_name']} PGI achievement {wh['pgi_achievement_rate']:.1f}% below distance standard. Review dispatch planning.",
+                    "priority": "High",
+                    "risk": "Medium"
+                })
         return recs
 
 class AlertEngine:
@@ -770,7 +839,7 @@ class ResponseBuilder:
             "delivery_notes": {"value": summary.get("total_delivery_notes", 0), "target": 5000,
                                "icon": "fa-file-invoice", "color": "info", "format": "number", "label": "Total Delivery Notes"},
             "pgi_achievement": {"value": summary.get("pgi_achievement_rate", 0), "target": 100,
-                                "icon": "fa-warehouse", "color": "success", "format": "percentage", "label": "PGI Achievement %"},
+                                "icon": "fa-warehouse", "color": "success", "format": "percentage", "label": "Distance PGI Achievement %"},
             "delivery_achievement": {"value": summary.get("delivery_achievement_rate", 0), "target": 95,
                                    "icon": "fa-truck", "color": "warning", "format": "percentage", "label": "Delivery Achievement %"},
             "pod_achievement": {"value": summary.get("pod_completion_rate", 0), "target": 95,
@@ -824,7 +893,7 @@ class ResponseBuilder:
 class DashboardService:
     def __init__(self):
         self._repo = DashboardRepository()
-        logger.info("🚀 DashboardService v10.0 initialized with Sequential Execution Architecture")
+        logger.info("🚀 DashboardService v11.0 initialized with Distance-Tiered PGI/POD Architecture")
 
     @cached(ttl=5)
     async def get_dashboard_data(
@@ -837,7 +906,7 @@ class DashboardService:
         filters = filters or {}
         logger.info(f"📡 Master Dashboard API called with filters: {filters}")
 
-        # Sequential DB execution to guarantee safety against psycopg2 cursor closing errors
+        # Sequential DB execution to guarantee safety against cursor closing errors
         raw_sum = self._repo.fetch_raw_summary()
         raw_pipe = self._repo.fetch_raw_pipeline()
         raw_div = self._repo.fetch_raw_divisions()
@@ -871,7 +940,7 @@ class DashboardService:
         city_charts = GraphEngine.get_city_charts(city)
 
         metadata = {
-            "application_version": "10.0.0",
+            "application_version": "11.0.0",
             "database_version": "PostgreSQL",
             "postgresql_status": "connected",
             "record_count": record_count,
