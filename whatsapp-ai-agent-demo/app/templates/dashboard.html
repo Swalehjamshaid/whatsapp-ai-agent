@@ -20,6 +20,252 @@
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
   <!-- Custom CSS -->
   <link href="/static/css/dashboard.css" rel="stylesheet" />
+
+  <!-- ============================================================
+  INTERNAL STYLE – VIBRANT ENHANCEMENTS (No functionality changes)
+  ============================================================ -->
+  <style>
+    /* ---- Global background & animations ---- */
+    body {
+      background: linear-gradient(135deg, #f0f4ff 0%, #fdf2f8 100%);
+      background-attachment: fixed;
+      min-height: 100vh;
+    }
+    [data-theme="dark"] body {
+      background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+    }
+
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .card, .kpi-card, .pipeline-stage, .empty-state {
+      animation: fadeInUp 0.5s ease both;
+    }
+
+    /* ---- Cards with glass effect & gradient header ---- */
+    .card {
+      background: rgba(255,255,255,0.7);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 16px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.06);
+      transition: transform 0.2s ease, box-shadow 0.3s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    .card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 16px 48px rgba(0,0,0,0.10);
+    }
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 4px;
+      background: linear-gradient(90deg, #0a6bff, #7c3aed, #06b6d4, #10b981);
+      border-radius: 16px 16px 0 0;
+      opacity: 0.7;
+    }
+    [data-theme="dark"] .card {
+      background: rgba(30,41,59,0.7);
+      border-color: rgba(255,255,255,0.05);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    }
+
+    .card-header {
+      background: linear-gradient(135deg, #0a6bff, #7c3aed) !important;
+      border: none !important;
+      color: white !important;
+      padding: 0.8rem 1.25rem !important;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      border-radius: 16px 16px 0 0 !important;
+    }
+    .card-header i {
+      color: white !important;
+      margin-right: 8px;
+    }
+
+    /* ---- Top Bar ---- */
+    .topbar {
+      background: rgba(255,255,255,0.6);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 16px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.06);
+      padding: 0.6rem 1.5rem;
+    }
+    [data-theme="dark"] .topbar {
+      background: rgba(15,23,42,0.7);
+      border-color: rgba(255,255,255,0.05);
+    }
+
+    /* ---- Sidebar ---- */
+    .sidebar {
+      background: rgba(255,255,255,0.85);
+      backdrop-filter: blur(8px);
+      border-right: 1px solid rgba(0,0,0,0.04);
+    }
+    [data-theme="dark"] .sidebar {
+      background: rgba(15,23,42,0.9);
+      border-right-color: rgba(255,255,255,0.04);
+    }
+    .sidebar-nav .nav-link.active {
+      background: linear-gradient(135deg, #0a6bff, #7c3aed);
+      color: white !important;
+      box-shadow: 0 4px 16px rgba(10,107,255,0.3);
+    }
+
+    /* ---- KPI Cards ---- */
+    .kpi-card {
+      background: rgba(255,255,255,0.8);
+      backdrop-filter: blur(4px);
+      border: 1px solid rgba(255,255,255,0.3);
+      border-radius: 16px;
+      padding: 1.2rem 1.5rem;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.04);
+      transition: all 0.2s ease;
+      border-left: 6px solid #0a6bff;
+    }
+    .kpi-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.08);
+    }
+    .kpi-card .kpi-value {
+      font-size: 2rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #0a6bff, #7c3aed);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    [data-theme="dark"] .kpi-card {
+      background: rgba(30,41,59,0.7);
+      border-color: rgba(255,255,255,0.05);
+    }
+    [data-theme="dark"] .kpi-card .kpi-value {
+      background: linear-gradient(135deg, #3b82f6, #a78bfa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    /* ---- Upload & Search buttons ---- */
+    .btn-upload, .btn-search {
+      background: linear-gradient(135deg, #0a6bff, #7c3aed);
+      border: none;
+      padding: 0.5rem 1.6rem;
+      border-radius: 10px;
+      font-weight: 600;
+      color: white;
+      transition: all 0.25s ease;
+    }
+    .btn-upload:hover, .btn-search:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(10,107,255,0.35);
+      color: white;
+    }
+
+    /* ---- Empty states ---- */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2.5rem 1.5rem;
+      color: #94a3b8;
+      text-align: center;
+      background: rgba(255,255,255,0.3);
+      border-radius: 12px;
+      border: 2px dashed #e2e8f0;
+      transition: all 0.3s ease;
+    }
+    .empty-state i {
+      font-size: 2.5rem;
+      margin-bottom: 0.75rem;
+      color: #cbd5e1;
+      transition: color 0.3s ease;
+    }
+    .empty-state:hover i {
+      color: #0a6bff;
+    }
+    .empty-state p {
+      margin: 0;
+      font-size: 0.95rem;
+      font-weight: 500;
+    }
+    .empty-state small {
+      font-size: 0.8rem;
+      color: #94a3b8;
+    }
+    [data-theme="dark"] .empty-state {
+      background: rgba(30,41,59,0.3);
+      border-color: #334155;
+    }
+    [data-theme="dark"] .empty-state i {
+      color: #475569;
+    }
+    [data-theme="dark"] .empty-state:hover i {
+      color: #3b82f6;
+    }
+
+    /* ---- Pipeline stages ---- */
+    .pipeline-stage {
+      background: rgba(255,255,255,0.6);
+      backdrop-filter: blur(4px);
+      border: 1px solid rgba(255,255,255,0.3);
+      border-radius: 12px;
+      padding: 0.6rem 1.2rem;
+      min-width: 130px;
+      transition: all 0.2s ease;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+    }
+    .pipeline-stage:hover {
+      transform: scale(1.03);
+      box-shadow: 0 8px 24px rgba(10,107,255,0.12);
+    }
+    .pipeline-arrow {
+      font-size: 1.8rem;
+      color: #94a3b8;
+      font-weight: 300;
+    }
+    [data-theme="dark"] .pipeline-stage {
+      background: rgba(30,41,59,0.5);
+      border-color: #334155;
+    }
+
+    /* ---- Upload highlight ---- */
+    .upload-highlight {
+      border: 2px solid #0a6bff;
+      background: rgba(10,107,255,0.05) !important;
+      border-radius: 16px;
+    }
+    [data-theme="dark"] .upload-highlight {
+      background: rgba(10,107,255,0.08) !important;
+      border-color: #3b82f6;
+    }
+
+    /* ---- Footer ---- */
+    .footer-bar {
+      background: rgba(255,255,255,0.5);
+      backdrop-filter: blur(4px);
+      border-radius: 12px;
+      padding: 0.8rem 1.5rem;
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+    [data-theme="dark"] .footer-bar {
+      background: rgba(15,23,42,0.5);
+      border-color: rgba(255,255,255,0.05);
+    }
+
+    /* ---- Responsive tweaks ---- */
+    @media (max-width: 575.98px) {
+      .kpi-card .kpi-value { font-size: 1.5rem; }
+      .pipeline-stage { min-width: 80px; padding: 0.4rem 0.8rem; }
+    }
+  </style>
 </head>
 <body>
 
@@ -81,7 +327,7 @@
     </div>
 
     <!-- ============================================================
-    KPI CARDS (ID: #kpiCards) – fully preserved
+    KPI CARDS (ID: #kpiCards)
     ============================================================ -->
     <section id="kpiCards" class="row g-3 mb-4"></section>
 
@@ -93,7 +339,11 @@
         <div class="card">
           <div class="card-header"><i class="fas fa-route"></i> Executive Logistics Pipeline</div>
           <div class="card-body" id="pipelineContainer">
-            <p class="text-muted text-center">No pipeline data available.</p>
+            <div class="empty-state">
+              <i class="fas fa-sitemap"></i>
+              <p>No pipeline data available</p>
+              <small>Upload data to see the logistics flow</small>
+            </div>
           </div>
         </div>
       </div>
@@ -107,7 +357,11 @@
         <div class="card">
           <div class="card-header"><i class="fas fa-layer-group"></i> Division Dashboard</div>
           <div class="card-body" id="divisionContainer">
-            <p class="text-muted text-center">No division data available.</p>
+            <div class="empty-state">
+              <i class="fas fa-chart-pie"></i>
+              <p>No division data available</p>
+              <small>Upload data to see division performance</small>
+            </div>
           </div>
         </div>
       </div>
@@ -122,7 +376,10 @@
           <div class="card-header"><i class="fas fa-warehouse"></i> Warehouse Performance</div>
           <div class="card-body">
             <div id="warehouseGrid" class="ag-theme-alpine" style="height:400px;"></div>
-            <p class="text-muted text-center small">Upload data to see warehouse performance.</p>
+            <div class="empty-state" style="margin-top:0.5rem;">
+              <i class="fas fa-building"></i>
+              <p>Upload data to see warehouse performance</p>
+            </div>
           </div>
         </div>
       </div>
@@ -130,7 +387,11 @@
         <div class="card">
           <div class="card-header"><i class="fas fa-chart-bar"></i> Warehouse Charts</div>
           <div class="card-body" id="warehouseCharts">
-            <p class="text-muted text-center">No charts available.</p>
+            <div class="empty-state">
+              <i class="fas fa-chart-simple"></i>
+              <p>No charts available</p>
+              <small>Upload data to generate visualizations</small>
+            </div>
           </div>
         </div>
       </div>
@@ -145,7 +406,10 @@
           <div class="card-header"><i class="fas fa-users"></i> Dealer Performance</div>
           <div class="card-body">
             <div id="dealerGrid" class="ag-theme-alpine" style="height:400px;"></div>
-            <p class="text-muted text-center small">Upload data to see dealer performance.</p>
+            <div class="empty-state" style="margin-top:0.5rem;">
+              <i class="fas fa-user-tie"></i>
+              <p>Upload data to see dealer performance</p>
+            </div>
           </div>
         </div>
       </div>
@@ -154,7 +418,10 @@
           <div class="card-header"><i class="fas fa-box"></i> Product Performance</div>
           <div class="card-body">
             <div id="productGrid" class="ag-theme-alpine" style="height:400px;"></div>
-            <p class="text-muted text-center small">Upload data to see product performance.</p>
+            <div class="empty-state" style="margin-top:0.5rem;">
+              <i class="fas fa-cube"></i>
+              <p>Upload data to see product performance</p>
+            </div>
           </div>
         </div>
       </div>
@@ -169,7 +436,10 @@
           <div class="card-header"><i class="fas fa-city"></i> City Performance</div>
           <div class="card-body">
             <div id="cityGrid" class="ag-theme-alpine" style="height:400px;"></div>
-            <p class="text-muted text-center small">Upload data to see city performance.</p>
+            <div class="empty-state" style="margin-top:0.5rem;">
+              <i class="fas fa-location-dot"></i>
+              <p>Upload data to see city performance</p>
+            </div>
           </div>
         </div>
       </div>
@@ -177,7 +447,11 @@
         <div class="card">
           <div class="card-header"><i class="fas fa-project-diagram"></i> Supply Chain Network</div>
           <div class="card-body" id="networkContainer">
-            <p class="text-muted text-center">No network data available.</p>
+            <div class="empty-state">
+              <i class="fas fa-network-wired"></i>
+              <p>No network data available</p>
+              <small>Upload data to visualize the supply chain</small>
+            </div>
           </div>
         </div>
       </div>
@@ -191,7 +465,11 @@
         <div class="card">
           <div class="card-header"><i class="fas fa-chart-line"></i> Monthly Trends</div>
           <div class="card-body" id="monthlyTrends">
-            <p class="text-muted text-center">No monthly data.</p>
+            <div class="empty-state">
+              <i class="fas fa-calendar-alt"></i>
+              <p>No monthly data</p>
+              <small>Upload data to see monthly trends</small>
+            </div>
           </div>
         </div>
       </div>
@@ -199,7 +477,11 @@
         <div class="card">
           <div class="card-header"><i class="fas fa-chart-area"></i> Daily Trends</div>
           <div class="card-body" id="dailyTrends">
-            <p class="text-muted text-center">No daily data.</p>
+            <div class="empty-state">
+              <i class="fas fa-clock"></i>
+              <p>No daily data</p>
+              <small>Upload data to see daily trends</small>
+            </div>
           </div>
         </div>
       </div>
@@ -213,7 +495,11 @@
         <div class="card">
           <div class="card-header"><i class="fas fa-exclamation-triangle"></i> Executive Alerts</div>
           <div class="card-body" id="alertsContainer">
-            <p class="text-muted text-center">No alerts.</p>
+            <div class="empty-state">
+              <i class="fas fa-bell-slash"></i>
+              <p>No alerts</p>
+              <small>All systems nominal</small>
+            </div>
           </div>
         </div>
       </div>
@@ -221,7 +507,11 @@
         <div class="card">
           <div class="card-header"><i class="fas fa-robot"></i> AI Recommendations</div>
           <div class="card-body" id="recommendationsContainer">
-            <p class="text-muted text-center">No recommendations yet.</p>
+            <div class="empty-state">
+              <i class="fas fa-lightbulb"></i>
+              <p>No recommendations yet</p>
+              <small>AI insights will appear after data upload</small>
+            </div>
           </div>
         </div>
       </div>
@@ -295,7 +585,10 @@
           <div class="card-header"><i class="fas fa-history"></i> Upload History</div>
           <div class="card-body">
             <div id="uploadsGrid" class="ag-theme-alpine" style="height:220px;"></div>
-            <div class="text-muted small text-center mt-2" id="uploadHistoryPlaceholder">Upload history will appear after your first import.</div>
+            <div id="uploadHistoryPlaceholder" class="empty-state" style="margin-top:0.5rem;">
+              <i class="fas fa-upload"></i>
+              <p>Upload history will appear after your first import</p>
+            </div>
           </div>
         </div>
       </div>
