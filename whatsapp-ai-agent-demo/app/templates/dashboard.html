@@ -1,6 +1,6 @@
 <!-- ============================================================
      FILE: app/templates/dashboard.html
-     VERSION: 9.1 - VIBRANT ENTERPRISE UI (FULLY INTEGRATED)
+     VERSION: 9.2 – SELF‑CONTAINED VIBRANT UI (NO EXTERNAL DEPS)
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
@@ -9,75 +9,195 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Logistics IQ – Enterprise Intelligence Platform</title>
 
-  <!-- Bootstrap 5 -->
+  <!-- Bootstrap 5 (CDN) -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
-  <!-- Font Awesome 6 -->
+  <!-- Font Awesome 6 (CDN) -->
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet" />
-  <!-- AG Grid -->
+  <!-- AG Grid (CDN) -->
   <link href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css" rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-theme-alpine.css" rel="stylesheet" />
-  <!-- Plotly -->
+  <!-- Plotly (CDN) -->
   <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist@2.26.0/plotly.min.js"></script>
-  <!-- AG Grid JS -->
+  <!-- AG Grid JS (CDN) -->
   <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
-  <!-- SweetAlert2 -->
+  <!-- SweetAlert2 (CDN) -->
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-  <!-- Custom CSS -->
-  <link href="/static/css/dashboard.css" rel="stylesheet" />
 
   <!-- ============================================================
-  INTERNAL STYLE – VIBRANT ENHANCEMENTS (No functionality changes)
+  ALL STYLES (Inline – replaces external dashboard.css)
   ============================================================ -->
   <style>
-    /* ---- Global background & animations ---- */
+    /* ---- Variables & Design Tokens ---- */
+    :root {
+      --color-primary: #0a6bff;
+      --color-primary-dark: #0050d0;
+      --color-primary-light: #e6f0ff;
+      --color-primary-gradient: linear-gradient(135deg, #0a6bff, #7c3aed);
+      --color-success: #10b981;
+      --color-warning: #f59e0b;
+      --color-danger: #ef4444;
+      --color-info: #06b6d4;
+      --color-gray-50: #f8fafc;
+      --color-gray-100: #f1f5f9;
+      --color-gray-200: #e2e8f0;
+      --color-gray-300: #cbd5e1;
+      --color-gray-400: #94a3b8;
+      --color-gray-500: #64748b;
+      --color-gray-600: #475569;
+      --color-gray-700: #334155;
+      --color-gray-800: #1e293b;
+      --color-gray-900: #0f172a;
+      --font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      --radius-lg: 16px;
+      --radius-md: 10px;
+      --shadow-sm: 0 2px 8px rgba(0,0,0,0.06);
+      --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
+      --shadow-lg: 0 8px 32px rgba(0,0,0,0.12);
+      --transition-base: 0.25s ease;
+    }
+
+    /* Dark Mode Overrides */
+    [data-theme="dark"] {
+      --color-gray-50: #0f172a;
+      --color-gray-100: #1e293b;
+      --color-gray-200: #334155;
+      --color-gray-300: #475569;
+      --color-gray-400: #64748b;
+      --color-gray-500: #94a3b8;
+      --color-gray-600: #cbd5e1;
+      --color-gray-700: #e2e8f0;
+      --color-gray-800: #f1f5f9;
+      --color-gray-900: #f8fafc;
+      --color-primary-light: #1e293b;
+    }
+
     body {
+      font-family: var(--font-family);
       background: linear-gradient(135deg, #f0f4ff 0%, #fdf2f8 100%);
       background-attachment: fixed;
+      color: var(--color-gray-800);
       min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
     }
     [data-theme="dark"] body {
       background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+      color: var(--color-gray-800);
     }
 
-    @keyframes fadeInUp {
-      from { opacity: 0; transform: translateY(20px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-    .card, .kpi-card, .pipeline-stage, .empty-state {
-      animation: fadeInUp 0.5s ease both;
+    /* ---- Layout ---- */
+    .container-fluid { padding: 0; }
+    .main-content {
+      margin-left: 260px;
+      padding: 1.5rem 2rem;
+      min-height: 100vh;
+      transition: margin var(--transition-base);
     }
 
-    /* ---- Cards with glass effect & gradient header ---- */
+    /* ---- Sidebar ---- */
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 260px;
+      height: 100vh;
+      background: rgba(255,255,255,0.85);
+      backdrop-filter: blur(8px);
+      border-right: 1px solid rgba(0,0,0,0.04);
+      padding: 1.25rem 0;
+      overflow-y: auto;
+      z-index: 1050;
+      transition: transform var(--transition-base);
+      display: flex;
+      flex-direction: column;
+    }
+    [data-theme="dark"] .sidebar {
+      background: rgba(15,23,42,0.9);
+      border-right-color: rgba(255,255,255,0.04);
+    }
+
+    .sidebar-brand { padding: 0 1.5rem 1.25rem; border-bottom: 1px solid var(--color-gray-200); }
+    .sidebar-brand h5 { font-size: 1.25rem; font-weight: 700; color: var(--color-gray-900); }
+    .sidebar-brand h5 i { color: var(--color-primary); margin-right: 0.5rem; }
+    .sidebar-brand small { font-size: 0.75rem; color: var(--color-gray-500); }
+
+    .sidebar-nav { flex: 1; padding: 0 0.75rem; }
+    .sidebar-nav .nav-link {
+      display: flex; align-items: center;
+      padding: 0.6rem 1rem;
+      border-radius: var(--radius-md);
+      color: var(--color-gray-600);
+      font-weight: 500;
+      font-size: 0.875rem;
+      transition: all 0.15s ease;
+      text-decoration: none;
+      gap: 0.5rem;
+    }
+    .sidebar-nav .nav-link i { width: 20px; text-align: center; }
+    .sidebar-nav .nav-link:hover { background: var(--color-primary-light); color: var(--color-primary); }
+    .sidebar-nav .nav-link.active {
+      background: linear-gradient(135deg, #0a6bff, #7c3aed);
+      color: white;
+      box-shadow: 0 4px 16px rgba(10,107,255,0.3);
+    }
+    .sidebar-footer {
+      padding: 0.75rem 1.5rem;
+      border-top: 1px solid var(--color-gray-200);
+      font-size: 0.75rem;
+      color: var(--color-gray-500);
+      text-align: center;
+    }
+
+    /* ---- Top Bar ---- */
+    .topbar {
+      background: rgba(255,255,255,0.6);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: var(--radius-lg);
+      padding: 0.6rem 1.5rem;
+      box-shadow: var(--shadow-sm);
+      margin-bottom: 1.5rem;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+    }
+    [data-theme="dark"] .topbar { background: rgba(15,23,42,0.7); border-color: rgba(255,255,255,0.05); }
+
+    .topbar-left { display: flex; align-items: center; gap: 1rem; }
+    .topbar-left .hamburger { display: none; background: none; border: none; font-size: 1.25rem; color: var(--color-gray-700); cursor: pointer; }
+    .topbar-left h4 { font-size: 1.125rem; font-weight: 600; margin: 0; color: var(--color-gray-900); }
+    .topbar-left h4 i { color: var(--color-primary); margin-right: 0.5rem; }
+
+    .topbar-right { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+    .badge-date { background: var(--color-gray-100); padding: 0.2rem 0.8rem; border-radius: 9999px; font-size: 0.75rem; color: var(--color-gray-600); }
+    .badge-date i { margin-right: 0.25rem; color: var(--color-primary); }
+    .user-badge { display: flex; align-items: center; gap: 0.25rem; background: var(--color-primary-light); padding: 0.2rem 0.8rem 0.2rem 0.6rem; border-radius: 9999px; font-size: 0.875rem; color: var(--color-primary); font-weight: 500; }
+    .btn-theme { background: var(--color-gray-100); border: none; border-radius: 9999px; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; color: var(--color-gray-600); transition: all 0.15s ease; cursor: pointer; }
+    .btn-theme:hover { background: var(--color-gray-200); color: var(--color-gray-800); }
+
+    /* ---- Cards ---- */
     .card {
       background: rgba(255,255,255,0.7);
       backdrop-filter: blur(8px);
       border: 1px solid rgba(255,255,255,0.2);
-      border-radius: 16px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.06);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-sm);
       transition: transform 0.2s ease, box-shadow 0.3s ease;
       position: relative;
       overflow: hidden;
+      margin-bottom: 0;
     }
-    .card:hover {
-      transform: translateY(-4px);
-      box-shadow: 0 16px 48px rgba(0,0,0,0.10);
-    }
+    .card:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg); }
     .card::before {
       content: '';
       position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
+      top: 0; left: 0; right: 0;
       height: 4px;
       background: linear-gradient(90deg, #0a6bff, #7c3aed, #06b6d4, #10b981);
-      border-radius: 16px 16px 0 0;
+      border-radius: var(--radius-lg) var(--radius-lg) 0 0;
       opacity: 0.7;
     }
-    [data-theme="dark"] .card {
-      background: rgba(30,41,59,0.7);
-      border-color: rgba(255,255,255,0.05);
-      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-    }
+    [data-theme="dark"] .card { background: rgba(30,41,59,0.7); border-color: rgba(255,255,255,0.05); box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
 
     .card-header {
       background: linear-gradient(135deg, #0a6bff, #7c3aed) !important;
@@ -86,58 +206,22 @@
       padding: 0.8rem 1.25rem !important;
       font-weight: 600;
       letter-spacing: 0.02em;
-      border-radius: 16px 16px 0 0 !important;
+      border-radius: var(--radius-lg) var(--radius-lg) 0 0 !important;
     }
-    .card-header i {
-      color: white !important;
-      margin-right: 8px;
-    }
-
-    /* ---- Top Bar ---- */
-    .topbar {
-      background: rgba(255,255,255,0.6);
-      backdrop-filter: blur(12px);
-      border: 1px solid rgba(255,255,255,0.2);
-      border-radius: 16px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.06);
-      padding: 0.6rem 1.5rem;
-    }
-    [data-theme="dark"] .topbar {
-      background: rgba(15,23,42,0.7);
-      border-color: rgba(255,255,255,0.05);
-    }
-
-    /* ---- Sidebar ---- */
-    .sidebar {
-      background: rgba(255,255,255,0.85);
-      backdrop-filter: blur(8px);
-      border-right: 1px solid rgba(0,0,0,0.04);
-    }
-    [data-theme="dark"] .sidebar {
-      background: rgba(15,23,42,0.9);
-      border-right-color: rgba(255,255,255,0.04);
-    }
-    .sidebar-nav .nav-link.active {
-      background: linear-gradient(135deg, #0a6bff, #7c3aed);
-      color: white !important;
-      box-shadow: 0 4px 16px rgba(10,107,255,0.3);
-    }
+    .card-header i { color: white !important; margin-right: 0.5rem; }
 
     /* ---- KPI Cards ---- */
     .kpi-card {
       background: rgba(255,255,255,0.8);
       backdrop-filter: blur(4px);
       border: 1px solid rgba(255,255,255,0.3);
-      border-radius: 16px;
+      border-radius: var(--radius-lg);
       padding: 1.2rem 1.5rem;
-      box-shadow: 0 4px 16px rgba(0,0,0,0.04);
+      box-shadow: var(--shadow-sm);
       transition: all 0.2s ease;
-      border-left: 6px solid #0a6bff;
+      border-left: 6px solid var(--color-primary);
     }
-    .kpi-card:hover {
-      transform: translateY(-3px);
-      box-shadow: 0 12px 40px rgba(0,0,0,0.08);
-    }
+    .kpi-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-md); }
     .kpi-card .kpi-value {
       font-size: 2rem;
       font-weight: 700;
@@ -146,33 +230,14 @@
       -webkit-text-fill-color: transparent;
       background-clip: text;
     }
-    [data-theme="dark"] .kpi-card {
-      background: rgba(30,41,59,0.7);
-      border-color: rgba(255,255,255,0.05);
-    }
+    [data-theme="dark"] .kpi-card { background: rgba(30,41,59,0.7); border-color: rgba(255,255,255,0.05); }
     [data-theme="dark"] .kpi-card .kpi-value {
       background: linear-gradient(135deg, #3b82f6, #a78bfa);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
 
-    /* ---- Upload & Search buttons ---- */
-    .btn-upload, .btn-search {
-      background: linear-gradient(135deg, #0a6bff, #7c3aed);
-      border: none;
-      padding: 0.5rem 1.6rem;
-      border-radius: 10px;
-      font-weight: 600;
-      color: white;
-      transition: all 0.25s ease;
-    }
-    .btn-upload:hover, .btn-search:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 8px 24px rgba(10,107,255,0.35);
-      color: white;
-    }
-
-    /* ---- Empty states ---- */
+    /* ---- Empty States ---- */
     .empty-state {
       display: flex;
       flex-direction: column;
@@ -186,36 +251,15 @@
       border: 2px dashed #e2e8f0;
       transition: all 0.3s ease;
     }
-    .empty-state i {
-      font-size: 2.5rem;
-      margin-bottom: 0.75rem;
-      color: #cbd5e1;
-      transition: color 0.3s ease;
-    }
-    .empty-state:hover i {
-      color: #0a6bff;
-    }
-    .empty-state p {
-      margin: 0;
-      font-size: 0.95rem;
-      font-weight: 500;
-    }
-    .empty-state small {
-      font-size: 0.8rem;
-      color: #94a3b8;
-    }
-    [data-theme="dark"] .empty-state {
-      background: rgba(30,41,59,0.3);
-      border-color: #334155;
-    }
-    [data-theme="dark"] .empty-state i {
-      color: #475569;
-    }
-    [data-theme="dark"] .empty-state:hover i {
-      color: #3b82f6;
-    }
+    .empty-state i { font-size: 2.5rem; margin-bottom: 0.75rem; color: #cbd5e1; transition: color 0.3s ease; }
+    .empty-state:hover i { color: #0a6bff; }
+    .empty-state p { margin: 0; font-size: 0.95rem; font-weight: 500; }
+    .empty-state small { font-size: 0.8rem; color: #94a3b8; }
+    [data-theme="dark"] .empty-state { background: rgba(30,41,59,0.3); border-color: #334155; }
+    [data-theme="dark"] .empty-state i { color: #475569; }
+    [data-theme="dark"] .empty-state:hover i { color: #3b82f6; }
 
-    /* ---- Pipeline stages ---- */
+    /* ---- Pipeline ---- */
     .pipeline-stage {
       background: rgba(255,255,255,0.6);
       backdrop-filter: blur(4px);
@@ -224,32 +268,77 @@
       padding: 0.6rem 1.2rem;
       min-width: 130px;
       transition: all 0.2s ease;
-      box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+      box-shadow: var(--shadow-sm);
+      text-align: center;
     }
-    .pipeline-stage:hover {
-      transform: scale(1.03);
-      box-shadow: 0 8px 24px rgba(10,107,255,0.12);
-    }
-    .pipeline-arrow {
-      font-size: 1.8rem;
-      color: #94a3b8;
-      font-weight: 300;
-    }
-    [data-theme="dark"] .pipeline-stage {
-      background: rgba(30,41,59,0.5);
-      border-color: #334155;
-    }
+    .pipeline-stage:hover { transform: scale(1.03); box-shadow: 0 8px 24px rgba(10,107,255,0.12); }
+    .pipeline-stage .stage-label { font-size: 0.75rem; color: var(--color-gray-500); text-transform: uppercase; letter-spacing: 0.04em; }
+    .pipeline-stage .stage-value { font-size: 1.25rem; font-weight: 700; color: var(--color-gray-900); }
+    .pipeline-arrow { font-size: 1.8rem; color: #94a3b8; font-weight: 300; }
+    [data-theme="dark"] .pipeline-stage { background: rgba(30,41,59,0.5); border-color: #334155; }
 
-    /* ---- Upload highlight ---- */
+    /* ---- Upload & Search ---- */
     .upload-highlight {
       border: 2px solid #0a6bff;
       background: rgba(10,107,255,0.05) !important;
-      border-radius: 16px;
+      border-radius: var(--radius-lg);
     }
-    [data-theme="dark"] .upload-highlight {
-      background: rgba(10,107,255,0.08) !important;
-      border-color: #3b82f6;
+    [data-theme="dark"] .upload-highlight { background: rgba(10,107,255,0.08) !important; border-color: #3b82f6; }
+
+    .btn-upload, .btn-search {
+      background: linear-gradient(135deg, #0a6bff, #7c3aed);
+      border: none;
+      padding: 0.5rem 1.6rem;
+      border-radius: 10px;
+      font-weight: 600;
+      color: white;
+      transition: all 0.25s ease;
     }
+    .btn-upload:hover, .btn-search:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(10,107,255,0.35); color: white; }
+
+    .form-toolbar { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; }
+    .form-toolbar .form-group { flex: 1; min-width: 160px; }
+    .form-toolbar .form-control, .form-toolbar .form-select {
+      border: 1px solid var(--color-gray-300);
+      border-radius: var(--radius-md);
+      padding: 0.4rem 0.8rem;
+      font-size: 0.875rem;
+      transition: border-color 0.15s ease;
+      background: #fff;
+    }
+    .form-toolbar .form-control:focus, .form-toolbar .form-select:focus {
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 3px rgba(10,107,255,0.15);
+    }
+
+    /* ---- AG Grid ---- */
+    .ag-theme-alpine {
+      --ag-background-color: var(--color-gray-50);
+      --ag-foreground-color: var(--color-gray-800);
+      --ag-border-color: var(--color-gray-200);
+      --ag-header-background-color: var(--color-gray-100);
+      --ag-header-foreground-color: var(--color-gray-700);
+      --ag-row-hover-color: var(--color-primary-light);
+      --ag-font-size: 0.875rem;
+      --ag-font-family: var(--font-family);
+    }
+    .ag-theme-alpine .ag-root-wrapper { border-radius: var(--radius-md); border: 1px solid var(--color-gray-200); }
+
+    /* ---- Alerts & Recommendations ---- */
+    .alert-item { border-radius: var(--radius-md); border-left: 4px solid var(--color-warning); background: var(--color-gray-50); padding: 0.5rem 1rem; box-shadow: var(--shadow-sm); }
+    .alert-item.critical { border-left-color: var(--color-danger); }
+    .alert-item.success { border-left-color: var(--color-success); }
+    .alert-item.info { border-left-color: var(--color-info); }
+
+    .rec-card {
+      background: var(--color-gray-50);
+      border-radius: var(--radius-md);
+      padding: 1rem;
+      border-left: 4px solid var(--color-primary);
+      box-shadow: var(--shadow-sm);
+      transition: all var(--transition-base);
+    }
+    .rec-card:hover { box-shadow: var(--shadow-md); }
 
     /* ---- Footer ---- */
     .footer-bar {
@@ -258,16 +347,33 @@
       border-radius: 12px;
       padding: 0.8rem 1.5rem;
       border: 1px solid rgba(255,255,255,0.2);
+      text-align: center;
+      font-size: 0.75rem;
+      color: var(--color-gray-500);
     }
-    [data-theme="dark"] .footer-bar {
-      background: rgba(15,23,42,0.5);
-      border-color: rgba(255,255,255,0.05);
+    [data-theme="dark"] .footer-bar { background: rgba(15,23,42,0.5); border-color: rgba(255,255,255,0.05); }
+
+    /* ---- Animations ---- */
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .card, .kpi-card, .pipeline-stage, .empty-state {
+      animation: fadeInUp 0.5s ease both;
     }
 
-    /* ---- Responsive tweaks ---- */
+    /* ---- Responsive ---- */
+    @media (max-width: 991.98px) {
+      .sidebar { transform: translateX(-100%); }
+      .sidebar.open { transform: translateX(0); }
+      .main-content { margin-left: 0; padding: 1rem; }
+      .topbar-left .hamburger { display: block; }
+    }
     @media (max-width: 575.98px) {
       .kpi-card .kpi-value { font-size: 1.5rem; }
       .pipeline-stage { min-width: 80px; padding: 0.4rem 0.8rem; }
+      .form-toolbar .form-group { min-width: 100%; }
+      .form-toolbar .btn-upload, .form-toolbar .btn-search { width: 100%; justify-content: center; }
     }
   </style>
 </head>
@@ -276,7 +382,7 @@
 <div id="app" class="container-fluid px-0">
 
   <!-- ============================================================
-  SIDEBAR (structural IDs unchanged)
+  SIDEBAR
   ============================================================ -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
@@ -295,7 +401,7 @@
       <a class="nav-link" href="#"><i class="fas fa-file-alt"></i> Reports</a>
       <a class="nav-link" href="#"><i class="fas fa-server"></i> Status</a>
     </nav>
-    <div class="sidebar-footer">v9.0 · Enterprise</div>
+    <div class="sidebar-footer">v9.2 · Enterprise</div>
   </aside>
 
   <!-- ============================================================
@@ -303,23 +409,17 @@
   ============================================================ -->
   <main class="main-content" id="mainContent">
 
-    <!-- ============================================================
-    TOP BAR (IDs: #hamburgerBtn, #todayDate, #lastRefresh, #themeToggle)
-    ============================================================ -->
+    <!-- TOP BAR -->
     <div class="topbar">
       <div class="topbar-left">
-        <button class="hamburger" id="hamburgerBtn" aria-label="Toggle sidebar">
-          <i class="fas fa-bars"></i>
-        </button>
+        <button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button>
         <h4><i class="fas fa-chart-pie"></i> Executive Command Center</h4>
       </div>
       <div class="topbar-right">
         <span class="badge-date"><i class="fas fa-calendar-day"></i> <span id="todayDate"></span></span>
         <span class="badge-date"><i class="fas fa-sync-alt"></i> <span id="lastRefresh">Just now</span></span>
         <span class="user-badge"><i class="fas fa-user-circle"></i> Viewer</span>
-        <button class="btn-theme" id="themeToggle" aria-label="Toggle dark mode">
-          <i class="fas fa-moon"></i>
-        </button>
+        <button class="btn-theme" id="themeToggle"><i class="fas fa-moon"></i></button>
       </div>
     </div>
 
@@ -330,60 +430,41 @@
       <p>Upload your first Excel file to see real‑time analytics.</p>
     </div>
 
-    <!-- ============================================================
-    KPI CARDS (ID: #kpiCards)
-    ============================================================ -->
+    <!-- KPI CARDS -->
     <section id="kpiCards" class="row g-3 mb-4"></section>
 
-    <!-- ============================================================
-    PIPELINE (ID: #pipelineContainer)
-    ============================================================ -->
+    <!-- PIPELINE -->
     <section class="row g-3 mb-4">
       <div class="col-12">
         <div class="card">
           <div class="card-header"><i class="fas fa-route"></i> Executive Logistics Pipeline</div>
           <div class="card-body" id="pipelineContainer">
-            <div class="empty-state">
-              <i class="fas fa-sitemap"></i>
-              <p>No pipeline data available</p>
-              <small>Upload data to see the logistics flow</small>
-            </div>
+            <div class="empty-state"><i class="fas fa-sitemap"></i><p>No pipeline data available</p><small>Upload data to see the logistics flow</small></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ============================================================
-    DIVISION DASHBOARD (ID: #divisionContainer)
-    ============================================================ -->
+    <!-- DIVISION DASHBOARD -->
     <section class="row g-3 mb-4">
       <div class="col-12">
         <div class="card">
           <div class="card-header"><i class="fas fa-layer-group"></i> Division Dashboard</div>
           <div class="card-body" id="divisionContainer">
-            <div class="empty-state">
-              <i class="fas fa-chart-pie"></i>
-              <p>No division data available</p>
-              <small>Upload data to see division performance</small>
-            </div>
+            <div class="empty-state"><i class="fas fa-chart-pie"></i><p>No division data available</p><small>Upload data to see division performance</small></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ============================================================
-    WAREHOUSE & CHARTS (IDs: #warehouseGrid, #warehouseCharts)
-    ============================================================ -->
+    <!-- WAREHOUSE & CHARTS -->
     <section class="row g-3 mb-4">
       <div class="col-xl-6">
         <div class="card">
           <div class="card-header"><i class="fas fa-warehouse"></i> Warehouse Performance</div>
           <div class="card-body">
             <div id="warehouseGrid" class="ag-theme-alpine" style="height:400px;"></div>
-            <div class="empty-state" style="margin-top:0.5rem;">
-              <i class="fas fa-building"></i>
-              <p>Upload data to see warehouse performance</p>
-            </div>
+            <div class="empty-state" style="margin-top:0.5rem;"><i class="fas fa-building"></i><p>Upload data to see warehouse performance</p></div>
           </div>
         </div>
       </div>
@@ -391,29 +472,20 @@
         <div class="card">
           <div class="card-header"><i class="fas fa-chart-bar"></i> Warehouse Charts</div>
           <div class="card-body" id="warehouseCharts">
-            <div class="empty-state">
-              <i class="fas fa-chart-simple"></i>
-              <p>No charts available</p>
-              <small>Upload data to generate visualizations</small>
-            </div>
+            <div class="empty-state"><i class="fas fa-chart-simple"></i><p>No charts available</p><small>Upload data to generate visualizations</small></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ============================================================
-    DEALER & PRODUCT (IDs: #dealerGrid, #productGrid)
-    ============================================================ -->
+    <!-- DEALER & PRODUCT -->
     <section class="row g-3 mb-4">
       <div class="col-xl-6">
         <div class="card">
           <div class="card-header"><i class="fas fa-users"></i> Dealer Performance</div>
           <div class="card-body">
             <div id="dealerGrid" class="ag-theme-alpine" style="height:400px;"></div>
-            <div class="empty-state" style="margin-top:0.5rem;">
-              <i class="fas fa-user-tie"></i>
-              <p>Upload data to see dealer performance</p>
-            </div>
+            <div class="empty-state" style="margin-top:0.5rem;"><i class="fas fa-user-tie"></i><p>Upload data to see dealer performance</p></div>
           </div>
         </div>
       </div>
@@ -422,28 +494,20 @@
           <div class="card-header"><i class="fas fa-box"></i> Product Performance</div>
           <div class="card-body">
             <div id="productGrid" class="ag-theme-alpine" style="height:400px;"></div>
-            <div class="empty-state" style="margin-top:0.5rem;">
-              <i class="fas fa-cube"></i>
-              <p>Upload data to see product performance</p>
-            </div>
+            <div class="empty-state" style="margin-top:0.5rem;"><i class="fas fa-cube"></i><p>Upload data to see product performance</p></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ============================================================
-    CITY & NETWORK (IDs: #cityGrid, #networkContainer)
-    ============================================================ -->
+    <!-- CITY & NETWORK -->
     <section class="row g-3 mb-4">
       <div class="col-xl-6">
         <div class="card">
           <div class="card-header"><i class="fas fa-city"></i> City Performance</div>
           <div class="card-body">
             <div id="cityGrid" class="ag-theme-alpine" style="height:400px;"></div>
-            <div class="empty-state" style="margin-top:0.5rem;">
-              <i class="fas fa-location-dot"></i>
-              <p>Upload data to see city performance</p>
-            </div>
+            <div class="empty-state" style="margin-top:0.5rem;"><i class="fas fa-location-dot"></i><p>Upload data to see city performance</p></div>
           </div>
         </div>
       </div>
@@ -451,29 +515,19 @@
         <div class="card">
           <div class="card-header"><i class="fas fa-project-diagram"></i> Supply Chain Network</div>
           <div class="card-body" id="networkContainer">
-            <div class="empty-state">
-              <i class="fas fa-network-wired"></i>
-              <p>No network data available</p>
-              <small>Upload data to visualize the supply chain</small>
-            </div>
+            <div class="empty-state"><i class="fas fa-network-wired"></i><p>No network data available</p><small>Upload data to visualize the supply chain</small></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ============================================================
-    MONTHLY & DAILY TRENDS (IDs: #monthlyTrends, #dailyTrends)
-    ============================================================ -->
+    <!-- MONTHLY & DAILY TRENDS -->
     <section class="row g-3 mb-4">
       <div class="col-xl-6">
         <div class="card">
           <div class="card-header"><i class="fas fa-chart-line"></i> Monthly Trends</div>
           <div class="card-body" id="monthlyTrends">
-            <div class="empty-state">
-              <i class="fas fa-calendar-alt"></i>
-              <p>No monthly data</p>
-              <small>Upload data to see monthly trends</small>
-            </div>
+            <div class="empty-state"><i class="fas fa-calendar-alt"></i><p>No monthly data</p><small>Upload data to see monthly trends</small></div>
           </div>
         </div>
       </div>
@@ -481,29 +535,19 @@
         <div class="card">
           <div class="card-header"><i class="fas fa-chart-area"></i> Daily Trends</div>
           <div class="card-body" id="dailyTrends">
-            <div class="empty-state">
-              <i class="fas fa-clock"></i>
-              <p>No daily data</p>
-              <small>Upload data to see daily trends</small>
-            </div>
+            <div class="empty-state"><i class="fas fa-clock"></i><p>No daily data</p><small>Upload data to see daily trends</small></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ============================================================
-    ALERTS & RECOMMENDATIONS (IDs: #alertsContainer, #recommendationsContainer)
-    ============================================================ -->
+    <!-- ALERTS & RECOMMENDATIONS -->
     <section class="row g-3 mb-4">
       <div class="col-xl-6">
         <div class="card">
           <div class="card-header"><i class="fas fa-exclamation-triangle"></i> Executive Alerts</div>
           <div class="card-body" id="alertsContainer">
-            <div class="empty-state">
-              <i class="fas fa-bell-slash"></i>
-              <p>No alerts</p>
-              <small>All systems nominal</small>
-            </div>
+            <div class="empty-state"><i class="fas fa-bell-slash"></i><p>No alerts</p><small>All systems nominal</small></div>
           </div>
         </div>
       </div>
@@ -511,27 +555,18 @@
         <div class="card">
           <div class="card-header"><i class="fas fa-robot"></i> AI Recommendations</div>
           <div class="card-body" id="recommendationsContainer">
-            <div class="empty-state">
-              <i class="fas fa-lightbulb"></i>
-              <p>No recommendations yet</p>
-              <small>AI insights will appear after data upload</small>
-            </div>
+            <div class="empty-state"><i class="fas fa-lightbulb"></i><p>No recommendations yet</p><small>AI insights will appear after data upload</small></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ============================================================
-    UPLOAD & SEARCH (CRITICAL – functionality unchanged)
-    ============================================================ -->
+    <!-- UPLOAD & SEARCH -->
     <section class="row g-3 mb-4">
       <div class="col-md-6">
         <div class="card upload-highlight">
-          <div class="card-header"><i class="fas fa-upload text-primary"></i> Upload Logistics Report
-            <span class="ms-auto fs-small text-muted"><i class="fas fa-check-circle text-success"></i> Excel supported</span>
-          </div>
+          <div class="card-header"><i class="fas fa-upload text-primary"></i> Upload Logistics Report <span class="ms-auto fs-small text-muted"><i class="fas fa-check-circle text-success"></i> Excel supported</span></div>
           <div class="card-body">
-            <!-- Upload Form – ID, action, method, enctype preserved -->
             <form class="form-toolbar" id="uploadForm" action="/upload/excel" method="post" enctype="multipart/form-data">
               <div class="form-group" style="flex:2;">
                 <label class="upload-label"><i class="fas fa-file-excel"></i> Excel File (.xlsx, .xls)</label>
@@ -556,7 +591,6 @@
         <div class="card search-panel">
           <div class="card-header"><i class="fas fa-search"></i> Search Deliveries</div>
           <div class="card-body">
-            <!-- Search Form – action, method, input names preserved -->
             <form class="form-toolbar" action="/search" method="get">
               <div class="form-group" style="flex:2;">
                 <label>Search</label>
@@ -580,9 +614,7 @@
       </div>
     </section>
 
-    <!-- ============================================================
-    UPLOAD HISTORY (ID: #uploadsGrid, #uploadHistoryPlaceholder)
-    ============================================================ -->
+    <!-- UPLOAD HISTORY -->
     <section class="row g-3 mb-4">
       <div class="col-12">
         <div class="card">
@@ -590,17 +622,14 @@
           <div class="card-body">
             <div id="uploadsGrid" class="ag-theme-alpine" style="height:220px;"></div>
             <div id="uploadHistoryPlaceholder" class="empty-state" style="margin-top:0.5rem;">
-              <i class="fas fa-upload"></i>
-              <p>Upload history will appear after your first import</p>
+              <i class="fas fa-upload"></i><p>Upload history will appear after your first import</p>
             </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ============================================================
-    FOOTER (ID: #footer)
-    ============================================================ -->
+    <!-- FOOTER -->
     <footer id="footer" class="footer-bar"></footer>
 
   </main>
@@ -608,7 +637,355 @@
 
 <!-- Bootstrap JS -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<!-- Dashboard JS – unchanged, uses all existing IDs -->
-<script src="/static/js/dashboard.js"></script>
+
+<!-- ============================================================
+  ALL JAVASCRIPT (Inline – replaces external dashboard.js)
+  ============================================================ -->
+<script>
+(function() {
+    const API_URL = '/dashboard/api/data';
+
+    // ---- Formatting helpers ----
+    function formatCurrency(v) {
+        if (v >= 1e6) return 'PKR ' + (v/1e6).toFixed(2) + 'M';
+        if (v >= 1e3) return 'PKR ' + v.toLocaleString();
+        return 'PKR ' + (v||0).toFixed(0);
+    }
+    function formatNumber(v) { return (v||0).toLocaleString(); }
+    function formatPct(v) { return (v||0).toFixed(1) + '%'; }
+    function formatDays(v) { return (v||0).toFixed(1) + ' days'; }
+
+    // ---- Render KPI Cards ----
+    function renderKPIs(cards) {
+        const container = document.getElementById('kpiCards');
+        container.innerHTML = Object.entries(cards).map(([key, card]) => `
+            <div class="col-md-3 col-lg-3">
+                <div class="card kpi-card">
+                    <div class="card-body">
+                        <h6 class="text-muted"><i class="fas ${card.icon}"></i> ${card.label}</h6>
+                        <h3 class="kpi-value">${card.format === 'currency' ? formatCurrency(card.value) :
+                             card.format === 'percentage' ? formatPct(card.value) :
+                             card.format === 'days' ? formatDays(card.value) :
+                             formatNumber(card.value)}</h3>
+                        <small>Target: ${formatNumber(card.target)}</small>
+                        <div class="progress mt-2"><div class="progress-bar" style="width:${Math.min(100, card.progress)}%"></div></div>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    // ---- Render Pipeline ----
+    function renderPipeline(pipeline) {
+        const container = document.getElementById('pipelineContainer');
+        if (!pipeline || !pipeline.dn_created) {
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-sitemap"></i><p>No pipeline data available</p><small>Upload data to see the logistics flow</small></div>';
+            return;
+        }
+        const stages = [
+            { label: 'DN Created', value: pipeline.dn_created || 0 },
+            { label: 'PGI Completed', value: pipeline.pgi_completed || 0, pct: pipeline.pgi_achievement || 0 },
+            { label: 'Delivered', value: pipeline.delivered || 0, pct: pipeline.delivery_achievement || 0 },
+            { label: 'POD Received', value: pipeline.pod_received || 0, pct: pipeline.pod_achievement || 0 },
+        ];
+        let html = '<div class="d-flex flex-wrap align-items-center justify-content-center">';
+        stages.forEach((s, idx) => {
+            html += `
+                <div class="pipeline-stage">
+                    <div class="stage-label">${s.label}</div>
+                    <div class="stage-value">${formatNumber(s.value)}</div>
+                    ${s.pct !== undefined ? `<small class="text-muted">${formatPct(s.pct)}</small>` : ''}
+                </div>
+            `;
+            if (idx < stages.length - 1) html += `<span class="pipeline-arrow">→</span>`;
+        });
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    // ---- Render Division Dashboard ----
+    function renderDivision(divisions) {
+        const container = document.getElementById('divisionContainer');
+        if (!divisions || !divisions.length) {
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-chart-pie"></i><p>No division data available</p><small>Upload data to see division performance</small></div>';
+            return;
+        }
+        let html = '<div class="d-flex flex-wrap">';
+        divisions.forEach(d => {
+            html += `
+                <div class="division-tag">
+                    <strong>${d.division}</strong><br>
+                    Rev: ${formatCurrency(d.revenue)}<br>
+                    PGI: ${formatPct(d.pgi_achievement)}<br>
+                    Gap: ${formatPct(d.gap_percentage)}
+                </div>
+            `;
+        });
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    // ---- AG Grid helper ----
+    function renderAGGrid(containerId, data, colDefs) {
+        const gridDiv = document.getElementById(containerId);
+        if (!gridDiv) return;
+        new agGrid.Grid(gridDiv, {
+            columnDefs: colDefs,
+            rowData: data,
+            pagination: true,
+            paginationPageSize: 10,
+            domLayout: 'autoHeight',
+        });
+    }
+
+    // ---- Plotly Charts ----
+    function renderPlotlyCharts(containerId, chartDict) {
+        const div = document.getElementById(containerId);
+        div.innerHTML = '';
+        Object.entries(chartDict).forEach(([key, jsonStr]) => {
+            if (!jsonStr) return;
+            const subDiv = document.createElement('div');
+            subDiv.style.height = '300px';
+            subDiv.style.width = '100%';
+            div.appendChild(subDiv);
+            try {
+                const fig = JSON.parse(jsonStr);
+                Plotly.newPlot(subDiv, fig.data, fig.layout);
+            } catch(e) { console.warn('Plotly error', e); }
+        });
+    }
+
+    // ---- Network ----
+    function renderNetwork(network) {
+        const container = document.getElementById('networkContainer');
+        if (!network || !network.nodes || !network.nodes.length) {
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-network-wired"></i><p>No network data available</p><small>Upload data to visualize the supply chain</small></div>';
+            return;
+        }
+        container.innerHTML = `
+            <p><strong>Nodes:</strong> ${network.nodes.length} &nbsp;|&nbsp; <strong>Edges:</strong> ${network.edges?.length || 0}</p>
+            <pre style="max-height:300px; overflow:auto; background:#f8f9fa; padding:10px; border-radius:8px;">${JSON.stringify(network, null, 2)}</pre>
+        `;
+    }
+
+    // ---- Alerts ----
+    function renderAlerts(alerts) {
+        const container = document.getElementById('alertsContainer');
+        if (!alerts || !alerts.length) {
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-bell-slash"></i><p>No alerts</p><small>All systems nominal</small></div>';
+            return;
+        }
+        container.innerHTML = alerts.map(a => `
+            <div class="alert-item ${a.level === 'critical' ? 'critical' : ''}">
+                <strong>${a.title}</strong> ${a.message}<br>
+                <small>${a.action || ''}</small>
+            </div>
+        `).join('');
+    }
+
+    // ---- AI Recommendations ----
+    function renderRecommendations(recs) {
+        const container = document.getElementById('recommendationsContainer');
+        if (!recs || !recs.length) {
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-lightbulb"></i><p>No recommendations yet</p><small>AI insights will appear after data upload</small></div>';
+            return;
+        }
+        container.innerHTML = recs.map(r => `
+            <div class="rec-card">
+                <h6><span class="badge bg-${r.priority === 'Critical' ? 'danger' : 'warning'}">${r.priority}</span> ${r.entity}</h6>
+                <p>${r.recommendation}</p>
+            </div>
+        `).join('');
+    }
+
+    // ---- Upload History ----
+    function renderUploadsGrid(data) {
+        const gridDiv = document.getElementById('uploadsGrid');
+        if (window.uploadsGrid) { window.uploadsGrid.destroy(); }
+        if (!data || !data.length) {
+            gridDiv.innerHTML = '';
+            const placeholder = document.getElementById('uploadHistoryPlaceholder');
+            if (placeholder) placeholder.style.display = 'block';
+            return;
+        }
+        const colDefs = [
+            { field: 'filename', headerName: 'File Name', flex: 2 },
+            { field: 'uploaded_at', headerName: 'Uploaded At', flex: 1.5, valueFormatter: p => p.value ? new Date(p.value).toLocaleString() : 'N/A' },
+            { field: 'rows', headerName: 'Rows', flex: 1 },
+            { field: 'inserted', headerName: 'Inserted', flex: 1 },
+            { field: 'skipped', headerName: 'Skipped', flex: 1 },
+            { field: 'status', headerName: 'Status', flex: 1, cellStyle: p => p.value === 'Success' ? { color: '#198754', fontWeight: '600' } : { color: '#dc3545' } },
+        ];
+        window.uploadsGrid = new agGrid.Grid(gridDiv, { columnDefs: colDefs, rowData: data, pagination: true, paginationPageSize: 5, domLayout: 'autoHeight' });
+        const placeholder = document.getElementById('uploadHistoryPlaceholder');
+        if (placeholder) placeholder.style.display = 'none';
+    }
+
+    // ---- Master load function ----
+    async function loadDashboard() {
+        try {
+            const res = await fetch(API_URL);
+            const data = await res.json();
+
+            renderKPIs(data.cards || {});
+            renderPipeline(data.pipeline || {});
+            renderDivision(data.division || []);
+
+            // AG Grid: Warehouse
+            const warehouseCols = [
+                { field: 'warehouse_name', headerName: 'Warehouse' },
+                { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
+                { field: 'pgi_achievement_rate', headerName: 'PGI %', valueFormatter: p => formatPct(p.value) },
+                { field: 'pod_completion_rate', headerName: 'POD %', valueFormatter: p => formatPct(p.value) },
+                { field: 'health_score', headerName: 'Health', valueFormatter: p => formatPct(p.value) },
+                { field: 'risk_level', headerName: 'Risk' },
+                { field: 'ranking', headerName: 'Rank' },
+            ];
+            renderAGGrid('warehouseGrid', data.warehouse || [], warehouseCols);
+
+            // Dealer
+            const dealerCols = [
+                { field: 'dealer_name', headerName: 'Dealer' },
+                { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
+                { field: 'units', headerName: 'Units' },
+                { field: 'pod_completion_rate', headerName: 'POD %', valueFormatter: p => formatPct(p.value) },
+                { field: 'health_score', headerName: 'Health', valueFormatter: p => formatPct(p.value) },
+                { field: 'ranking', headerName: 'Rank' },
+            ];
+            renderAGGrid('dealerGrid', data.dealer || [], dealerCols);
+
+            // Product
+            const productCols = [
+                { field: 'product_name', headerName: 'Product' },
+                { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
+                { field: 'units', headerName: 'Units' },
+                { field: 'abc_class', headerName: 'ABC' },
+                { field: 'slow_moving_flag', headerName: 'Slow', cellRenderer: p => p.value ? '🐢' : '' },
+                { field: 'fast_moving_flag', headerName: 'Fast', cellRenderer: p => p.value ? '🚀' : '' },
+                { field: 'dead_stock_flag', headerName: 'Dead', cellRenderer: p => p.value ? '💀' : '' },
+            ];
+            renderAGGrid('productGrid', data.product || [], productCols);
+
+            // City
+            const cityCols = [
+                { field: 'city', headerName: 'City' },
+                { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
+                { field: 'units', headerName: 'Units' },
+                { field: 'pod_completion_rate', headerName: 'POD %', valueFormatter: p => formatPct(p.value) },
+                { field: 'health_score', headerName: 'Health', valueFormatter: p => formatPct(p.value) },
+            ];
+            renderAGGrid('cityGrid', data.city || [], cityCols);
+
+            // Charts
+            renderPlotlyCharts('warehouseCharts', data.warehouse_charts || {});
+            renderPlotlyCharts('dealerCharts', data.dealer_charts || {});
+            renderPlotlyCharts('productCharts', data.product_charts || {});
+            renderPlotlyCharts('cityCharts', data.city_charts || {});
+
+            // Monthly & Daily Trends
+            const monthly = data.monthly_trends || {};
+            if (monthly.months && monthly.months.length) {
+                const trace1 = { x: monthly.months, y: monthly.revenue, name: 'Revenue', type: 'scatter', mode: 'lines+markers' };
+                const trace2 = { x: monthly.months, y: monthly.delivery_notes, name: 'DN', type: 'scatter', mode: 'lines+markers' };
+                Plotly.newPlot('monthlyTrends', [trace1, trace2], { title: 'Revenue & DN Trend', barmode: 'group' });
+            } else {
+                document.getElementById('monthlyTrends').innerHTML = '<div class="empty-state"><i class="fas fa-calendar-alt"></i><p>No monthly data</p><small>Upload data to see monthly trends</small></div>';
+            }
+            const daily = data.daily_trends || {};
+            if (daily.dates && daily.dates.length) {
+                const trace1 = { x: daily.dates, y: daily.revenue, name: 'Revenue', type: 'scatter', mode: 'lines+markers' };
+                const trace2 = { x: daily.dates, y: daily.delivery_notes, name: 'DN', type: 'scatter', mode: 'lines+markers' };
+                Plotly.newPlot('dailyTrends', [trace1, trace2], { title: 'Daily Revenue & DN' });
+            } else {
+                document.getElementById('dailyTrends').innerHTML = '<div class="empty-state"><i class="fas fa-clock"></i><p>No daily data</p><small>Upload data to see daily trends</small></div>';
+            }
+
+            renderNetwork(data.network || {});
+            renderAlerts(data.alerts || []);
+            renderRecommendations(data.recommendations || []);
+            renderUploadsGrid(data.latest_uploads || []);
+
+            // Footer
+            document.getElementById('footer').innerHTML = `
+                <i class="fas fa-code-branch"></i> v9.2 &nbsp;|&nbsp;
+                <i class="fas fa-database"></i> PostgreSQL &nbsp;|&nbsp;
+                <i class="fas fa-sync"></i> ${new Date().toLocaleString()} &nbsp;|&nbsp;
+                <i class="fas fa-cubes"></i> Records: ${data.metadata?.record_count || 0} &nbsp;|&nbsp;
+                <i class="fas fa-cloud"></i> ${data.metadata?.environment || 'Production'}
+            `;
+            document.getElementById('lastRefresh').innerText = new Date().toLocaleString();
+
+        } catch(e) {
+            console.error('Dashboard load error:', e);
+            document.body.innerHTML = '<div class="alert alert-danger m-3">Failed to load dashboard. See console.</div>';
+        }
+    }
+
+    // ---- Theme toggle ----
+    document.getElementById('themeToggle').addEventListener('click', function() {
+        document.documentElement.setAttribute('data-theme',
+            document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'
+        );
+        this.innerHTML = document.documentElement.getAttribute('data-theme') === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+    });
+
+    // ---- Sidebar toggle ----
+    document.getElementById('hamburgerBtn').addEventListener('click', function() {
+        document.querySelector('.sidebar').classList.toggle('open');
+    });
+
+    // ---- Today's date ----
+    document.getElementById('todayDate').innerText = new Date().toLocaleDateString('en-GB', {
+        weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
+    });
+
+    // ---- Interactive Upload (preserved) ----
+    document.getElementById('uploadForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const formData = new FormData(this);
+        const fileInput = this.querySelector('input[type="file"]');
+        if (!fileInput.files.length) {
+            Swal.fire({ icon: 'warning', title: 'No File Selected', text: 'Please choose an Excel file.' });
+            return;
+        }
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', this.action, true);
+        Swal.fire({
+            title: 'Uploading Logistics Report',
+            html: `
+                <div class="text-start mb-2"><i class="fas fa-spinner fa-spin me-2"></i> Processing...</div>
+                <div class="progress"><div id="uploadProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" style="width:0%;">0%</div></div>
+                <div id="uploadStatusText" class="mt-2 text-muted">Starting...</div>
+            `,
+            allowOutsideClick: false, showConfirmButton: false
+        });
+        xhr.upload.onprogress = function(event) {
+            if (event.lengthComputable) {
+                const pct = Math.round((event.loaded / event.total) * 100);
+                document.getElementById('uploadProgressBar').style.width = pct + '%';
+                document.getElementById('uploadProgressBar').textContent = pct + '%';
+                document.getElementById('uploadStatusText').textContent = pct < 100 ? `Uploading ${pct}%` : 'Processing...';
+            }
+        };
+        xhr.onload = function() {
+            if (xhr.status >= 200 && xhr.status < 300) {
+                Swal.fire({ icon: 'success', title: 'Upload Successful', text: 'File imported. Dashboard will refresh.', timer: 2000, showConfirmButton: false })
+                    .then(() => window.location.reload());
+            } else {
+                let msg = 'Upload failed.';
+                try { const json = JSON.parse(xhr.responseText); if (json.message) msg = json.message; } catch(e) {}
+                Swal.fire({ icon: 'error', title: 'Upload Failed', text: msg });
+            }
+        };
+        xhr.onerror = function() { Swal.fire({ icon: 'error', title: 'Network Error' }); };
+        xhr.send(formData);
+    });
+
+    // ---- Auto-refresh ----
+    loadDashboard();
+    setInterval(loadDashboard, 30000);
+})();
+</script>
+
 </body>
 </html>
