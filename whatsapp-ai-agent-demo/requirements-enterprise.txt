@@ -21,3 +21,12 @@ regex==2025.7.34
 jsonschema==4.25.0
 
 joblib==1.5.1
+
+
+plotly
+numpy
+scipy
+networkx
+altair
+bokeh
+pyecharts
