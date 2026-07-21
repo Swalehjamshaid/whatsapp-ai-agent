@@ -1,7 +1,7 @@
 <!-- ============================================================ -->
 <!-- FILE: app/templates/dashboard.html                           -->
 <!-- PROJECT: WhatsApp AI Agent Demo - Logistics Intelligence    -->
-<!-- VERSION: 6.0 - Enterprise Logistics Intelligence Platform   -->
+<!-- VERSION: 6.0 - Fully Integrated with DashboardService       -->
 <!-- ============================================================ -->
 
 <!DOCTYPE html>
@@ -967,12 +967,13 @@
         </div>
 
         <!-- ============================================================
-        LATEST UPDATES (AG Grid) – placeholder
+        LATEST UPDATES (AG Grid) – placeholder (service does not provide this)
         ============================================================ -->
         <div class="card-custom p-3 mb-4">
             <div class="card-header-custom"><i class="fas fa-history"></i> Latest Updates</div>
             <div class="card-body-custom">
                 <div id="uploadsGrid" class="ag-theme-alpine" style="height:220px;"></div>
+                <div class="text-muted small text-center mt-2">Upload history will appear after your first import.</div>
             </div>
         </div>
 
@@ -1066,7 +1067,7 @@
     </script>
 
     <!-- ============================================================
-    DASHBOARD JAVASCRIPT - v6.0 (Enterprise)
+    DASHBOARD JAVASCRIPT - v6.0 (Fully Integrated)
     ============================================================ -->
     <script>
         // ============================================================
@@ -1117,13 +1118,6 @@
             if (card.format === 'days') return formatDays(card.target || 0);
             if (card.format === 'currency') return formatCurrency(card.target || 0);
             return card.target ? formatNumber(card.target) : 'N/A';
-        }
-
-        function stars(rating) {
-            const full = Math.floor(rating);
-            const half = rating - full >= 0.5 ? 1 : 0;
-            const empty = 5 - full - half;
-            return '★'.repeat(full) + (half ? '½' : '') + '☆'.repeat(empty);
         }
 
         // ============================================================
@@ -1402,12 +1396,10 @@
             if (dailyChart) dailyChart.destroy();
             const daily = charts.daily_trend || {};
             const dailyLabels = daily.labels || [];
-            // Use the new structured data, fallback to previous for compatibility
-            const dnData = daily.delivery_notes || daily.data || [];
+            const dnData = daily.delivery_notes || [];
             const pgiCompleted = daily.pgi_completed || [];
             const deliveredDns = daily.delivered_dns || [];
             const podCompleted = daily.pod_completed || [];
-            // If any dataset is empty, fill with zeros
             const fallbackZero = dnData.map(() => 0);
             dailyChart = new Chart(dailyCtx, {
                 type: 'bar',
@@ -1456,7 +1448,7 @@
         }
 
         // ============================================================
-        // AG GRID: WAREHOUSE (enterprise fields)
+        // AG GRID: WAREHOUSE (fields from service)
         // ============================================================
         function renderWarehouseGrid(data) {
             const gridDiv = document.getElementById('warehouseGrid');
@@ -1572,7 +1564,7 @@
         }
 
         // ============================================================
-        // AG GRID: TRANSPORTER (new enterprise fields)
+        // AG GRID: TRANSPORTER
         // ============================================================
         function renderTransporterGrid(data) {
             const gridDiv = document.getElementById('transporterGrid');
