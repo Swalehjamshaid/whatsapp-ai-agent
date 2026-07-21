@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 11.6 - ENTERPRISE SUPPLY CHAIN PLATFORM (PYTHON-SIDE DISTANCE CALC)
+# VERSION: 11.8 - ENTERPRISE SUPPLY CHAIN PLATFORM (PROFESSIONAL PLOTLY CHARTS)
 # ============================================================
 
 import hashlib
@@ -64,15 +64,6 @@ def _pct(numerator: float, denominator: float) -> float:
         return 0.0
     return round((numerator / denominator) * 100, 2)
 
-def _format_currency(amount: float) -> str:
-    if amount is None:
-        return "PKR 0.00"
-    if amount >= 1_000_000:
-        return f"PKR {amount/1_000_000:.2f}M"
-    elif amount >= 1_000:
-        return f"PKR {amount:,.0f}"
-    return f"PKR {amount:,.0f}"
-
 # ============================================================
 # PYTHON DISTANCE CALCULATOR
 # ============================================================
@@ -83,19 +74,12 @@ class PythonDistanceCalculator:
     """
     @staticmethod
     def get_distance_km(warehouse: str, city: str) -> float:
-        """
-        Replace this placeholder logic with actual geopy coordinate mapping 
-        or a dictionary of known distances between warehouses and cities.
-        """
-        # Example hardcoded mapping (can be expanded or replaced with geopy)
         distance_map = {
             ("Lahore WH", "Karachi"): 1200.0,
             ("Lahore WH", "Islamabad"): 380.0,
             ("Karachi WH", "Hyderabad"): 160.0
         }
-        
-        # Fallback heuristic if pair not found in mapping
-        return distance_map.get((warehouse, city), 350.0) # Defaulting to 350km for safety
+        return distance_map.get((warehouse, city), 350.0)
 
 # ============================================================
 # CACHE ENGINE
@@ -160,9 +144,8 @@ class DashboardRepository:
     def fetch_raw_summary(self) -> Dict[str, Any]:
         sql = """
             SELECT
-                COALESCE(SUM(dn_amount), 0) AS total_revenue,
-                COALESCE(SUM(dn_qty), 0) AS total_units,
                 COUNT(DISTINCT dn_no) AS total_dn,
+                COALESCE(SUM(dn_qty), 0) AS total_units,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_completed,
@@ -180,7 +163,6 @@ class DashboardRepository:
         products = self._execute("SELECT COUNT(DISTINCT material_no) FROM delivery_reports WHERE material_no IS NOT NULL").scalar() or 0
 
         return {
-            "total_revenue": _safe_float(row.total_revenue),
             "total_units": _safe_int(row.total_units),
             "total_dn": _safe_int(row.total_dn),
             "pgi_completed": _safe_int(row.pgi_completed),
@@ -218,29 +200,20 @@ class DashboardRepository:
         sql = """
             SELECT
                 division,
-                COALESCE(SUM(dn_amount), 0) AS revenue,
                 COALESCE(SUM(dn_qty), 0) AS units,
                 COUNT(DISTINCT dn_no) AS dn_qty,
-                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_qty,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivery_qty,
-                COUNT(DISTINCT CASE WHEN good_issue_date IS NULL THEN dn_no END) AS gap_qty,
-                COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN dn_amount ELSE 0 END), 0) AS gap_amount
-            FROM delivery_reports WHERE division IS NOT NULL GROUP BY division ORDER BY revenue DESC
+                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_qty
+            FROM delivery_reports WHERE division IS NOT NULL GROUP BY division ORDER BY dn_qty DESC
         """
         return self._execute(sql).fetchall()
 
     def fetch_raw_warehouses_for_python(self) -> List[Any]:
-        """
-        Retrieves granular data necessary for Python to calculate distances locally.
-        We group by warehouse, city, and days taken to keep payload light but accurate.
-        """
         sql = """
             SELECT
                 warehouse AS warehouse_name,
                 ship_to_city,
                 (good_issue_date::date - dn_create_date::date) AS pgi_days,
                 (pod_date::date - good_issue_date::date) AS pod_days,
-                COALESCE(SUM(dn_amount), 0) AS revenue,
                 COALESCE(SUM(dn_qty), 0) AS units,
                 COUNT(DISTINCT dn_no) AS delivery_notes,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
@@ -257,14 +230,12 @@ class DashboardRepository:
         sql = """
             SELECT
                 dealer_code, customer_name AS dealer_name,
-                COALESCE(SUM(dn_amount), 0) AS revenue,
                 COALESCE(SUM(dn_qty), 0) AS units,
                 COUNT(DISTINCT dn_no) AS delivery_notes,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_completed,
                 COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_cycle_days
-            FROM delivery_reports WHERE dealer_code IS NOT NULL GROUP BY dealer_code, customer_name ORDER BY revenue DESC
+            FROM delivery_reports WHERE dealer_code IS NOT NULL GROUP BY dealer_code, customer_name ORDER BY delivery_notes DESC
         """
         return self._execute(sql).fetchall()
 
@@ -272,53 +243,31 @@ class DashboardRepository:
         sql = """
             SELECT
                 material_no AS sku, customer_model AS product_name,
-                COALESCE(SUM(dn_amount), 0) AS revenue,
                 COALESCE(SUM(dn_qty), 0) AS units,
-                COUNT(DISTINCT dn_no) AS delivery_notes,
-                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_completed
-            FROM delivery_reports WHERE material_no IS NOT NULL GROUP BY material_no, customer_model ORDER BY revenue DESC
+                COUNT(DISTINCT dn_no) AS delivery_notes
+            FROM delivery_reports WHERE material_no IS NOT NULL GROUP BY material_no, customer_model ORDER BY delivery_notes DESC
         """
         return self._execute(sql).fetchall()
 
     def fetch_raw_cities(self) -> List[Any]:
         sql = """
             SELECT
-                ship_to_city AS city, COALESCE(SUM(dn_amount), 0) AS revenue,
+                ship_to_city AS city,
                 COALESCE(SUM(dn_qty), 0) AS units,
                 COUNT(DISTINCT dn_no) AS delivery_notes,
-                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_completed,
                 COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_cycle_days
-            FROM delivery_reports WHERE ship_to_city IS NOT NULL GROUP BY ship_to_city ORDER BY revenue DESC
-        """
-        return self._execute(sql).fetchall()
-
-    def fetch_raw_monthly_trends(self) -> List[Any]:
-        sql = """
-            SELECT
-                TO_CHAR(dn_create_date, 'YYYY-MM') AS month,
-                COALESCE(SUM(dn_amount), 0) AS revenue,
-                COALESCE(SUM(dn_qty), 0) AS units,
-                COUNT(DISTINCT dn_no) AS dn,
-                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_completed
-            FROM delivery_reports WHERE dn_create_date IS NOT NULL GROUP BY month ORDER BY month
+            FROM delivery_reports WHERE ship_to_city IS NOT NULL GROUP BY ship_to_city ORDER BY delivery_notes DESC
         """
         return self._execute(sql).fetchall()
 
     def fetch_raw_daily_trends(self) -> List[Any]:
         sql = """
             SELECT
-                dn_create_date AS date, COALESCE(SUM(dn_amount), 0) AS revenue,
+                dn_create_date AS date,
                 COALESCE(SUM(dn_qty), 0) AS units,
                 COUNT(DISTINCT dn_no) AS dn,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_completed
+                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns
             FROM delivery_reports WHERE dn_create_date >= CURRENT_DATE - INTERVAL '30 days' GROUP BY dn_create_date ORDER BY dn_create_date
         """
         return self._execute(sql).fetchall()
@@ -340,7 +289,6 @@ class DashboardRepository:
 class BusinessRuleEngine:
     @staticmethod
     def calculate_summary(raw: Dict[str, Any]) -> Dict[str, Any]:
-        total_rev = raw.get("total_revenue", 0.0)
         total_dn = raw.get("total_dn", 0)
         pgi_completed = raw.get("pgi_completed", 0)
         delivered_dns = raw.get("delivered_dns", 0)
@@ -352,7 +300,6 @@ class BusinessRuleEngine:
         health = round((pgi_rate * 0.35) + (delivery_rate * 0.35) + (pod_rate * 0.30), 2)
 
         return {
-            "total_revenue": total_rev,
             "total_units": raw.get("total_units", 0),
             "total_delivery_notes": total_dn,
             "pgi_completed": pgi_completed,
@@ -388,7 +335,7 @@ class BusinessRuleEngine:
         }
 
 # ============================================================
-# 3. ANALYTICS ENGINE (PYTHON-BASED DISTANCE TIERING)
+# 3. ANALYTICS ENGINE
 # ============================================================
 
 class AnalyticsEngine:
@@ -398,22 +345,17 @@ class AnalyticsEngine:
         for row in rows:
             result.append({
                 "division": row.division,
-                "revenue": _safe_float(row.revenue),
                 "units": _safe_int(row.units),
                 "dn_qty": _safe_int(row.dn_qty),
                 "pgi_qty": _safe_int(row.pgi_qty),
-                "gap_qty": _safe_int(row.gap_qty),
                 "pgi_achievement": _pct(_safe_int(row.pgi_qty), _safe_int(row.dn_qty)),
             })
         return result
 
     @staticmethod
     def process_warehouses(rows: List[Any]) -> List[Dict[str, Any]]:
-        """
-        Aggregates granular warehouse/city rows and calculates distance metrics locally in Python.
-        """
         wh_stats = defaultdict(lambda: {
-            "revenue": 0.0, "units": 0, "delivery_notes": 0,
+            "units": 0, "delivery_notes": 0,
             "pgi_completed": 0, "delivered_dns": 0, "pod_completed": 0,
             "pending_pgi": 0, "pending_delivery": 0,
             "on_time_pgis": 0, "late_pgis": 0, "on_time_pods": 0, "late_pods": 0,
@@ -421,20 +363,17 @@ class AnalyticsEngine:
             "distances": []
         })
 
-        # Python-side processing
         for row in rows:
             w_name = row.warehouse_name
             city = row.ship_to_city
-            
             dist = PythonDistanceCalculator.get_distance_km(w_name, city)
             
             st = wh_stats[w_name]
-            st["revenue"] += _safe_float(row.revenue)
             st["units"] += _safe_int(row.units)
             st["delivery_notes"] += _safe_int(row.delivery_notes)
             st["pgi_completed"] += _safe_int(row.pgi_completed)
             st["delivered_dns"] += _safe_int(row.delivered_dns)
-            st["pod_completed"] += _safe_int(row.delivered_dns) # Evaluated at city level
+            st["pod_completed"] += _safe_int(row.delivered_dns)
             st["pending_pgi"] += _safe_int(row.pending_pgi)
             st["pending_delivery"] += _safe_int(row.pending_delivery)
             st["distances"].append(dist)
@@ -444,14 +383,12 @@ class AnalyticsEngine:
             pgi_qty = _safe_int(row.pgi_completed)
             pod_qty = _safe_int(row.delivered_dns)
             
-            # PGI Distance Matrix Evaluation
             if pgi_days is not None and pgi_qty > 0:
                 thresh = 1 if dist <= 250 else 2 if dist <= 450 else 3 if dist <= 700 else 4 if dist <= 900 else 5
                 if pgi_days <= thresh: st["on_time_pgis"] += pgi_qty
                 else: st["late_pgis"] += pgi_qty
                 st["sum_pgi_days"] += (pgi_days * pgi_qty)
                 
-            # POD Distance Matrix Evaluation
             if pod_days is not None and pod_qty > 0:
                 thresh = 1 if dist <= 100 else 2 if dist <= 250 else 3 if dist <= 450 else 4 if dist <= 700 else 5 if dist <= 900 else 6
                 if pod_days <= thresh: st["on_time_pods"] += pod_qty
@@ -459,7 +396,6 @@ class AnalyticsEngine:
                 st["sum_pod_days"] += (pod_days * pod_qty)
                 st["sum_cycle_days"] += (((pgi_days or 0) + pod_days) * pod_qty)
 
-        # Final Formatting
         result = []
         for w_name, data in wh_stats.items():
             dn = data["delivery_notes"]
@@ -477,7 +413,6 @@ class AnalyticsEngine:
 
             result.append({
                 "warehouse_name": w_name,
-                "revenue": data["revenue"],
                 "units": data["units"],
                 "delivery_notes": dn,
                 "average_distance": round(avg_dist, 1),
@@ -487,16 +422,12 @@ class AnalyticsEngine:
                 "pgi_achievement_rate": pgi_rate,
                 "delivery_achievement_rate": delivery_rate,
                 "pod_completion_rate": pod_rate,
-                "on_time_pgis": data["on_time_pgis"],
-                "late_pgis": data["late_pgis"],
-                "on_time_pods": data["on_time_pods"],
-                "late_pods": data["late_pods"],
                 "pending_pgi": data["pending_pgi"],
                 "pending_delivery": data["pending_delivery"],
                 "health_score": health,
             })
             
-        result.sort(key=lambda x: x["health_score"], reverse=True)
+        result.sort(key=lambda x: x["delivery_notes"], reverse=True)
         for i, w in enumerate(result): w["ranking"] = i + 1
         return result
 
@@ -506,9 +437,9 @@ class AnalyticsEngine:
         for row in rows:
             result.append({
                 "dealer_name": row.dealer_name or row.dealer_code,
-                "revenue": _safe_float(row.revenue),
                 "units": _safe_int(row.units),
-                "pgi_achievement_rate": _pct(_safe_int(row.pgi_completed), _safe_int(row.delivery_notes)),
+                "delivery_notes": _safe_int(row.delivery_notes),
+                "avg_cycle_days": round(_safe_float(row.avg_cycle_days), 1),
             })
         return result
 
@@ -518,8 +449,8 @@ class AnalyticsEngine:
         for row in rows:
             result.append({
                 "product_name": row.product_name or row.sku,
-                "revenue": _safe_float(row.revenue),
                 "units": _safe_int(row.units),
+                "delivery_notes": _safe_int(row.delivery_notes),
             })
         return result
 
@@ -529,54 +460,196 @@ class AnalyticsEngine:
         for row in rows:
             result.append({
                 "city": row.city,
-                "revenue": _safe_float(row.revenue),
                 "units": _safe_int(row.units),
+                "delivery_notes": _safe_int(row.delivery_notes),
+                "avg_cycle_days": round(_safe_float(row.avg_cycle_days), 1),
             })
         return result
 
     @staticmethod
-    def process_monthly_trends(rows: List[Any]) -> Dict[str, List]:
-        months, revenue, units = [], [], []
-        for row in rows:
-            months.append(row.month)
-            revenue.append(_safe_float(row.revenue))
-            units.append(_safe_int(row.units))
-        return {"months": months, "revenue": revenue, "units": units}
-
-    @staticmethod
     def process_daily_trends(rows: List[Any]) -> Dict[str, List]:
-        dates_list, revenue, units = [], [], []
+        dates_list, dns, units, pgi, delivered = [], [], [], [], []
         for row in rows:
             dates_list.append(row.date.strftime('%Y-%m-%d') if hasattr(row.date, 'strftime') else str(row.date))
-            revenue.append(_safe_float(row.revenue))
+            dns.append(_safe_int(row.dn))
             units.append(_safe_int(row.units))
-        return {"dates": dates_list, "revenue": revenue, "units": units}
+            pgi.append(_safe_int(row.pgi_completed))
+            delivered.append(_safe_int(row.delivered_dns))
+        return {"dates": dates_list, "dn": dns, "units": units, "pgi": pgi, "delivered": delivered}
 
     @staticmethod
     def process_network(rows: List[Any]) -> Dict[str, Any]:
         return {"nodes": [], "edges": []}
 
 # ============================================================
-# 4. GRAPH ENGINE (Plotly)
+# 4. ENTERPRISE GRAPH ENGINE (Plotly)
 # ============================================================
 
 class GraphEngine:
+    """
+    Builds world-class, executive-ready enterprise visualizations adhering to SAP/Fabric standards.
+    Strictly focuses on logistics, volumes, cycles, and efficiencies without financial interference.
+    """
+    
+    @staticmethod
+    def _apply_corporate_layout(fig, title: str, x_title: str = "", y_title: str = "") -> go.Figure:
+        fig.update_layout(
+            title=dict(text=title, font=dict(family="Segoe UI, Inter, sans-serif", size=16, color="#0B192C"), x=0.02, y=0.95),
+            paper_bgcolor="#FFFFFF",
+            plot_bgcolor="#F8FAFC",
+            font=dict(family="Segoe UI, Inter, sans-serif", size=12, color="#334155"),
+            margin=dict(l=60, r=30, t=60, b=50),
+            hoverlabel=dict(bgcolor="#0B192C", font_size=12, font_color="#FFFFFF"),
+            xaxis=dict(title=x_title, showgrid=True, gridcolor="#E2E8F0", zeroline=False),
+            yaxis=dict(title=y_title, showgrid=True, gridcolor="#E2E8F0", zeroline=False),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        return fig
+
     @staticmethod
     def get_warehouse_charts(warehouses: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not warehouses or not PLOTLY_AVAILABLE: return {}
-        names = [w["warehouse_name"] for w in warehouses]
-        revenues = [w["revenue"] for w in warehouses]
         charts = {}
-        fig = px.bar(x=revenues, y=names, orientation='h', title="Warehouse Revenue Ranking")
-        charts["revenue_ranking"] = fig.to_json()
+        
+        # 1. Warehouse Delivery Performance (DN Count Horizontal Bar)
+        df_wh = sorted(warehouses, key=lambda x: x["delivery_notes"])
+        names = [w["warehouse_name"] for w in df_wh]
+        dns = [w["delivery_notes"] for w in df_wh]
+        
+        fig_dn = go.Figure(go.Bar(
+            x=dns, y=names, orientation='h',
+            marker=dict(color=dns, colorscale='Blues', line=dict(color='#1E3A8A', width=1)),
+            text=[f"{v:,} DNs" for v in dns], textposition='outside'
+        ))
+        GraphEngine._apply_corporate_layout(fig_dn, "Warehouse Delivery Performance (by Total DNs)", "Delivery Notes (DNs)", "Warehouse")
+        fig_dn.update_layout(xaxis=dict(range=[0, max(dns) * 1.15]))
+        charts["delivery_performance"] = fig_dn.to_json()
+
+        # 2. Warehouse Quantity Delivered (Units Horizontal Bar)
+        df_qty = sorted(warehouses, key=lambda x: x["units"])
+        q_names = [w["warehouse_name"] for w in df_qty]
+        q_units = [w["units"] for w in df_qty]
+        
+        fig_qty = go.Figure(go.Bar(
+            x=q_units, y=q_names, orientation='h',
+            marker=dict(color=q_units, colorscale='Teal', line=dict(color='#0F766E', width=1)),
+            text=[f"{v:,} Units" for v in q_units], textposition='outside'
+        ))
+        GraphEngine._apply_corporate_layout(fig_qty, "Warehouse Quantity Delivered (Physical Units)", "Total Units Shipped", "Warehouse")
+        fig_qty.update_layout(xaxis=dict(range=[0, max(q_units) * 1.15]))
+        charts["quantity_performance"] = fig_qty.to_json()
+
+        # 3. PGI Processing Performance (DN -> PGI Days - Lower is Better)
+        df_pgi = sorted(warehouses, key=lambda x: x["actual_pgi_days"], reverse=True) # Reversed for top-down ascending order in horizontal bar
+        p_names = [w["warehouse_name"] for w in df_pgi]
+        p_days = [w["actual_pgi_days"] for w in df_pgi]
+        
+        fig_pgi = go.Figure(go.Bar(
+            x=p_days, y=p_names, orientation='h',
+            marker=dict(color=p_days, colorscale='Reds_r', line=dict(color='#991B1B', width=1)), # Greens/Teal for lower is better
+            text=[f"{v:.2f} Days" for v in p_days], textposition='outside'
+        ))
+        GraphEngine._apply_corporate_layout(fig_pgi, "PGI Processing Performance (DN ➔ PGI) [Lower is Better]", "Average Days", "Warehouse")
+        fig_pgi.update_layout(xaxis=dict(range=[0, max(p_days) * 1.20]))
+        charts["pgi_performance"] = fig_pgi.to_json()
+
+        # 4. Overall Logistics Delivery Cycle (DN -> POD Days)
+        df_cycle = sorted(warehouses, key=lambda x: x["average_logistics_cycle"], reverse=True)
+        c_names = [w["warehouse_name"] for w in df_cycle]
+        c_days = [w["average_logistics_cycle"] for w in df_cycle]
+        
+        fig_cycle = go.Figure(go.Bar(
+            x=c_days, y=c_names, orientation='h',
+            marker=dict(color=c_days, colorscale='Spectral_r', line=dict(color='#B45309', width=1)),
+            text=[f"{v:.2f} Days" for v in c_days], textposition='outside'
+        ))
+        GraphEngine._apply_corporate_layout(fig_cycle, "Overall Delivery Cycle (DN ➔ POD) [Lower is Better]", "Average Cycle Days", "Warehouse")
+        fig_cycle.update_layout(xaxis=dict(range=[0, max(c_days) * 1.20]))
+        charts["overall_cycle"] = fig_cycle.to_json()
+
+        # 5. Warehouse Contribution Share (Donut Chart)
+        total_net = sum(dns)
+        shares = [round((v / total_net) * 100, 2) if total_net else 0 for v in dns]
+        fig_contrib = go.Figure(go.Pie(
+            labels=[w["warehouse_name"] for w in df_wh],
+            values=shares,
+            hole=0.45,
+            marker=dict(colors=px.colors.qualitative.Prism)
+        ))
+        GraphEngine._apply_corporate_layout(fig_contrib, "Warehouse Volume Contribution Share (%)")
+        fig_contrib.update_traces(textinfo='percent+label', textposition='inside')
+        charts["volume_contribution"] = fig_contrib.to_json()
+
         return charts
 
     @staticmethod
-    def get_dealer_charts(dealers: List[Dict[str, Any]]) -> Dict[str, Any]: return {}
+    def get_dealer_charts(dealers: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not dealers or not PLOTLY_AVAILABLE: return {}
+        charts = {}
+        top_dealers = dealers[:10] # Top 10 key accounts
+        names = [d["dealer_name"] for d in top_dealers][::-1]
+        volumes = [d["delivery_notes"] for d in top_dealers][::-1]
+        
+        fig = go.Figure(go.Bar(
+            x=volumes, y=names, orientation='h',
+            marker=dict(color='#0284C7', line=dict(color='#0369A1', width=1)),
+            text=[f"{v:,} DNs" for v in volumes], textposition='outside'
+        ))
+        GraphEngine._apply_corporate_layout(fig, "Top 10 Key Dealer Accounts by Delivery Volume", "Delivery Notes (DNs)", "Dealer Name")
+        fig.update_layout(xaxis=dict(range=[0, max(volumes) * 1.15]))
+        charts["top_dealers"] = fig.to_json()
+        return charts
+
     @staticmethod
-    def get_product_charts(products: List[Dict[str, Any]]) -> Dict[str, Any]: return {}
+    def get_product_charts(products: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not products or not PLOTLY_AVAILABLE: return {}
+        charts = {}
+        top_prod = products[:10]
+        names = [p["product_name"] for p in top_prod][::-1]
+        units = [p["units"] for p in top_prod][::-1]
+        
+        fig = go.Figure(go.Bar(
+            x=units, y=names, orientation='h',
+            marker=dict(color='#0D9488', line=dict(color='#0F766E', width=1)),
+            text=[f"{v:,} Units" for v in units], textposition='outside'
+        ))
+        GraphEngine._apply_corporate_layout(fig, "Top 10 Customer Models Shipped by Volume", "Total Units", "Customer Model / SKU")
+        fig.update_layout(xaxis=dict(range=[0, max(units) * 1.15]))
+        charts["top_products"] = fig.to_json()
+        return charts
+
     @staticmethod
-    def get_city_charts(cities: List[Dict[str, Any]]) -> Dict[str, Any]: return {}
+    def get_city_charts(cities: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not cities or not PLOTLY_AVAILABLE: return {}
+        charts = {}
+        top_cities = cities[:10]
+        names = [c["city"] for c in top_cities][::-1]
+        dns = [c["delivery_notes"] for c in top_cities][::-1]
+        
+        fig = go.Figure(go.Bar(
+            x=dns, y=names, orientation='h',
+            marker=dict(color='#4F46E5', line=dict(color='#3730A3', width=1)),
+            text=[f"{v:,} DNs" for v in dns], textposition='outside'
+        ))
+        GraphEngine._apply_corporate_layout(fig, "Top 10 Destination Cities by Delivery Volume", "Delivery Notes (DNs)", "Ship-to City")
+        fig.update_layout(xaxis=dict(range=[0, max(dns) * 1.15]))
+        charts["top_cities"] = fig.to_json()
+        return charts
+
+    @staticmethod
+    def get_daily_trend_charts(daily_data: Dict[str, List]) -> Dict[str, Any]:
+        if not daily_data or not daily_data.get("dates") or not PLOTLY_AVAILABLE: return {}
+        charts = {}
+        dates = daily_data["dates"]
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=dates, y=daily_data["dn"], mode='lines+markers', name='Daily DNs', line=dict(color='#2563EB', width=2)))
+        fig.add_trace(go.Scatter(x=dates, y=daily_data["pgi"], mode='lines+markers', name='Daily PGI', line=dict(color='#059669', width=2)))
+        fig.add_trace(go.Scatter(x=dates, y=daily_data["delivered"], mode='lines+markers', name='Daily Delivered', line=dict(color='#D97706', width=2)))
+        
+        GraphEngine._apply_corporate_layout(fig, "30-Day Operational Logistics Trend (DN, PGI, POD)", "Date", "Volume Count")
+        charts["daily_operations"] = fig.to_json()
+        return charts
 
 # ============================================================
 # 5. RECOMMENDATION & ALERT ENGINES
@@ -585,12 +658,42 @@ class GraphEngine:
 class RecommendationEngine:
     @staticmethod
     def generate(warehouses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return []
+        recs = []
+        for w in warehouses:
+            if w.get("actual_pgi_days", 0) > 1.0:
+                recs.append({
+                    "warehouse": w["warehouse_name"],
+                    "category": "PGI Bottleneck",
+                    "priority": "High",
+                    "recommendation": f"Optimize warehouse pick-pack staging at {w['warehouse_name']}; current PGI processing averages {w['actual_pgi_days']} days."
+                })
+            if w.get("average_logistics_cycle", 0) > 6.0:
+                recs.append({
+                    "warehouse": w["warehouse_name"],
+                    "category": "Cycle Time SLA",
+                    "priority": "Critical",
+                    "recommendation": f"Review transport dispatch schedules for {w['warehouse_name']} to reduce end-to-end delivery cycle."
+                })
+        return recs
 
 class AlertEngine:
     @staticmethod
     def generate(summary: Dict[str, Any], warehouses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return []
+        alerts = []
+        for w in warehouses:
+            if w.get("average_logistics_cycle", 0) > 5.8:
+                alerts.append({
+                    "severity": "CRITICAL",
+                    "source": w["warehouse_name"],
+                    "message": f"Cycle time of {w['average_logistics_cycle']} days exceeds executive target threshold of 5.8 days."
+                })
+            if w.get("pending_pgi", 0) > 50:
+                alerts.append({
+                    "severity": "WARNING",
+                    "source": w["warehouse_name"],
+                    "message": f"High backlog: {w['pending_pgi']} Delivery Notes pending Post Goods Issue (PGI)."
+                })
+        return alerts
 
 # ============================================================
 # 6. RESPONSE BUILDER & MASTER ORCHESTRATOR
@@ -600,13 +703,15 @@ class ResponseBuilder:
     @staticmethod
     def build(
         summary, pipeline, division, warehouse, dealer, product, city,
-        monthly, daily, network, alerts, recommendations, metadata, warehouse_charts,
-        dealer_charts, product_charts, city_charts
+        daily_trends_raw, network, alerts, recommendations, metadata, warehouse_charts,
+        dealer_charts, product_charts, city_charts, trend_charts
     ) -> Dict[str, Any]:
         
         cards = {
-            "revenue": {"value": summary.get("total_revenue", 0), "target": 150000000, "icon": "fa-chart-line"},
+            "total_dn": {"value": summary.get("total_delivery_notes", 0), "icon": "fa-file-invoice"},
+            "total_units": {"value": summary.get("total_units", 0), "icon": "fa-boxes"},
             "health_score": {"value": summary.get("dashboard_health_score", 0), "target": 95, "icon": "fa-heartbeat"},
+            "avg_cycle": {"value": summary.get("average_logistics_cycle", 0), "unit": "Days", "icon": "fa-clock"}
         }
         
         return {
@@ -622,8 +727,8 @@ class ResponseBuilder:
             "product_charts": product_charts,
             "city": city,
             "city_charts": city_charts,
-            "monthly_trends": monthly,
-            "daily_trends": daily,
+            "daily_trends": daily_trends_raw,
+            "trend_charts": trend_charts,
             "network": network,
             "alerts": alerts,
             "recommendations": recommendations,
@@ -633,7 +738,7 @@ class ResponseBuilder:
 class DashboardService:
     def __init__(self):
         self._repo = DashboardRepository()
-        logger.info("🚀 DashboardService v11.6 initialized with Python Distance Tiering")
+        logger.info("🚀 DashboardService v11.8 initialized with Enterprise Plotly Engine")
 
     @cached(ttl=5)
     async def get_dashboard_data(
@@ -649,11 +754,10 @@ class DashboardService:
             raw_sum = self._repo.fetch_raw_summary()
             raw_pipe = self._repo.fetch_raw_pipeline()
             raw_div = self._repo.fetch_raw_divisions()
-            raw_wh = self._repo.fetch_raw_warehouses_for_python() # Using the new unaggregated raw Python pull
+            raw_wh = self._repo.fetch_raw_warehouses_for_python()
             raw_dl = self._repo.fetch_raw_dealers()
             raw_pr = self._repo.fetch_raw_products()
             raw_ct = self._repo.fetch_raw_cities()
-            raw_mon = self._repo.fetch_raw_monthly_trends()
             raw_dai = self._repo.fetch_raw_daily_trends()
             raw_net = self._repo.fetch_raw_network_rows()
             record_count = self._repo.fetch_record_count()
@@ -664,12 +768,11 @@ class DashboardService:
         summary = BusinessRuleEngine.calculate_summary(raw_sum)
         pipeline = BusinessRuleEngine.calculate_pipeline(raw_pipe)
         division = AnalyticsEngine.process_divisions(raw_div)
-        warehouse = AnalyticsEngine.process_warehouses(raw_wh) # Heavy-lifting now handled in-memory
+        warehouse = AnalyticsEngine.process_warehouses(raw_wh)
         dealer = AnalyticsEngine.process_dealers(raw_dl)
         product = AnalyticsEngine.process_products(raw_pr)
         city = AnalyticsEngine.process_cities(raw_ct)
-        monthly = AnalyticsEngine.process_monthly_trends(raw_mon)
-        daily = AnalyticsEngine.process_daily_trends(raw_dai)
+        daily_trends_raw = AnalyticsEngine.process_daily_trends(raw_dai)
         network = AnalyticsEngine.process_network(raw_net)
 
         alerts = AlertEngine.generate(summary, warehouse)
@@ -679,9 +782,10 @@ class DashboardService:
         dealer_charts = GraphEngine.get_dealer_charts(dealer)
         product_charts = GraphEngine.get_product_charts(product)
         city_charts = GraphEngine.get_city_charts(city)
+        trend_charts = GraphEngine.get_daily_trend_charts(daily_trends_raw)
 
         metadata = {
-            "application_version": "11.6.0",
+            "application_version": "11.8.0",
             "database_version": "PostgreSQL",
             "postgresql_status": "connected",
             "record_count": record_count,
@@ -691,8 +795,8 @@ class DashboardService:
 
         return ResponseBuilder.build(
             summary, pipeline, division, warehouse, dealer, product, city,
-            monthly, daily, network, alerts, recommendations, metadata,
-            warehouse_charts, dealer_charts, product_charts, city_charts
+            daily_trends_raw, network, alerts, recommendations, metadata,
+            warehouse_charts, dealer_charts, product_charts, city_charts, trend_charts
         )
 
 # ============================================================
@@ -710,99 +814,30 @@ def get_dashboard_service() -> DashboardService:
 router = APIRouter(prefix="/dashboard/api", tags=["dashboard"])
 
 @router.get("/data")
-async def dashboard_api_data(
-    service: DashboardService = Depends(get_dashboard_service),
-    start_date: Optional[str] = Query(None),
-    end_date: Optional[str] = Query(None),
-    warehouse: Optional[str] = Query(None),
-    dealer: Optional[str] = Query(None),
-    city: Optional[str] = Query(None),
-    division: Optional[str] = Query(None),
-):
-    filters = {k: v for k, v in locals().items() if k not in ['service', 'filters'] and v is not None}
-    return await service.get_dashboard_data(filters)
-
-@router.get("/executive")
-async def executive_summary(service: DashboardService = Depends(get_dashboard_service)):
-    data = await service.get_dashboard_data({})
-    return {"executive": data.get("executive")}
-
-@router.get("/pipeline")
-async def pipeline(service: DashboardService = Depends(get_dashboard_service)):
-    data = await service.get_dashboard_data({})
-    return data.get("pipeline", {})
-
-@router.get("/division")
-async def division(service: DashboardService = Depends(get_dashboard_service)):
-    data = await service.get_dashboard_data({})
-    return data.get("division", [])
-
-@router.get("/warehouse")
-async def warehouse(service: DashboardService = Depends(get_dashboard_service)):
-    data = await service.get_dashboard_data({})
-    return data.get("warehouse", [])
+async def dashboard_api_data(service: DashboardService = Depends(get_dashboard_service)):
+    return await service.get_dashboard_data({})
 
 @router.get("/warehouse/charts")
 async def warehouse_charts(service: DashboardService = Depends(get_dashboard_service)):
     data = await service.get_dashboard_data({})
     return data.get("warehouse_charts", {})
 
-@router.get("/dealer")
-async def dealer(service: DashboardService = Depends(get_dashboard_service)):
-    data = await service.get_dashboard_data({})
-    return data.get("dealer", [])
-
 @router.get("/dealer/charts")
 async def dealer_charts(service: DashboardService = Depends(get_dashboard_service)):
     data = await service.get_dashboard_data({})
     return data.get("dealer_charts", {})
-
-@router.get("/product")
-async def product(service: DashboardService = Depends(get_dashboard_service)):
-    data = await service.get_dashboard_data({})
-    return data.get("product", [])
 
 @router.get("/product/charts")
 async def product_charts(service: DashboardService = Depends(get_dashboard_service)):
     data = await service.get_dashboard_data({})
     return data.get("product_charts", {})
 
-@router.get("/city")
-async def city(service: DashboardService = Depends(get_dashboard_service)):
-    data = await service.get_dashboard_data({})
-    return data.get("city", [])
-
 @router.get("/city/charts")
 async def city_charts(service: DashboardService = Depends(get_dashboard_service)):
     data = await service.get_dashboard_data({})
     return data.get("city_charts", {})
 
-@router.get("/trends/monthly")
-async def monthly_trends(service: DashboardService = Depends(get_dashboard_service)):
+@router.get("/trends/charts")
+async def trend_charts(service: DashboardService = Depends(get_dashboard_service)):
     data = await service.get_dashboard_data({})
-    return data.get("monthly_trends", {})
-
-@router.get("/trends/daily")
-async def daily_trends(service: DashboardService = Depends(get_dashboard_service)):
-    data = await service.get_dashboard_data({})
-    return data.get("daily_trends", {})
-
-@router.get("/network")
-async def network(service: DashboardService = Depends(get_dashboard_service)):
-    data = await service.get_dashboard_data({})
-    return data.get("network", {})
-
-@router.get("/alerts")
-async def alerts(service: DashboardService = Depends(get_dashboard_service)):
-    data = await service.get_dashboard_data({})
-    return data.get("alerts", [])
-
-@router.get("/recommendations")
-async def recommendations(service: DashboardService = Depends(get_dashboard_service)):
-    data = await service.get_dashboard_data({})
-    return data.get("recommendations", [])
-
-@router.get("/metadata")
-async def metadata(service: DashboardService = Depends(get_dashboard_service)):
-    data = await service.get_dashboard_data({})
-    return data.get("metadata", {})
+    return data.get("trend_charts", {})
