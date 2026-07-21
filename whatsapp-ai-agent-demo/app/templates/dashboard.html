@@ -20,12 +20,12 @@
     <link href="/static/css/dashboard.css" rel="stylesheet" />
 </head>
 <body>
-    <div id="app" class="container-fluid">
+    <div id="app" class="container-fluid px-0">
         <!-- Sidebar -->
         <aside class="sidebar">
             <div class="sidebar-brand">
                 <h5><i class="fas fa-cubes"></i> Logistics IQ</h5>
-                <small>Enterprise Intelligence Platform</small>
+                <small>Enterprise Intelligence</small>
             </div>
             <nav class="sidebar-nav">
                 <a class="nav-link active" href="#"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
@@ -39,7 +39,7 @@
                 <a class="nav-link" href="#"><i class="fas fa-file-alt"></i> Reports</a>
                 <a class="nav-link" href="#"><i class="fas fa-server"></i> Status</a>
             </nav>
-            <div class="sidebar-footer">v8.2 · Enterprise</div>
+            <div class="sidebar-footer">v8.3 · Enterprise</div>
         </aside>
 
         <!-- Main Content -->
@@ -58,6 +58,13 @@
                 </div>
             </div>
 
+            <!-- Welcome / No Data Placeholder (hidden when data loads) -->
+            <div id="welcomeBanner" class="alert alert-info text-center mb-4" style="display:none;">
+                <i class="fas fa-rocket fa-2x"></i>
+                <h4>Welcome to Logistics IQ</h4>
+                <p>Upload your first Excel file to see real-time analytics.</p>
+            </div>
+
             <!-- KPI Cards -->
             <section id="kpiCards" class="row g-3 mb-4"></section>
 
@@ -66,7 +73,9 @@
                 <div class="col-12">
                     <div class="card">
                         <div class="card-header"><i class="fas fa-route"></i> Executive Logistics Pipeline</div>
-                        <div class="card-body" id="pipelineContainer"></div>
+                        <div class="card-body" id="pipelineContainer">
+                            <p class="text-muted text-center">No pipeline data available.</p>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -76,7 +85,9 @@
                 <div class="col-12">
                     <div class="card">
                         <div class="card-header"><i class="fas fa-layer-group"></i> Division Dashboard</div>
-                        <div class="card-body" id="divisionContainer"></div>
+                        <div class="card-body" id="divisionContainer">
+                            <p class="text-muted text-center">No division data available.</p>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -88,13 +99,16 @@
                         <div class="card-header"><i class="fas fa-warehouse"></i> Warehouse Performance</div>
                         <div class="card-body">
                             <div id="warehouseGrid" class="ag-theme-alpine" style="height:400px;"></div>
+                            <p class="text-muted text-center small">Upload data to see warehouse performance.</p>
                         </div>
                     </div>
                 </div>
                 <div class="col-xl-6">
                     <div class="card">
                         <div class="card-header"><i class="fas fa-chart-bar"></i> Warehouse Charts</div>
-                        <div class="card-body" id="warehouseCharts"></div>
+                        <div class="card-body" id="warehouseCharts">
+                            <p class="text-muted text-center">No charts available.</p>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -106,6 +120,7 @@
                         <div class="card-header"><i class="fas fa-users"></i> Dealer Performance</div>
                         <div class="card-body">
                             <div id="dealerGrid" class="ag-theme-alpine" style="height:400px;"></div>
+                            <p class="text-muted text-center small">Upload data to see dealer performance.</p>
                         </div>
                     </div>
                 </div>
@@ -114,6 +129,7 @@
                         <div class="card-header"><i class="fas fa-box"></i> Product Performance</div>
                         <div class="card-body">
                             <div id="productGrid" class="ag-theme-alpine" style="height:400px;"></div>
+                            <p class="text-muted text-center small">Upload data to see product performance.</p>
                         </div>
                     </div>
                 </div>
@@ -126,13 +142,16 @@
                         <div class="card-header"><i class="fas fa-city"></i> City Performance</div>
                         <div class="card-body">
                             <div id="cityGrid" class="ag-theme-alpine" style="height:400px;"></div>
+                            <p class="text-muted text-center small">Upload data to see city performance.</p>
                         </div>
                     </div>
                 </div>
                 <div class="col-xl-6">
                     <div class="card">
                         <div class="card-header"><i class="fas fa-project-diagram"></i> Supply Chain Network</div>
-                        <div class="card-body" id="networkContainer"></div>
+                        <div class="card-body" id="networkContainer">
+                            <p class="text-muted text-center">No network data available.</p>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -142,13 +161,17 @@
                 <div class="col-xl-6">
                     <div class="card">
                         <div class="card-header"><i class="fas fa-chart-line"></i> Monthly Trends</div>
-                        <div class="card-body" id="monthlyTrends"></div>
+                        <div class="card-body" id="monthlyTrends">
+                            <p class="text-muted text-center">No monthly data.</p>
+                        </div>
                     </div>
                 </div>
                 <div class="col-xl-6">
                     <div class="card">
                         <div class="card-header"><i class="fas fa-chart-area"></i> Daily Trends</div>
-                        <div class="card-body" id="dailyTrends"></div>
+                        <div class="card-body" id="dailyTrends">
+                            <p class="text-muted text-center">No daily data.</p>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -158,18 +181,22 @@
                 <div class="col-xl-6">
                     <div class="card">
                         <div class="card-header"><i class="fas fa-exclamation-triangle"></i> Executive Alerts</div>
-                        <div class="card-body" id="alertsContainer"></div>
+                        <div class="card-body" id="alertsContainer">
+                            <p class="text-muted text-center">No alerts.</p>
+                        </div>
                     </div>
                 </div>
                 <div class="col-xl-6">
                     <div class="card">
                         <div class="card-header"><i class="fas fa-robot"></i> AI Recommendations</div>
-                        <div class="card-body" id="recommendationsContainer"></div>
+                        <div class="card-body" id="recommendationsContainer">
+                            <p class="text-muted text-center">No recommendations yet.</p>
+                        </div>
                     </div>
                 </div>
             </section>
 
-            <!-- Upload & Search (Preserved) -->
+            <!-- Upload & Search -->
             <section class="row g-3 mb-4">
                 <div class="col-md-6">
                     <div class="card upload-highlight">
