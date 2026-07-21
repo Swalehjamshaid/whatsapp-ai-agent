@@ -1,18 +1,18 @@
 <!-- ============================================================
      FILE: app/templates/dashboard.html
-     VERSION: 12.0 – ULTRA-PREMIUM SAP/MICROSOFT FABRIC COMMAND SUITE
+     VERSION: 13.0 – WORLD‑CLASS ENTERPRISE DASHBOARD
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Haier Pakistan – Enterprise Logistics Command Suite</title>
+  <title>Haier Pakistan – Enterprise Command Suite</title>
 
-  <!-- Google Fonts: Plus Jakarta Sans -->
+  <!-- Google Fonts: Inter + JetBrains Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 
   <!-- Bootstrap 5 CSS -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
@@ -29,69 +29,219 @@
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
   <!-- ============================================================
-  ULTRA-PREMIUM ENTERPRISE DESIGN SYSTEM (FABRIC / SAP STANDARD)
+  ULTRA‑PREMIUM DESIGN SYSTEM – Inspired by top SaaS dashboards
   ============================================================ -->
   <style>
+    /* ----- Design Tokens ----- */
     :root {
-      --bg-app: #070B14;
-      --bg-surface: #0F172A;
-      --bg-surface-hover: #1E293B;
-      --border-color: rgba(255, 255, 255, 0.08);
-      --border-glow: rgba(56, 189, 248, 0.25);
-      
-      --text-main: #F8FAFC;
-      --text-muted: #94A3B8;
-      --text-bright: #FFFFFF;
-      
-      --accent-cyan: #0ea5e9;
-      --accent-blue: #2563eb;
-      --accent-indigo: #4f46e5;
-      
-      --gradient-brand: linear-gradient(135deg, #0ea5e9 0%, #2563eb 50%, #4f46e5 100%);
-      --gradient-card: linear-gradient(145deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.8) 100%);
-      
-      --success: #10b981;
-      --warning: #f59e0b;
-      --danger: #ef4444;
-      
-      --font-family: 'Plus Jakarta Sans', sans-serif;
-      --radius-xl: 20px;
-      --radius-lg: 14px;
-      --radius-md: 10px;
-      
-      --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-      --shadow-neon: 0 0 20px rgba(14, 165, 233, 0.15);
-      --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      --color-bg-base: #070b14;
+      --color-bg-surface: #0f172a;
+      --color-bg-elevated: #1e293b;
+      --color-border: rgba(255,255,255,0.06);
+      --color-border-hover: rgba(56,189,248,0.25);
+      --color-text-primary: #f8fafc;
+      --color-text-secondary: #94a3b8;
+      --color-text-muted: #64748b;
+      --color-accent: #38bdf8;
+      --color-accent-blue: #2563eb;
+      --color-accent-indigo: #4f46e5;
+      --color-success: #10b981;
+      --color-warning: #f59e0b;
+      --color-danger: #ef4444;
+      --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+      --radius-xl: 24px;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow-glass: 0 12px 48px rgba(0,0,0,0.45);
+      --shadow-neon: 0 0 30px rgba(56,189,248,0.08);
+      --transition-smooth: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
     [data-theme="light"] {
-      --bg-app: #F1F5F9;
-      --bg-surface: #FFFFFF;
-      --bg-surface-hover: #F8FAFC;
-      --border-color: #E2E8F0;
-      --border-glow: rgba(14, 165, 233, 0.2);
-      
-      --text-main: #1E293B;
-      --text-muted: #64748B;
-      --text-bright: #0F172A;
-      
-      --gradient-card: linear-gradient(145deg, #FFFFFF 0%, #F8FAFC 100%);
-      --shadow-glass: 0 10px 30px 0 rgba(0, 0, 0, 0.05);
-      --shadow-neon: 0 0 20px rgba(14, 165, 233, 0.08);
+      --color-bg-base: #f1f5f9;
+      --color-bg-surface: #ffffff;
+      --color-bg-elevated: #f8fafc;
+      --color-border: #e2e8f0;
+      --color-border-hover: rgba(37,99,235,0.15);
+      --color-text-primary: #0f172a;
+      --color-text-secondary: #475569;
+      --color-text-muted: #94a3b8;
+      --shadow-glass: 0 12px 48px rgba(0,0,0,0.05);
+      --shadow-neon: 0 0 30px rgba(37,99,235,0.06);
     }
 
+    /* ----- Reset & Base ----- */
+    * { box-sizing: border-box; }
     body {
-      font-family: var(--font-family);
-      background-color: var(--bg-app);
-      color: var(--text-main);
-      min-height: 100vh;
+      font-family: var(--font-sans);
+      background: var(--color-bg-base);
+      color: var(--color-text-primary);
       margin: 0;
-      overflow-x: hidden;
+      min-height: 100vh;
+      transition: background 0.4s ease, color 0.4s ease;
       -webkit-font-smoothing: antialiased;
-      transition: background-color 0.3s ease, color 0.3s ease;
     }
 
     .container-fluid { padding: 0; }
+
+    /* ----- Sidebar (Executive) ----- */
+    .sidebar {
+      position: fixed;
+      top: 0; left: 0;
+      width: 280px;
+      height: 100vh;
+      background: var(--color-bg-surface);
+      border-right: 1px solid var(--color-border);
+      padding: 1.75rem 1.25rem;
+      z-index: 1050;
+      display: flex;
+      flex-direction: column;
+      backdrop-filter: blur(20px);
+      transition: transform var(--transition-smooth);
+    }
+    .sidebar-brand {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding-bottom: 1.75rem;
+      border-bottom: 1px solid var(--color-border);
+    }
+    .brand-icon {
+      width: 44px; height: 44px;
+      background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
+      border-radius: var(--radius-md);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 1.3rem;
+      box-shadow: var(--shadow-neon);
+    }
+    .sidebar-brand h5 {
+      font-size: 1.1rem; font-weight: 800; color: var(--color-text-primary);
+      margin: 0; letter-spacing: -0.02em;
+    }
+    .sidebar-brand small {
+      font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+      color: var(--color-text-secondary); letter-spacing: 0.1em;
+      display: block;
+    }
+
+    .sidebar-nav {
+      flex: 1;
+      padding: 1.5rem 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      overflow-y: auto;
+    }
+    .sidebar-nav::-webkit-scrollbar { width: 4px; }
+    .sidebar-nav::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 4px; }
+
+    .sidebar-nav .nav-link {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: var(--radius-md);
+      color: var(--color-text-secondary);
+      font-weight: 600;
+      font-size: 0.85rem;
+      text-decoration: none;
+      transition: var(--transition-smooth);
+    }
+    .sidebar-nav .nav-link i {
+      width: 20px; text-align: center;
+      font-size: 1.05rem;
+      transition: transform 0.2s ease;
+    }
+    .sidebar-nav .nav-link:hover {
+      background: rgba(56,189,248,0.06);
+      color: var(--color-accent);
+    }
+    .sidebar-nav .nav-link:hover i { transform: translateX(4px); }
+    .sidebar-nav .nav-link.active {
+      background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
+      color: #fff;
+      box-shadow: 0 8px 24px rgba(37,99,235,0.3);
+    }
+    .sidebar-footer {
+      padding: 1rem 0.5rem;
+      border-top: 1px solid var(--color-border);
+      font-size: 0.7rem;
+      color: var(--color-text-muted);
+      text-align: center;
+      font-weight: 600;
+    }
+
+    /* ----- Top Bar ----- */
+    .topbar {
+      background: var(--color-bg-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-xl);
+      padding: 0.9rem 2rem;
+      margin-bottom: 2.25rem;
+      box-shadow: var(--shadow-glass);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      backdrop-filter: blur(20px);
+      transition: background 0.3s ease;
+    }
+    .topbar-left { display: flex; align-items: center; gap: 1.25rem; }
+    .topbar-left .hamburger {
+      display: none; background: none; border: none;
+      font-size: 1.25rem; color: var(--color-text-primary); cursor: pointer;
+    }
+    .topbar-left h4 {
+      font-size: 1.2rem; font-weight: 800; margin: 0;
+      color: var(--color-text-primary);
+      letter-spacing: -0.02em;
+      display: flex; align-items: center; gap: 0.6rem;
+    }
+    .topbar-left h4 i { color: var(--color-accent); }
+
+    .topbar-right {
+      display: flex; align-items: center; gap: 0.9rem;
+      flex-wrap: wrap;
+    }
+    .badge-date {
+      background: var(--color-bg-base);
+      padding: 0.4rem 1.1rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      color: var(--color-text-secondary);
+      font-weight: 600;
+      border: 1px solid var(--color-border);
+      display: flex; align-items: center; gap: 0.5rem;
+    }
+    .badge-date i { color: var(--color-accent); }
+    .user-badge {
+      display: flex; align-items: center; gap: 0.5rem;
+      background: rgba(56,189,248,0.08);
+      padding: 0.35rem 1rem 0.35rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      color: var(--color-accent);
+      font-weight: 700;
+      border: 1px solid rgba(56,189,248,0.15);
+    }
+    .btn-theme {
+      background: var(--color-bg-base);
+      border: 1px solid var(--color-border);
+      border-radius: 9999px;
+      width: 38px; height: 38px;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--color-text-secondary);
+      transition: var(--transition-smooth);
+      cursor: pointer;
+    }
+    .btn-theme:hover {
+      background: var(--color-bg-elevated);
+      color: var(--color-text-primary);
+      transform: rotate(15deg);
+    }
+
+    /* ----- Main Content ----- */
     .main-content {
       margin-left: 280px;
       padding: 2rem 2.5rem;
@@ -99,244 +249,288 @@
       transition: margin var(--transition-smooth);
     }
 
-    /* ---- Executive Sidebar ---- */
-    .sidebar {
-      position: fixed;
-      top: 0; left: 0;
-      width: 280px;
-      height: 100vh;
-      background: var(--bg-surface);
-      border-right: 1px solid var(--border-color);
-      padding: 1.75rem 1.25rem;
-      z-index: 1050;
-      display: flex;
-      flex-direction: column;
-      box-shadow: 5px 0 30px rgba(0,0,0,0.2);
-      backdrop-filter: blur(20px);
-    }
-    .sidebar-brand {
-      padding: 0 0.5rem 1.75rem;
-      border-bottom: 1px solid var(--border-color);
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-    }
-    .brand-icon {
-      width: 44px; height: 44px;
-      background: var(--gradient-brand);
-      border-radius: var(--radius-md);
-      display: flex; align-items: center; justify-content: center;
-      color: white; font-size: 1.25rem;
-      box-shadow: var(--shadow-neon);
-    }
-    .sidebar-brand h5 { font-size: 1.15rem; font-weight: 800; color: var(--text-bright); margin: 0; letter-spacing: -0.01em; }
-    .sidebar-brand small { font-size: 0.7rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; }
-
-    .sidebar-nav { flex: 1; padding: 1.5rem 0; display: flex; flex-direction: column; gap: 0.4rem; overflow-y: auto; }
-    .sidebar-nav::-webkit-scrollbar { width: 4px; }
-    .sidebar-nav::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
-
-    .sidebar-nav .nav-link {
-      display: flex; align-items: center;
-      padding: 0.85rem 1rem;
-      border-radius: var(--radius-md);
-      color: var(--text-muted);
-      font-weight: 600;
-      font-size: 0.875rem;
-      transition: var(--transition-smooth);
-      text-decoration: none;
-      gap: 0.9rem;
-    }
-    .sidebar-nav .nav-link i { width: 20px; text-align: center; font-size: 1.05rem; transition: transform 0.2s ease; }
-    .sidebar-nav .nav-link:hover { background: rgba(14, 165, 233, 0.08); color: var(--accent-cyan); }
-    .sidebar-nav .nav-link:hover i { transform: translateX(3px); color: var(--accent-cyan); }
-    .sidebar-nav .nav-link.active {
-      background: var(--gradient-brand);
-      color: #FFFFFF;
-      box-shadow: 0 8px 20px rgba(14, 165, 233, 0.3);
-    }
-    .sidebar-nav .nav-link.active i { color: #FFFFFF; }
-    .sidebar-footer {
-      padding: 1rem 0.5rem;
-      border-top: 1px solid var(--border-color);
-      font-size: 0.725rem;
-      color: var(--text-muted);
-      text-align: center;
-      font-weight: 600;
-    }
-
-    /* ---- Glassmorphic Topbar ---- */
-    .topbar {
-      background: var(--bg-surface);
-      border: 1px solid var(--border-color);
-      border-radius: var(--radius-xl);
-      padding: 1.1rem 2rem;
-      box-shadow: var(--shadow-glass);
-      margin-bottom: 2.25rem;
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      backdrop-filter: blur(20px);
-    }
-    .topbar-left { display: flex; align-items: center; gap: 1.25rem; }
-    .topbar-left .hamburger { display: none; background: none; border: none; font-size: 1.25rem; color: var(--text-bright); cursor: pointer; }
-    .topbar-left h4 { font-size: 1.3rem; font-weight: 800; margin: 0; color: var(--text-bright); letter-spacing: -0.02em; display: flex; align-items: center; gap: 0.75rem; }
-    .topbar-left h4 i { color: var(--accent-cyan); }
-
-    .topbar-right { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
-    .badge-date { background: var(--bg-app); padding: 0.45rem 1rem; border-radius: 9999px; font-size: 0.775rem; color: var(--text-muted); font-weight: 600; border: 1px solid var(--border-color); display: flex; align-items: center; gap: 0.5rem; }
-    .badge-date i { color: var(--accent-cyan); }
-    .user-badge { display: flex; align-items: center; gap: 0.5rem; background: rgba(14, 165, 233, 0.1); padding: 0.4rem 1.1rem 0.4rem 0.85rem; border-radius: 9999px; font-size: 0.825rem; color: var(--accent-cyan); font-weight: 700; border: 1px solid rgba(14, 165, 233, 0.25); }
-    .btn-theme { background: var(--bg-app); border: 1px solid var(--border-color); border-radius: 9999px; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; color: var(--text-muted); transition: var(--transition-smooth); cursor: pointer; }
-    .btn-theme:hover { background: var(--border-color); color: var(--text-bright); transform: rotate(15deg); }
-
-    /* ---- Executive Cards ---- */
+    /* ----- Cards (Glass) ----- */
     .card {
-      background: var(--gradient-card);
-      border: 1px solid var(--border-color);
+      background: var(--color-bg-surface);
+      border: 1px solid var(--color-border);
       border-radius: var(--radius-xl);
       box-shadow: var(--shadow-glass);
-      margin-bottom: 2rem;
       transition: var(--transition-smooth);
-      position: relative;
       overflow: hidden;
+      position: relative;
+      backdrop-filter: blur(4px);
+      margin-bottom: 1.5rem;
+    }
+    .card:hover {
+      transform: translateY(-4px);
+      border-color: var(--color-border-hover);
+      box-shadow: var(--shadow-neon);
     }
     .card::before {
       content: '';
       position: absolute;
-      top: 0; left: 0; width: 100%; height: 2px;
-      background: var(--gradient-brand);
+      top: 0; left: 0; width: 100%; height: 2.5px;
+      background: linear-gradient(90deg, var(--color-accent), var(--color-accent-indigo));
       opacity: 0.6;
     }
-    .card:hover { transform: translateY(-4px); box-shadow: 0 20px 40px rgba(0,0,0,0.25); border-color: rgba(14, 165, 233, 0.3); }
-    
+
     .card-header {
       background: transparent !important;
-      border-bottom: 1px solid var(--border-color) !important;
-      color: var(--text-bright) !important;
-      padding: 1.4rem 1.75rem !important;
-      font-weight: 800;
-      font-size: 1.1rem;
+      border-bottom: 1px solid var(--color-border) !important;
+      color: var(--color-text-primary) !important;
+      padding: 1.2rem 1.75rem !important;
+      font-weight: 700;
+      font-size: 1rem;
       letter-spacing: -0.01em;
-      display: flex;
-      align-items: center;
-      gap: 0.85rem;
+      display: flex; align-items: center; gap: 0.85rem;
     }
-    .card-header i { color: var(--accent-cyan); font-size: 1.25rem; filter: drop-shadow(0 0 8px rgba(14, 165, 233, 0.4)); }
+    .card-header i {
+      color: var(--color-accent);
+      font-size: 1.2rem;
+      filter: drop-shadow(0 0 8px rgba(56,189,248,0.2));
+    }
 
-    /* ---- Ultra KPI Cards ---- */
+    /* ----- KPI Cards (Elevated) ----- */
     .kpi-card {
-      background: var(--gradient-card);
-      border: 1px solid var(--border-color);
-      border-radius: var(--radius-xl);
-      padding: 1.6rem 1.75rem;
-      box-shadow: var(--shadow-glass);
+      background: var(--color-bg-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      padding: 1.5rem 1.75rem;
       height: 100%;
       position: relative;
-      overflow: hidden;
       transition: var(--transition-smooth);
+      box-shadow: var(--shadow-glass);
+      backdrop-filter: blur(4px);
     }
-    .kpi-card::after {
-      content: '';
-      position: absolute;
-      bottom: 0; right: 0; width: 100px; height: 100px;
-      background: radial-gradient(circle, rgba(14, 165, 233, 0.08) 0%, transparent 70%);
-      pointer-events: none;
+    .kpi-card:hover {
+      transform: translateY(-6px);
+      border-color: var(--color-accent);
+      box-shadow: var(--shadow-neon);
     }
-    .kpi-card:hover { transform: translateY(-5px); border-color: var(--accent-cyan); box-shadow: var(--shadow-neon); }
-    .kpi-card h6 { font-size: 0.75rem; text-transform: uppercase; font-weight: 700; color: var(--text-muted); margin-bottom: 0.75rem; letter-spacing: 0.08em; display: flex; align-items: center; gap: 0.5rem; }
-    .kpi-card h6 i { color: var(--accent-cyan); font-size: 0.95rem; }
-    .kpi-card .kpi-value { font-size: 2.25rem; font-weight: 800; color: var(--text-bright); margin: 0; letter-spacing: -0.03em; }
+    .kpi-card h6 {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: var(--color-text-secondary);
+      letter-spacing: 0.08em;
+      margin-bottom: 0.65rem;
+      display: flex; align-items: center; gap: 0.5rem;
+    }
+    .kpi-card h6 i { color: var(--color-accent); }
+    .kpi-card .kpi-value {
+      font-size: 2.1rem;
+      font-weight: 800;
+      color: var(--color-text-primary);
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+    }
+    .kpi-card .kpi-sub {
+      font-size: 0.7rem;
+      color: var(--color-text-muted);
+      font-weight: 600;
+      margin-top: 0.4rem;
+    }
 
-    /* ---- Empty States ---- */
+    /* ----- Empty States ----- */
     .empty-state {
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      padding: 3.5rem 2rem; color: var(--text-muted); text-align: center;
-      background: rgba(15, 23, 42, 0.3); border-radius: var(--radius-lg); border: 2px dashed var(--border-color);
-    }
-    .empty-state i { font-size: 3rem; margin-bottom: 1rem; color: var(--accent-cyan); opacity: 0.4; }
-
-    /* ---- Pipeline Flow UI ---- */
-    .pipeline-stage {
-      background: rgba(15, 23, 42, 0.5);
-      border: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+      color: var(--color-text-secondary);
+      text-align: center;
+      background: rgba(15,23,42,0.2);
       border-radius: var(--radius-lg);
-      padding: 1.25rem 1.5rem; min-width: 170px; text-align: center;
-      transition: var(--transition-smooth);
-      position: relative;
+      border: 2px dashed var(--color-border);
     }
-    .pipeline-stage:hover { transform: scale(1.04); border-color: var(--accent-cyan); box-shadow: var(--shadow-neon); }
-    .pipeline-stage .stage-label { font-size: 0.725rem; color: var(--text-muted); text-transform: uppercase; font-weight: 800; letter-spacing: 0.08em; }
-    .pipeline-stage .stage-value { font-size: 1.75rem; font-weight: 800; color: var(--text-bright); margin-top: 0.35rem; letter-spacing: -0.02em; }
-    .pipeline-arrow { font-size: 1.5rem; color: var(--accent-cyan); font-weight: 400; opacity: 0.8; filter: drop-shadow(0 0 5px rgba(14, 165, 233, 0.3)); }
+    .empty-state i {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+      color: var(--color-accent);
+      opacity: 0.3;
+    }
 
-    /* ---- Excel Upload & Search Panels ---- */
-    .upload-highlight { border: 2px dashed var(--accent-cyan); background: rgba(14, 165, 233, 0.04); }
-    
+    /* ----- Pipeline Flow ----- */
+    .pipeline-stage {
+      background: rgba(15,23,42,0.4);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: 1.25rem 1.5rem;
+      min-width: 160px;
+      text-align: center;
+      transition: var(--transition-smooth);
+    }
+    .pipeline-stage:hover {
+      border-color: var(--color-accent);
+      transform: scale(1.04);
+      box-shadow: var(--shadow-neon);
+    }
+    .pipeline-stage .stage-label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: var(--color-text-secondary);
+      letter-spacing: 0.06em;
+    }
+    .pipeline-stage .stage-value {
+      font-size: 1.75rem;
+      font-weight: 800;
+      color: var(--color-text-primary);
+      margin-top: 0.25rem;
+    }
+    .pipeline-arrow {
+      font-size: 1.2rem;
+      color: var(--color-accent);
+      opacity: 0.6;
+    }
+
+    /* ----- Forms & Upload ----- */
+    .upload-highlight {
+      border: 2px dashed var(--color-accent);
+      background: rgba(56,189,248,0.03);
+    }
     .btn-upload, .btn-search {
-      background: var(--gradient-brand); border: none; padding: 0.75rem 2rem;
-      border-radius: var(--radius-md); font-weight: 700; font-size: 0.9rem; color: white;
-      transition: var(--transition-smooth); box-shadow: 0 8px 20px rgba(14, 165, 233, 0.3);
+      background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
+      border: none;
+      padding: 0.75rem 2rem;
+      border-radius: var(--radius-md);
+      font-weight: 700;
+      font-size: 0.9rem;
+      color: #fff;
+      transition: var(--transition-smooth);
+      box-shadow: 0 8px 24px rgba(37,99,235,0.25);
       display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
     }
-    .btn-upload:hover, .btn-search:hover { transform: translateY(-2px); box-shadow: 0 12px 25px rgba(14, 165, 233, 0.4); color: white; }
+    .btn-upload:hover, .btn-search:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 32px rgba(37,99,235,0.35);
+    }
 
     .form-toolbar { display: flex; flex-wrap: wrap; gap: 1.25rem; align-items: flex-end; }
-    .form-toolbar .form-group { flex: 1; min-width: 200px; }
+    .form-toolbar .form-group { flex: 1; min-width: 180px; }
     .form-control, .form-select {
-      border: 1px solid var(--border-color); border-radius: var(--radius-md);
-      padding: 0.75rem 1.15rem; font-size: 0.9rem; background: rgba(15, 23, 42, 0.6); color: var(--text-bright);
-      font-weight: 500; transition: var(--transition-smooth);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: 0.7rem 1.1rem;
+      font-size: 0.9rem;
+      background: rgba(15,23,42,0.5);
+      color: var(--color-text-primary);
+      font-weight: 500;
+      transition: var(--transition-smooth);
     }
-    [data-theme="light"] .form-control, [data-theme="light"] .form-select { background: #FFFFFF; color: var(--text-main); }
+    [data-theme="light"] .form-control,
+    [data-theme="light"] .form-select {
+      background: #ffffff;
+      color: var(--color-text-primary);
+    }
     .form-control:focus, .form-select:focus {
-      border-color: var(--accent-cyan);
-      box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.2);
-      background: rgba(15, 23, 42, 0.8);
-      color: var(--text-bright);
+      border-color: var(--color-accent);
+      box-shadow: 0 0 0 4px rgba(56,189,248,0.12);
+      background: rgba(15,23,42,0.7);
     }
-    [data-theme="light"] .form-control:focus, [data-theme="light"] .form-select:focus { background: #FFFFFF; color: var(--text-main); }
-    label { font-size: 0.775rem; font-weight: 800; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.5rem; display: block; }
+    [data-theme="light"] .form-control:focus,
+    [data-theme="light"] .form-select:focus {
+      background: #ffffff;
+    }
+    label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--color-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 0.4rem;
+      display: block;
+    }
 
-    /* ---- AG Grid Professional Customization ---- */
+    /* ----- AG Grid Alpine Customization ----- */
     .ag-theme-alpine {
       --ag-background-color: transparent;
-      --ag-foreground-color: var(--text-main);
-      --ag-border-color: var(--border-color);
-      --ag-header-background-color: rgba(15, 23, 42, 0.6);
-      --ag-header-foreground-color: var(--text-bright);
-      --ag-row-hover-color: rgba(14, 165, 233, 0.08);
-      --ag-font-size: 0.875rem;
-      --ag-font-family: var(--font-family);
+      --ag-foreground-color: var(--color-text-primary);
+      --ag-border-color: var(--color-border);
+      --ag-header-background-color: rgba(15,23,42,0.5);
+      --ag-header-foreground-color: var(--color-text-primary);
+      --ag-row-hover-color: rgba(56,189,248,0.04);
+      --ag-font-size: 0.85rem;
+      --ag-font-family: var(--font-sans);
     }
-    [data-theme="light"] .ag-theme-alpine { --ag-header-background-color: #F8FAFC; }
-    .ag-theme-alpine .ag-root-wrapper { border-radius: var(--radius-lg); border: 1px solid var(--border-color); box-shadow: var(--shadow-glass); }
-    .ag-theme-alpine .ag-header-cell-label { font-weight: 800; font-size: 0.8rem; text-transform: uppercase; color: var(--text-muted); }
+    [data-theme="light"] .ag-theme-alpine {
+      --ag-header-background-color: #f8fafc;
+    }
+    .ag-theme-alpine .ag-root-wrapper {
+      border-radius: var(--radius-md);
+      border: 1px solid var(--color-border);
+    }
+    .ag-theme-alpine .ag-header-cell-text {
+      font-weight: 700;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      color: var(--color-text-secondary);
+      letter-spacing: 0.04em;
+    }
 
-    /* ---- Alerts & Recommendations ---- */
-    .alert-item { border-radius: var(--radius-md); border-left: 4px solid var(--warning); background: rgba(245, 158, 11, 0.06); padding: 1rem 1.25rem; font-size: 0.875rem; font-weight: 500; border: 1px solid var(--border-color); display: flex; align-items: center; gap: 0.85rem; }
-    .alert-item.critical { border-left-color: var(--danger); background: rgba(239, 68, 68, 0.08); }
-    .alert-item.success { border-left-color: var(--success); background: rgba(16, 185, 129, 0.08); }
+    /* ----- Alerts & Recommendations ----- */
+    .alert-item {
+      border-radius: var(--radius-md);
+      border-left: 4px solid var(--color-warning);
+      background: rgba(245,158,11,0.04);
+      padding: 0.9rem 1.2rem;
+      margin-bottom: 0.6rem;
+      border: 1px solid var(--color-border);
+      display: flex; align-items: center; gap: 0.8rem;
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+    .alert-item.critical { border-left-color: var(--color-danger); background: rgba(239,68,68,0.04); }
+    .alert-item.success { border-left-color: var(--color-success); background: rgba(16,185,129,0.04); }
 
     .rec-card {
-      background: rgba(15, 23, 42, 0.4); border-radius: var(--radius-md); padding: 1.15rem 1.35rem;
-      border-left: 4px solid var(--accent-cyan); font-size: 0.875rem; margin-bottom: 0.85rem;
-      border-top: 1px solid var(--border-color); border-right: 1px solid var(--border-color); border-bottom: 1px solid var(--border-color);
+      background: rgba(15,23,42,0.3);
+      border-radius: var(--radius-md);
+      padding: 1rem 1.3rem;
+      border-left: 4px solid var(--color-accent);
+      border-top: 1px solid var(--color-border);
+      border-right: 1px solid var(--color-border);
+      border-bottom: 1px solid var(--color-border);
+      margin-bottom: 0.7rem;
     }
 
-    /* ---- Footer ---- */
+    /* ----- Footer ----- */
     .footer-bar {
-      background: var(--bg-surface); border-radius: var(--radius-xl); padding: 1.25rem 2.25rem;
-      border: 1px solid var(--border-color); text-align: center; font-size: 0.8rem; color: var(--text-muted);
-      font-weight: 600; box-shadow: var(--shadow-glass); backdrop-filter: blur(20px);
+      background: var(--color-bg-surface);
+      border-radius: var(--radius-xl);
+      padding: 1.1rem 2rem;
+      border: 1px solid var(--color-border);
+      text-align: center;
+      font-size: 0.75rem;
+      color: var(--color-text-secondary);
+      font-weight: 600;
+      box-shadow: var(--shadow-glass);
+      backdrop-filter: blur(20px);
     }
 
+    /* ----- Responsive Adjustments ----- */
     @media (max-width: 991.98px) {
       .sidebar { transform: translateX(-100%); }
       .sidebar.open { transform: translateX(0); }
       .main-content { margin-left: 0; padding: 1.5rem; }
       .topbar-left .hamburger { display: block; }
+    }
+    @media (max-width: 575.98px) {
+      .kpi-card .kpi-value { font-size: 1.6rem; }
+      .pipeline-stage { min-width: 120px; padding: 1rem; }
+    }
+
+    /* ----- Utility Animations ----- */
+    .fade-in {
+      animation: fadeInUp 0.6s ease forwards;
+    }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .card, .kpi-card, .pipeline-stage {
+      animation: fadeInUp 0.5s ease both;
     }
   </style>
 </head>
@@ -356,20 +550,20 @@
       </div>
     </div>
     <nav class="sidebar-nav">
-      <a class="nav-link active" href="#"><i class="fas fa-chart-line"></i> Dashboard Suite</a>
-      <a class="nav-link" href="#uploadSection"><i class="fas fa-cloud-arrow-up"></i> Excel Import Center</a>
-      <a class="nav-link" href="#warehouseGrid"><i class="fas fa-warehouse"></i> Warehouse Hubs</a>
-      <a class="nav-link" href="#dealerGrid"><i class="fas fa-handshake"></i> Key Accounts</a>
-      <a class="nav-link" href="#cityGrid"><i class="fas fa-map-location-dot"></i> Destination Hubs</a>
-      <a class="nav-link" href="#productGrid"><i class="fas fa-boxes-stacked"></i> SKU / Models</a>
-      <a class="nav-link" href="#trendCharts"><i class="fas fa-wave-square"></i> Operational Trends</a>
-      <a class="nav-link" href="#alertsContainer"><i class="fas fa-shield-halved"></i> Management Alerts</a>
+      <a class="nav-link active" href="#"><i class="fas fa-chart-line"></i> Dashboard</a>
+      <a class="nav-link" href="#uploadSection"><i class="fas fa-cloud-upload-alt"></i> Import Center</a>
+      <a class="nav-link" href="#warehouseGrid"><i class="fas fa-warehouse"></i> Warehouses</a>
+      <a class="nav-link" href="#dealerGrid"><i class="fas fa-handshake"></i> Dealers</a>
+      <a class="nav-link" href="#cityGrid"><i class="fas fa-map-marker-alt"></i> Cities</a>
+      <a class="nav-link" href="#productGrid"><i class="fas fa-boxes"></i> Products</a>
+      <a class="nav-link" href="#trendCharts"><i class="fas fa-wave-square"></i> Trends</a>
+      <a class="nav-link" href="#alertsContainer"><i class="fas fa-shield-alt"></i> Alerts</a>
     </nav>
-    <div class="sidebar-footer">v12.0 · Enterprise BI Standard</div>
+    <div class="sidebar-footer">v13.0 · Enterprise</div>
   </aside>
 
   <!-- ============================================================
-  MAIN CONTENT AREA
+  MAIN CONTENT
   ============================================================ -->
   <main class="main-content" id="mainContent">
 
@@ -377,12 +571,12 @@
     <div class="topbar">
       <div class="topbar-left">
         <button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button>
-        <h4><i class="fas fa-chart-pie"></i> Logistics Operations Command Center</h4>
+        <h4><i class="fas fa-chart-pie"></i> Logistics Operations Command</h4>
       </div>
       <div class="topbar-right">
         <span class="badge-date"><i class="fas fa-calendar-day"></i> <span id="todayDate"></span></span>
-        <span class="badge-date"><i class="fas fa-rotate"></i> <span id="lastRefresh">Just now</span></span>
-        <span class="user-badge"><i class="fas fa-user-tie"></i> Logistics Director</span>
+        <span class="badge-date"><i class="fas fa-sync-alt"></i> <span id="lastRefresh">Just now</span></span>
+        <span class="user-badge"><i class="fas fa-user-tie"></i> Director</span>
         <button class="btn-theme" id="themeToggle"><i class="fas fa-sun"></i></button>
       </div>
     </div>
@@ -390,23 +584,23 @@
     <!-- KPI CARDS -->
     <section id="kpiCards" class="row g-4 mb-4"></section>
 
-    <!-- PIPELINE FULFILLMENT -->
+    <!-- PIPELINE -->
     <section class="row g-4 mb-4">
       <div class="col-12">
         <div class="card">
-          <div class="card-header"><i class="fas fa-route"></i> End-to-End Supply Chain Fulfillment Pipeline</div>
+          <div class="card-header"><i class="fas fa-route"></i> End‑to‑End Fulfillment Pipeline</div>
           <div class="card-body p-4" id="pipelineContainer">
-            <div class="empty-state"><i class="fas fa-sitemap"></i><p>Pipeline awaiting data synchronization</p><small>Upload your SAP logistics spreadsheet to populate metrics</small></div>
+            <div class="empty-state"><i class="fas fa-sitemap"></i><p>Pipeline awaiting data</p><small>Upload SAP logistics report to populate</small></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- WAREHOUSE GRID & CHARTS -->
+    <!-- WAREHOUSE + CHARTS -->
     <section class="row g-4 mb-4">
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-warehouse"></i> Warehouse Fulfillment Ranking</div>
+          <div class="card-header"><i class="fas fa-warehouse"></i> Warehouse Performance</div>
           <div class="card-body p-3">
             <div id="warehouseGrid" class="ag-theme-alpine" style="height:420px;"></div>
           </div>
@@ -414,21 +608,19 @@
       </div>
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-chart-column"></i> Network Volume Distribution</div>
+          <div class="card-header"><i class="fas fa-chart-bar"></i> Network Volume Distribution</div>
           <div class="card-body p-3" id="warehouseCharts">
-            <div class="empty-state"><i class="fas fa-chart-simple"></i><p>Charts initializing...</p><small>Interactive Plotly visualization will render automatically</small></div>
+            <div class="empty-state"><i class="fas fa-chart-simple"></i><p>Charts initializing</p></div>
           </div>
         </div>
       </div>
     </section>
 
-    <div class="my-4"></div>
-
-    <!-- DEALER & PRODUCT PERFORMANCE -->
+    <!-- DEALER + PRODUCT -->
     <section class="row g-4 mb-4">
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-users"></i> Key Dealer Account Deliveries</div>
+          <div class="card-header"><i class="fas fa-users"></i> Dealer Accounts</div>
           <div class="card-body p-3">
             <div id="dealerGrid" class="ag-theme-alpine" style="height:420px;"></div>
           </div>
@@ -436,7 +628,7 @@
       </div>
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-box-open"></i> Top Shipped Customer Models / SKUs</div>
+          <div class="card-header"><i class="fas fa-box-open"></i> Product / SKU Performance</div>
           <div class="card-body p-3">
             <div id="productGrid" class="ag-theme-alpine" style="height:420px;"></div>
           </div>
@@ -444,13 +636,11 @@
       </div>
     </section>
 
-    <div class="my-4"></div>
-
-    <!-- CITY & DAILY TRENDS -->
+    <!-- CITY + TRENDS -->
     <section class="row g-4 mb-4">
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-city"></i> City Destination Hub Performance</div>
+          <div class="card-header"><i class="fas fa-city"></i> City Hub Performance</div>
           <div class="card-body p-3">
             <div id="cityGrid" class="ag-theme-alpine" style="height:420px;"></div>
           </div>
@@ -458,97 +648,93 @@
       </div>
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-chart-line"></i> 30-Day Operational Trend (DN, PGI, POD)</div>
+          <div class="card-header"><i class="fas fa-chart-line"></i> 30‑Day Operational Trends</div>
           <div class="card-body p-3" id="trendCharts">
-            <div class="empty-state"><i class="fas fa-clock"></i><p>Trend analysis awaiting data</p><small>Upload dataset to view timeline curves</small></div>
+            <div class="empty-state"><i class="fas fa-clock"></i><p>Trend data pending</p></div>
           </div>
         </div>
       </div>
     </section>
 
-    <div class="my-4"></div>
-
-    <!-- ALERTS & RECOMMENDATIONS -->
+    <!-- ALERTS + RECOMMENDATIONS -->
     <section class="row g-4 mb-4">
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-triangle-exclamation text-warning"></i> Management Alert Panel</div>
+          <div class="card-header"><i class="fas fa-exclamation-triangle text-warning"></i> Management Alerts</div>
           <div class="card-body p-4" id="alertsContainer">
-            <div class="empty-state"><i class="fas fa-shield-check"></i><p>All network metrics operating within target thresholds</p><small>No anomalies detected</small></div>
+            <div class="empty-state"><i class="fas fa-shield-check"></i><p>All systems nominal</p></div>
           </div>
         </div>
       </div>
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-wand-magic-sparkles text-primary"></i> AI Operational Recommendations</div>
+          <div class="card-header"><i class="fas fa-lightbulb text-primary"></i> AI Recommendations</div>
           <div class="card-body p-4" id="recommendationsContainer">
-            <div class="empty-state"><i class="fas fa-lightbulb"></i><p>AI engine on standby</p><small>Smart insights will generate upon data upload</small></div>
+            <div class="empty-state"><i class="fas fa-robot"></i><p>AI engine ready</p></div>
           </div>
         </div>
       </div>
     </section>
 
-    <div class="my-4"></div>
-
-    <!-- EXCEL UPLOAD CENTER & LOOKUP -->
+    <!-- UPLOAD + SEARCH -->
     <section id="uploadSection" class="row g-4 mb-4">
       <div class="col-md-6">
         <div class="card upload-highlight h-100 mb-0">
-          <div class="card-header"><i class="fas fa-file-excel text-success"></i> Upload Logistics Excel Report</div>
+          <div class="card-header"><i class="fas fa-file-excel text-success"></i> Import Excel Report</div>
           <div class="card-body p-4">
             <form class="form-toolbar flex-column align-items-stretch" id="uploadForm" action="/dashboard/api/upload" method="post" enctype="multipart/form-data">
               <div class="form-group w-100 mb-3">
-                <label><i class="fas fa-file-arrow-up me-1"></i> Select SAP Excel Report (.xlsx, .xls)</label>
+                <label><i class="fas fa-file-arrow-up me-1"></i> Choose Excel File (.xlsx, .xls)</label>
                 <input type="file" name="file" accept=".xlsx,.xls" class="form-control" required />
-                <small class="text-muted mt-1 d-block" style="font-size:0.75rem;">Standard format containing Delivery Notes, PGI, and POD records.</small>
+                <small class="text-muted mt-1 d-block" style="font-size:0.7rem;">SAP standard format with DN, PGI, POD records.</small>
               </div>
               <div class="form-group w-100 mb-3">
-                <label><i class="fas fa-clone me-1"></i> Duplicate Strategy</label>
+                <label><i class="fas fa-copy me-1"></i> Duplicate Handling</label>
                 <select name="skip_duplicates" class="form-select">
                   <option value="true">Skip Existing DNs (Recommended)</option>
                   <option value="false">Update Existing DN Records</option>
                 </select>
               </div>
-              <button type="submit" class="btn-upload w-100 py-3"><i class="fas fa-cloud-arrow-up me-2"></i> Import &amp; Process Data</button>
+              <button type="submit" class="btn-upload w-100 py-3"><i class="fas fa-cloud-upload-alt me-2"></i> Import & Process</button>
             </form>
           </div>
         </div>
       </div>
       <div class="col-md-6">
         <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-magnifying-glass"></i> Instant Delivery Lookup</div>
+          <div class="card-header"><i class="fas fa-search"></i> Quick Lookup</div>
           <div class="card-body p-4 d-flex flex-column justify-content-center">
-            <form class="form-toolbar flex-column align-items-stretch" id="searchForm" onsubmit="event.preventDefault(); Swal.fire('Quick Lookup', 'Use AG Grid column filters or sidebar filters for data segmentation.', 'info');">
+            <form class="form-toolbar flex-column align-items-stretch" id="searchForm" onsubmit="event.preventDefault(); Swal.fire('Quick Lookup', 'Use AG Grid column filters for advanced search.', 'info');">
               <div class="form-group w-100 mb-3">
-                <label>Search Query Parameter</label>
-                <input type="text" id="searchInput" class="form-control" placeholder="Enter DN Number, Dealer Name, or City..." />
+                <label>Search Query</label>
+                <input type="text" id="searchInput" class="form-control" placeholder="Enter DN, dealer, city…" />
               </div>
               <div class="form-group w-100 mb-3">
-                <label>Filter Target Entity</label>
+                <label>Filter Entity</label>
                 <select id="searchType" class="form-select">
-                  <option value="all">Entire Network Database</option>
-                  <option value="dn">Delivery Note Number</option>
-                  <option value="dealer">Dealer / Customer Party</option>
-                  <option value="city">Destination City Hub</option>
-                  <option value="warehouse">Fulfillment Warehouse</option>
+                  <option value="all">All Data</option>
+                  <option value="dn">DN Number</option>
+                  <option value="dealer">Dealer</option>
+                  <option value="city">City</option>
+                  <option value="warehouse">Warehouse</option>
                 </select>
               </div>
-              <button type="submit" class="btn-search w-100 py-3"><i class="fas fa-search me-2"></i> Execute Query</button>
+              <button type="submit" class="btn-search w-100 py-3"><i class="fas fa-search me-2"></i> Execute</button>
             </form>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- UPLOAD HISTORY LOG -->
+    <!-- UPLOAD HISTORY -->
     <section class="row g-4 mb-4">
       <div class="col-12">
         <div class="card">
-          <div class="card-header"><i class="fas fa-clock-rotate-left"></i> System Ingestion &amp; Import History</div>
+          <div class="card-header"><i class="fas fa-history"></i> Import History</div>
           <div class="card-body p-3">
             <div id="uploadsGrid" class="ag-theme-alpine" style="height:210px;"></div>
             <div id="uploadHistoryPlaceholder" class="empty-state py-4" style="display:none;">
-              <i class="fas fa-folder-open"></i><p>No import audit logs recorded</p>
+              <i class="fas fa-folder-open"></i><p>No import records found</p>
             </div>
           </div>
         </div>
@@ -565,39 +751,37 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
 <!-- ============================================================
-     APPLICATION JAVASCRIPT (Enterprise UI & API Integration)
-     ============================================================ -->
+  APPLICATION JAVASCRIPT – ALL FUNCTIONALITY PRESERVED
+  ============================================================ -->
 <script>
 (function() {
     const API_URL = '/dashboard/api/data';
 
     function formatNumber(v) { return (v || 0).toLocaleString(); }
     function formatPct(v) { return (v || 0).toFixed(1) + '%'; }
-    function formatDays(v) { return (v || 0).toFixed(1) + ' Days'; }
+    function formatDays(v) { return (v || 0).toFixed(1) + ' days'; }
 
     function renderKPIs(cards) {
         const container = document.getElementById('kpiCards');
         if (!container) return;
         if (!cards || typeof cards !== 'object') {
-            container.innerHTML = '<div class="col-12"><div class="empty-state"><p>No operational KPIs available</p></div></div>';
+            container.innerHTML = '<div class="col-12"><div class="empty-state"><p>No KPIs available</p></div></div>';
             return;
         }
-        
-        const cardConfig = [
+        const config = [
             { key: 'total_dn', label: 'Total Delivery Notes', icon: 'fa-file-invoice-dollar', fmt: v => formatNumber(v) + ' DNs' },
-            { key: 'total_units', label: 'Total Units Shipped', icon: 'fa-boxes-packing', fmt: v => formatNumber(v) + ' Units' },
-            { key: 'health_score', label: 'Operations Health Score', icon: 'fa-heart-pulse', fmt: v => formatPct(v) },
-            { key: 'avg_cycle', label: 'Avg Delivery Cycle', icon: 'fa-stopwatch', fmt: v => formatDays(v) }
+            { key: 'total_units', label: 'Total Units Shipped', icon: 'fa-boxes-packing', fmt: v => formatNumber(v) + ' units' },
+            { key: 'health_score', label: 'Health Score', icon: 'fa-heart-pulse', fmt: v => formatPct(v) },
+            { key: 'avg_cycle', label: 'Average Cycle Time', icon: 'fa-stopwatch', fmt: v => formatDays(v) }
         ];
-
-        container.innerHTML = cardConfig.map(cfg => {
+        container.innerHTML = config.map(cfg => {
             const dataObj = cards[cfg.key] || { value: 0 };
             return `
                 <div class="col-xl-3 col-md-6 mb-2">
                     <div class="card kpi-card">
                         <h6><i class="fas ${cfg.icon}"></i> ${cfg.label}</h6>
-                        <h3 class="kpi-value">${cfg.fmt(dataObj.value || 0)}</h3>
-                        <small class="text-muted fw-bold mt-2 d-block" style="font-size:0.7rem;">SLA Benchmark &le; 5.8 Days</small>
+                        <div class="kpi-value">${cfg.fmt(dataObj.value || 0)}</div>
+                        <div class="kpi-sub">Target: ≤ 5.8 days</div>
                     </div>
                 </div>
             `;
@@ -608,7 +792,7 @@
         const container = document.getElementById('pipelineContainer');
         if (!container) return;
         if (!pipeline || !pipeline.dn_created) {
-            container.innerHTML = '<div class="empty-state"><i class="fas fa-sitemap"></i><p>Pipeline awaiting data synchronization</p><small>Upload your SAP logistics spreadsheet to populate metrics</small></div>';
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-sitemap"></i><p>Pipeline awaiting data</p><small>Upload SAP report to populate</small></div>';
             return;
         }
         const stages = [
@@ -623,7 +807,7 @@
                 <div class="pipeline-stage">
                     <div class="stage-label">${s.label}</div>
                     <div class="stage-value">${formatNumber(s.value)}</div>
-                    ${s.pct !== undefined ? `<span class="badge bg-info bg-opacity-10 text-info mt-2 px-2 py-1" style="font-size:0.7rem; font-weight:700;">${formatPct(s.pct)} Achieved</span>` : ''}
+                    ${s.pct !== undefined ? `<span class="badge bg-info bg-opacity-10 text-info mt-2 px-2 py-1" style="font-size:0.65rem;font-weight:700;">${formatPct(s.pct)}</span>` : ''}
                 </div>
             `;
             if (idx < stages.length - 1) html += `<span class="pipeline-arrow px-1"><i class="fas fa-chevron-right"></i></span>`;
@@ -635,8 +819,7 @@
     function renderAGGrid(containerId, data, colDefs) {
         const gridDiv = document.getElementById(containerId);
         if (!gridDiv) return;
-        gridDiv.innerHTML = ''; 
-        
+        gridDiv.innerHTML = '';
         try {
             if (typeof agGrid !== 'undefined' && agGrid.createGrid) {
                 agGrid.createGrid(gridDiv, {
@@ -655,9 +838,7 @@
                     domLayout: 'autoHeight',
                 });
             }
-        } catch (err) {
-            console.warn('AG Grid rendering error for ' + containerId, err);
-        }
+        } catch(e) { console.warn('Grid error:', containerId, e); }
     }
 
     function renderPlotlyFromJson(containerId, chartJson) {
@@ -665,38 +846,35 @@
         if (!div) return;
         div.innerHTML = '';
         if (!chartJson) return;
-        
         const subDiv = document.createElement('div');
         subDiv.style.height = '380px';
         subDiv.style.width = '100%';
         div.appendChild(subDiv);
-        
         try {
             const fig = typeof chartJson === 'string' ? JSON.parse(chartJson) : chartJson;
             const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
             if (fig.layout) {
                 fig.layout.paper_bgcolor = 'transparent';
                 fig.layout.plot_bgcolor = 'transparent';
-                fig.layout.font = { color: isDark ? '#F8FAFC' : '#1E293B', family: 'Plus Jakarta Sans, sans-serif' };
+                fig.layout.font = { color: isDark ? '#f8fafc' : '#0f172a', family: 'Inter, sans-serif' };
                 fig.layout.margin = { l: 40, r: 20, t: 30, b: 40 };
             }
             Plotly.newPlot(subDiv, fig.data, fig.layout || {}, { responsive: true, displayModeBar: false });
-        } catch(e) {
-            console.warn('Plotly render error for ' + containerId, e);
-        }
+        } catch(e) { console.warn('Plotly error:', containerId, e); }
     }
 
     function renderAlerts(alerts) {
         const container = document.getElementById('alertsContainer');
         if (!container) return;
-        const alertList = Array.isArray(alerts) ? alerts : Object.values(alerts || {});
-        if (!alertList.length) {
-            container.innerHTML = '<div class="empty-state"><i class="fas fa-shield-check"></i><p>All network metrics operating within target thresholds</p><small>No anomalies detected</small></div>';
+        const list = Array.isArray(alerts) ? alerts : Object.values(alerts || {});
+        if (!list.length) {
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-shield-check"></i><p>All metrics within thresholds</p></div>';
             return;
         }
-        container.innerHTML = alertList.map(a => `
-            <div class="alert-item ${a.severity === 'CRITICAL' ? 'critical' : ''} mb-2">
-                <i class="fas fa-triangle-exclamation text-warning"></i> <strong>[${a.source || 'Network'}]</strong> ${a.message || ''}
+        container.innerHTML = list.map(a => `
+            <div class="alert-item ${a.severity === 'CRITICAL' ? 'critical' : ''}">
+                <i class="fas fa-triangle-exclamation text-warning"></i>
+                <span><strong>[${a.source || 'System'}]</strong> ${a.message || ''}</span>
             </div>
         `).join('');
     }
@@ -704,16 +882,16 @@
     function renderRecommendations(recs) {
         const container = document.getElementById('recommendationsContainer');
         if (!container) return;
-        const recList = Array.isArray(recs) ? recs : Object.values(recs || {});
-        if (!recList.length) {
-            container.innerHTML = '<div class="empty-state"><i class="fas fa-lightbulb"></i><p>AI engine on standby</p><small>Smart insights will generate upon data upload</small></div>';
+        const list = Array.isArray(recs) ? recs : Object.values(recs || {});
+        if (!list.length) {
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-lightbulb"></i><p>AI insights will appear here</p></div>';
             return;
         }
-        container.innerHTML = recList.map(r => `
-            <div class="rec-card mb-2">
+        container.innerHTML = list.map(r => `
+            <div class="rec-card">
                 <div class="d-flex align-items-center mb-1">
                     <span class="badge bg-${r.priority === 'Critical' ? 'danger' : 'info'} me-2">${r.priority || 'Info'}</span>
-                    <strong>${r.warehouse || r.category || 'Optimization Notice'}</strong>
+                    <strong>${r.warehouse || r.category || 'Optimization'}</strong>
                 </div>
                 <p class="mb-0 text-muted" style="font-size:0.85rem;">${r.recommendation || ''}</p>
             </div>
@@ -723,39 +901,39 @@
     async function loadDashboard() {
         try {
             const res = await fetch(API_URL);
-            if (!res.ok) throw new Error('Failed to load dashboard data: ' + res.statusText);
+            if (!res.ok) throw new Error('API error: ' + res.statusText);
             const data = await res.json();
 
             renderKPIs(data.cards || {});
             renderPipeline(data.pipeline || {});
 
             renderAGGrid('warehouseGrid', data.warehouse || [], [
-                { field: 'ranking', headerName: 'Rank', width: 75, pinned: 'left' },
+                { field: 'ranking', headerName: 'Rank', width: 70, pinned: 'left' },
                 { field: 'warehouse_name', headerName: 'Warehouse', flex: 1.5 },
-                { field: 'delivery_notes', headerName: 'Total DNs', width: 105, valueFormatter: p => formatNumber(p.value) },
-                { field: 'units', headerName: 'Units Shipped', width: 120, valueFormatter: p => formatNumber(p.value) },
-                { field: 'average_logistics_cycle', headerName: 'Cycle Days', width: 110, valueFormatter: p => formatDays(p.value) },
+                { field: 'delivery_notes', headerName: 'DNs', width: 100, valueFormatter: p => formatNumber(p.value) },
+                { field: 'units', headerName: 'Units', width: 110, valueFormatter: p => formatNumber(p.value) },
+                { field: 'average_logistics_cycle', headerName: 'Cycle (days)', width: 110, valueFormatter: p => formatDays(p.value) },
                 { field: 'health_score', headerName: 'Health %', width: 100, valueFormatter: p => formatPct(p.value) }
             ]);
 
             renderAGGrid('dealerGrid', data.dealer || [], [
-                { field: 'dealer_name', headerName: 'Dealer Account', flex: 1.5 },
-                { field: 'delivery_notes', headerName: 'DN Count', width: 100, valueFormatter: p => formatNumber(p.value) },
-                { field: 'units', headerName: 'Units', width: 95, valueFormatter: p => formatNumber(p.value) },
-                { field: 'avg_cycle_days', headerName: 'Cycle Days', width: 110, valueFormatter: p => formatDays(p.value) }
+                { field: 'dealer_name', headerName: 'Dealer', flex: 1.5 },
+                { field: 'delivery_notes', headerName: 'DNs', width: 100, valueFormatter: p => formatNumber(p.value) },
+                { field: 'units', headerName: 'Units', width: 110, valueFormatter: p => formatNumber(p.value) },
+                { field: 'avg_cycle_days', headerName: 'Cycle (days)', width: 110, valueFormatter: p => formatDays(p.value) }
             ]);
 
             renderAGGrid('productGrid', data.product || [], [
-                { field: 'product_name', headerName: 'Customer Model / SKU', flex: 1.5 },
-                { field: 'delivery_notes', headerName: 'DN Count', width: 100, valueFormatter: p => formatNumber(p.value) },
-                { field: 'units', headerName: 'Total Units', width: 110, valueFormatter: p => formatNumber(p.value) }
+                { field: 'product_name', headerName: 'Model / SKU', flex: 1.5 },
+                { field: 'delivery_notes', headerName: 'DNs', width: 100, valueFormatter: p => formatNumber(p.value) },
+                { field: 'units', headerName: 'Units', width: 110, valueFormatter: p => formatNumber(p.value) }
             ]);
 
             renderAGGrid('cityGrid', data.city || [], [
-                { field: 'city', headerName: 'Destination City', flex: 1.5 },
-                { field: 'delivery_notes', headerName: 'DN Count', width: 100, valueFormatter: p => formatNumber(p.value) },
-                { field: 'units', headerName: 'Units Shipped', width: 115, valueFormatter: p => formatNumber(p.value) },
-                { field: 'avg_cycle_days', headerName: 'Cycle Days', width: 110, valueFormatter: p => formatDays(p.value) }
+                { field: 'city', headerName: 'City', flex: 1.5 },
+                { field: 'delivery_notes', headerName: 'DNs', width: 100, valueFormatter: p => formatNumber(p.value) },
+                { field: 'units', headerName: 'Units', width: 110, valueFormatter: p => formatNumber(p.value) },
+                { field: 'avg_cycle_days', headerName: 'Cycle (days)', width: 110, valueFormatter: p => formatDays(p.value) }
             ]);
 
             if (data.warehouse_charts && data.warehouse_charts.delivery_performance) {
@@ -769,50 +947,53 @@
             renderAlerts(data.alerts || []);
             renderRecommendations(data.recommendations || []);
 
-            const footerEl = document.getElementById('footer');
-            if (footerEl) {
-                footerEl.innerHTML = `
-                    <i class="fas fa-shield-halved text-success me-1"></i> Haier Pakistan Logistics Suite v12.0 &nbsp;|&nbsp;
-                    <i class="fas fa-database text-info ms-2 me-1"></i> PostgreSQL &nbsp;|&nbsp;
-                    <i class="fas fa-clock text-muted ms-2 me-1"></i> Synced: ${new Date().toLocaleTimeString()} &nbsp;|&nbsp;
-                    <i class="fas fa-cubes text-primary ms-2 me-1"></i> Records: ${formatNumber(data.metadata?.record_count || 0)}
+            const footer = document.getElementById('footer');
+            if (footer) {
+                footer.innerHTML = `
+                    <i class="fas fa-shield-halved text-success me-1"></i> Haier Pakistan v13.0 &nbsp;|&nbsp;
+                    <i class="fas fa-database text-info mx-1"></i> PostgreSQL &nbsp;|&nbsp;
+                    <i class="fas fa-clock text-muted mx-1"></i> Sync: ${new Date().toLocaleTimeString()} &nbsp;|&nbsp;
+                    <i class="fas fa-cubes text-primary mx-1"></i> Records: ${formatNumber(data.metadata?.record_count || 0)}
                 `;
             }
             const refreshEl = document.getElementById('lastRefresh');
             if (refreshEl) refreshEl.innerText = new Date().toLocaleTimeString();
 
         } catch(e) {
-            console.error('Enterprise dashboard synchronization error:', e);
+            console.error('Dashboard load error:', e);
         }
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+        // Theme toggle
         const themeToggle = document.getElementById('themeToggle');
         if (themeToggle) {
             themeToggle.addEventListener('click', function() {
-                const currentTheme = document.documentElement.getAttribute('data-theme');
-                const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-                document.documentElement.setAttribute('data-theme', newTheme);
-                this.innerHTML = newTheme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+                const current = document.documentElement.getAttribute('data-theme');
+                const next = current === 'dark' ? 'light' : 'dark';
+                document.documentElement.setAttribute('data-theme', next);
+                this.innerHTML = next === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
                 loadDashboard();
             });
         }
 
-        const hamburgerBtn = document.getElementById('hamburgerBtn');
-        if (hamburgerBtn) {
-            hamburgerBtn.addEventListener('click', function() {
-                const sidebar = document.querySelector('.sidebar');
-                if (sidebar) sidebar.classList.toggle('open');
+        // Sidebar hamburger
+        const hamburger = document.getElementById('hamburgerBtn');
+        if (hamburger) {
+            hamburger.addEventListener('click', function() {
+                document.querySelector('.sidebar').classList.toggle('open');
             });
         }
 
-        const todayDateEl = document.getElementById('todayDate');
-        if (todayDateEl) {
-            todayDateEl.innerText = new Date().toLocaleDateString('en-GB', {
+        // Today's date
+        const dateEl = document.getElementById('todayDate');
+        if (dateEl) {
+            dateEl.innerText = new Date().toLocaleDateString('en-GB', {
                 weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
             });
         }
 
+        // Upload form
         const uploadForm = document.getElementById('uploadForm');
         if (uploadForm) {
             uploadForm.addEventListener('submit', function(e) {
@@ -820,42 +1001,43 @@
                 const formData = new FormData(this);
                 const fileInput = this.querySelector('input[type="file"]');
                 if (!fileInput || !fileInput.files.length) {
-                    Swal.fire({ icon: 'warning', title: 'No File Selected', text: 'Please choose an Excel file (.xlsx, .xls).' });
+                    Swal.fire({ icon: 'warning', title: 'No File Selected', text: 'Please choose an Excel file.' });
                     return;
                 }
                 const xhr = new XMLHttpRequest();
                 xhr.open('POST', this.action, true);
                 Swal.fire({
-                    title: 'Importing Logistics Report',
+                    title: 'Importing Report',
                     html: `
-                        <div class="text-start mb-2"><i class="fas fa-spinner fa-spin me-2 text-info"></i> Ingesting SAP Delivery Records...</div>
-                        <div class="progress" style="height: 10px; border-radius: 5px; background: rgba(255,255,255,0.1);"><div id="uploadProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info" style="width:0%;">0%</div></div>
-                        <div id="uploadStatusText" class="mt-2 text-muted small">Uploading stream to server...</div>
+                        <div class="mb-2"><i class="fas fa-spinner fa-spin text-info"></i> Uploading stream...</div>
+                        <div class="progress" style="height:8px;border-radius:4px;background:rgba(255,255,255,0.05);">
+                            <div id="uploadProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info" style="width:0%;">0%</div>
+                        </div>
+                        <div id="uploadStatusText" class="mt-2 text-muted small">Preparing...</div>
                     `,
-                    background: '#0F172A',
-                    color: '#F8FAFC',
+                    background: '#0f172a', color: '#f8fafc',
                     allowOutsideClick: false, showConfirmButton: false
                 });
                 xhr.upload.onprogress = function(event) {
                     if (event.lengthComputable) {
                         const pct = Math.round((event.loaded / event.total) * 100);
                         const bar = document.getElementById('uploadProgressBar');
-                        const statusText = document.getElementById('uploadStatusText');
+                        const status = document.getElementById('uploadStatusText');
                         if (bar) { bar.style.width = pct + '%'; bar.textContent = pct + '%'; }
-                        if (statusText) { statusText.textContent = pct < 100 ? `Uploading ${pct}%` : 'Processing database transactions...'; }
+                        if (status) status.textContent = pct < 100 ? `Uploading ${pct}%` : 'Processing database...';
                     }
                 };
                 xhr.onload = function() {
                     if (xhr.status >= 200 && xhr.status < 300) {
-                        Swal.fire({ icon: 'success', title: 'Import Successful', text: 'Logistics records updated successfully. Refreshing command suite.', timer: 2200, showConfirmButton: false, background: '#0F172A', color: '#F8FAFC' })
+                        Swal.fire({ icon: 'success', title: 'Import Complete', text: 'Data refreshed.', timer: 2000, showConfirmButton: false, background: '#0f172a', color: '#f8fafc' })
                             .then(() => window.location.reload());
                     } else {
-                        let msg = 'File import failed.';
+                        let msg = 'Import failed.';
                         try { const json = JSON.parse(xhr.responseText); if (json.detail) msg = json.detail; } catch(e) {}
-                        Swal.fire({ icon: 'error', title: 'Import Failed', text: msg, background: '#0F172A', color: '#F8FAFC' });
+                        Swal.fire({ icon: 'error', title: 'Import Failed', text: msg, background: '#0f172a', color: '#f8fafc' });
                     }
                 };
-                xhr.onerror = function() { Swal.fire({ icon: 'error', title: 'Network Error', text: 'Could not connect to backend server.', background: '#0F172A', color: '#F8FAFC' }); };
+                xhr.onerror = function() { Swal.fire({ icon: 'error', title: 'Network Error', text: 'Cannot reach server.', background: '#0f172a', color: '#f8fafc' }); };
                 xhr.send(formData);
             });
         }
