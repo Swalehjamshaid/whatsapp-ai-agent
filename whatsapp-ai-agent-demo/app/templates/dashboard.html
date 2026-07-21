@@ -1,274 +1,317 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Logistics IQ – Enterprise Intelligence Platform</title>
-    <!-- Bootstrap 5 -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
-    <!-- Font Awesome -->
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet" />
-    <!-- AG Grid -->
-    <link href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css" rel="stylesheet" />
-    <link href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-theme-alpine.css" rel="stylesheet" />
-    <!-- Plotly -->
-    <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist@2.26.0/plotly.min.js"></script>
-    <!-- AG Grid JS -->
-    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
-    <!-- SweetAlert2 -->
-    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <!-- Custom CSS -->
-    <link href="/static/css/dashboard.css" rel="stylesheet" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Logistics IQ – Enterprise Intelligence Platform</title>
+
+  <!-- Bootstrap 5 -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <!-- Font Awesome 6 -->
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet" />
+  <!-- AG Grid -->
+  <link href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-theme-alpine.css" rel="stylesheet" />
+  <!-- Plotly -->
+  <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist@2.26.0/plotly.min.js"></script>
+  <!-- AG Grid JS -->
+  <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
+  <!-- SweetAlert2 -->
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <!-- Custom CSS -->
+  <link href="/static/css/dashboard.css" rel="stylesheet" />
 </head>
 <body>
-    <div id="app" class="container-fluid px-0">
-        <!-- Sidebar -->
-        <aside class="sidebar">
-            <div class="sidebar-brand">
-                <h5><i class="fas fa-cubes"></i> Logistics IQ</h5>
-                <small>Enterprise Intelligence</small>
-            </div>
-            <nav class="sidebar-nav">
-                <a class="nav-link active" href="#"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
-                <a class="nav-link" href="#"><i class="fas fa-upload"></i> Upload Center</a>
-                <a class="nav-link" href="#"><i class="fas fa-chart-line"></i> Analytics</a>
-                <a class="nav-link" href="#"><i class="fas fa-warehouse"></i> Warehouse</a>
-                <a class="nav-link" href="#"><i class="fas fa-users"></i> Dealers</a>
-                <a class="nav-link" href="#"><i class="fas fa-city"></i> Cities</a>
-                <a class="nav-link" href="#"><i class="fas fa-box"></i> Products</a>
-                <a class="nav-link" href="#"><i class="fas fa-robot"></i> AI Insights</a>
-                <a class="nav-link" href="#"><i class="fas fa-file-alt"></i> Reports</a>
-                <a class="nav-link" href="#"><i class="fas fa-server"></i> Status</a>
-            </nav>
-            <div class="sidebar-footer">v8.3 · Enterprise</div>
-        </aside>
 
-        <!-- Main Content -->
-        <main class="main-content">
-            <!-- Top Bar -->
-            <div class="topbar">
-                <div class="topbar-left">
-                    <button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button>
-                    <h4><i class="fas fa-chart-pie"></i> Executive Command Center</h4>
-                </div>
-                <div class="topbar-right">
-                    <span class="badge-date"><i class="fas fa-calendar-day"></i> <span id="todayDate"></span></span>
-                    <span class="badge-date"><i class="fas fa-sync-alt"></i> <span id="lastRefresh">Just now</span></span>
-                    <span class="user-badge"><i class="fas fa-user-circle"></i> Viewer</span>
-                    <button class="btn btn-outline-secondary btn-sm" id="themeToggle"><i class="fas fa-moon"></i></button>
-                </div>
-            </div>
+<div id="app" class="container-fluid px-0">
 
-            <!-- Welcome Banner (hidden when data exists) -->
-            <div id="welcomeBanner" class="alert alert-info text-center mb-4" style="display:none;">
-                <i class="fas fa-rocket fa-2x"></i>
-                <h4>Welcome to Logistics IQ</h4>
-                <p>Upload your first Excel file to see real-time analytics.</p>
-            </div>
+  <!-- ============================================================
+  SIDEBAR (structural IDs unchanged)
+  ============================================================ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <h5><i class="fas fa-cubes"></i> Logistics IQ</h5>
+      <small>Enterprise Intelligence</small>
+    </div>
+    <nav class="sidebar-nav">
+      <a class="nav-link active" href="#"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+      <a class="nav-link" href="#"><i class="fas fa-upload"></i> Upload Center</a>
+      <a class="nav-link" href="#"><i class="fas fa-chart-line"></i> Analytics</a>
+      <a class="nav-link" href="#"><i class="fas fa-warehouse"></i> Warehouse</a>
+      <a class="nav-link" href="#"><i class="fas fa-users"></i> Dealers</a>
+      <a class="nav-link" href="#"><i class="fas fa-city"></i> Cities</a>
+      <a class="nav-link" href="#"><i class="fas fa-box"></i> Products</a>
+      <a class="nav-link" href="#"><i class="fas fa-robot"></i> AI Insights</a>
+      <a class="nav-link" href="#"><i class="fas fa-file-alt"></i> Reports</a>
+      <a class="nav-link" href="#"><i class="fas fa-server"></i> Status</a>
+    </nav>
+    <div class="sidebar-footer">v9.0 · Enterprise</div>
+  </aside>
 
-            <!-- KPI Cards -->
-            <section id="kpiCards" class="row g-3 mb-4"></section>
+  <!-- ============================================================
+  MAIN CONTENT
+  ============================================================ -->
+  <main class="main-content" id="mainContent">
 
-            <!-- Pipeline -->
-            <section class="row g-3 mb-4">
-                <div class="col-12">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-route"></i> Executive Logistics Pipeline</div>
-                        <div class="card-body" id="pipelineContainer">
-                            <p class="text-muted text-center">No pipeline data available.</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Division Dashboard -->
-            <section class="row g-3 mb-4">
-                <div class="col-12">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-layer-group"></i> Division Dashboard</div>
-                        <div class="card-body" id="divisionContainer">
-                            <p class="text-muted text-center">No division data available.</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Warehouse and Charts -->
-            <section class="row g-3 mb-4">
-                <div class="col-xl-6">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-warehouse"></i> Warehouse Performance</div>
-                        <div class="card-body">
-                            <div id="warehouseGrid" class="ag-theme-alpine" style="height:400px;"></div>
-                            <p class="text-muted text-center small">Upload data to see warehouse performance.</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-xl-6">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-chart-bar"></i> Warehouse Charts</div>
-                        <div class="card-body" id="warehouseCharts">
-                            <p class="text-muted text-center">No charts available.</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Dealer & Product -->
-            <section class="row g-3 mb-4">
-                <div class="col-xl-6">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-users"></i> Dealer Performance</div>
-                        <div class="card-body">
-                            <div id="dealerGrid" class="ag-theme-alpine" style="height:400px;"></div>
-                            <p class="text-muted text-center small">Upload data to see dealer performance.</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-xl-6">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-box"></i> Product Performance</div>
-                        <div class="card-body">
-                            <div id="productGrid" class="ag-theme-alpine" style="height:400px;"></div>
-                            <p class="text-muted text-center small">Upload data to see product performance.</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- City & Network -->
-            <section class="row g-3 mb-4">
-                <div class="col-xl-6">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-city"></i> City Performance</div>
-                        <div class="card-body">
-                            <div id="cityGrid" class="ag-theme-alpine" style="height:400px;"></div>
-                            <p class="text-muted text-center small">Upload data to see city performance.</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-xl-6">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-project-diagram"></i> Supply Chain Network</div>
-                        <div class="card-body" id="networkContainer">
-                            <p class="text-muted text-center">No network data available.</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Monthly & Daily Trends -->
-            <section class="row g-3 mb-4">
-                <div class="col-xl-6">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-chart-line"></i> Monthly Trends</div>
-                        <div class="card-body" id="monthlyTrends">
-                            <p class="text-muted text-center">No monthly data.</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-xl-6">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-chart-area"></i> Daily Trends</div>
-                        <div class="card-body" id="dailyTrends">
-                            <p class="text-muted text-center">No daily data.</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Alerts & Recommendations -->
-            <section class="row g-3 mb-4">
-                <div class="col-xl-6">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-exclamation-triangle"></i> Executive Alerts</div>
-                        <div class="card-body" id="alertsContainer">
-                            <p class="text-muted text-center">No alerts.</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-xl-6">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-robot"></i> AI Recommendations</div>
-                        <div class="card-body" id="recommendationsContainer">
-                            <p class="text-muted text-center">No recommendations yet.</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Upload & Search (Preserved) -->
-            <section class="row g-3 mb-4">
-                <div class="col-md-6">
-                    <div class="card upload-highlight">
-                        <div class="card-header"><i class="fas fa-upload text-primary"></i> Upload Logistics Report <span class="ms-auto fs-small text-muted"><i class="fas fa-check-circle text-success"></i> Excel supported</span></div>
-                        <div class="card-body">
-                            <form class="form-toolbar" id="uploadForm" action="/upload/excel" method="post" enctype="multipart/form-data">
-                                <div class="form-group" style="flex:2;">
-                                    <label class="upload-label"><i class="fas fa-file-excel"></i> Excel File (.xlsx, .xls)</label>
-                                    <input type="file" name="file" accept=".xlsx,.xls" class="form-control" required />
-                                    <small class="text-muted" style="font-size:0.7rem;">Choose File – No file chosen</small>
-                                </div>
-                                <div class="form-group">
-                                    <label class="upload-label"><i class="fas fa-copy"></i> Skip Duplicates</label>
-                                    <select name="skip_duplicates" class="form-select">
-                                        <option value="true">Yes – Skip existing DNs</option>
-                                        <option value="false">No – Update existing DNs</option>
-                                    </select>
-                                </div>
-                                <button type="submit" class="btn-upload"><i class="fas fa-arrow-up"></i> Upload &amp; Import</button>
-                            </form>
-                            <div class="mt-2 fs-small text-success"><i class="fas fa-check-circle"></i> Excel upload active – accepts .xlsx, .xls</div>
-                            <div class="mt-1 fs-small"><a href="#" class="text-decoration-none"><i class="fas fa-eye"></i> View / Download</a></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-6">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-search"></i> Search Deliveries</div>
-                        <div class="card-body">
-                            <form class="form-toolbar" action="/search" method="get">
-                                <div class="form-group" style="flex:2;">
-                                    <label>Search</label>
-                                    <input type="text" name="q" class="form-control" placeholder="DN, Dealer, Customer, or City..." required />
-                                </div>
-                                <div class="form-group">
-                                    <label>Type</label>
-                                    <select name="search_type" class="form-select">
-                                        <option value="all">All</option>
-                                        <option value="dn">DN Number</option>
-                                        <option value="dealer">Dealer Code</option>
-                                        <option value="city">City</option>
-                                        <option value="warehouse">Warehouse</option>
-                                        <option value="division">Division</option>
-                                    </select>
-                                </div>
-                                <button type="submit" class="btn-search"><i class="fas fa-search"></i> Search</button>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Latest Uploads (AG Grid) -->
-            <section class="row g-3 mb-4">
-                <div class="col-12">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-history"></i> Upload History</div>
-                        <div class="card-body">
-                            <div id="uploadsGrid" class="ag-theme-alpine" style="height:220px;"></div>
-                            <div class="text-muted small text-center mt-2" id="uploadHistoryPlaceholder">Upload history will appear after your first import.</div>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Footer -->
-            <footer id="footer" class="footer-bar"></footer>
-        </main>
+    <!-- ============================================================
+    TOP BAR (IDs: #hamburgerBtn, #todayDate, #lastRefresh, #themeToggle)
+    ============================================================ -->
+    <div class="topbar">
+      <div class="topbar-left">
+        <button class="hamburger" id="hamburgerBtn" aria-label="Toggle sidebar">
+          <i class="fas fa-bars"></i>
+        </button>
+        <h4><i class="fas fa-chart-pie"></i> Executive Command Center</h4>
+      </div>
+      <div class="topbar-right">
+        <span class="badge-date"><i class="fas fa-calendar-day"></i> <span id="todayDate"></span></span>
+        <span class="badge-date"><i class="fas fa-sync-alt"></i> <span id="lastRefresh">Just now</span></span>
+        <span class="user-badge"><i class="fas fa-user-circle"></i> Viewer</span>
+        <button class="btn-theme" id="themeToggle" aria-label="Toggle dark mode">
+          <i class="fas fa-moon"></i>
+        </button>
+      </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/dashboard.js"></script>
+    <!-- Welcome Banner (hidden when data exists) -->
+    <div id="welcomeBanner" class="alert alert-info text-center mb-4" style="display:none;">
+      <i class="fas fa-rocket fa-2x"></i>
+      <h4>Welcome to Logistics IQ</h4>
+      <p>Upload your first Excel file to see real‑time analytics.</p>
+    </div>
+
+    <!-- ============================================================
+    KPI CARDS (ID: #kpiCards) – fully preserved
+    ============================================================ -->
+    <section id="kpiCards" class="row g-3 mb-4"></section>
+
+    <!-- ============================================================
+    PIPELINE (ID: #pipelineContainer)
+    ============================================================ -->
+    <section class="row g-3 mb-4">
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header"><i class="fas fa-route"></i> Executive Logistics Pipeline</div>
+          <div class="card-body" id="pipelineContainer">
+            <p class="text-muted text-center">No pipeline data available.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+    DIVISION DASHBOARD (ID: #divisionContainer)
+    ============================================================ -->
+    <section class="row g-3 mb-4">
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header"><i class="fas fa-layer-group"></i> Division Dashboard</div>
+          <div class="card-body" id="divisionContainer">
+            <p class="text-muted text-center">No division data available.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+    WAREHOUSE & CHARTS (IDs: #warehouseGrid, #warehouseCharts)
+    ============================================================ -->
+    <section class="row g-3 mb-4">
+      <div class="col-xl-6">
+        <div class="card">
+          <div class="card-header"><i class="fas fa-warehouse"></i> Warehouse Performance</div>
+          <div class="card-body">
+            <div id="warehouseGrid" class="ag-theme-alpine" style="height:400px;"></div>
+            <p class="text-muted text-center small">Upload data to see warehouse performance.</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-xl-6">
+        <div class="card">
+          <div class="card-header"><i class="fas fa-chart-bar"></i> Warehouse Charts</div>
+          <div class="card-body" id="warehouseCharts">
+            <p class="text-muted text-center">No charts available.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+    DEALER & PRODUCT (IDs: #dealerGrid, #productGrid)
+    ============================================================ -->
+    <section class="row g-3 mb-4">
+      <div class="col-xl-6">
+        <div class="card">
+          <div class="card-header"><i class="fas fa-users"></i> Dealer Performance</div>
+          <div class="card-body">
+            <div id="dealerGrid" class="ag-theme-alpine" style="height:400px;"></div>
+            <p class="text-muted text-center small">Upload data to see dealer performance.</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-xl-6">
+        <div class="card">
+          <div class="card-header"><i class="fas fa-box"></i> Product Performance</div>
+          <div class="card-body">
+            <div id="productGrid" class="ag-theme-alpine" style="height:400px;"></div>
+            <p class="text-muted text-center small">Upload data to see product performance.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+    CITY & NETWORK (IDs: #cityGrid, #networkContainer)
+    ============================================================ -->
+    <section class="row g-3 mb-4">
+      <div class="col-xl-6">
+        <div class="card">
+          <div class="card-header"><i class="fas fa-city"></i> City Performance</div>
+          <div class="card-body">
+            <div id="cityGrid" class="ag-theme-alpine" style="height:400px;"></div>
+            <p class="text-muted text-center small">Upload data to see city performance.</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-xl-6">
+        <div class="card">
+          <div class="card-header"><i class="fas fa-project-diagram"></i> Supply Chain Network</div>
+          <div class="card-body" id="networkContainer">
+            <p class="text-muted text-center">No network data available.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+    MONTHLY & DAILY TRENDS (IDs: #monthlyTrends, #dailyTrends)
+    ============================================================ -->
+    <section class="row g-3 mb-4">
+      <div class="col-xl-6">
+        <div class="card">
+          <div class="card-header"><i class="fas fa-chart-line"></i> Monthly Trends</div>
+          <div class="card-body" id="monthlyTrends">
+            <p class="text-muted text-center">No monthly data.</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-xl-6">
+        <div class="card">
+          <div class="card-header"><i class="fas fa-chart-area"></i> Daily Trends</div>
+          <div class="card-body" id="dailyTrends">
+            <p class="text-muted text-center">No daily data.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+    ALERTS & RECOMMENDATIONS (IDs: #alertsContainer, #recommendationsContainer)
+    ============================================================ -->
+    <section class="row g-3 mb-4">
+      <div class="col-xl-6">
+        <div class="card">
+          <div class="card-header"><i class="fas fa-exclamation-triangle"></i> Executive Alerts</div>
+          <div class="card-body" id="alertsContainer">
+            <p class="text-muted text-center">No alerts.</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-xl-6">
+        <div class="card">
+          <div class="card-header"><i class="fas fa-robot"></i> AI Recommendations</div>
+          <div class="card-body" id="recommendationsContainer">
+            <p class="text-muted text-center">No recommendations yet.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+    UPLOAD & SEARCH (CRITICAL – functionality unchanged)
+    ============================================================ -->
+    <section class="row g-3 mb-4">
+      <div class="col-md-6">
+        <div class="card upload-highlight">
+          <div class="card-header"><i class="fas fa-upload text-primary"></i> Upload Logistics Report
+            <span class="ms-auto fs-small text-muted"><i class="fas fa-check-circle text-success"></i> Excel supported</span>
+          </div>
+          <div class="card-body">
+            <!-- Upload Form – ID, action, method, enctype preserved -->
+            <form class="form-toolbar" id="uploadForm" action="/upload/excel" method="post" enctype="multipart/form-data">
+              <div class="form-group" style="flex:2;">
+                <label class="upload-label"><i class="fas fa-file-excel"></i> Excel File (.xlsx, .xls)</label>
+                <input type="file" name="file" accept=".xlsx,.xls" class="form-control" required />
+                <small class="text-muted" style="font-size:0.7rem;">Choose File – No file chosen</small>
+              </div>
+              <div class="form-group">
+                <label class="upload-label"><i class="fas fa-copy"></i> Skip Duplicates</label>
+                <select name="skip_duplicates" class="form-select">
+                  <option value="true">Yes – Skip existing DNs</option>
+                  <option value="false">No – Update existing DNs</option>
+                </select>
+              </div>
+              <button type="submit" class="btn-upload"><i class="fas fa-arrow-up"></i> Upload &amp; Import</button>
+            </form>
+            <div class="mt-2 fs-small text-success"><i class="fas fa-check-circle"></i> Excel upload active – accepts .xlsx, .xls</div>
+            <div class="mt-1 fs-small"><a href="#" class="text-decoration-none"><i class="fas fa-eye"></i> View / Download</a></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="card search-panel">
+          <div class="card-header"><i class="fas fa-search"></i> Search Deliveries</div>
+          <div class="card-body">
+            <!-- Search Form – action, method, input names preserved -->
+            <form class="form-toolbar" action="/search" method="get">
+              <div class="form-group" style="flex:2;">
+                <label>Search</label>
+                <input type="text" name="q" class="form-control" placeholder="DN, Dealer, Customer, or City..." required />
+              </div>
+              <div class="form-group">
+                <label>Type</label>
+                <select name="search_type" class="form-select">
+                  <option value="all">All</option>
+                  <option value="dn">DN Number</option>
+                  <option value="dealer">Dealer Code</option>
+                  <option value="city">City</option>
+                  <option value="warehouse">Warehouse</option>
+                  <option value="division">Division</option>
+                </select>
+              </div>
+              <button type="submit" class="btn-search"><i class="fas fa-search"></i> Search</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+    UPLOAD HISTORY (ID: #uploadsGrid, #uploadHistoryPlaceholder)
+    ============================================================ -->
+    <section class="row g-3 mb-4">
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header"><i class="fas fa-history"></i> Upload History</div>
+          <div class="card-body">
+            <div id="uploadsGrid" class="ag-theme-alpine" style="height:220px;"></div>
+            <div class="text-muted small text-center mt-2" id="uploadHistoryPlaceholder">Upload history will appear after your first import.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+    FOOTER (ID: #footer)
+    ============================================================ -->
+    <footer id="footer" class="footer-bar"></footer>
+
+  </main>
+</div>
+
+<!-- Bootstrap JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<!-- Dashboard JS – unchanged, uses all existing IDs -->
+<script src="/static/js/dashboard.js"></script>
 </body>
 </html>
