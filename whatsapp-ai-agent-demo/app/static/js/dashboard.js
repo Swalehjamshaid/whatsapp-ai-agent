@@ -1,7 +1,10 @@
 // dashboard.js – Executive Command Center (v8.2)
+// All data is fetched from /dashboard/api/data; no calculations are done here.
+
 (function() {
     const API_URL = '/dashboard/api/data';
 
+    // ---- Formatting helpers (only display, no logic) ----
     function formatCurrency(v) {
         if (v >= 1e6) return 'PKR ' + (v/1e6).toFixed(2) + 'M';
         if (v >= 1e3) return 'PKR ' + v.toLocaleString();
@@ -11,6 +14,7 @@
     function formatPct(v) { return (v||0).toFixed(1) + '%'; }
     function formatDays(v) { return (v||0).toFixed(1) + ' days'; }
 
+    // ---- Render KPI Cards ----
     function renderKPIs(cards) {
         const container = document.getElementById('kpiCards');
         container.innerHTML = Object.entries(cards).map(([key, card]) => `
@@ -30,6 +34,7 @@
         `).join('');
     }
 
+    // ---- Render Pipeline ----
     function renderPipeline(pipeline) {
         const container = document.getElementById('pipelineContainer');
         const stages = [
@@ -53,9 +58,10 @@
         container.innerHTML = html;
     }
 
+    // ---- Render Division Dashboard ----
     function renderDivision(divisions) {
         const container = document.getElementById('divisionContainer');
-        if (!divisions.length) {
+        if (!divisions || !divisions.length) {
             container.innerHTML = '<div class="text-muted">No division data available.</div>';
             return;
         }
@@ -74,6 +80,7 @@
         container.innerHTML = html;
     }
 
+    // ---- AG Grid helper ----
     function renderAGGrid(containerId, data, colDefs) {
         const gridDiv = document.getElementById(containerId);
         new agGrid.Grid(gridDiv, {
@@ -85,6 +92,7 @@
         });
     }
 
+    // ---- Plotly Charts (from JSON) ----
     function renderPlotlyCharts(containerId, chartDict) {
         const div = document.getElementById(containerId);
         div.innerHTML = '';
@@ -101,6 +109,7 @@
         });
     }
 
+    // ---- Network (simple display) ----
     function renderNetwork(network) {
         const container = document.getElementById('networkContainer');
         container.innerHTML = `
@@ -109,6 +118,7 @@
         `;
     }
 
+    // ---- Alerts ----
     function renderAlerts(alerts) {
         const container = document.getElementById('alertsContainer');
         container.innerHTML = alerts.map(a => `
@@ -119,6 +129,7 @@
         `).join('');
     }
 
+    // ---- AI Recommendations ----
     function renderRecommendations(recs) {
         const container = document.getElementById('recommendationsContainer');
         container.innerHTML = recs.map(r => `
@@ -131,6 +142,7 @@
         `).join('');
     }
 
+    // ---- Upload History (AG Grid) ----
     function renderUploadsGrid(data) {
         const gridDiv = document.getElementById('uploadsGrid');
         if (window.uploadsGrid) { window.uploadsGrid.destroy(); }
@@ -142,21 +154,29 @@
             { field: 'skipped', headerName: 'Skipped', flex: 1 },
             { field: 'status', headerName: 'Status', flex: 1, cellStyle: p => p.value === 'Success' ? { color: '#198754', fontWeight: '600' } : { color: '#dc3545' } },
         ];
-        window.uploadsGrid = new agGrid.Grid(gridDiv, { columnDefs, rowData: data, pagination: true, paginationPageSize: 5, domLayout: 'autoHeight' });
+        window.uploadsGrid = new agGrid.Grid(gridDiv, {
+            columnDefs: colDefs,
+            rowData: data,
+            pagination: true,
+            paginationPageSize: 5,
+            domLayout: 'autoHeight',
+        });
         const placeholder = document.getElementById('uploadHistoryPlaceholder');
         if (placeholder) placeholder.style.display = data && data.length > 0 ? 'none' : 'block';
     }
 
+    // ---- Master load function ----
     async function loadDashboard() {
         try {
             const res = await fetch(API_URL);
             const data = await res.json();
 
+            // Render all sections
             renderKPIs(data.cards || {});
             renderPipeline(data.pipeline || {});
             renderDivision(data.division || []);
 
-            // Warehouse
+            // AG Grid: Warehouse
             const warehouseCols = [
                 { field: 'warehouse_name', headerName: 'Warehouse' },
                 { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
@@ -168,7 +188,7 @@
             ];
             renderAGGrid('warehouseGrid', data.warehouse || [], warehouseCols);
 
-            // Dealer
+            // AG Grid: Dealer
             const dealerCols = [
                 { field: 'dealer_name', headerName: 'Dealer' },
                 { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
@@ -179,7 +199,7 @@
             ];
             renderAGGrid('dealerGrid', data.dealer || [], dealerCols);
 
-            // Product
+            // AG Grid: Product
             const productCols = [
                 { field: 'product_name', headerName: 'Product' },
                 { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
@@ -191,7 +211,7 @@
             ];
             renderAGGrid('productGrid', data.product || [], productCols);
 
-            // City
+            // AG Grid: City
             const cityCols = [
                 { field: 'city', headerName: 'City' },
                 { field: 'revenue', headerName: 'Revenue', valueFormatter: p => formatCurrency(p.value) },
@@ -201,13 +221,13 @@
             ];
             renderAGGrid('cityGrid', data.city || [], cityCols);
 
-            // Charts
+            // Plotly Charts
             renderPlotlyCharts('warehouseCharts', data.warehouse_charts || {});
             renderPlotlyCharts('dealerCharts', data.dealer_charts || {});
             renderPlotlyCharts('productCharts', data.product_charts || {});
             renderPlotlyCharts('cityCharts', data.city_charts || {});
 
-            // Monthly & Daily Trends – use Plotly directly from raw data
+            // Monthly & Daily Trends (using raw data)
             const monthly = data.monthly_trends || {};
             if (monthly.months && monthly.months.length) {
                 const trace1 = { x: monthly.months, y: monthly.revenue, name: 'Revenue', type: 'scatter', mode: 'lines+markers' };
@@ -230,6 +250,7 @@
             renderRecommendations(data.recommendations || []);
             renderUploadsGrid(data.latest_uploads || []);
 
+            // Footer
             document.getElementById('footer').innerHTML = `
                 <i class="fas fa-code-branch"></i> v8.2 &nbsp;|&nbsp;
                 <i class="fas fa-database"></i> PostgreSQL &nbsp;|&nbsp;
@@ -245,7 +266,7 @@
         }
     }
 
-    // Theme toggle
+    // ---- Theme toggle ----
     document.getElementById('themeToggle').addEventListener('click', function() {
         document.documentElement.setAttribute('data-theme',
             document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'
@@ -253,16 +274,17 @@
         this.innerHTML = document.documentElement.getAttribute('data-theme') === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
     });
 
-    // Sidebar toggle
+    // ---- Sidebar toggle ----
     document.getElementById('hamburgerBtn').addEventListener('click', function() {
         document.querySelector('.sidebar').classList.toggle('open');
     });
 
+    // ---- Today's date ----
     document.getElementById('todayDate').innerText = new Date().toLocaleDateString('en-GB', {
         weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
     });
 
-    // Upload form – interactive progress (unchanged)
+    // ---- Interactive Upload (preserved) ----
     document.getElementById('uploadForm').addEventListener('submit', function(e) {
         e.preventDefault();
         const formData = new FormData(this);
@@ -304,6 +326,7 @@
         xhr.send(formData);
     });
 
+    // ---- Auto-refresh ----
     loadDashboard();
     setInterval(loadDashboard, 30000);
 })();
