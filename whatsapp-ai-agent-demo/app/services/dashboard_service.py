@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 15.2 - ENTERPRISE WAREHOUSE INTELLIGENCE PLATFORM
+# VERSION: 15.3 - ENTERPRISE WAREHOUSE INTELLIGENCE PLATFORM
 # ============================================================
 # EXCEEDS SAP ANALYTICS CLOUD | MICROSOFT FABRIC | POWER BI PREMIUM
 # ============================================================
@@ -94,7 +94,7 @@ except ImportError:
     STATSMODELS_AVAILABLE = False
 
 from app.database import engine, get_db
-from app.models import DeliveryReport, Warehouse, Dealer, City, Product, Division
+from app.models import DeliveryReport
 from app.services.geo_service import GeoService
 
 # ============================================================
@@ -1010,7 +1010,7 @@ class DashboardService:
         }
         
         metadata = {
-            "version": "15.2",
+            "version": "15.3",
             "timestamp": datetime.utcnow().isoformat(),
             "record_count": record_count,
             "warehouse_count": len(warehouses),
@@ -1058,6 +1058,6 @@ async def get_warehouses(service: DashboardService = Depends(get_dashboard_servi
 
 @router.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "15.2", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "healthy", "version": "15.3", "timestamp": datetime.utcnow().isoformat()}
 
 logger.info("DashboardService router mounted at /dashboard/api")
