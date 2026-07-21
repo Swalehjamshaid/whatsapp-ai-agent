@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 12.0 - ENTERPRISE SUPPLY CHAIN PLATFORM (EXECUTIVE LOGISTICS)
+# VERSION: 14.0 - ENTERPRISE WAREHOUSE INTELLIGENCE PLATFORM
 # ============================================================
 
 import hashlib
@@ -8,10 +8,12 @@ import json
 import logging
 import os
 import time
+import math
 from typing import Optional, Dict, List, Any, Union, Tuple
-from collections import defaultdict
+from collections import defaultdict, Counter
 from functools import wraps
 from datetime import datetime, timedelta, date
+from dataclasses import dataclass, field
 
 from sqlalchemy import text
 from fastapi import APIRouter, Depends, Query, HTTPException
@@ -20,12 +22,18 @@ from app.database import engine
 from app.models import DeliveryReport
 from app.services.geo_service import GeoService
 
-# Optional enterprise libraries
+# Enterprise Libraries Integration
 try:
     import numpy as np
     NUMPY_AVAILABLE = True
 except ImportError:
     NUMPY_AVAILABLE = False
+
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
 
 try:
     import plotly.graph_objects as go
@@ -34,7 +42,31 @@ try:
 except ImportError:
     PLOTLY_AVAILABLE = False
 
-# Optional Geopy for real-world distance calculation if needed
+try:
+    import networkx as nx
+    NETWORKX_AVAILABLE = True
+except ImportError:
+    NETWORKX_AVAILABLE = False
+
+try:
+    from scipy import stats
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+
+try:
+    import statsmodels.api as sm
+    STATSMODELS_AVAILABLE = True
+except ImportError:
+    STATSMODELS_AVAILABLE = False
+
+try:
+    from sklearn.cluster import KMeans
+    from sklearn.preprocessing import StandardScaler
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+
 try:
     from geopy.distance import geodesic
     GEOPY_AVAILABLE = True
@@ -44,12 +76,24 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ============================================================
+# CONFIGURATION & CONSTANTS
+# ============================================================
+
+class DashboardConfig:
+    VERSION: str = "14.0.0"
+    CACHE_TTL_SECONDS: int = 5
+    DEFAULT_CURRENCY: str = "PKR"
+    MAX_RECORDS_LIMIT: int = 5000
+    TARGET_CYCLE_DAYS: float = 5.0
+    TARGET_PGI_DAYS: float = 1.0
+
+# ============================================================
 # UTILITY FUNCTIONS
 # ============================================================
 
 def _safe_float(value: Any) -> float:
     try:
-        return float(value or 0)
+        return float(value or 0.0)
     except (ValueError, TypeError):
         return 0.0
 
@@ -62,86 +106,137 @@ def _safe_int(value: Any) -> int:
 def _pct(numerator: float, denominator: float) -> float:
     if not denominator:
         return 0.0
-    return round((numerator / denominator) * 100, 2)
+    return round((numerator / denominator) * 100.0, 2)
 
 # ============================================================
-# PYTHON DISTANCE CALCULATOR
+# DISTANCE & GEOSPATIAL ENGINE
 # ============================================================
 
-class PythonDistanceCalculator:
+class GeospatialDistanceEngine:
     """
-    Handles all distance calculations purely in Python to avoid Postgres column errors.
+    Handles enterprise distance matrices, geospatial coordinate lookups,
+    and fallback distance routing for Pakistan regional warehouses.
     """
-    @staticmethod
-    def get_distance_km(warehouse: str, city: str) -> float:
-        distance_map = {
+    _WAREHOUSE_COORDINATES = {
+        "Lahore WH": (31.5497, 74.3436),
+        "Karachi WH": (24.8607, 67.0011),
+        "Rawalpindi WH": (33.6844, 73.0479),
+        "Multan WH": (30.1575, 71.5249),
+        "Faisalabad WH": (31.4504, 73.1350),
+        "Peshawar WH": (34.0151, 71.5249)
+    }
+
+    _CITY_COORDINATES = {
+        "Lahore": (31.5497, 74.3436),
+        "Karachi": (24.8607, 67.0011),
+        "Islamabad": (33.6844, 73.0479),
+        "Rawalpindi": (33.5651, 73.0169),
+        "Multan": (30.1575, 71.5249),
+        "Faisalabad": (31.4504, 73.1350),
+        "Peshawar": (34.0151, 71.5249),
+        "Quetta": (30.1798, 66.9750),
+        "Hyderabad": (25.3960, 68.3578),
+        "Sialkot": (32.4945, 74.5229),
+        "Gujranwala": (32.1877, 74.1945)
+    }
+
+    @classmethod
+    def calculate_distance(cls, warehouse: str, city: str) -> float:
+        wh_coords = cls._WAREHOUSE_COORDINATES.get(warehouse)
+        city_coords = cls._CITY_COORDINATES.get(city)
+
+        if wh_coords and city_coords and GEOPY_AVAILABLE:
+            try:
+                return round(geodesic(wh_coords, city_coords).kilometers, 2)
+            except Exception:
+                pass
+
+        # Fallback heuristic matrix for Pakistan logistics network
+        matrix = {
             ("Lahore WH", "Karachi"): 1200.0,
             ("Lahore WH", "Islamabad"): 380.0,
-            ("Karachi WH", "Hyderabad"): 160.0
+            ("Lahore WH", "Rawalpindi"): 375.0,
+            ("Lahore WH", "Multan"): 350.0,
+            ("Lahore WH", "Faisalabad"): 130.0,
+            ("Lahore WH", "Peshawar"): 540.0,
+            ("Lahore WH", "Quetta"): 980.0,
+            ("Lahore WH", "Hyderabad"): 1150.0,
+            ("Lahore WH", "Sialkot"): 125.0,
+            ("Lahore WH", "Gujranwala"): 75.0,
+            ("Karachi WH", "Hyderabad"): 160.0,
+            ("Karachi WH", "Multan"): 870.0,
+            ("Karachi WH", "Lahore"): 1200.0,
+            ("Rawalpindi WH", "Peshawar"): 170.0,
+            ("Rawalpindi WH", "Lahore"): 375.0,
+            ("Multan WH", "Lahore"): 350.0,
+            ("Multan WH", "Karachi"): 870.0
         }
-        return distance_map.get((warehouse, city), 350.0)
+        return matrix.get((warehouse, city), 350.0)
 
 # ============================================================
 # CACHE ENGINE
 # ============================================================
 
-class InMemoryCache:
-    def __init__(self, ttl_seconds=5):
-        self._cache = {}
+class InMemoryCacheEngine:
+    def __init__(self, ttl_seconds: int = 5):
+        self._cache: Dict[str, Dict[str, Any]] = {}
         self._ttl = ttl_seconds
 
-    def _make_key(self, func_name: str, args: tuple, kwargs: dict) -> str:
-        key_parts = [func_name, str(args), str(sorted(kwargs.items()))]
-        return hashlib.md5("|".join(key_parts).encode()).hexdigest()
+    def _generate_key(self, func_name: str, args: tuple, kwargs: dict) -> str:
+        serialized = f"{func_name}:{str(args)}:{str(sorted(kwargs.items()))}"
+        return hashlib.md5(serialized.encode("utf-8")).hexdigest()
 
-    def get(self, key):
+    def get(self, key: str) -> Optional[Any]:
         entry = self._cache.get(key)
-        if entry and (time.time() - entry['timestamp'] < self._ttl):
-            return entry['value']
+        if entry and (time.time() - entry["timestamp"] < self._ttl):
+            return entry["value"]
         return None
 
-    def set(self, key, value):
-        self._cache[key] = {'value': value, 'timestamp': time.time()}
+    def set(self, key: str, value: Any) -> None:
+        self._cache[key] = {"value": value, "timestamp": time.time()}
 
-    def clear(self):
+    def clear(self) -> None:
         self._cache.clear()
 
-cache = InMemoryCache(ttl_seconds=5)
+_global_cache = InMemoryCacheEngine(ttl_seconds=DashboardConfig.CACHE_TTL_SECONDS)
 
-def cached(ttl=5):
+def cached(ttl: int = 5):
     def decorator(func):
         @wraps(func)
         async def wrapper(*args, **kwargs):
-            if kwargs.get('no_cache'):
+            if kwargs.get("no_cache"):
                 return await func(*args, **kwargs)
-            key = cache._make_key(func.__name__, args, kwargs)
-            cached_value = cache.get(key)
-            if cached_value is not None:
-                return cached_value
+            key = _global_cache._generate_key(func.__name__, args, kwargs)
+            cached_val = _global_cache.get(key)
+            if cached_val is not None:
+                return cached_val
             result = await func(*args, **kwargs)
-            cache.set(key, result)
+            _global_cache.set(key, result)
             return result
         return wrapper
     return decorator
 
 # ============================================================
-# 1. DATABASE REPOSITORY
+# 1. DATABASE REPOSITORY LAYER
 # ============================================================
 
 class DashboardRepository:
+    """
+    High-performance SQLAlchemy database repository for PostgreSQL delivery_reports.
+    """
     def __init__(self):
-        logger.info("🗄️ DashboardRepository initialized")
+        logger.info("🗄️ DashboardRepository initialized for PostgreSQL connection pool")
 
-    def _execute(self, sql: str, params: Optional[Dict[str, Any]] = None):
+    def _execute_query(self, sql: str, params: Optional[Dict[str, Any]] = None) -> Any:
         try:
-            with engine.connect() as conn:
-                result = conn.execute(text(sql), params or {})
+            with engine.connect() as connection:
+                result = connection.execute(text(sql), params or {})
                 return result
         except Exception as e:
-            logger.error(f"❌ SQL execution failed: {str(e)}")
+            logger.error(f"❌ PostgreSQL execution error: {str(e)}")
             raise
 
-    def fetch_raw_summary(self) -> Dict[str, Any]:
+    def fetch_executive_summary_data(self) -> Dict[str, Any]:
         sql = """
             SELECT
                 COUNT(DISTINCT dn_no) AS total_dn,
@@ -151,65 +246,32 @@ class DashboardRepository:
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_completed,
                 COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - dn_create_date::date) END), 0) AS avg_delivery_days,
                 COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND good_issue_date IS NOT NULL THEN (good_issue_date::date - dn_create_date::date) END), 0) AS avg_pgi_days,
-                COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_pod_days,
-                COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_cycle_days
+                COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_pod_days
             FROM delivery_reports
         """
-        row = self._execute(sql).first()
-        if not row: return {}
-        
-        dealers = self._execute("SELECT COUNT(DISTINCT dealer_code) FROM delivery_reports WHERE dealer_code IS NOT NULL").scalar() or 0
-        warehouses = self._execute("SELECT COUNT(DISTINCT warehouse) FROM delivery_reports WHERE warehouse IS NOT NULL").scalar() or 0
-        cities = self._execute("SELECT COUNT(DISTINCT ship_to_city) FROM delivery_reports WHERE ship_to_city IS NOT NULL").scalar() or 0
-        products = self._execute("SELECT COUNT(DISTINCT material_no) FROM delivery_reports WHERE material_no IS NOT NULL").scalar() or 0
+        row = self._execute_query(sql).first()
+        if not row:
+            return {}
+
+        warehouses_count = self._execute_query("SELECT COUNT(DISTINCT warehouse) FROM delivery_reports WHERE warehouse IS NOT NULL").scalar() or 0
+        dealers_count = self._execute_query("SELECT COUNT(DISTINCT dealer_code) FROM delivery_reports WHERE dealer_code IS NOT NULL").scalar() or 0
+        cities_count = self._execute_query("SELECT COUNT(DISTINCT ship_to_city) FROM delivery_reports WHERE ship_to_city IS NOT NULL").scalar() or 0
 
         return {
-            "total_units": _safe_int(row.total_units),
             "total_dn": _safe_int(row.total_dn),
+            "total_units": _safe_int(row.total_units),
             "pgi_completed": _safe_int(row.pgi_completed),
             "delivered_dns": _safe_int(row.delivered_dns),
             "pod_completed": _safe_int(row.pod_completed),
             "avg_delivery_days": _safe_float(row.avg_delivery_days),
             "avg_pgi_days": _safe_float(row.avg_pgi_days),
             "avg_pod_days": _safe_float(row.avg_pod_days),
-            "avg_cycle_days": _safe_float(row.avg_cycle_days),
-            "dealers": dealers, "warehouses": warehouses, "cities": cities, "products": products
+            "warehouses_count": warehouses_count,
+            "dealers_count": dealers_count,
+            "cities_count": cities_count
         }
 
-    def fetch_raw_pipeline(self) -> Dict[str, Any]:
-        sql = """
-            SELECT
-                COUNT(DISTINCT dn_no) AS total_dn,
-                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_done,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_done,
-                COUNT(DISTINCT CASE WHEN good_issue_date IS NULL THEN dn_no END) AS pending_pgi,
-                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN dn_no END) AS pending_delivery
-            FROM delivery_reports
-        """
-        row = self._execute(sql).first()
-        if not row: return {}
-        return {
-            "total_dn": _safe_int(row.total_dn),
-            "pgi_done": _safe_int(row.pgi_done),
-            "delivered": _safe_int(row.delivered),
-            "pod_done": _safe_int(row.pod_done),
-            "pending_pgi": _safe_int(row.pending_pgi),
-            "pending_delivery": _safe_int(row.pending_delivery)
-        }
-
-    def fetch_raw_divisions(self) -> List[Any]:
-        sql = """
-            SELECT
-                division,
-                COALESCE(SUM(dn_qty), 0) AS units,
-                COUNT(DISTINCT dn_no) AS dn_qty,
-                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_qty
-            FROM delivery_reports WHERE division IS NOT NULL GROUP BY division ORDER BY dn_qty DESC
-        """
-        return self._execute(sql).fetchall()
-
-    def fetch_raw_warehouses_for_python(self) -> List[Any]:
+    def fetch_warehouse_execution_rows(self) -> List[Any]:
         sql = """
             SELECT
                 warehouse AS warehouse_name,
@@ -222,60 +284,14 @@ class DashboardRepository:
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NULL THEN dn_no END) AS pending_pgi,
-                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN dn_no END) AS pending_delivery
+                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN dn_no END) AS pending_pod
             FROM delivery_reports
             WHERE warehouse IS NOT NULL
             GROUP BY warehouse, ship_to_city, pgi_days, pod_days, delivery_days
         """
-        return self._execute(sql).fetchall()
+        return self._execute_query(sql).fetchall()
 
-    def fetch_raw_dealers(self) -> List[Any]:
-        sql = """
-            SELECT
-                dealer_code, customer_name AS dealer_name,
-                COALESCE(SUM(dn_qty), 0) AS units,
-                COUNT(DISTINCT dn_no) AS delivery_notes,
-                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
-                COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_cycle_days
-            FROM delivery_reports WHERE dealer_code IS NOT NULL GROUP BY dealer_code, customer_name ORDER BY delivery_notes DESC
-        """
-        return self._execute(sql).fetchall()
-
-    def fetch_raw_products(self) -> List[Any]:
-        sql = """
-            SELECT
-                material_no AS sku, customer_model AS product_name,
-                COALESCE(SUM(dn_qty), 0) AS units,
-                COUNT(DISTINCT dn_no) AS delivery_notes
-            FROM delivery_reports WHERE material_no IS NOT NULL GROUP BY material_no, customer_model ORDER BY delivery_notes DESC
-        """
-        return self._execute(sql).fetchall()
-
-    def fetch_raw_cities(self) -> List[Any]:
-        sql = """
-            SELECT
-                ship_to_city AS city,
-                COALESCE(SUM(dn_qty), 0) AS units,
-                COUNT(DISTINCT dn_no) AS delivery_notes,
-                COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_cycle_days
-            FROM delivery_reports WHERE ship_to_city IS NOT NULL GROUP BY ship_to_city ORDER BY delivery_notes DESC
-        """
-        return self._execute(sql).fetchall()
-
-    def fetch_raw_daily_trends(self) -> List[Any]:
-        sql = """
-            SELECT
-                dn_create_date AS date,
-                COALESCE(SUM(dn_qty), 0) AS units,
-                COUNT(DISTINCT dn_no) AS dn,
-                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns
-            FROM delivery_reports WHERE dn_create_date >= CURRENT_DATE - INTERVAL '30 days' GROUP BY dn_create_date ORDER BY dn_create_date
-        """
-        return self._execute(sql).fetchall()
-
-    def fetch_raw_aging(self) -> List[Any]:
+    def fetch_delivery_aging_rows(self) -> List[Any]:
         sql = """
             SELECT
                 CASE
@@ -293,284 +309,302 @@ class DashboardRepository:
             GROUP BY aging_bucket
             ORDER BY MIN((pod_date::date - dn_create_date::date))
         """
-        return self._execute(sql).fetchall()
+        return self._execute_query(sql).fetchall()
 
-    def fetch_raw_network_rows(self) -> List[Any]:
+    def fetch_daily_trend_rows(self) -> List[Any]:
         sql = """
-            SELECT warehouse, ship_to_city, dealer_code FROM delivery_reports
-            WHERE warehouse IS NOT NULL AND ship_to_city IS NOT NULL AND dealer_code IS NOT NULL GROUP BY warehouse, ship_to_city, dealer_code LIMIT 1000
+            SELECT
+                dn_create_date AS date,
+                COALESCE(SUM(dn_qty), 0) AS units,
+                COUNT(DISTINCT dn_no) AS dn,
+                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
+                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns
+            FROM delivery_reports
+            WHERE dn_create_date >= CURRENT_DATE - INTERVAL '30 days'
+            GROUP BY dn_create_date
+            ORDER BY dn_create_date
         """
-        return self._execute(sql).fetchall()
+        return self._execute_query(sql).fetchall()
 
-    def fetch_record_count(self) -> int:
-        return self._execute("SELECT COUNT(*) FROM delivery_reports").scalar() or 0
-
-# ============================================================
-# 2. BUSINESS RULE & KPI ENGINE
-# ============================================================
-
-class BusinessRuleEngine:
-    @staticmethod
-    def calculate_summary(raw: Dict[str, Any], warehouses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        total_dn = raw.get("total_dn", 0)
-        pgi_completed = raw.get("pgi_completed", 0)
-        delivered_dns = raw.get("delivered_dns", 0)
-        pod_completed = raw.get("pod_completed", 0)
-
-        pgi_rate = _pct(pgi_completed, total_dn)
-        delivery_rate = _pct(delivered_dns, total_dn)
-        pod_rate = _pct(pod_completed, delivered_dns if delivered_dns else 1)
-        health = round((pgi_rate * 0.35) + (delivery_rate * 0.35) + (pod_rate * 0.30), 2)
-
-        best_wh = warehouses[0]["warehouse_name"] if warehouses else "Lahore"
-        slow_wh = warehouses[-1]["warehouse_name"] if warehouses else "Multan"
-
-        return {
-            "total_units": raw.get("total_units", 0),
-            "total_delivery_notes": total_dn,
-            "pgi_completed": pgi_completed,
-            "delivered_dns": delivered_dns,
-            "pod_completed": pod_completed,
-            "active_dealers": raw.get("dealers", 0),
-            "active_warehouses": raw.get("warehouses", 0),
-            "active_cities": raw.get("cities", 0),
-            "active_products": raw.get("products", 0),
-            "avg_delivery_days": raw.get("avg_delivery_days", 0.0),
-            "avg_pgi_days": raw.get("avg_pgi_days", 0.0),
-            "avg_pod_days": raw.get("avg_pod_days", 0.0),
-            "average_logistics_cycle": raw.get("avg_cycle_days", 0.0),
-            "pgi_achievement_rate": pgi_rate,
-            "delivery_achievement_rate": delivery_rate,
-            "pod_completion_rate": pod_rate,
-            "dashboard_health_score": health,
-            "ontime_delivery_pct": delivery_rate,
-            "pending_pgi": total_dn - pgi_completed,
-            "pending_pod": pgi_completed - delivered_dns,
-            "best_warehouse": best_wh,
-            "slowest_warehouse": slow_wh,
-            "critical_delays": sum(1 for w in warehouses if w.get("average_logistics_cycle", 0) > 5.8)
-        }
-
-    @staticmethod
-    def calculate_pipeline(raw: Dict[str, Any]) -> Dict[str, Any]:
-        total_dn = raw.get("total_dn", 0)
-        delivered = raw.get("delivered", 0)
-        return {
-            "dn_created": total_dn,
-            "pgi_completed": raw.get("pgi_done", 0),
-            "delivered": delivered,
-            "pod_received": raw.get("pod_done", 0),
-            "pgi_achievement": _pct(raw.get("pgi_done", 0), total_dn),
-            "delivery_achievement": _pct(delivered, total_dn),
-            "pod_achievement": _pct(raw.get("pod_done", 0), delivered if delivered else 1),
-            "pending_pgi": raw.get("pending_pgi", 0),
-            "pending_delivery": raw.get("pending_delivery", 0),
-        }
+    def fetch_total_record_count(self) -> int:
+        return self._execute_query("SELECT COUNT(*) FROM delivery_reports").scalar() or 0
 
 # ============================================================
-# 3. ANALYTICS ENGINE
+# 2. WAREHOUSE BUSINESS RULES & TARGET ENGINE
 # ============================================================
 
-class AnalyticsEngine:
+class WarehouseBusinessRulesEngine:
+    """
+    Implements distance-based delivery target rules and shipment status classification.
+    """
     @staticmethod
-    def process_divisions(rows: List[Any]) -> List[Dict[str, Any]]:
-        result = []
-        for row in rows:
-            result.append({
-                "division": row.division,
-                "units": _safe_int(row.units),
-                "dn_qty": _safe_int(row.dn_qty),
-                "pgi_qty": _safe_int(row.pgi_qty),
-                "pgi_achievement": _pct(_safe_int(row.pgi_qty), _safe_int(row.dn_qty)),
-            })
-        return result
+    def get_target_days(distance_km: float) -> int:
+        if distance_km <= 100:
+            return 1
+        elif distance_km <= 250:
+            return 2
+        elif distance_km <= 450:
+            return 3
+        elif distance_km <= 700:
+            return 4
+        elif distance_km <= 900:
+            return 5
+        else:
+            return 6
 
+    @classmethod
+    def classify_shipment_status(cls, actual_days: float, target_days: float) -> str:
+        diff = actual_days - target_days
+        if diff <= 0:
+            return "🟢 On Time"
+        elif diff <= 1:
+            return "🟡 Slightly Delayed"
+        elif diff <= 3:
+            return "🟠 Delayed"
+        else:
+            return "🔴 Critical Delay"
+
+# ============================================================
+# 3. WAREHOUSE ANALYTICS & PERFORMANCE SCORE ENGINE
+# ============================================================
+
+class WarehouseAnalyticsEngine:
+    """
+    Aggregates warehouse performance, computes AI scores (40% Cycle, 25% PGI, 20% POD, 10% Pending, 5% Volume),
+    and builds comprehensive scorecards.
+    """
     @staticmethod
-    def process_warehouses(rows: List[Any]) -> List[Dict[str, Any]]:
+    def calculate_ai_score(cycle_days: float, pgi_days: float, pod_days: float, pending_work: int, volume: int, max_volume: int) -> Tuple[float, str]:
+        cycle_score = max(0.0, 100.0 - (cycle_days * 8.0)) * 0.40
+        pgi_score = max(0.0, 100.0 - (pgi_days * 15.0)) * 0.25
+        pod_score = max(0.0, 100.0 - (pod_days * 10.0)) * 0.20
+        pending_score = max(0.0, 100.0 - (pending_work * 0.2)) * 0.10
+        vol_score = (min(float(volume), float(max_volume)) / (float(max_volume) if max_volume else 1.0) * 100.0) * 0.05
+
+        final_score = round(cycle_score + pgi_score + pod_score + pending_score + vol_score, 1)
+
+        if final_score >= 85.0:
+            label = "Excellent"
+        elif final_score >= 70.0:
+            label = "Good"
+        elif final_score >= 55.0:
+            label = "Average"
+        elif final_score >= 40.0:
+            label = "Poor"
+        else:
+            label = "Critical"
+
+        return final_score, label
+
+    @classmethod
+    def process_warehouse_statistics(cls, rows: List[Any]) -> List[Dict[str, Any]]:
         wh_stats = defaultdict(lambda: {
-            "units": 0, "delivery_notes": 0,
-            "pgi_completed": 0, "delivered_dns": 0, "pod_completed": 0,
-            "pending_pgi": 0, "pending_delivery": 0,
-            "sum_delivery_days": 0.0, "sum_pgi_days": 0.0, "sum_pod_days": 0.0, "sum_cycle_days": 0.0,
+            "units": 0,
+            "delivery_notes": 0,
+            "pgi_completed": 0,
+            "delivered_dns": 0,
+            "pending_pgi": 0,
+            "pending_pod": 0,
+            "sum_delivery_days": 0.0,
+            "sum_pgi_days": 0.0,
+            "sum_pod_days": 0.0,
+            "target_days_sum": 0.0,
+            "on_time_count": 0,
+            "delayed_count": 0,
             "distances": []
         })
 
         for row in rows:
             w_name = row.warehouse_name
             city = row.ship_to_city
-            dist = PythonDistanceCalculator.get_distance_km(w_name, city)
-            
+            dist = GeospatialDistanceEngine.calculate_distance(w_name, city)
+            target = WarehouseBusinessRulesEngine.get_target_days(dist)
+
             st = wh_stats[w_name]
             st["units"] += _safe_int(row.units)
             st["delivery_notes"] += _safe_int(row.delivery_notes)
             st["pgi_completed"] += _safe_int(row.pgi_completed)
             st["delivered_dns"] += _safe_int(row.delivered_dns)
-            st["pod_completed"] += _safe_int(row.delivered_dns)
             st["pending_pgi"] += _safe_int(row.pending_pgi)
-            st["pending_delivery"] += _safe_int(row.pending_delivery)
+            st["pending_pod"] += _safe_int(row.pending_pod)
             st["distances"].append(dist)
-            
-            delivery_days = row.delivery_days
-            pgi_days = row.pgi_days
-            pod_days = row.pod_days
+            st["target_days_sum"] += (target * _safe_int(row.delivery_notes))
+
+            delivery_days = _safe_float(row.delivery_days)
+            pgi_days = _safe_float(row.pgi_days)
+            pod_days = _safe_float(row.pod_days)
             dn_qty = _safe_int(row.delivery_notes)
-            pgi_qty = _safe_int(row.pgi_completed)
-            pod_qty = _safe_int(row.delivered_dns)
-            
-            if delivery_days is not None and dn_qty > 0:
-                st["sum_delivery_days"] += (delivery_days * dn_qty)
-            if pgi_days is not None and pgi_qty > 0:
-                st["sum_pgi_days"] += (pgi_days * pgi_qty)
-            if pod_days is not None and pod_qty > 0:
-                st["sum_pod_days"] += (pod_days * pod_qty)
-                st["sum_cycle_days"] += (pod_days * pod_qty)
 
+            st["sum_delivery_days"] += (delivery_days * dn_qty)
+            st["sum_pgi_days"] += (pgi_days * dn_qty)
+            st["sum_pod_days"] += (pod_days * dn_qty)
+
+            if delivery_days <= target:
+                st["on_time_count"] += dn_qty
+            else:
+                st["delayed_count"] += dn_qty
+
+        max_vol = max([d["delivery_notes"] for d in wh_stats.values()], default=1)
         result = []
-        for w_name, data in wh_stats.items():
-            dn = data["delivery_notes"]
-            delivered = data["delivered_dns"]
-            pgi_comp = data["pgi_completed"]
-            
-            act_delivery = (data["sum_delivery_days"] / dn) if dn else 0
-            act_pgi = (data["sum_pgi_days"] / pgi_comp) if pgi_comp else 0
-            act_pod = (data["sum_pod_days"] / delivered) if delivered else 0
-            act_cycle = (data["sum_cycle_days"] / delivered) if delivered else act_delivery
 
-            pgi_rate = _pct(pgi_comp, dn)
-            delivery_rate = _pct(delivered, dn)
-            pod_rate = _pct(delivered, delivered if delivered else 1)
-            health = round((pgi_rate * 0.35) + (delivery_rate * 0.35) + (pod_rate * 0.30), 2)
-            
-            avg_dist = (sum(data["distances"]) / len(data["distances"])) if data["distances"] else 0
+        for w_name, data in wh_stats.items():
+            dn = data["delivery_notes"] or 1
+            act_delivery = data["sum_delivery_days"] / dn
+            act_pgi = data["sum_pgi_days"] / dn
+            act_pod = data["sum_pod_days"] / dn
+            target_avg = data["target_days_sum"] / dn
+
+            achievement_pct = _pct(data["on_time_count"], dn)
+            delay_pct = _pct(data["delayed_count"], dn)
+            pending_work_total = data["pending_pgi"] + data["pending_pod"]
+
+            ai_score, ai_label = cls.calculate_ai_score(
+                act_delivery, act_pgi, act_pod, pending_work_total, dn, max_vol
+            )
+
+            if ai_score >= 75.0:
+                traffic_light = "🟢 Green"
+            elif ai_score >= 60.0:
+                traffic_light = "🟡 Yellow"
+            elif ai_score >= 45.0:
+                traffic_light = "🟠 Orange"
+            else:
+                traffic_light = "🔴 Red"
 
             result.append({
                 "warehouse_name": w_name,
+                "delivery_notes": data["delivery_notes"],
                 "units": data["units"],
-                "delivery_notes": dn,
-                "average_distance": round(avg_dist, 1),
-                "actual_delivery_days": round(act_delivery, 1),
-                "actual_pgi_days": round(act_pgi, 1),
-                "actual_pod_days": round(act_pod, 1),
-                "average_logistics_cycle": round(act_cycle, 1),
-                "pgi_achievement_rate": pgi_rate,
-                "delivery_achievement_rate": delivery_rate,
-                "pod_completion_rate": pod_rate,
+                "average_pgi": round(act_pgi, 1),
+                "average_pod": round(act_pod, 1),
+                "average_cycle": round(act_delivery, 1),
+                "target_days": round(target_avg, 1),
+                "achievement_pct": achievement_pct,
+                "delay_pct": delay_pct,
                 "pending_pgi": data["pending_pgi"],
-                "pending_delivery": data["pending_delivery"],
-                "health_score": health,
+                "pending_pod": data["pending_pod"],
+                "overall_score": ai_score,
+                "ai_performance_label": ai_label,
+                "traffic_light": traffic_light
             })
-            
-        result.sort(key=lambda x: x["delivery_notes"], reverse=True)
-        for i, w in enumerate(result): w["ranking"] = i + 1
-        return result
 
-    @staticmethod
-    def process_dealers(rows: List[Any]) -> List[Dict[str, Any]]:
-        result = []
-        for row in rows:
-            result.append({
-                "dealer_name": row.dealer_name or row.dealer_code,
-                "units": _safe_int(row.units),
-                "delivery_notes": _safe_int(row.delivery_notes),
-                "avg_cycle_days": round(_safe_float(row.avg_cycle_days), 1),
-            })
-        return result
-
-    @staticmethod
-    def process_products(rows: List[Any]) -> List[Dict[str, Any]]:
-        result = []
-        for row in rows:
-            result.append({
-                "product_name": row.product_name or row.sku,
-                "units": _safe_int(row.units),
-                "delivery_notes": _safe_int(row.delivery_notes),
-            })
-        return result
-
-    @staticmethod
-    def process_cities(rows: List[Any]) -> List[Dict[str, Any]]:
-        result = []
-        for row in rows:
-            result.append({
-                "city": row.city,
-                "units": _safe_int(row.units),
-                "delivery_notes": _safe_int(row.delivery_notes),
-                "avg_cycle_days": round(_safe_float(row.avg_cycle_days), 1),
-            })
-        return result
-
-    @staticmethod
-    def process_daily_trends(rows: List[Any]) -> Dict[str, List]:
-        dates_list, dns, units, pgi, delivered = [], [], [], [], []
-        for row in rows:
-            dates_list.append(row.date.strftime('%Y-%m-%d') if hasattr(row.date, 'strftime') else str(row.date))
-            dns.append(_safe_int(row.dn))
-            units.append(_safe_int(row.units))
-            pgi.append(_safe_int(row.pgi_completed))
-            delivered.append(_safe_int(row.delivered_dns))
-        return {"dates": dates_list, "dn": dns, "units": units, "pgi": pgi, "delivered": delivered}
-
-    @staticmethod
-    def process_aging(rows: List[Any]) -> List[Dict[str, Any]]:
-        total = sum(_safe_int(r.count) for r in rows) or 1
-        result = []
-        for row in rows:
-            cnt = _safe_int(row.count)
-            result.append({
-                "bucket": row.aging_bucket,
-                "count": cnt,
-                "percentage": _pct(cnt, total)
-            })
-        return result
-
-    @staticmethod
-    def calculate_scorecard(warehouses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        scored = []
-        for w in warehouses:
-            # 40% Delivery Days, 30% PGI Days, 20% POD Days, 10% Delivery Volume (normalized)
-            score = max(0, 100 - (w.get("actual_delivery_days", 0) * 5 + w.get("actual_pgi_days", 0) * 10 + w.get("actual_pod_days", 0) * 5))
-            scored.append({**w, "performance_score": round(score, 1)})
-        
-        scored.sort(key=lambda x: x["performance_score"], reverse=True)
-        for i, w in enumerate(scored):
+        result.sort(key=lambda x: x["overall_score"], reverse=True)
+        for i, w in enumerate(result):
             w["ranking"] = i + 1
-            if i == 0: w["medal"] = "Gold"
-            elif i == 1: w["medal"] = "Silver"
-            elif i == 2: w["medal"] = "Bronze"
-            else: w["medal"] = "Standard"
-        return scored
-
-    @staticmethod
-    def calculate_share(warehouses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        total_dn = sum(w["delivery_notes"] for w in warehouses) or 1
-        shares = []
-        for w in warehouses:
-            shares.append({
-                "warehouse": w["warehouse_name"],
-                "delivery_notes": w["delivery_notes"],
-                "percentage": _pct(w["delivery_notes"], total_dn)
-            })
-        shares.sort(key=lambda x: x["percentage"], reverse=True)
-        return shares
-
-    @staticmethod
-    def process_network(rows: List[Any]) -> Dict[str, Any]:
-        return {"nodes": [], "edges": []}
+        return result
 
 # ============================================================
-# 4. ENTERPRISE GRAPH ENGINE (Plotly)
+# 4. AI ANALYTICS & ROOT CAUSE ENGINE
+# ============================================================
+
+class AIAnalyticsEngine:
+    """
+    Generates executive summaries, root cause analyses, operational risks,
+    and improvement plans for warehouses.
+    """
+    @staticmethod
+    def generate_ai_insights(warehouses: List[Dict[str, Any]]) -> Dict[str, str]:
+        if not warehouses:
+            return {}
+
+        fastest_pgi = min(warehouses, key=lambda x: x["average_pgi"])
+        slowest_pgi = max(warehouses, key=lambda x: x["average_pgi"])
+        fastest_pod = min(warehouses, key=lambda x: x["average_pod"])
+        slowest_pod = max(warehouses, key=lambda x: x["average_pod"])
+        highest_vol = max(warehouses, key=lambda x: x["delivery_notes"])
+        highest_qty = max(warehouses, key=lambda x: x["units"])
+        highest_ppgi = max(warehouses, key=lambda x: x["pending_pgi"])
+        highest_ppod = max(warehouses, key=lambda x: x["pending_pod"])
+        best_wh = warehouses[0]
+        worst_wh = warehouses[-1]
+
+        return {
+            "best_performing_warehouse": f"{best_wh['warehouse_name']} (Score: {best_wh['overall_score']})",
+            "worst_performing_warehouse": f"{worst_wh['warehouse_name']} (Score: {worst_wh['overall_score']})",
+            "fastest_pgi": f"{fastest_pgi['warehouse_name']} ({fastest_pgi['average_pgi']} Days)",
+            "slowest_pgi": f"{slowest_pgi['warehouse_name']} ({slowest_pgi['average_pgi']} Days)",
+            "fastest_pod": f"{fastest_pod['warehouse_name']} ({fastest_pod['average_pod']} Days)",
+            "slowest_pod": f"{slowest_pod['warehouse_name']} ({slowest_pod['average_pod']} Days)",
+            "highest_delivery_volume": f"{highest_vol['warehouse_name']} ({highest_vol['delivery_notes']:,} DNs)",
+            "highest_quantity_delivered": f"{highest_qty['warehouse_name']} ({highest_qty['units']:,} Units)",
+            "highest_pending_pgi": f"{highest_ppgi['warehouse_name']} ({highest_ppgi['pending_pgi']:,} DNs)",
+            "highest_pending_pod": f"{highest_ppod['warehouse_name']} ({highest_ppod['pending_pod']:,} Shipments)",
+            "most_efficient_warehouse": f"{best_wh['warehouse_name']}",
+            "warehouse_needing_immediate_attention": f"{worst_wh['warehouse_name']} due to delayed cycle times."
+        }
+
+    @staticmethod
+    def generate_root_cause_analysis(warehouses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        analysis = []
+        for w in warehouses:
+            if w["overall_score"] < 70.0 or w["delay_pct"] > 15.0:
+                causes = []
+                if w["average_pgi"] > 1.2:
+                    causes.append("Slow warehouse picking and staging delays")
+                if w["average_pod"] > 3.0:
+                    causes.append("Vehicle dispatch bottlenecks and long-distance transit delays")
+                if w["pending_pgi"] > 30:
+                    causes.append("Manpower shortage and high unfulfilled workload")
+                if not causes:
+                    causes.append("Documentation lag and carrier availability constraints")
+
+                analysis.append({
+                    "warehouse_name": w["warehouse_name"],
+                    "root_causes": causes,
+                    "immediate_actions": ["Reallocate shift workforce", "Clear PGI staging backlog"],
+                    "short_term_improvements": ["Optimize pick-pack route inside warehouse", "Enforce strict carrier dispatch SLAs"],
+                    "long_term_improvements": ["Integrate automated WMS scanning", "Expand regional carrier fleet contracts"],
+                    "priority_level": "High" if w["overall_score"] < 50.0 else "Medium",
+                    "estimated_improvement": "18-25% faster cycle reduction"
+                })
+        return analysis
+
+# ============================================================
+# 5. ALERT ENGINE
+# ============================================================
+
+class AlertEngine:
+    """
+    Generates critical, warning, and informational alerts based on warehouse thresholds.
+    """
+    @staticmethod
+    def generate_alerts(warehouses: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        alerts = []
+        for w in warehouses:
+            if w["overall_score"] < 50.0:
+                alerts.append({
+                    "severity": "CRITICAL",
+                    "source": w["warehouse_name"],
+                    "message": f"Critical warehouse score of {w['overall_score']} detected. Immediate intervention required."
+                })
+            elif w["delay_pct"] > 20.0:
+                alerts.append({
+                    "severity": "WARNING",
+                    "source": w["warehouse_name"],
+                    "message": f"High delivery delay percentage ({w['delay_pct']}%) exceeding acceptable SLA threshold."
+                })
+            if w["pending_pgi"] > 50:
+                alerts.append({
+                    "severity": "WARNING",
+                    "source": w["warehouse_name"],
+                    "message": f"High PGI backlog of {w['pending_pgi']} Delivery Notes waiting to be processed."
+                })
+        return alerts
+
+# ============================================================
+# 6. ENTERPRISE GRAPH ENGINE (Plotly)
 # ============================================================
 
 class GraphEngine:
     """
-    Builds world-class, executive-ready enterprise visualizations adhering to SAP/Fabric standards.
+    Builds enterprise-grade Plotly JSON visualizations for frontend dashboards.
     """
     @staticmethod
-    def _apply_corporate_layout(fig, title: str, x_title: str = "", y_title: str = "") -> go.Figure:
+    def _apply_corporate_layout(fig: go.Figure, title: str, x_title: str = "", y_title: str = "") -> go.Figure:
         fig.update_layout(
             title=dict(text=title, font=dict(family="Plus Jakarta Sans, sans-serif", size=15, color="#FFFFFF"), x=0.02, y=0.95),
-            paper_bgcolor="rgba(0,0,0,0)",   # FIX: replaced 'transparent' to avoid backend error
-            plot_bgcolor="rgba(0,0,0,0)",    # FIX: replaced 'transparent'
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
             font=dict(family="Plus Jakarta Sans, sans-serif", size=12, color="#94A3B8"),
             margin=dict(l=60, r=30, t=50, b=40),
             hoverlabel=dict(bgcolor="#0F172A", font_size=12, font_color="#FFFFFF"),
@@ -582,13 +616,14 @@ class GraphEngine:
 
     @staticmethod
     def get_warehouse_charts(warehouses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        if not warehouses or not PLOTLY_AVAILABLE: return {}
+        if not warehouses or not PLOTLY_AVAILABLE:
+            return {}
         charts = {}
-        
+
         df_wh = sorted(warehouses, key=lambda x: x["delivery_notes"])
         names = [w["warehouse_name"] for w in df_wh]
         dns = [w["delivery_notes"] for w in df_wh]
-        
+
         fig_dn = go.Figure(go.Bar(
             x=dns, y=names, orientation='h',
             marker=dict(color='#0284C7', line=dict(color='#38BDF8', width=1)),
@@ -602,112 +637,32 @@ class GraphEngine:
 
     @staticmethod
     def get_daily_trend_charts(daily_data: Dict[str, List]) -> Dict[str, Any]:
-        if not daily_data or not daily_data.get("dates") or not PLOTLY_AVAILABLE: return {}
+        if not daily_data or not daily_data.get("dates") or not PLOTLY_AVAILABLE:
+            return {}
         charts = {}
         dates = daily_data["dates"]
-        
+
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=dates, y=daily_data["dn"], mode='lines+markers', name='Daily DNs', line=dict(color='#0284C7', width=2)))
         fig.add_trace(go.Scatter(x=dates, y=daily_data["pgi"], mode='lines+markers', name='Daily PGI', line=dict(color='#10B981', width=2)))
         fig.add_trace(go.Scatter(x=dates, y=daily_data["delivered"], mode='lines+markers', name='Daily Delivered', line=dict(color='#F59E0B', width=2)))
-        
+
         GraphEngine._apply_corporate_layout(fig, "30-Day Operational Logistics Trend (DN, PGI, POD)", "Date", "Volume Count")
         charts["daily_operations"] = fig.to_json()
         return charts
 
 # ============================================================
-# 5. RECOMMENDATION & ALERT ENGINES
+# 7. DASHBOARD SERVICE & API ORCHESTRATOR
 # ============================================================
-
-class RecommendationEngine:
-    @staticmethod
-    def generate(warehouses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        recs = []
-        for w in warehouses:
-            if w.get("actual_pgi_days", 0) > 1.0:
-                recs.append({
-                    "title": f"PGI Bottleneck at {w['warehouse_name']}",
-                    "description": f"Optimize pick-pack staging; current PGI processing averages {w['actual_pgi_days']} days."
-                })
-            if w.get("average_logistics_cycle", 0) > 6.0:
-                recs.append({
-                    "title": f"Cycle SLA Breach at {w['warehouse_name']}",
-                    "description": f"Review transport dispatch schedules; average delivery cycle is {w['average_logistics_cycle']} days."
-                })
-        if not recs:
-            recs.append({"title": "Operations Nominal", "description": "All regional warehouses are operating efficiently within normal cycle thresholds."})
-        return recs
-
-class AlertEngine:
-    @staticmethod
-    def generate(summary: Dict[str, Any], warehouses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        alerts = []
-        for w in warehouses:
-            if w.get("average_logistics_cycle", 0) > 5.8:
-                alerts.append({
-                    "severity": "CRITICAL",
-                    "source": w["warehouse_name"],
-                    "message": f"Cycle time of {w['average_logistics_cycle']} days exceeds executive target threshold of 5.8 days."
-                })
-            if w.get("pending_pgi", 0) > 50:
-                alerts.append({
-                    "severity": "WARNING",
-                    "source": w["warehouse_name"],
-                    "message": f"High backlog: {w['pending_pgi']} Delivery Notes pending Post Goods Issue (PGI)."
-                })
-        return alerts
-
-# ============================================================
-# 6. RESPONSE BUILDER & MASTER ORCHESTRATOR
-# ============================================================
-
-class ResponseBuilder:
-    @staticmethod
-    def build(
-        summary, pipeline, division, warehouse, dealer, product, city,
-        daily_trends_raw, network, alerts, recommendations, metadata, warehouse_charts,
-        trend_charts, warehouse_dn_ranking, warehouse_qty_ranking, pgi_ranking, pod_ranking,
-        overall_cycle_ranking, warehouse_share, aging_buckets, scorecard
-    ) -> Dict[str, Any]:
-        
-        cards = {
-            "total_dn": {"value": summary.get("total_delivery_notes", 0)},
-            "total_units": {"value": summary.get("total_units", 0)},
-            "health_score": {"value": summary.get("dashboard_health_score", 0)},
-            "avg_cycle": {"value": summary.get("average_logistics_cycle", 0)}
-        }
-        
-        return {
-            "executive": summary,
-            "cards": summary, # passes all KPI fields directly for the 15 KPI cards
-            "pipeline": pipeline,
-            "division": division,
-            "warehouse": warehouse,
-            "warehouse_dn_ranking": warehouse_dn_ranking,
-            "warehouse_qty_ranking": warehouse_qty_ranking,
-            "pgi_ranking": pgi_ranking,
-            "pod_ranking": pod_ranking,
-            "overall_cycle_ranking": overall_cycle_ranking,
-            "warehouse_share": warehouse_share,
-            "aging_buckets": aging_buckets,
-            "scorecard": scorecard,
-            "warehouse_charts": warehouse_charts,
-            "dealer": dealer,
-            "product": product,
-            "city": city,
-            "daily_trends": daily_trends_raw,
-            "trend_charts": trend_charts,
-            "network": network,
-            "alerts": alerts,
-            "executive_insights": recommendations,
-            "recommendations": recommendations,
-            "metadata": metadata,
-        }
 
 class DashboardService:
+    """
+    Master service orchestrator combining repository, analytics, AI insights,
+    alert engine, and graph generation.
+    """
     def __init__(self):
         self._repo = DashboardRepository()
-        logger.info("🚀 DashboardService v12.0 initialized with Executive Logistics BI Engine")
+        logger.info(f"🚀 DashboardService v{DashboardConfig.VERSION} initialized")
 
     @cached(ttl=5)
     async def get_dashboard_data(
@@ -720,75 +675,106 @@ class DashboardService:
         filters = filters or {}
 
         try:
-            raw_sum = self._repo.fetch_raw_summary()
-            raw_pipe = self._repo.fetch_raw_pipeline()
-            raw_div = self._repo.fetch_raw_divisions()
-            raw_wh = self._repo.fetch_raw_warehouses_for_python()
-            raw_dl = self._repo.fetch_raw_dealers()
-            raw_pr = self._repo.fetch_raw_products()
-            raw_ct = self._repo.fetch_raw_cities()
-            raw_dai = self._repo.fetch_raw_daily_trends()
-            raw_ag = self._repo.fetch_raw_aging()
-            raw_net = self._repo.fetch_raw_network_rows()
-            record_count = self._repo.fetch_record_count()
+            raw_sum = self._repo.fetch_executive_summary_data()
+            raw_wh = self._repo.fetch_warehouse_execution_rows()
+            raw_ag = self._repo.fetch_delivery_aging_rows()
+            raw_dai = self._repo.fetch_daily_trend_rows()
+            record_count = self._repo.fetch_total_record_count()
         except Exception as e:
-            logger.error(f"❌ Database execution error caught: {str(e)}")
+            logger.error(f"❌ Database execution error: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Database execution error: {str(e)}")
 
-        warehouse = AnalyticsEngine.process_warehouses(raw_wh)
-        summary = BusinessRuleEngine.calculate_summary(raw_sum, warehouse)
-        pipeline = BusinessRuleEngine.calculate_pipeline(raw_pipe)
-        division = AnalyticsEngine.process_divisions(raw_div)
-        dealer = AnalyticsEngine.process_dealers(raw_dl)
-        product = AnalyticsEngine.process_products(raw_pr)
-        city = AnalyticsEngine.process_cities(raw_ct)
-        daily_trends_raw = AnalyticsEngine.process_daily_trends(raw_dai)
-        aging_buckets = AnalyticsEngine.process_aging(raw_ag)
-        network = AnalyticsEngine.process_network(raw_net)
+        warehouses = WarehouseAnalyticsEngine.process_warehouse_statistics(raw_wh)
+        insights = AIAnalyticsEngine.generate_ai_insights(warehouses)
+        root_causes = AIAnalyticsEngine.generate_root_cause_analysis(warehouses)
+        alerts = AlertEngine.generate_alerts(warehouses)
 
-        warehouse_dn_ranking = sorted(warehouse, key=lambda x: x["delivery_notes"], reverse=True)
-        warehouse_qty_ranking = sorted(warehouse, key=lambda x: x["units"], reverse=True)
-        pgi_ranking = sorted(warehouse, key=lambda x: x["actual_pgi_days"]) # Lower is better
-        pod_ranking = sorted(warehouse, key=lambda x: x["actual_pod_days"]) # Lower is better
-        overall_cycle_ranking = sorted(warehouse, key=lambda x: x["average_logistics_cycle"]) # Lower is better
-        warehouse_share = AnalyticsEngine.calculate_share(warehouse)
-        scorecard = AnalyticsEngine.calculate_scorecard(warehouse)
+        aging_total = sum(_safe_int(r.count) for r in raw_ag) or 1
+        aging_buckets = [
+            {"bucket": r.aging_bucket, "count": _safe_int(r.count), "percentage": _pct(_safe_int(r.count), aging_total)}
+            for r in raw_ag
+        ]
 
-        alerts = AlertEngine.generate(summary, warehouse)
-        recommendations = RecommendationEngine.generate(warehouse)
+        dates_list, dns, units, pgi, delivered = [], [], [], [], []
+        for row in raw_dai:
+            dates_list.append(row.date.strftime('%Y-%m-%d') if hasattr(row.date, 'strftime') else str(row.date))
+            dns.append(_safe_int(row.dn))
+            units.append(_safe_int(row.units))
+            pgi.append(_safe_int(row.pgi_completed))
+            delivered.append(_safe_int(row.delivered_dns))
+        daily_trends_raw = {"dates": dates_list, "dn": dns, "units": units, "pgi": pgi, "delivered": delivered}
 
-        warehouse_charts = GraphEngine.get_warehouse_charts(warehouse)
-        trend_charts = GraphEngine.get_daily_trend_charts(daily_trends_raw)
+        total_dn = raw_sum.get("total_dn", 0)
+        delivered_dns = raw_sum.get("delivered_dns", 0)
+        on_time_pct = _pct(delivered_dns, total_dn)
 
-        metadata = {
-            "application_version": "12.0.0",
-            "database_version": "PostgreSQL",
-            "postgresql_status": "connected",
-            "record_count": record_count,
-            "last_refresh": datetime.utcnow().isoformat(),
-            "environment": os.getenv("ENVIRONMENT", "production"),
+        cards = {
+            "active_warehouses": raw_sum.get("warehouses_count", 0),
+            "total_delivery_notes": total_dn,
+            "total_quantity_delivered": raw_sum.get("total_units", 0),
+            "average_delivery_days": raw_sum.get("avg_delivery_days", 0.0),
+            "average_pgi_days": raw_sum.get("avg_pgi_days", 0.0),
+            "average_pod_days": raw_sum.get("avg_pod_days", 0.0),
+            "ontime_delivery_pct": on_time_pct,
+            "pending_pgi": sum(w["pending_pgi"] for w in warehouses),
+            "pending_pod": sum(w["pending_pod"] for w in warehouses),
+            "best_warehouse": warehouses[0]["warehouse_name"] if warehouses else "Lahore",
+            "worst_warehouse": warehouses[-1]["warehouse_name"] if warehouses else "Multan",
+            "critical_delays": sum(1 for w in warehouses if w["overall_score"] < 50.0)
         }
 
-        return ResponseBuilder.build(
-            summary, pipeline, division, warehouse, dealer, product, city,
-            daily_trends_raw, network, alerts, recommendations, metadata, warehouse_charts,
-            trend_charts, warehouse_dn_ranking, warehouse_qty_ranking, pgi_ranking, pod_ranking,
-            overall_cycle_ranking, warehouse_share, aging_buckets, scorecard
-        )
+        warehouse_charts = GraphEngine.get_warehouse_charts(warehouses)
+        trend_charts = GraphEngine.get_daily_trend_charts(daily_trends_raw)
+
+        return {
+            "cards": cards,
+            "executive": cards,
+            "warehouse_scorecard": warehouses,
+            "warehouse": warehouses,
+            "warehouse_ranking": warehouses,
+            "warehouse_dn_ranking": sorted(warehouses, key=lambda x: x["delivery_notes"], reverse=True),
+            "warehouse_qty_ranking": sorted(warehouses, key=lambda x: x["units"], reverse=True),
+            "pgi_ranking": sorted(warehouses, key=lambda x: x["average_pgi"]),
+            "pod_ranking": sorted(warehouses, key=lambda x: x["average_pod"]),
+            "overall_cycle_ranking": sorted(warehouses, key=lambda x: x["average_cycle"]),
+            "warehouse_share": [{"warehouse": w["warehouse_name"], "delivery_notes": w["delivery_notes"], "percentage": _pct(w["delivery_notes"], total_dn)} for w in warehouses],
+            "ai_insights": insights,
+            "executive_insights": [{"title": k.replace("_", " ").title(), "description": v} for k, v in insights.items()],
+            "root_cause_analysis": root_causes,
+            "recommendations": root_causes,
+            "aging_buckets": aging_buckets,
+            "scorecard": warehouses,
+            "warehouse_charts": warehouse_charts,
+            "trend_charts": trend_charts,
+            "alerts": alerts,
+            "executive_summary": {
+                "summary_text": f"Warehouse execution overview across {cards['active_warehouses']} active facilities in Pakistan. Top performance is led by {cards['best_warehouse']}, while {cards['worst_warehouse']} requires immediate logistical intervention.",
+                "major_risks": ["Transit bottleneck on long-distance routes", "Staging queue backlog in regional distribution centers"],
+                "recommended_actions": ["Streamline PGI generation workflow", "Enforce 24-hour carrier dispatch windows"]
+            },
+            "metadata": {
+                "application_version": DashboardConfig.VERSION,
+                "database_version": "PostgreSQL",
+                "postgresql_status": "connected",
+                "record_count": record_count,
+                "last_refresh": datetime.utcnow().isoformat(),
+                "environment": os.getenv("ENVIRONMENT", "production")
+            }
+        }
 
 # ============================================================
-# FASTAPI ROUTER
+# FASTAPI ROUTER & DEPENDENCY INJECTION
 # ============================================================
 
-_dashboard_service = None
+_dashboard_service_instance: Optional[DashboardService] = None
 
 def get_dashboard_service() -> DashboardService:
-    global _dashboard_service
-    if _dashboard_service is None:
-        _dashboard_service = DashboardService()
-    return _dashboard_service
+    global _dashboard_service_instance
+    if _dashboard_service_instance is None:
+        _dashboard_service_instance = DashboardService()
+    return _dashboard_service_instance
 
-router = APIRouter(prefix="/dashboard/api", tags=["dashboard"])
+router = APIRouter(prefix="/dashboard/api", tags=["dashboard", "warehouse-intelligence"])
 
 @router.get("/data")
 async def dashboard_api_data(service: DashboardService = Depends(get_dashboard_service)):
