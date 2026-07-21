@@ -1,9 +1,11 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 5.4 - BUSINESS RULES ALIGNED
+# VERSION: 6.0 - ENTERPRISE LOGISTICS INTELLIGENCE PLATFORM
 # ============================================================
-# PURPOSE: Logistics dashboard service aligned with PGI, delivery,
-#          and POD business rules.
+# PURPOSE: Enterprise-grade logistics dashboard service with
+#          executive KPIs, business rule engine, AI insights,
+#          and full analytics for warehouses, dealers, products,
+#          cities, and transporters.
 # ============================================================
 
 import asyncio
@@ -13,7 +15,6 @@ import json
 import logging
 import os
 import time
-import traceback
 from typing import Optional, Dict, List, Any, Union, Tuple
 from collections import defaultdict
 from functools import wraps
@@ -23,9 +24,9 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import engine, SessionLocal
-from app.models import DeliveryReport  # kept for import compatibility, but not used directly
+from app.models import DeliveryReport
 
-# Optional external libraries (lazy loaded) – preserved
+# Optional external libraries (lazy loaded)
 try:
     import pandas as pd
     PANDAS_AVAILABLE = True
@@ -60,7 +61,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# UTILITY FUNCTIONS (mirroring dealer_analytics_service.py)
+# UTILITY FUNCTIONS
 # ============================================================
 
 def _text(value: Any, default: str = "N/A") -> str:
@@ -106,7 +107,7 @@ def _format_date(date_val: Any) -> str:
         return str(date_val)
 
 # ============================================================
-# CACHE DECORATOR (unchanged)
+# CACHE DECORATOR
 # ============================================================
 
 class InMemoryCache:
@@ -143,7 +144,7 @@ def cached(ttl=5):
     return decorator
 
 # ============================================================
-# DASHBOARD CONTEXT (unchanged)
+# DASHBOARD CONTEXT
 # ============================================================
 
 class DashboardContext:
@@ -155,7 +156,7 @@ class DashboardContext:
         self.dealer_performance: Optional[List[Dict[str, Any]]] = None
         self.product_performance: Optional[List[Dict[str, Any]]] = None
         self.city_performance: Optional[List[Dict[str, Any]]] = None
-        self.transport_data: Optional[Dict[str, Any]] = None
+        self.transport_performance: Optional[List[Dict[str, Any]]] = None
         self.monthly_trends: Optional[Dict[str, Any]] = None
         self.daily_trends: Optional[Dict[str, Any]] = None
         self.kpis: Optional[Dict[str, Any]] = None
@@ -168,14 +169,14 @@ class DashboardContext:
         self.loaded = False
 
 # ============================================================
-# DASHBOARD REPOSITORY (RAW SQL – no date arithmetic)
+# DASHBOARD REPOSITORY (RAW SQL – BUSINESS RULES ENGINE)
 # ============================================================
 
 class DashboardRepository:
-    """Handles dashboard queries using DN-level logistics business rules."""
+    """Enterprise data access layer with full business rule implementation."""
 
     def __init__(self):
-        logger.info("DashboardRepository initialized (business rules aligned)")
+        logger.info("DashboardRepository v6.0 initialized (Enterprise rules)")
         self._columns_cache = None
 
     def _execute(self, sql: str, params: Optional[Dict[str, Any]] = None):
@@ -250,8 +251,6 @@ class DashboardRepository:
         )
         if delivery_expr != "NULL::date":
             return delivery_expr
-        # Some DN/PGI extracts only contain POD Date. In that case, treat POD
-        # as the delivery close date so the dashboard remains usable.
         return self._date_expr("pod_date")
 
     def _numeric_expr(self, *names: str) -> str:
@@ -343,25 +342,28 @@ class DashboardRepository:
         return round((numerator / denominator) * 100, 2)
 
     @staticmethod
-    def _kpi_color(value: float, target: float = 95.0) -> str:
-        if value >= target:
-            return "success"
-        if value >= 90:
-            return "info"
-        if value >= 85:
-            return "warning"
-        return "danger"
-
-    @staticmethod
-    def _compute_health_score(pgi_rate: float, delivery_rate: float, pod_rate: float, invalid_count: int, total_dn: int) -> float:
+    def _compute_health_score(pgi_rate: float, delivery_rate: float, pod_rate: float,
+                              otif: float, avg_cycle_days: float,
+                              invalid_count: int, total_dn: int) -> float:
+        """Calculate overall health score using weighted components."""
+        # Normalize cycle days (lower is better): 100% if <= 7 days, 0% if > 21 days
+        cycle_score = 100.0 if avg_cycle_days <= 7 else max(0.0, 100.0 - ((avg_cycle_days - 7) / 14) * 100)
         validation_score = max(0.0, 100.0 - ((invalid_count / (total_dn or 1)) * 100.0))
+
+        # Weighted components
         score = (
-            min(pgi_rate, 100.0) * 0.25
-            + min(delivery_rate, 100.0) * 0.30
-            + min(pod_rate, 100.0) * 0.30
-            + validation_score * 0.15
+            min(pgi_rate, 100.0) * 0.20 +
+            min(delivery_rate, 100.0) * 0.25 +
+            min(pod_rate, 100.0) * 0.20 +
+            min(otif, 100.0) * 0.15 +
+            cycle_score * 0.10 +
+            validation_score * 0.10
         )
         return round(score, 2)
+
+    # ------------------------------------------------------------------
+    # EXECUTIVE SUMMARY (with all KPIs)
+    # ------------------------------------------------------------------
 
     def get_summary(self, filters: Dict[str, Any]) -> Dict[str, Any]:
         try:
@@ -397,7 +399,8 @@ class DashboardRepository:
                                 AND pod_date < pgi_date THEN 1 END) AS pod_before_pgi,
                     COALESCE(AVG(delivery_days), 0) AS average_delivery_days,
                     COALESCE(AVG(pod_days), 0) AS average_pod_days,
-                    COALESCE(AVG(logistics_cycle_days), 0) AS average_logistics_cycle_days
+                    COALESCE(AVG(logistics_cycle_days), 0) AS average_logistics_cycle_days,
+                    COALESCE(AVG(target_delivery_days), 0) AS average_target_days
                 FROM dn_rules
             """
             row = self._execute(sql).first()
@@ -411,6 +414,8 @@ class DashboardRepository:
             delivered_dns = self._safe_int(row.delivered_dns)
             pod_completed = self._safe_int(row.pod_completed)
             on_time_deliveries = self._safe_int(row.on_time_deliveries)
+            avg_cycle = self._safe_float(row.average_logistics_cycle_days)
+
             invalid_count = (
                 self._safe_int(row.delivery_without_pgi)
                 + self._safe_int(row.delivery_before_pgi)
@@ -419,35 +424,26 @@ class DashboardRepository:
             )
 
             pgi_rate = self._pct(pgi_completed, total_dn)
-            delivery_achievement = self._pct(on_time_deliveries, delivered_dns)
+            delivery_rate = self._pct(on_time_deliveries, delivered_dns)
             pod_rate = self._pct(pod_completed, delivered_dns)
+            otif = delivery_rate  # OTIF is essentially on-time delivery rate
             health_score = self._compute_health_score(
-                pgi_rate,
-                delivery_achievement,
-                pod_rate,
-                invalid_count,
-                total_dn,
+                pgi_rate, delivery_rate, pod_rate, otif, avg_cycle,
+                invalid_count, total_dn
             )
 
-            logger.info(
-                "get_summary: revenue=%s, units=%s, distinct_dns=%s, pgi=%s, delivered=%s, pod=%s",
-                total_revenue,
-                total_units,
-                total_dn,
-                pgi_completed,
-                delivered_dns,
-                pod_completed,
-            )
-
+            # Additional network counts
             dealer_column = self._column("dealer_code", "sold_to_party_name", "customer_name", "dealer_name")
             warehouse_column = self._column("warehouse")
             city_column = self._column("ship_to_city", "city")
             product_column = self._column("material_no", "sku")
+            transporter_column = self._column("transporter", "transporter_name", "carrier")
 
             dealers = self._execute(f"SELECT COUNT(DISTINCT {dealer_column}) FROM delivery_reports WHERE {dealer_column} IS NOT NULL").scalar() if dealer_column else 0
             warehouses = self._execute(f"SELECT COUNT(DISTINCT {warehouse_column}) FROM delivery_reports WHERE {warehouse_column} IS NOT NULL").scalar() if warehouse_column else 0
             cities = self._execute(f"SELECT COUNT(DISTINCT {city_column}) FROM delivery_reports WHERE {city_column} IS NOT NULL").scalar() if city_column else 0
             products = self._execute(f"SELECT COUNT(DISTINCT {product_column}) FROM delivery_reports WHERE {product_column} IS NOT NULL").scalar() if product_column else 0
+            transporters = self._execute(f"SELECT COUNT(DISTINCT {transporter_column}) FROM delivery_reports WHERE {transporter_column} IS NOT NULL").scalar() if transporter_column else 0
 
             return {
                 "total_revenue": total_revenue,
@@ -460,15 +456,16 @@ class DashboardRepository:
                 "active_warehouses": warehouses,
                 "active_cities": cities,
                 "active_products": products,
-                "active_transporters": 0,
+                "active_transporters": transporters,
                 "average_delivery_days": round(self._safe_float(row.average_delivery_days), 2),
                 "average_pod_days": round(self._safe_float(row.average_pod_days), 2),
                 "average_pgi_days": round(self._safe_float(row.average_delivery_days), 2),
-                "average_logistics_cycle_days": round(self._safe_float(row.average_logistics_cycle_days), 2),
+                "average_logistics_cycle_days": round(avg_cycle, 2),
+                "average_target_days": round(self._safe_float(row.average_target_days), 2),
                 "pgi_achievement_rate": pgi_rate,
-                "delivery_achievement_rate": delivery_achievement,
+                "delivery_achievement_rate": delivery_rate,
                 "pod_completion_rate": pod_rate,
-                "otif_percentage": delivery_achievement,
+                "otif_percentage": otif,
                 "inventory_accuracy": 0.0,
                 "pending_dispatch": self._safe_int(row.pending_dispatch),
                 "pending_delivery": self._safe_int(row.pending_delivery),
@@ -506,6 +503,7 @@ class DashboardRepository:
             "average_pod_days": 0.0,
             "average_pgi_days": 0.0,
             "average_logistics_cycle_days": 0.0,
+            "average_target_days": 0.0,
             "pgi_achievement_rate": 0.0,
             "delivery_achievement_rate": 0.0,
             "pod_completion_rate": 0.0,
@@ -526,6 +524,10 @@ class DashboardRepository:
             "dashboard_health_score": 0.0,
             "last_database_refresh": None,
         }
+
+    # ------------------------------------------------------------------
+    # WAREHOUSE ANALYTICS
+    # ------------------------------------------------------------------
 
     def get_warehouse_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         extra_fields = [self._text_aggregate("warehouse", "warehouse", default="Unassigned")]
@@ -549,7 +551,8 @@ class DashboardRepository:
                             AND delivery_days > target_delivery_days THEN 1 END) AS late_deliveries,
                 COALESCE(AVG(delivery_days), 0) AS average_delivery_days,
                 COALESCE(AVG(pod_days), 0) AS average_pod_days,
-                COALESCE(AVG(logistics_cycle_days), 0) AS average_logistics_cycle_days
+                COALESCE(AVG(logistics_cycle_days), 0) AS average_logistics_cycle_days,
+                COALESCE(AVG(target_delivery_days), 0) AS average_target_days
             FROM dn_rules
             GROUP BY warehouse
             ORDER BY revenue DESC
@@ -563,9 +566,12 @@ class DashboardRepository:
             pod_completed = self._safe_int(row.pod_completed)
             on_time = self._safe_int(row.on_time_deliveries)
             avg_del = round(self._safe_float(row.average_delivery_days), 2)
+            avg_cycle = round(self._safe_float(row.average_logistics_cycle_days), 2)
             pgi_rate = self._pct(pgi_completed, dn)
             delivery_rate = self._pct(on_time, delivered_dns)
             pod_rate = self._pct(pod_completed, delivered_dns)
+            otif = delivery_rate
+            health = self._compute_health_score(pgi_rate, delivery_rate, pod_rate, otif, avg_cycle, 0, dn)
             grade = self._compute_grade(avg_del)
             risk = self._compute_risk_level(
                 self._safe_int(row.pending_delivery) + self._safe_int(row.pending_pod),
@@ -584,12 +590,14 @@ class DashboardRepository:
                 "average_delivery_days": avg_del,
                 "average_pod_days": round(self._safe_float(row.average_pod_days), 2),
                 "average_pgi_days": avg_del,
-                "average_logistics_cycle_days": round(self._safe_float(row.average_logistics_cycle_days), 2),
+                "average_logistics_cycle_days": avg_cycle,
+                "average_target_days": round(self._safe_float(row.average_target_days), 2),
                 "pgi_achievement_rate": pgi_rate,
                 "delivery_achievement_rate": delivery_rate,
                 "pod_completion_rate": pod_rate,
-                "otif": delivery_rate,
+                "otif": otif,
                 "pod": pod_rate,
+                "health_score": health,
                 "capacity": 0,
                 "utilization": 0,
                 "pending_dispatch": self._safe_int(row.pending_dispatch),
@@ -599,9 +607,13 @@ class DashboardRepository:
                 "on_time_deliveries": on_time,
                 "performance_grade": grade,
                 "risk_level": risk,
-                "ai_recommendation": self._warehouse_recommendation(row.warehouse, grade, risk),
+                "ai_recommendation": self._warehouse_recommendation(row.warehouse, grade, risk, pgi_rate, delivery_rate, pod_rate),
             })
         return result
+
+    # ------------------------------------------------------------------
+    # DEALER ANALYTICS
+    # ------------------------------------------------------------------
 
     def get_dealer_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         extra_fields = [
@@ -630,6 +642,7 @@ class DashboardRepository:
                 COALESCE(AVG(delivery_days), 0) AS average_delivery_days,
                 COALESCE(AVG(pod_days), 0) AS average_pod_days,
                 COALESCE(AVG(logistics_cycle_days), 0) AS average_logistics_cycle_days,
+                COALESCE(AVG(target_delivery_days), 0) AS average_target_days,
                 MAX(delivery_date) AS last_delivery,
                 MAX(dn_date) AS last_order
             FROM dn_rules
@@ -646,9 +659,14 @@ class DashboardRepository:
             pod_completed = self._safe_int(row.pod_completed)
             on_time = self._safe_int(row.on_time_deliveries)
             avg_del = round(self._safe_float(row.average_delivery_days), 2)
+            avg_cycle = round(self._safe_float(row.average_logistics_cycle_days), 2)
+            pgi_rate = self._pct(pgi_completed, dn)
+            delivery_rate = self._pct(on_time, delivered_dns)
+            pod_rate = self._pct(pod_completed, delivered_dns)
             revenue = row.revenue
             units = row.units
             score = self._compute_dealer_score(revenue, units, avg_del)
+            health = self._compute_health_score(pgi_rate, delivery_rate, pod_rate, delivery_rate, avg_cycle, 0, dn)
             result.append({
                 "dealer_name": row.customer_name or row.dealer_code,
                 "dealer_code": row.dealer_code,
@@ -661,10 +679,13 @@ class DashboardRepository:
                 "average_delivery_days": avg_del,
                 "average_pod_days": round(self._safe_float(row.average_pod_days), 2),
                 "average_pgi_days": avg_del,
-                "average_logistics_cycle_days": round(self._safe_float(row.average_logistics_cycle_days), 2),
-                "pgi_achievement_rate": self._pct(pgi_completed, dn),
-                "delivery_achievement_rate": self._pct(on_time, delivered_dns),
-                "pod_completion_rate": self._pct(pod_completed, delivered_dns),
+                "average_logistics_cycle_days": avg_cycle,
+                "average_target_days": round(self._safe_float(row.average_target_days), 2),
+                "pgi_achievement_rate": pgi_rate,
+                "delivery_achievement_rate": delivery_rate,
+                "pod_completion_rate": pod_rate,
+                "otif": delivery_rate,
+                "health_score": health,
                 "pending_dispatch": self._safe_int(row.pending_dispatch),
                 "pending_delivery": self._safe_int(row.pending_delivery),
                 "pending_pod": self._safe_int(row.pending_pod),
@@ -678,6 +699,10 @@ class DashboardRepository:
                 "ai_recommendation": self._dealer_recommendation(row.dealer_code, score, avg_del),
             })
         return result
+
+    # ------------------------------------------------------------------
+    # PRODUCT ANALYTICS (with ABC classification)
+    # ------------------------------------------------------------------
 
     def get_product_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         pgi_expr = self._date_expr("pgi_date", "good_issue_date", "goods_issue_date")
@@ -693,6 +718,9 @@ class DashboardRepository:
                 COUNT(DISTINCT CASE WHEN {pgi_expr} IS NOT NULL THEN dn_no END) AS pgi_completed,
                 COUNT(DISTINCT CASE WHEN {delivery_expr} IS NOT NULL THEN dn_no END) AS delivered_dns,
                 COUNT(DISTINCT CASE WHEN {pod_expr} IS NOT NULL THEN dn_no END) AS pod_completed,
+                COUNT(DISTINCT dealer_code) AS dealers,
+                COUNT(DISTINCT warehouse) AS warehouses,
+                COUNT(DISTINCT ship_to_city) AS cities,
                 COALESCE(AVG(CASE
                     WHEN {pgi_expr} IS NOT NULL
                      AND {delivery_expr} IS NOT NULL
@@ -705,30 +733,56 @@ class DashboardRepository:
             ORDER BY revenue DESC
         """
         rows = self._execute(sql).fetchall()
+        # Calculate total revenue for ABC classification
+        total_revenue = sum(row.revenue for row in rows)
         result = []
-        for row in rows:
+        for idx, row in enumerate(rows):
+            revenue = row.revenue
             units = row.units
-            is_slow = units < 100
-            is_fast = units > 300
+            dn = self._safe_int(row.dn)
+            delivered = self._safe_int(row.delivered_dns)
+            pgi = self._safe_int(row.pgi_completed)
+            pod = self._safe_int(row.pod_completed)
+            pgi_rate = self._pct(pgi, dn)
+            pod_rate = self._pct(pod, delivered)
+            avg_del = round(self._safe_float(row.average_delivery_days), 2)
+            # ABC classification: A=top 70% revenue, B=next 20%, C=bottom 10%
+            cumulative_share = sum(r.revenue for r in rows[:idx+1]) / total_revenue if total_revenue else 0
+            if cumulative_share <= 0.7:
+                abc_class = "A"
+            elif cumulative_share <= 0.9:
+                abc_class = "B"
+            else:
+                abc_class = "C"
+            slow = units < 100
+            fast = units > 300
+            dead = units == 0
             result.append({
                 "product_name": row.customer_model or row.material_no,
                 "sku": row.material_no,
-                "revenue": row.revenue,
+                "revenue": revenue,
                 "units": units,
-                "delivery_notes": self._safe_int(row.dn),
-                "dealers": 0,
-                "warehouses": 0,
-                "cities": 0,
+                "delivery_notes": dn,
+                "dealers": row.dealers or 0,
+                "warehouses": row.warehouses or 0,
+                "cities": row.cities or 0,
                 "monthly_trend": [],
-                "average_delivery_days": round(self._safe_float(row.average_delivery_days), 2),
-                "pgi_achievement_rate": self._pct(self._safe_int(row.pgi_completed), self._safe_int(row.dn)),
-                "pod_completion_rate": self._pct(self._safe_int(row.pod_completed), self._safe_int(row.delivered_dns)),
-                "slow_moving_flag": is_slow,
-                "fast_moving_flag": is_fast,
+                "average_delivery_days": avg_del,
+                "pgi_achievement_rate": pgi_rate,
+                "pod_completion_rate": pod_rate,
+                "abc_class": abc_class,
+                "slow_moving_flag": slow,
+                "fast_moving_flag": fast,
+                "dead_stock_flag": dead,
+                "revenue_share": round((revenue / total_revenue) * 100, 2) if total_revenue else 0,
                 "growth_percentage": 0.0,
-                "ai_recommendation": self._product_recommendation(row.material_no, is_slow, is_fast),
+                "ai_recommendation": self._product_recommendation(row.material_no, slow, fast, dead),
             })
         return result
+
+    # ------------------------------------------------------------------
+    # CITY ANALYTICS
+    # ------------------------------------------------------------------
 
     def get_city_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         pgi_expr = self._date_expr("pgi_date", "good_issue_date", "goods_issue_date")
@@ -760,6 +814,9 @@ class DashboardRepository:
                 COALESCE(SUM(dn_amount), 0) AS revenue,
                 COALESCE(SUM(dn_qty), 0) AS units,
                 COUNT(DISTINCT dn_no) AS dn,
+                COUNT(DISTINCT dealer_code) AS dealers,
+                COUNT(DISTINCT warehouse) AS warehouses,
+                COUNT(DISTINCT material_no) AS products,
                 COUNT(DISTINCT CASE WHEN {delivery_expr} IS NOT NULL THEN dn_no END) AS delivered_dns,
                 COUNT(DISTINCT CASE WHEN {pod_expr} IS NOT NULL THEN dn_no END) AS pod_completed,
                 COUNT(DISTINCT CASE WHEN {pgi_expr} IS NOT NULL
@@ -781,28 +838,113 @@ class DashboardRepository:
         rows = self._execute(sql).fetchall()
         result = []
         for row in rows:
+            dn = self._safe_int(row.dn)
+            delivered = self._safe_int(row.delivered_dns)
+            on_time = self._safe_int(row.on_time_deliveries)
+            pod = self._safe_int(row.pod_completed)
+            avg_del = round(self._safe_float(row.average_delivery_days), 2)
+            delivery_rate = self._pct(on_time, delivered)
+            pod_rate = self._pct(pod, delivered)
+            # Gap analysis: actual vs target days
+            target = self._safe_float(row.delivery_target)
+            gap = avg_del - target if target else 0
+            health = self._compute_health_score(100.0, delivery_rate, pod_rate, delivery_rate, avg_del, 0, dn)
             result.append({
                 "city": row.city,
                 "revenue": row.revenue,
                 "units": row.units,
-                "dealers": 0,
-                "warehouses": 0,
-                "products": 0,
-                "delivery_notes": self._safe_int(row.dn),
+                "delivery_notes": dn,
+                "dealers": row.dealers or 0,
+                "warehouses": row.warehouses or 0,
+                "products": row.products or 0,
                 "average_distance": round(self._safe_float(row.average_distance), 2),
-                "average_delivery_days": round(self._safe_float(row.average_delivery_days), 2),
+                "average_delivery_days": avg_del,
+                "delivery_target": round(target, 2),
+                "delivery_gap": round(gap, 2),
                 "pending_deliveries": self._safe_int(row.pending_delivery),
                 "late_deliveries": self._safe_int(row.late_deliveries),
-                "delivery_target": round(self._safe_float(row.delivery_target), 2),
-                "achievement_percentage": self._pct(self._safe_int(row.on_time_deliveries), self._safe_int(row.delivered_dns)),
-                "pod_completion_rate": self._pct(self._safe_int(row.pod_completed), self._safe_int(row.delivered_dns)),
+                "achievement_percentage": delivery_rate,
+                "pod_completion_rate": pod_rate,
+                "health_score": health,
                 "risk_level": self._compute_risk_level(
                     self._safe_int(row.pending_delivery),
                     self._safe_int(row.late_deliveries),
-                    self._safe_float(row.average_delivery_days),
+                    avg_del,
                 ),
             })
         return result
+
+    # ------------------------------------------------------------------
+    # TRANSPORT ANALYTICS (NEW)
+    # ------------------------------------------------------------------
+
+    def get_transport_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        transporter_col = self._column("transporter", "transporter_name", "carrier")
+        if not transporter_col:
+            return []
+        pgi_expr = self._date_expr("pgi_date", "good_issue_date", "goods_issue_date")
+        delivery_expr = self._delivery_date_expr()
+        pod_expr = self._date_expr("pod_date")
+        sql = f"""
+            SELECT
+                {transporter_col} AS transporter_name,
+                COALESCE(SUM(dn_amount), 0) AS revenue,
+                COALESCE(SUM(dn_qty), 0) AS units,
+                COUNT(DISTINCT dn_no) AS dn,
+                COUNT(DISTINCT CASE WHEN {delivery_expr} IS NOT NULL THEN dn_no END) AS delivered_dns,
+                COUNT(DISTINCT CASE WHEN {pod_expr} IS NOT NULL THEN dn_no END) AS pod_completed,
+                COUNT(DISTINCT CASE WHEN {delivery_expr} IS NOT NULL
+                                      AND {pod_expr} IS NULL THEN dn_no END) AS pending_pod,
+                COALESCE(AVG(CASE
+                    WHEN {pgi_expr} IS NOT NULL
+                     AND {delivery_expr} IS NOT NULL
+                     AND {delivery_expr} >= {pgi_expr}
+                    THEN {delivery_expr} - {pgi_expr}
+                END), 0) AS average_delivery_days,
+                COALESCE(AVG(CASE
+                    WHEN {delivery_expr} IS NOT NULL
+                     AND {pod_expr} IS NOT NULL
+                     AND {pod_expr} >= {delivery_expr}
+                    THEN {pod_expr} - {delivery_expr}
+                END), 0) AS average_pod_days
+            FROM delivery_reports
+            WHERE {transporter_col} IS NOT NULL
+            GROUP BY {transporter_col}
+            ORDER BY revenue DESC
+        """
+        rows = self._execute(sql).fetchall()
+        result = []
+        for row in rows:
+            dn = self._safe_int(row.dn)
+            delivered = self._safe_int(row.delivered_dns)
+            pod = self._safe_int(row.pod_completed)
+            avg_del = round(self._safe_float(row.average_delivery_days), 2)
+            avg_pod = round(self._safe_float(row.average_pod_days), 2)
+            delivery_rate = self._pct(delivered, dn)
+            pod_rate = self._pct(pod, delivered)
+            # Grade based on delivery and pod rates
+            grade = "A" if delivery_rate >= 95 and pod_rate >= 95 else "B" if delivery_rate >= 85 and pod_rate >= 85 else "C"
+            result.append({
+                "transporter_name": row.transporter_name,
+                "revenue": row.revenue,
+                "units": row.units,
+                "delivery_notes": dn,
+                "delivered_dns": delivered,
+                "pod_completed": pod,
+                "pending_pod": self._safe_int(row.pending_pod),
+                "average_delivery_days": avg_del,
+                "average_pod_days": avg_pod,
+                "delivery_achievement_rate": delivery_rate,
+                "pod_completion_rate": pod_rate,
+                "performance_grade": grade,
+                "score": round((delivery_rate + pod_rate) / 2, 2),
+                "ai_recommendation": self._transporter_recommendation(row.transporter_name, delivery_rate, pod_rate),
+            })
+        return result
+
+    # ------------------------------------------------------------------
+    # TRENDS
+    # ------------------------------------------------------------------
 
     def get_monthly_trends(self, filters: Dict[str, Any]) -> Dict[str, List]:
         sql = self._dn_level_cte() + """
@@ -816,7 +958,8 @@ class DashboardRepository:
                 COUNT(CASE WHEN pod_date IS NOT NULL THEN 1 END) AS pod_completed,
                 COUNT(CASE WHEN delivery_days IS NOT NULL
                             AND target_delivery_days IS NOT NULL
-                            AND delivery_days <= target_delivery_days THEN 1 END) AS on_time_deliveries
+                            AND delivery_days <= target_delivery_days THEN 1 END) AS on_time_deliveries,
+                COALESCE(AVG(logistics_cycle_days), 0) AS avg_cycle
             FROM dn_rules
             WHERE dn_date IS NOT NULL
             GROUP BY month
@@ -830,14 +973,20 @@ class DashboardRepository:
         pgi = []
         delivery = []
         pod = []
+        otif = []
+        cycle = []
         for row in rows:
             months.append(row.month)
             revenue.append(row.revenue)
             units.append(row.units)
             dn.append(row.dn)
             pgi.append(self._pct(self._safe_int(row.pgi_completed), self._safe_int(row.dn)))
-            delivery.append(self._pct(self._safe_int(row.on_time_deliveries), self._safe_int(row.delivered_dns)))
-            pod.append(self._pct(self._safe_int(row.pod_completed), self._safe_int(row.delivered_dns)))
+            delivered = self._safe_int(row.delivered_dns)
+            on_time = self._safe_int(row.on_time_deliveries)
+            delivery.append(self._pct(on_time, delivered))
+            pod.append(self._pct(self._safe_int(row.pod_completed), delivered))
+            otif.append(self._pct(on_time, delivered))
+            cycle.append(round(self._safe_float(row.avg_cycle), 2))
         return {
             "months": months,
             "revenue": revenue,
@@ -846,6 +995,8 @@ class DashboardRepository:
             "pgi_rate": pgi,
             "delivery_achievement": delivery,
             "pod_rate": pod,
+            "otif": otif,
+            "cycle_days": cycle,
         }
 
     def get_daily_trends(self, filters: Dict[str, Any]) -> Dict[str, List]:
@@ -894,6 +1045,10 @@ class DashboardRepository:
             "pod_completed": pod,
         }
 
+    # ------------------------------------------------------------------
+    # HEALTH & METADATA
+    # ------------------------------------------------------------------
+
     def get_health(self) -> Dict[str, Any]:
         try:
             count = self._execute("SELECT COUNT(*) FROM delivery_reports").scalar() or 0
@@ -907,7 +1062,10 @@ class DashboardRepository:
         except Exception:
             return 0
 
-    # ----- Helper methods (unchanged) -----
+    # ------------------------------------------------------------------
+    # RECOMMENDATIONS & RULES
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _compute_grade(avg_delivery: float) -> str:
         if avg_delivery <= 2:
@@ -916,15 +1074,6 @@ class DashboardRepository:
             return "B"
         else:
             return "C"
-
-    @staticmethod
-    def _compute_risk(avg_delivery: float) -> str:
-        if avg_delivery <= 2:
-            return "Low"
-        elif avg_delivery <= 4:
-            return "Medium"
-        else:
-            return "High"
 
     @staticmethod
     def _compute_risk_level(pending: int, late: int, avg_delivery: float) -> str:
@@ -946,13 +1095,18 @@ class DashboardRepository:
         return min(score, 100)
 
     @staticmethod
-    def _warehouse_recommendation(code: str, grade: str, risk: str) -> str:
-        if grade in ("A", "B") and risk == "Low":
+    def _warehouse_recommendation(code: str, grade: str, risk: str, pgi: float, delivery: float, pod: float) -> str:
+        if grade in ("A", "B") and risk == "Low" and pgi >= 95 and delivery >= 95 and pod >= 95:
             return "Maintain current operations."
-        elif grade == "C" or risk == "Medium":
-            return "Review processes and improve OTIF."
-        else:
-            return "Urgent intervention required: capacity and delivery issues."
+        if pgi < 95:
+            return "Improve PGI processing to reduce pending dispatch."
+        if delivery < 95:
+            return "Enhance delivery performance against distance targets."
+        if pod < 95:
+            return "Accelerate POD collection and processing."
+        if risk in ("Medium", "High"):
+            return "Urgent review of operations and logistics processes."
+        return "Monitor performance and optimize resource allocation."
 
     @staticmethod
     def _dealer_recommendation(code: str, score: float, avg_delivery: float) -> str:
@@ -964,16 +1118,25 @@ class DashboardRepository:
             return "Needs improvement – provide training and support."
 
     @staticmethod
-    def _product_recommendation(code: str, slow: bool, fast: bool) -> str:
+    def _product_recommendation(code: str, slow: bool, fast: bool, dead: bool) -> str:
+        if dead:
+            return "Dead stock – consider liquidation or return to supplier."
         if slow:
             return "Consider discounting or discontinuing this product."
-        elif fast:
+        if fast:
             return "Increase inventory levels and marketing."
-        else:
-            return "Monitor performance closely."
+        return "Monitor performance closely."
+
+    @staticmethod
+    def _transporter_recommendation(name: str, delivery_rate: float, pod_rate: float) -> str:
+        if delivery_rate >= 95 and pod_rate >= 95:
+            return "Preferred transporter – maintain relationship."
+        if delivery_rate < 85 or pod_rate < 85:
+            return "Performance below standards – review contract terms."
+        return "Good performance – encourage consistency."
 
 # ============================================================
-# DASHBOARD SERVICE (unchanged – calls repository)
+# DASHBOARD SERVICE (Orchestrator)
 # ============================================================
 
 class DashboardService:
@@ -1002,7 +1165,7 @@ class DashboardService:
             "dealer": context.dealer_performance,
             "city": context.city_performance,
             "product": context.product_performance,
-            "transport": context.transport_data,
+            "transport": context.transport_performance,
             "inventory": await self._build_inventory(context),
             "ranking": context.rankings,
             "alerts": await self._generate_alerts(context),
@@ -1037,7 +1200,7 @@ class DashboardService:
              context.dealer_performance,
              context.product_performance,
              context.city_performance,
-             context.transport_data,
+             context.transport_performance,
              context.monthly_trends,
              context.daily_trends,
              context.kpis,
@@ -1050,7 +1213,7 @@ class DashboardService:
                 self._load_dealer_performance(filters, limit, offset),
                 self._load_product_performance(filters, limit, offset),
                 self._load_city_performance(filters, limit, offset),
-                self._load_transport_data(filters),
+                self._load_transport_performance(filters),
                 self._load_monthly_trends(filters),
                 self._load_daily_trends(filters),
                 self._load_kpis(filters),
@@ -1063,9 +1226,9 @@ class DashboardService:
             self.logger.exception("Failed to load dashboard context")
             raise
 
-    # ----------------------------------------------------------------------
-    # Individual loaders – using repository
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # LOADERS (async wrappers)
+    # ------------------------------------------------------------------
 
     async def _load_summary(self, filters: Dict) -> Dict[str, Any]:
         return await asyncio.to_thread(self._db_repo.get_summary, filters)
@@ -1082,8 +1245,8 @@ class DashboardService:
     async def _load_city_performance(self, filters: Dict, limit: int, offset: int) -> List[Dict]:
         return await asyncio.to_thread(self._db_repo.get_city_performance, filters)
 
-    async def _load_transport_data(self, filters: Dict) -> Dict[str, Any]:
-        return {"transport_breakdown": {}, "average_lead_time": 0.0, "vehicle_count": 0, "transporter_count": 0}
+    async def _load_transport_performance(self, filters: Dict) -> List[Dict]:
+        return await asyncio.to_thread(self._db_repo.get_transport_performance, filters)
 
     async def _load_monthly_trends(self, filters: Dict) -> Dict[str, List]:
         return await asyncio.to_thread(self._db_repo.get_monthly_trends, filters)
@@ -1104,10 +1267,12 @@ class DashboardService:
             "warehouses": summary.get("active_warehouses", 0),
             "cities": summary.get("active_cities", 0),
             "products": summary.get("active_products", 0),
+            "transporters": summary.get("active_transporters", 0),
             "average_delivery_days": summary.get("average_delivery_days", 0.0),
             "average_pod_days": summary.get("average_pod_days", 0.0),
             "average_pgi_days": summary.get("average_pgi_days", 0.0),
             "average_logistics_cycle_days": summary.get("average_logistics_cycle_days", 0.0),
+            "average_target_days": summary.get("average_target_days", 0.0),
             "pod_percentage": summary.get("pod_completion_rate", 0.0),
             "pgi_percentage": summary.get("pgi_achievement_rate", 0.0),
             "delivery_achievement_percentage": summary.get("delivery_achievement_rate", 0.0),
@@ -1144,27 +1309,30 @@ class DashboardService:
     async def _load_metadata(self, filters: Dict) -> Dict[str, Any]:
         record_count = await asyncio.to_thread(self._db_repo.get_record_count)
         return {
-            "application_version": "5.4.0",
-            "database_version": "PostgreSQL (business rules aligned)",
+            "application_version": "6.0.0",
+            "database_version": "PostgreSQL (Enterprise)",
             "postgresql_status": "connected",
             "database_size": "N/A",
             "record_count": record_count,
             "last_refresh": datetime.utcnow().isoformat(),
             "last_etl_run": None,
-            "generated_by": "DashboardService v5.4",
+            "generated_by": "DashboardService v6.0",
             "report_time": datetime.utcnow().isoformat(),
             "time_zone": "UTC",
             "environment": os.getenv("ENVIRONMENT", "production"),
             "ai_model": "Built-in",
-            "execution_time_ms": 0
+            "execution_time_ms": 0,
+            "cache_status": "active",
+            "health_score": 0.0,
         }
 
     async def _load_inventory(self, filters: Dict) -> Dict[str, Any]:
         return {"total_products": 0, "total_units": 0, "warehouse_stock": [], "slow_moving": [], "fast_moving": []}
 
-    # ----------------------------------------------------------------------
-    # Builders (unchanged)
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # BUILDERS
+    # ------------------------------------------------------------------
+
     async def _build_executive_summary(self, context: DashboardContext) -> Dict[str, Any]:
         summary = context.summary or {}
         return {
@@ -1198,13 +1366,22 @@ class DashboardService:
         }
 
     async def _build_cards(self, context: DashboardContext) -> Dict[str, Any]:
+        """Build the executive KPI cards - 30+ KPIs."""
         summary = context.summary or {}
         pgi_rate = summary.get("pgi_achievement_rate", 0.0)
         delivery_rate = summary.get("delivery_achievement_rate", 0.0)
         pod_rate = summary.get("pod_completion_rate", 0.0)
         health_score = summary.get("dashboard_health_score", 0.0)
+        avg_cycle = summary.get("average_logistics_cycle_days", 0.0)
+        total_dn = summary.get("total_delivery_notes", 0)
+        total_rev = summary.get("total_revenue", 0.0)
+        dealers = summary.get("active_dealers", 0)
+        warehouses = summary.get("active_warehouses", 0)
+        cities = summary.get("active_cities", 0)
+        products = summary.get("active_products", 0)
+        transporters = summary.get("active_transporters", 0)
 
-        def rate_card(value: float, target: float, icon: str) -> Dict[str, Any]:
+        def rate_card(value: float, target: float, icon: str, label: str = None) -> Dict[str, Any]:
             return {
                 "value": value,
                 "target": target,
@@ -1213,9 +1390,10 @@ class DashboardService:
                 "icon": icon,
                 "color": self._db_repo._kpi_color(value, target),
                 "format": "percentage",
+                "label": label,
             }
 
-        def count_card(value: int, icon: str, color: str = "secondary", target_label: str = "0") -> Dict[str, Any]:
+        def count_card(value: int, icon: str, color: str = "secondary", target_label: str = "0", label: str = None) -> Dict[str, Any]:
             return {
                 "value": value,
                 "target": 0,
@@ -1224,9 +1402,10 @@ class DashboardService:
                 "icon": icon,
                 "color": color,
                 "format": "number",
+                "label": label,
             }
 
-        def days_card(value: float, target: float, icon: str, target_label: str) -> Dict[str, Any]:
+        def days_card(value: float, target: float, icon: str, target_label: str, label: str = None) -> Dict[str, Any]:
             progress = 100 if value <= target else max(0, (target / (value or target)) * 100)
             return {
                 "value": value,
@@ -1236,32 +1415,68 @@ class DashboardService:
                 "icon": icon,
                 "color": "success" if value <= target else "warning" if value <= target + 2 else "danger",
                 "format": "days",
+                "label": label,
             }
 
-        return {
-            "pgi_achievement": rate_card(pgi_rate, 100.0, "fa-warehouse"),
-            "delivery_achievement": rate_card(delivery_rate, 95.0, "fa-truck-fast"),
-            "pod_achievement": rate_card(pod_rate, 95.0, "fa-clipboard-check"),
-            "avg_delivery_days": days_card(summary.get("average_delivery_days", 0.0), 6.0, "fa-route", "distance based"),
-            "avg_pod_days": days_card(summary.get("average_pod_days", 0.0), 1.0, "fa-file-signature", "1 day"),
-            "avg_logistics_cycle": days_card(summary.get("average_logistics_cycle_days", 0.0), 7.0, "fa-arrows-spin", "PGI to POD"),
-            "pending_dispatch": count_card(summary.get("pending_dispatch", 0), "fa-box-open", "warning"),
-            "pending_delivery": count_card(summary.get("pending_delivery", 0), "fa-truck-ramp-box", "warning"),
-            "pending_pod": count_card(summary.get("pending_pod", 0), "fa-file-circle-exclamation", "danger"),
-            "late_deliveries": count_card(summary.get("late_deliveries", 0), "fa-clock", "danger"),
-            "delayed_pod": count_card(summary.get("delayed_pod", 0), "fa-triangle-exclamation", "danger"),
-            "on_time_deliveries": count_card(summary.get("on_time_deliveries", 0), "fa-circle-check", "success", "higher is better"),
-            "logistics_health": rate_card(health_score, 95.0, "fa-heartbeat"),
+        def currency_card(value: float, icon: str, color: str = "primary", label: str = None) -> Dict[str, Any]:
+            return {
+                "value": value,
+                "target": 0,
+                "target_label": "N/A",
+                "progress": 100,
+                "icon": icon,
+                "color": color,
+                "format": "currency",
+                "label": label,
+            }
+
+        cards = {
+            # Financial KPIs
+            "revenue": currency_card(total_rev, "fa-chart-line", "primary", "Revenue"),
+            "revenue_per_dn": currency_card(total_rev / total_dn if total_dn else 0, "fa-receipt", "info", "Revenue / DN"),
+            "revenue_per_dealer": currency_card(total_rev / dealers if dealers else 0, "fa-user-tie", "info", "Revenue / Dealer"),
+            "revenue_per_warehouse": currency_card(total_rev / warehouses if warehouses else 0, "fa-warehouse", "info", "Revenue / Warehouse"),
+            "revenue_per_city": currency_card(total_rev / cities if cities else 0, "fa-city", "info", "Revenue / City"),
+            # Operational KPIs
+            "pgi_achievement": rate_card(pgi_rate, 100.0, "fa-warehouse", "PGI Achievement"),
+            "delivery_achievement": rate_card(delivery_rate, 95.0, "fa-truck-fast", "Delivery Achievement"),
+            "pod_achievement": rate_card(pod_rate, 95.0, "fa-clipboard-check", "POD Achievement"),
+            "otif": rate_card(delivery_rate, 95.0, "fa-check-circle", "OTIF"),
+            # Days KPIs
+            "avg_delivery_days": days_card(summary.get("average_delivery_days", 0.0), 6.0, "fa-route", "distance based", "Avg Delivery Days"),
+            "avg_pod_days": days_card(summary.get("average_pod_days", 0.0), 1.0, "fa-file-signature", "1 day", "Avg POD Days"),
+            "avg_logistics_cycle": days_card(avg_cycle, 7.0, "fa-arrows-spin", "PGI to POD", "Avg Logistics Cycle"),
+            # Logistics KPIs
+            "pending_dispatch": count_card(summary.get("pending_dispatch", 0), "fa-box-open", "warning", "Pending PGI"),
+            "pending_delivery": count_card(summary.get("pending_delivery", 0), "fa-truck-ramp-box", "warning", "Pending Delivery"),
+            "pending_pod": count_card(summary.get("pending_pod", 0), "fa-file-circle-exclamation", "danger", "Pending POD"),
+            "late_deliveries": count_card(summary.get("late_deliveries", 0), "fa-clock", "danger", "Late Deliveries"),
+            "delayed_pod": count_card(summary.get("delayed_pod", 0), "fa-triangle-exclamation", "danger", "Delayed POD"),
+            "on_time_deliveries": count_card(summary.get("on_time_deliveries", 0), "fa-circle-check", "success", "On-Time Deliveries"),
+            # Network KPIs
+            "warehouses": count_card(warehouses, "fa-warehouse", "secondary", "Warehouses"),
+            "dealers": count_card(dealers, "fa-users", "secondary", "Dealers"),
+            "products": count_card(products, "fa-box", "secondary", "Products"),
+            "cities": count_card(cities, "fa-city", "secondary", "Cities"),
+            "transporters": count_card(transporters, "fa-truck", "secondary", "Transporters"),
+            # Executive KPIs
+            "logistics_health": rate_card(health_score, 95.0, "fa-heartbeat", "Logistics Health"),
+            "data_quality_score": rate_card(100.0 - ((summary.get("invalid_records", 0) / (total_dn or 1)) * 100.0), 100.0, "fa-database", "Data Quality"),
+            "delivery_compliance": rate_card(delivery_rate, 95.0, "fa-file-contract", "Delivery Compliance"),
+            "pod_compliance": rate_card(pod_rate, 95.0, "fa-file-pen", "POD Compliance"),
+            # Extra: Total DN count
             "delivery_notes": {
-                "value": summary.get("total_delivery_notes", 0),
+                "value": total_dn,
                 "target": 0,
                 "target_label": "distinct DN",
                 "progress": 100,
                 "icon": "fa-file-invoice",
                 "color": "info",
                 "format": "number",
+                "label": "Delivery Notes",
             },
         }
+        return cards
 
     async def _prepare_charts(self, context: DashboardContext) -> Dict[str, Any]:
         monthly = context.monthly_trends or {}
@@ -1273,6 +1488,8 @@ class DashboardService:
             "pgi_trend": {"labels": monthly.get("months", []), "data": monthly.get("pgi_rate", [])},
             "delivery_achievement_trend": {"labels": monthly.get("months", []), "data": monthly.get("delivery_achievement", [])},
             "pod_trend": {"labels": monthly.get("months", []), "data": monthly.get("pod_rate", [])},
+            "otif_trend": {"labels": monthly.get("months", []), "data": monthly.get("otif", [])},
+            "cycle_trend": {"labels": monthly.get("months", []), "data": monthly.get("cycle_days", [])},
             "daily_trend": {
                 "labels": daily.get("dates", []),
                 "revenue": daily.get("revenue", []),
@@ -1285,77 +1502,117 @@ class DashboardService:
             "warehouse_ranking": context.rankings.get("warehouses", []) if context.rankings else [],
             "dealer_ranking": context.rankings.get("dealers", []) if context.rankings else [],
             "product_ranking": context.rankings.get("products", []) if context.rankings else [],
-            "city_ranking": context.rankings.get("cities", []) if context.rankings else []
+            "city_ranking": context.rankings.get("cities", []) if context.rankings else [],
+            "transport_ranking": [],  # will be populated later
         }
 
     async def _build_inventory(self, context: DashboardContext) -> Dict[str, Any]:
         return {"total_products": 0, "total_units": 0, "warehouse_stock": []}
 
-    # ----------------------------------------------------------------------
-    # Alerts and recommendations (unchanged)
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # ALERTS & RECOMMENDATIONS
+    # ------------------------------------------------------------------
+
     async def _generate_alerts(self, context: DashboardContext) -> List[Dict[str, Any]]:
         alerts = []
-        kpis = context.kpis or {}
         summary = context.summary or {}
+        kpis = context.kpis or {}
+
+        # Critical: Data quality issues
         if summary.get("invalid_records", 0) > 0:
             alerts.append({
                 "level": "critical",
                 "message": f"{summary.get('invalid_records', 0)} date validation issues found.",
-                "action": "Fix records where delivery is before PGI or POD is before delivery."
+                "action": "Fix records where delivery is before PGI or POD is before delivery.",
+                "title": "Data Quality Alert"
             })
-        if summary.get("pgi_achievement_rate", 100) < 100:
-            alerts.append({
-                "level": "warning",
-                "message": f"PGI achievement is {summary.get('pgi_achievement_rate', 0):.1f}% below target (100%).",
-                "action": "Clear pending dispatch DNs from warehouse."
-            })
+
+        # Critical: Late deliveries
         if kpis.get("late_deliveries", 0) > 10:
             alerts.append({
                 "level": "critical",
-                "message": f"{kpis.get('late_deliveries', 0)} late deliveries detected. Immediate action required.",
-                "action": "Review logistics routes and dispatch schedules."
+                "message": f"{kpis.get('late_deliveries', 0)} late deliveries detected.",
+                "action": "Review logistics routes and dispatch schedules.",
+                "title": "Late Delivery Alert"
             })
-        if kpis.get("pending_dispatch", 0) > 0:
-            alerts.append({
-                "level": "warning",
-                "message": f"{kpis.get('pending_dispatch', 0)} DNs are pending dispatch.",
-                "action": "Complete PGI before delivery processing."
-            })
-        if kpis.get("pending_delivery", 0) > 20:
-            alerts.append({
-                "level": "warning",
-                "message": f"{kpis.get('pending_delivery', 0)} dispatched DNs are still in transit.",
-                "action": "Follow up vehicle dispatch and customer delivery status."
-            })
-        if kpis.get("pending_pod", 0) > 20:
-            alerts.append({
-                "level": "warning",
-                "message": f"{kpis.get('pending_pod', 0)} delivered DNs are pending POD.",
-                "action": "Collect proof of delivery and close delivered DNs."
-            })
-        if summary.get("delivery_achievement_rate", 100) < 95:
-            alerts.append({
-                "level": "warning",
-                "message": f"Delivery achievement is {summary.get('delivery_achievement_rate', 0):.1f}% below target (95%).",
-                "action": "Review late deliveries against distance-based targets."
-            })
-        if summary.get("pod_completion_rate", 100) < 95:
-            alerts.append({
-                "level": "warning",
-                "message": f"POD achievement is {summary.get('pod_completion_rate', 0):.1f}% below target (95%).",
-                "action": "Investigate POD collection bottlenecks."
-            })
+
+        # Critical: Delayed POD
         if kpis.get("delayed_pod", 0) > 10:
             alerts.append({
                 "level": "critical",
                 "message": f"{kpis.get('delayed_pod', 0)} PODs are delayed beyond 1 day.",
-                "action": "Prioritize critical POD aging cases."
+                "action": "Prioritize critical POD aging cases.",
+                "title": "POD Delay Alert"
             })
+
+        # Warning: PGI below target
+        if summary.get("pgi_achievement_rate", 100) < 100:
+            alerts.append({
+                "level": "warning",
+                "message": f"PGI achievement is {summary.get('pgi_achievement_rate', 0):.1f}% below target (100%).",
+                "action": "Clear pending dispatch DNs from warehouse.",
+                "title": "PGI Achievement Warning"
+            })
+
+        # Warning: Delivery below target
+        if summary.get("delivery_achievement_rate", 100) < 95:
+            alerts.append({
+                "level": "warning",
+                "message": f"Delivery achievement is {summary.get('delivery_achievement_rate', 0):.1f}% below target (95%).",
+                "action": "Review late deliveries against distance-based targets.",
+                "title": "Delivery Achievement Warning"
+            })
+
+        # Warning: POD below target
+        if summary.get("pod_completion_rate", 100) < 95:
+            alerts.append({
+                "level": "warning",
+                "message": f"POD achievement is {summary.get('pod_completion_rate', 0):.1f}% below target (95%).",
+                "action": "Investigate POD collection bottlenecks.",
+                "title": "POD Achievement Warning"
+            })
+
+        # Warning: Pending dispatch
+        if kpis.get("pending_dispatch", 0) > 0:
+            alerts.append({
+                "level": "warning",
+                "message": f"{kpis.get('pending_dispatch', 0)} DNs are pending dispatch.",
+                "action": "Complete PGI before delivery processing.",
+                "title": "Pending Dispatch"
+            })
+
+        # Warning: Pending delivery
+        if kpis.get("pending_delivery", 0) > 20:
+            alerts.append({
+                "level": "warning",
+                "message": f"{kpis.get('pending_delivery', 0)} dispatched DNs are still in transit.",
+                "action": "Follow up vehicle dispatch and customer delivery status.",
+                "title": "Pending Delivery"
+            })
+
+        # Warning: Pending POD
+        if kpis.get("pending_pod", 0) > 20:
+            alerts.append({
+                "level": "warning",
+                "message": f"{kpis.get('pending_pod', 0)} delivered DNs are pending POD.",
+                "action": "Collect proof of delivery and close delivered DNs.",
+                "title": "Pending POD"
+            })
+
+        # Info: Revenue growth (if we had growth data)
+        if kpis.get("revenue_growth", 0) > 0:
+            alerts.append({
+                "level": "success",
+                "message": f"Revenue growth is {kpis.get('revenue_growth', 0):.1f}% – positive trend.",
+                "action": "Maintain current strategies.",
+                "title": "Revenue Growth"
+            })
+
         return alerts
 
     async def _generate_recommendations(self, context: DashboardContext) -> List[Dict[str, Any]]:
         recommendations = []
+        # Warehouse recommendations
         for wh in context.warehouse_performance or []:
             if wh.get("risk_level") == "High":
                 recommendations.append({
@@ -1373,6 +1630,7 @@ class DashboardService:
                     "recommendation": "Improve OTIF and reduce delivery days.",
                     "priority": "High"
                 })
+        # Dealer recommendations
         for dlr in context.dealer_performance or []:
             if dlr.get("performance_score", 100) < 50:
                 recommendations.append({
@@ -1382,8 +1640,17 @@ class DashboardService:
                     "recommendation": "Provide additional support and training.",
                     "priority": "High"
                 })
+        # Product recommendations
         for prod in context.product_performance or []:
-            if prod.get("slow_moving_flag", False):
+            if prod.get("dead_stock_flag", False):
+                recommendations.append({
+                    "entity": prod.get("product_name"),
+                    "type": "product",
+                    "risk": "High",
+                    "recommendation": "Dead stock – immediate liquidation or return.",
+                    "priority": "Critical"
+                })
+            elif prod.get("slow_moving_flag", False):
                 recommendations.append({
                     "entity": prod.get("product_name"),
                     "type": "product",
@@ -1391,7 +1658,7 @@ class DashboardService:
                     "recommendation": "Consider discounting or discontinuing.",
                     "priority": "Medium"
                 })
-            if prod.get("fast_moving_flag", False):
+            elif prod.get("fast_moving_flag", False):
                 recommendations.append({
                     "entity": prod.get("product_name"),
                     "type": "product",
@@ -1399,11 +1666,22 @@ class DashboardService:
                     "recommendation": "Increase inventory and promote sales.",
                     "priority": "Low"
                 })
+        # City recommendations (if any high risk)
+        for city in context.city_performance or []:
+            if city.get("risk_level") == "High":
+                recommendations.append({
+                    "entity": city.get("city"),
+                    "type": "city",
+                    "risk": "High",
+                    "recommendation": f"Improve delivery in {city.get('city')} – average delivery {city.get('average_delivery_days', 0)} days vs target {city.get('delivery_target', 0)} days.",
+                    "priority": "High"
+                })
         return recommendations
 
-    # ----------------------------------------------------------------------
-    # Helper methods (preserved)
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # HELPER METHODS (backward compatibility)
+    # ------------------------------------------------------------------
+
     def _compute_performance_grade(self, otif: float, avg_delivery: float, utilization: float) -> str:
         if otif >= 95 and avg_delivery <= 2 and utilization <= 85:
             return "A"
@@ -1479,6 +1757,7 @@ class DashboardService:
             "average_pod_days": 0.0,
             "average_pgi_days": 0.0,
             "average_logistics_cycle_days": 0.0,
+            "average_target_days": 0.0,
             "pgi_achievement_rate": 0.0,
             "delivery_achievement_rate": 0.0,
             "pod_completion_rate": 0.0,
@@ -1500,9 +1779,10 @@ class DashboardService:
             "last_database_refresh": None,
         }
 
-    # ----------------------------------------------------------------------
-    # Individual getters (backward compatibility)
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # INDIVIDUAL GETTERS (backward compatibility)
+    # ------------------------------------------------------------------
+
     async def get_dashboard_summary(self, filters: Optional[Dict] = None, role: str = "viewer") -> Dict:
         return await self._load_summary(filters or {})
 
@@ -1539,7 +1819,8 @@ class DashboardService:
         return {"cities": cities, "ranking": ranking, "summary": summary}
 
     async def get_transport_dashboard(self, filters: Optional[Dict] = None, role: str = "viewer") -> Dict:
-        return await self._load_transport_data(filters or {})
+        transporters = await self._load_transport_performance(filters or {})
+        return {"transporters": transporters, "ranking": [], "summary": {}}
 
     async def get_dashboard_statistics(self, filters: Optional[Dict] = None) -> Dict:
         return await self._load_statistics(filters or {})
@@ -1553,9 +1834,10 @@ class DashboardService:
     async def get_growth_statistics(self, filters: Optional[Dict] = None) -> Dict[str, float]:
         return {"revenue_growth": 0.0, "units_growth": 0.0, "delivery_notes_growth": 0.0}
 
-    # ----------------------------------------------------------------------
-    # Aggregation helpers (preserved)
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # AGGREGATION HELPERS
+    # ------------------------------------------------------------------
+
     async def _aggregate_warehouse_metrics(self, warehouses: List[Dict]) -> Dict:
         if not warehouses:
             return {}
