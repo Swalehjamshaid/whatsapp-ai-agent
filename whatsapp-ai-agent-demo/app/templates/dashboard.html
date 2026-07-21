@@ -1,7 +1,7 @@
 <!-- ============================================================ -->
 <!-- FILE: app/templates/dashboard.html                           -->
 <!-- PROJECT: WhatsApp AI Agent Demo - Logistics Intelligence    -->
-<!-- VERSION: 6.0 - Fully Integrated with DashboardService       -->
+<!-- VERSION: 7.0 - Fully Integrated with DashboardService v7.0  -->
 <!-- ============================================================ -->
 
 <!DOCTYPE html>
@@ -10,7 +10,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Logistics Intelligence Dashboard</title>
+    <title>Logistics IQ – Enterprise Intelligence Platform</title>
 
     <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
@@ -708,6 +708,19 @@
             transition: width 0.3s ease;
             border-radius: 30px;
         }
+
+        /* Upload label styling */
+        .upload-label {
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: #495057;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 2px;
+        }
+        .upload-label i {
+            margin-right: 4px;
+        }
     </style>
 </head>
 
@@ -796,7 +809,7 @@
         <div id="alertCenter" class="alert-center"></div>
 
         <!-- ============================================================
-        KPI GRID (dynamic – 30+ KPIs)
+        KPI GRID (dynamic – 30+ KPIs from backend)
         ============================================================ -->
         <div id="kpiGrid" class="kpi-grid"></div>
 
@@ -967,13 +980,15 @@
         </div>
 
         <!-- ============================================================
-        LATEST UPDATES (AG Grid) – placeholder (service does not provide this)
+        LATEST UPDATES (AG Grid) – displays upload history
         ============================================================ -->
         <div class="card-custom p-3 mb-4">
-            <div class="card-header-custom"><i class="fas fa-history"></i> Latest Updates</div>
+            <div class="card-header-custom"><i class="fas fa-history"></i> Upload History</div>
             <div class="card-body-custom">
                 <div id="uploadsGrid" class="ag-theme-alpine" style="height:220px;"></div>
-                <div class="text-muted small text-center mt-2">Upload history will appear after your first import.</div>
+                <div class="text-muted small text-center mt-2" id="uploadHistoryPlaceholder">
+                    Upload history will appear after your first import.
+                </div>
             </div>
         </div>
 
@@ -990,12 +1005,12 @@
                     <div class="card-body-custom">
                         <form class="form-toolbar" id="uploadForm" action="/upload/excel" method="post" enctype="multipart/form-data">
                             <div class="form-group" style="flex:2;">
-                                <label><i class="fas fa-file-excel"></i> Excel File (.xlsx, .xls)</label>
+                                <label class="upload-label"><i class="fas fa-file-excel"></i> Excel File (.xlsx, .xls)</label>
                                 <input type="file" name="file" accept=".xlsx,.xls" class="form-control" required />
                                 <small class="text-muted" style="font-size:0.7rem;">Choose File – No file chosen</small>
                             </div>
                             <div class="form-group">
-                                <label><i class="fas fa-copy"></i> Skip Duplicates</label>
+                                <label class="upload-label"><i class="fas fa-copy"></i> Skip Duplicates</label>
                                 <select name="skip_duplicates" class="form-select">
                                     <option value="true">Yes – Skip existing DNs</option>
                                     <option value="false">No – Update existing DNs</option>
@@ -1067,7 +1082,7 @@
     </script>
 
     <!-- ============================================================
-    DASHBOARD JAVASCRIPT - v6.0 (Fully Integrated)
+    DASHBOARD JAVASCRIPT - v7.0 (Fully Integrated with DashboardService)
     ============================================================ -->
     <script>
         // ============================================================
@@ -1134,6 +1149,12 @@
                 document.getElementById('footerRecords').innerText = dashboardData.metadata?.record_count || 0;
                 document.getElementById('footerExecTime').innerText = dashboardData.metadata?.execution_time_ms || 'N/A';
                 document.getElementById('footerEnv').innerText = dashboardData.metadata?.environment || 'Production';
+
+                // Hide placeholder if upload history exists
+                const placeholder = document.getElementById('uploadHistoryPlaceholder');
+                if (placeholder && dashboardData.latest_uploads && dashboardData.latest_uploads.length > 0) {
+                    placeholder.style.display = 'none';
+                }
             } catch (error) {
                 console.error('Error fetching dashboard:', error);
                 Swal.fire({
@@ -1613,6 +1634,12 @@
                 paginationPageSize: 5,
                 domLayout: 'autoHeight',
             });
+
+            // Toggle placeholder visibility
+            const placeholder = document.getElementById('uploadHistoryPlaceholder');
+            if (placeholder) {
+                placeholder.style.display = data && data.length > 0 ? 'none' : 'block';
+            }
         }
 
         // ============================================================
@@ -1725,6 +1752,7 @@
                     try {
                         const json = JSON.parse(xhr.responseText || '{}');
                         if (json.message) successMsg = json.message;
+                        if (json.inserted) successMsg += ` (${json.inserted} rows inserted)`;
                     } catch (_) {}
                     Swal.fire({
                         icon: 'success',
