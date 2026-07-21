@@ -1,9 +1,8 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 9.3 - ENTERPRISE LOGISTICS INTELLIGENCE PLATFORM (MODULAR ARCHITECTURE)
+# VERSION: 10.0 - ENTERPRISE SUPPLY CHAIN INTELLIGENCE PLATFORM (SEQUENTIAL ENGINE)
 # ============================================================
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -128,7 +127,7 @@ def cached(ttl=5):
     return decorator
 
 # ============================================================
-# 1. DATABASE REPOSITORY
+# 1. DATABASE REPOSITORY (Strictly Sequential to Prevent Cursor Closures)
 # ============================================================
 
 class DashboardRepository:
@@ -153,7 +152,9 @@ class DashboardRepository:
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_completed,
-                COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_cycle_days
+                COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_cycle_days,
+                COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND good_issue_date IS NOT NULL THEN (good_issue_date::date - dn_create_date::date) END), 0) AS avg_delivery_days,
+                COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_pod_days
             FROM delivery_reports
         """
         row = self._execute(sql).first()
@@ -173,6 +174,8 @@ class DashboardRepository:
             "delivered_dns": _safe_int(row.delivered_dns),
             "pod_completed": _safe_int(row.pod_completed),
             "avg_cycle_days": _safe_float(row.avg_cycle_days),
+            "avg_delivery_days": _safe_float(row.avg_delivery_days),
+            "avg_pod_days": _safe_float(row.avg_pod_days),
             "dealers": dealers,
             "warehouses": warehouses,
             "cities": cities,
@@ -239,7 +242,6 @@ class DashboardRepository:
             WHERE warehouse IS NOT NULL
             GROUP BY warehouse
             ORDER BY revenue DESC
-            LIMIT 10
         """
         return self._execute(sql).fetchall()
 
@@ -252,13 +254,13 @@ class DashboardRepository:
                 COALESCE(SUM(dn_qty), 0) AS units,
                 COUNT(DISTINCT dn_no) AS delivery_notes,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
+                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_completed,
                 COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_cycle_days
             FROM delivery_reports
             WHERE dealer_code IS NOT NULL
             GROUP BY dealer_code, customer_name
             ORDER BY revenue DESC
-            LIMIT 10
         """
         return self._execute(sql).fetchall()
 
@@ -271,12 +273,12 @@ class DashboardRepository:
                 COALESCE(SUM(dn_qty), 0) AS units,
                 COUNT(DISTINCT dn_no) AS delivery_notes,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
+                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_completed
             FROM delivery_reports
             WHERE material_no IS NOT NULL
             GROUP BY material_no, customer_model
             ORDER BY revenue DESC
-            LIMIT 10
         """
         return self._execute(sql).fetchall()
 
@@ -288,13 +290,13 @@ class DashboardRepository:
                 COALESCE(SUM(dn_qty), 0) AS units,
                 COUNT(DISTINCT dn_no) AS delivery_notes,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
+                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS pod_completed,
                 COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN (pod_date::date - good_issue_date::date) END), 0) AS avg_cycle_days
             FROM delivery_reports
             WHERE ship_to_city IS NOT NULL
             GROUP BY ship_to_city
             ORDER BY revenue DESC
-            LIMIT 10
         """
         return self._execute(sql).fetchall()
 
@@ -359,6 +361,8 @@ class BusinessRuleEngine:
         delivered_dns = raw.get("delivered_dns", 0)
         pod_completed = raw.get("pod_completed", 0)
         avg_cycle = raw.get("avg_cycle_days", 0.0)
+        avg_delivery = raw.get("avg_delivery_days", 0.0)
+        avg_pod = raw.get("avg_pod_days", 0.0)
 
         pgi_rate = _pct(pgi_completed, total_dn)
         delivery_rate = _pct(delivered_dns, total_dn)
@@ -379,7 +383,9 @@ class BusinessRuleEngine:
             "active_cities": raw.get("cities", 0),
             "active_products": raw.get("products", 0),
             "active_transporters": 0,
-            "average_delivery_days": avg_cycle,
+            "average_delivery_days": avg_delivery,
+            "average_pod_days": avg_pod,
+            "average_logistics_cycle": avg_cycle,
             "pgi_achievement_rate": pgi_rate,
             "delivery_achievement_rate": delivery_rate,
             "pod_completion_rate": pod_rate,
@@ -456,19 +462,32 @@ class AnalyticsEngine:
             avg_delivery = _safe_float(row.avg_delivery_days)
             avg_pod = _safe_float(row.avg_pod_days)
             pending_pgi = _safe_int(row.pending_pgi)
-            grade = "A" if health >= 90 else "B" if health >= 75 else "C"
-            risk = "Low" if health >= 85 else "Medium" if health >= 70 else "High"
+            pending_delivery = _safe_int(row.pending_delivery)
             
-            # Recommendation logic inside Analytics
-            rec = "Excellent performance. Maintain standards."
-            if health < 75:
-                if pod < 80: rec = "POD rate critical. Immediate escalation required."
-                elif pgi < 85: rec = "PGI gap high. Review warehouse dispatch process."
-                else: rec = "Urgent review of all logistics processes."
-            elif health < 90:
-                if pod < 90: rec = f"POD rate is {pod_rate:.1f}%. Improve POD collection."
-                elif pgi < 95: rec = f"PGI rate is {pgi_rate:.1f}%. Accelerate PGI processing."
-                else: rec = "Good performance. Optimize for higher efficiency."
+            # Grades according to exact prompt rules
+            if health >= 95: grade = "Outstanding"
+            elif health >= 90: grade = "Excellent"
+            elif health >= 85: grade = "Good"
+            elif health >= 80: grade = "Needs Improvement"
+            else: grade = "Critical"
+
+            # Risk levels according to exact prompt rules
+            if health >= 95: risk = "Very Low Risk"
+            elif health >= 90: risk = "Low Risk"
+            elif health >= 85: risk = "Medium Risk"
+            elif health >= 80: risk = "High Risk"
+            else: risk = "Critical Risk"
+            
+            # Recommendation logic
+            rec = "Maintain dispatch standards."
+            if health < 80:
+                rec = "Critical warehouse delay. Immediate management intervention required."
+            elif pod_rate < 85:
+                rec = "Improve POD follow-up and document collection."
+            elif pgi_rate < 90:
+                rec = "Review PGI process and increase dispatch planning."
+            else:
+                rec = "Warehouse operating efficiently."
 
             result.append({
                 "warehouse_name": row.warehouse_name,
@@ -482,6 +501,7 @@ class AnalyticsEngine:
                 "average_pod_days": avg_pod,
                 "average_logistics_cycle": avg_cycle,
                 "pending_pgi": pending_pgi,
+                "pending_delivery": pending_delivery,
                 "pending_pod": 0,
                 "late_deliveries": 0,
                 "health_score": health,
@@ -501,10 +521,12 @@ class AnalyticsEngine:
         for row in rows:
             dn = _safe_int(row.delivery_notes)
             pgi = _safe_int(row.pgi_completed)
+            delivered = _safe_int(row.delivered_dns)
             pod = _safe_int(row.pod_completed)
             pgi_rate = _pct(pgi, dn)
-            pod_rate = _pct(pod, pgi if pgi else 1)
-            health = round((pgi_rate + pod_rate) / 2, 2)
+            delivery_rate = _pct(delivered, dn)
+            pod_rate = _pct(pod, delivered if delivered else 1)
+            health = round((pgi_rate * 0.35) + (delivery_rate * 0.35) + (pod_rate * 0.30), 2)
             avg_cycle = _safe_float(row.avg_cycle_days)
             result.append({
                 "dealer_name": row.dealer_name or row.dealer_code,
@@ -513,6 +535,7 @@ class AnalyticsEngine:
                 "units": _safe_int(row.units),
                 "delivery_notes": dn,
                 "pgi_achievement_rate": pgi_rate,
+                "delivery_achievement_rate": delivery_rate,
                 "pod_completion_rate": pod_rate,
                 "average_delivery_days": avg_cycle,
                 "health_score": health,
@@ -532,11 +555,15 @@ class AnalyticsEngine:
             units = _safe_int(row.units)
             dn = _safe_int(row.delivery_notes)
             pgi = _safe_int(row.pgi_completed)
+            delivered = _safe_int(row.delivered_dns)
             pod = _safe_int(row.pod_completed)
             pgi_rate = _pct(pgi, dn)
-            pod_rate = _pct(pod, pgi if pgi else 1)
+            delivery_rate = _pct(delivered, dn)
+            pod_rate = _pct(pod, delivered if delivered else 1)
             share = (revenue / total_rev * 100) if total_rev else 0
-            abc = "A" if share > 40 else "B" if share > 20 else "C"
+            
+            abc = "A" if share >= 50 else "B" if share >= 20 else "C"
+            
             result.append({
                 "product_name": row.product_name or row.sku,
                 "sku": row.sku,
@@ -544,6 +571,7 @@ class AnalyticsEngine:
                 "units": units,
                 "delivery_notes": dn,
                 "pgi_achievement_rate": pgi_rate,
+                "delivery_achievement_rate": delivery_rate,
                 "pod_completion_rate": pod_rate,
                 "abc_class": abc,
                 "revenue_share": round(share, 2),
@@ -561,10 +589,12 @@ class AnalyticsEngine:
             units = _safe_int(row.units)
             dn = _safe_int(row.delivery_notes)
             pgi = _safe_int(row.pgi_completed)
+            delivered = _safe_int(row.delivered_dns)
             pod = _safe_int(row.pod_completed)
             pgi_rate = _pct(pgi, dn)
-            pod_rate = _pct(pod, pgi if pgi else 1)
-            health = round((pgi_rate + pod_rate) / 2, 2)
+            delivery_rate = _pct(delivered, dn)
+            pod_rate = _pct(pod, delivered if delivered else 1)
+            health = round((pgi_rate * 0.35) + (delivery_rate * 0.35) + (pod_rate * 0.30), 2)
             avg_cycle = _safe_float(row.avg_cycle_days)
             result.append({
                 "city": row.city,
@@ -572,6 +602,7 @@ class AnalyticsEngine:
                 "units": units,
                 "delivery_notes": dn,
                 "pgi_achievement_rate": pgi_rate,
+                "delivery_achievement_rate": delivery_rate,
                 "pod_completion_rate": pod_rate,
                 "average_delivery_days": avg_cycle,
                 "health_score": health,
@@ -595,17 +626,19 @@ class AnalyticsEngine:
 
     @staticmethod
     def process_daily_trends(rows: List[Any]) -> Dict[str, List]:
-        dates, revenue, units, dn, pgi, delivered, pod = [], [], [], [], [], [], []
+        dates_list, revenue, units, dn, pgi, delivered_list, pod = [], [], [], [], [], [], []
         for row in rows:
-            dates.append(row.date.strftime('%Y-%m-%d') if hasattr(row.date, 'strftime') else str(row.date))
+            dates_list.append(row.date.strftime('%Y-%m-%d') if hasattr(row.date, 'strftime') else str(row.date))
             revenue.append(_safe_float(row.revenue))
             units.append(_safe_int(row.units))
-            dn.append(_safe_int(row.dn))
-            pgi.append(_safe_int(row.pgi_completed))
-            delivered.append(_safe_int(row.delivered_dns))
-            pod.append(_safe_int(row.pod_completed))
-        return {"dates": dates, "revenue": revenue, "units": units, "delivery_notes": dn,
-                "pgi_completed": pgi, "delivered_dns": delivered, "pod_completed": pod}
+            dn_val = _safe_int(row.dn)
+            delivered_val = _safe_int(row.delivered_dns)
+            dn.append(dn_val)
+            pgi.append(_pct(_safe_int(row.pgi_completed), dn_val))
+            delivered_list.append(_pct(delivered_val, dn_val))
+            pod.append(_pct(_safe_int(row.pod_completed), delivered_val if delivered_val else 1))
+        return {"dates": dates_list, "revenue": revenue, "units": units, "delivery_notes": dn,
+                "pgi_rate": pgi, "delivery_achievement": delivered_list, "pod_rate": pod}
 
     @staticmethod
     def process_network(rows: List[Any]) -> Dict[str, Any]:
@@ -731,21 +764,25 @@ class ResponseBuilder:
     ) -> Dict[str, Any]:
         cards = {
             "revenue": {"value": summary.get("total_revenue", 0), "target": 150000000,
-                        "icon": "fa-chart-line", "color": "primary", "format": "currency", "label": "Revenue"},
+                        "icon": "fa-chart-line", "color": "primary", "format": "currency", "label": "Total Revenue"},
             "units": {"value": summary.get("total_units", 0), "target": 10000,
-                      "icon": "fa-box", "color": "success", "format": "number", "label": "Units"},
+                      "icon": "fa-box", "color": "success", "format": "number", "label": "Total Units"},
             "delivery_notes": {"value": summary.get("total_delivery_notes", 0), "target": 5000,
-                               "icon": "fa-file-invoice", "color": "info", "format": "number", "label": "Delivery Notes"},
+                               "icon": "fa-file-invoice", "color": "info", "format": "number", "label": "Total Delivery Notes"},
             "pgi_achievement": {"value": summary.get("pgi_achievement_rate", 0), "target": 100,
-                                "icon": "fa-warehouse", "color": "success", "format": "percentage", "label": "PGI Achievement"},
+                                "icon": "fa-warehouse", "color": "success", "format": "percentage", "label": "PGI Achievement %"},
             "delivery_achievement": {"value": summary.get("delivery_achievement_rate", 0), "target": 95,
-                                   "icon": "fa-truck", "color": "warning", "format": "percentage", "label": "Delivery Achievement"},
+                                   "icon": "fa-truck", "color": "warning", "format": "percentage", "label": "Delivery Achievement %"},
             "pod_achievement": {"value": summary.get("pod_completion_rate", 0), "target": 95,
-                                "icon": "fa-clipboard-check", "color": "danger", "format": "percentage", "label": "POD Achievement"},
+                                "icon": "fa-clipboard-check", "color": "danger", "format": "percentage", "label": "POD Achievement %"},
             "avg_delivery_days": {"value": summary.get("average_delivery_days", 0), "target": 5,
-                                  "icon": "fa-clock", "color": "info", "format": "days", "label": "Avg Delivery Days"},
+                                  "icon": "fa-clock", "color": "info", "format": "days", "label": "Average Delivery Days"},
+            "avg_pod_days": {"value": summary.get("average_pod_days", 0), "target": 3,
+                             "icon": "fa-calendar-check", "color": "info", "format": "days", "label": "Average POD Days"},
+            "avg_logistics_cycle": {"value": summary.get("average_logistics_cycle", 0), "target": 8,
+                                    "icon": "fa-hourglass-half", "color": "primary", "format": "days", "label": "Average Logistics Cycle"},
             "health_score": {"value": summary.get("dashboard_health_score", 0), "target": 95,
-                             "icon": "fa-heartbeat", "color": "primary", "format": "percentage", "label": "Health Score"},
+                             "icon": "fa-heartbeat", "color": "primary", "format": "percentage", "label": "Dashboard Health Score"},
         }
         for key, card in cards.items():
             card["progress"] = min((card["value"] / card["target"]) * 100, 100) if card["target"] else 0
@@ -787,7 +824,7 @@ class ResponseBuilder:
 class DashboardService:
     def __init__(self):
         self._repo = DashboardRepository()
-        logger.info("🚀 DashboardService v9.3 initialized with Modular Enterprise Architecture")
+        logger.info("🚀 DashboardService v10.0 initialized with Sequential Execution Architecture")
 
     @cached(ttl=5)
     async def get_dashboard_data(
@@ -800,22 +837,18 @@ class DashboardService:
         filters = filters or {}
         logger.info(f"📡 Master Dashboard API called with filters: {filters}")
 
-        # Parallel DB fetching using asyncio.gather
-        raw_sum_t = asyncio.to_thread(self._repo.fetch_raw_summary)
-        raw_pipe_t = asyncio.to_thread(self._repo.fetch_raw_pipeline)
-        div_t = asyncio.to_thread(self._repo.fetch_raw_divisions)
-        wh_t = asyncio.to_thread(self._repo.fetch_raw_warehouses)
-        dl_t = asyncio.to_thread(self._repo.fetch_raw_dealers)
-        pr_t = asyncio.to_thread(self._repo.fetch_raw_products)
-        ct_t = asyncio.to_thread(self._repo.fetch_raw_cities)
-        mon_t = asyncio.to_thread(self._repo.fetch_raw_monthly_trends)
-        dai_t = asyncio.to_thread(self._repo.fetch_raw_daily_trends)
-        net_t = asyncio.to_thread(self._repo.fetch_raw_network_rows)
-        cnt_t = asyncio.to_thread(self._repo.fetch_record_count)
-
-        raw_sum, raw_pipe, raw_div, raw_wh, raw_dl, raw_pr, raw_ct, raw_mon, raw_dai, raw_net, record_count = await asyncio.gather(
-            raw_sum_t, raw_pipe_t, div_t, wh_t, dl_t, pr_t, ct_t, mon_t, dai_t, net_t, cnt_t
-        )
+        # Sequential DB execution to guarantee safety against psycopg2 cursor closing errors
+        raw_sum = self._repo.fetch_raw_summary()
+        raw_pipe = self._repo.fetch_raw_pipeline()
+        raw_div = self._repo.fetch_raw_divisions()
+        raw_wh = self._repo.fetch_raw_warehouses()
+        raw_dl = self._repo.fetch_raw_dealers()
+        raw_pr = self._repo.fetch_raw_products()
+        raw_ct = self._repo.fetch_raw_cities()
+        raw_mon = self._repo.fetch_raw_monthly_trends()
+        raw_dai = self._repo.fetch_raw_daily_trends()
+        raw_net = self._repo.fetch_raw_network_rows()
+        record_count = self._repo.fetch_record_count()
 
         # Engine Executions
         summary = BusinessRuleEngine.calculate_summary(raw_sum)
@@ -838,7 +871,7 @@ class DashboardService:
         city_charts = GraphEngine.get_city_charts(city)
 
         metadata = {
-            "application_version": "9.3.0",
+            "application_version": "10.0.0",
             "database_version": "PostgreSQL",
             "postgresql_status": "connected",
             "record_count": record_count,
