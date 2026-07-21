@@ -2,10 +2,9 @@
 # FILE: app/services/dashboard_service.py
 # VERSION: 6.0 - ENTERPRISE LOGISTICS INTELLIGENCE PLATFORM
 # ============================================================
-# PURPOSE: Enterprise-grade logistics dashboard service with
-#          executive KPIs, business rule engine, AI insights,
-#          and full analytics for warehouses, dealers, products,
-#          cities, and transporters.
+# NOTE: This service is purely based on PostgreSQL data.
+#       No static or mock data is used. All values are
+#       derived directly from the delivery_reports table.
 # ============================================================
 
 import asyncio
@@ -875,7 +874,7 @@ class DashboardRepository:
         return result
 
     # ------------------------------------------------------------------
-    # TRANSPORT ANALYTICS (NEW)
+    # TRANSPORT ANALYTICS
     # ------------------------------------------------------------------
 
     def get_transport_performance(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
