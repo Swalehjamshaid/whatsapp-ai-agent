@@ -925,7 +925,7 @@ class BusinessRuleEngine:
         else: return {"tier": "tier_5", "label": "Critical", "color": "#ef4444", "status": "Critical"}
 
 # ============================================================
-# BLOCK 10: Warehouse Intelligence Engine (Enhanced)
+# BLOCK 10: Warehouse Intelligence Engine (Enhanced - FIXED)
 # ============================================================
 
 class WarehouseIntelligenceEngine:
@@ -1004,6 +1004,11 @@ class WarehouseIntelligenceEngine:
                 "performance_score": perf_score,
                 "grade": grade,
                 "risk": risk.value,
+                # ---- ADDED MISSING FIELDS ----
+                "delivered_units": delivered_units,
+                "pgi_units": pgi_units,
+                "avg_pgi_days": avg_pgi,
+                # -----------------------------
                 "delivery": {
                     "avg_days": avg_cycle,
                     "min_days": min_delivery,
@@ -1142,12 +1147,12 @@ class KPIEngine:
 
 class AlertEngine:
     @staticmethod
-    def generate_alerts(warehouses: List[Dict[str, Any]], kpis: Dict) -> List[Dict[str, Any]]:
+    def generate_alerts(warehouse_summaries: List[Dict[str, Any]], kpis: Dict) -> List[Dict[str, Any]]:
         raw_alerts = []
 
         # Warehouse-level alerts
-        for w in warehouses:
-            warehouse = w.get('warehouse_name', 'Unknown')
+        for w in warehouse_summaries:
+            warehouse = w.get('warehouse', 'Unknown')
             # Delivery gap
             gap = w.get('delivery', {}).get('gap_days', 0)
             if gap > 0:
@@ -1267,37 +1272,37 @@ class RecommendationEngine:
     def generate_recommendations(warehouse_summaries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         recs = []
         for w in warehouse_summaries:
-            warehouse = w['warehouse']
+            warehouse = w.get('warehouse', 'Unknown')
             actions = []
             priority = "Low"
 
             # Delivery gap
-            delivery_gap = w['delivery']['gap_days']
+            delivery_gap = w.get('delivery', {}).get('gap_days', 0)
             if delivery_gap > 1:
                 actions.append(f"Reduce delivery gap by improving dispatch and last-mile routing.")
                 priority = "High" if delivery_gap > 2 else "Medium"
 
             # POD gap
-            pod_gap = w['pod']['gap_days']
+            pod_gap = w.get('pod', {}).get('gap_days', 0)
             if pod_gap > 1:
                 actions.append(f"Improve POD collection process; follow up with transporters.")
                 priority = "High" if pod_gap > 2 else "Medium"
 
             # Cycle gap
-            cycle_gap = w['cycle']['gap_days']
+            cycle_gap = w.get('cycle', {}).get('gap_days', 0)
             if cycle_gap > 2:
                 actions.append(f"Reduce total cycle time by synchronizing PGI and POD.")
                 priority = "High"
 
             # Pending units
-            pending_units = w['pending']['units']
+            pending_units = w.get('pending', {}).get('units', 0)
             if pending_units > 500:
                 actions.append(f"Prioritize clearance of {pending_units} pending units.")
                 priority = "High"
 
             # PGI
-            if w['pgi_pct'] < 85:
-                actions.append(f"Accelerate PGI process (current {w['pgi_pct']}%).")
+            if w.get('pgi_pct', 100) < 85:
+                actions.append(f"Accelerate PGI process (current {w.get('pgi_pct', 100)}%).")
                 priority = "High"
 
             if not actions:
@@ -1684,7 +1689,7 @@ class ResponseBuilder:
         }
 
 # ============================================================
-# BLOCK 17: Dashboard Service (Orchestrator)
+# BLOCK 17: Dashboard Service (Orchestrator) - FIXED
 # ============================================================
 
 class DashboardService:
@@ -1734,9 +1739,13 @@ class DashboardService:
                 logger.warning(f"Distance compliance calculation failed: {e}")
 
             # 3. Build warehouse intelligence summaries
-            warehouse_summaries = WarehouseIntelligenceEngine.compute_warehouse_intelligence(
-                warehouse_raw, avg_distances, compliance_data
-            )
+            try:
+                warehouse_summaries = WarehouseIntelligenceEngine.compute_warehouse_intelligence(
+                    warehouse_raw, avg_distances, compliance_data
+                )
+            except Exception as e:
+                logger.error(f"Warehouse intelligence computation failed: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Warehouse intelligence error: {str(e)}")
 
             # 4. Compute national KPIs and rankings
             national_kpis = KPIEngine.compute_national_kpis(warehouse_summaries)
@@ -1766,13 +1775,30 @@ class DashboardService:
                 "avg_pod_days": {"value": summary.get('avg_pod_days', 0)},
             }
 
-            alerts = AlertEngine.generate_alerts(warehouse_summaries, kpis)
-            recommendations = RecommendationEngine.generate_recommendations(warehouse_summaries)
+            try:
+                alerts = AlertEngine.generate_alerts(warehouse_summaries, kpis)
+            except Exception as e:
+                logger.error(f"Alert generation failed: {e}", exc_info=True)
+                alerts = []
+
+            try:
+                recommendations = RecommendationEngine.generate_recommendations(warehouse_summaries)
+            except Exception as e:
+                logger.error(f"Recommendation generation failed: {e}", exc_info=True)
+                recommendations = []
 
             # 6. Add AI insights and trends to warehouse summaries
             for w in warehouse_summaries:
-                w['ai_insight'] = RecommendationEngine.generate_short_insight(w)
-                w['trend'] = PerformanceTrendEngine.calculate_trend(w['warehouse'], daily_trend)
+                try:
+                    w['ai_insight'] = RecommendationEngine.generate_short_insight(w)
+                except Exception as e:
+                    logger.warning(f"AI insight failed for {w.get('warehouse', 'unknown')}: {e}")
+                    w['ai_insight'] = "Insight unavailable"
+                try:
+                    w['trend'] = PerformanceTrendEngine.calculate_trend(w['warehouse'], daily_trend)
+                except Exception as e:
+                    logger.warning(f"Trend calculation failed for {w.get('warehouse', 'unknown')}: {e}")
+                    w['trend'] = "▬ Stable"
 
             # 7. Executive Summary
             exec_summary_text = ExecutiveSummaryEngine.generate_summary(kpis, warehouse_summaries, alerts, recommendations)
@@ -1821,32 +1847,40 @@ class DashboardService:
             }
 
             # 13. Build final response
-            return ResponseBuilder.build(
-                summary=summary,
-                warehouse_summaries=warehouse_summaries,
-                dealers=dealer_raw,
-                cities=city_raw,
-                products=product_raw,
-                divisions=division_raw,
-                daily_trend=daily_trend,
-                monthly_trend=monthly_trend,
-                pending_analysis=pending_analysis,
-                city_delays=city_delays,
-                kpis=kpis,
-                insights=insights,
-                alerts=alerts,
-                recommendations=recommendations,
-                exec_summary=exec_summary_text,
-                pipeline=pipeline,
-                trends=trends,
-                compliance_data=compliance_data,
-                import_summary=import_summary,
-                metadata=metadata,
-                charts=charts,
-                national_kpis=national_kpis,
-                detailed_summary=detailed_summary,
-            )
+            try:
+                response = ResponseBuilder.build(
+                    summary=summary,
+                    warehouse_summaries=warehouse_summaries,
+                    dealers=dealer_raw,
+                    cities=city_raw,
+                    products=product_raw,
+                    divisions=division_raw,
+                    daily_trend=daily_trend,
+                    monthly_trend=monthly_trend,
+                    pending_analysis=pending_analysis,
+                    city_delays=city_delays,
+                    kpis=kpis,
+                    insights=insights,
+                    alerts=alerts,
+                    recommendations=recommendations,
+                    exec_summary=exec_summary_text,
+                    pipeline=pipeline,
+                    trends=trends,
+                    compliance_data=compliance_data,
+                    import_summary=import_summary,
+                    metadata=metadata,
+                    charts=charts,
+                    national_kpis=national_kpis,
+                    detailed_summary=detailed_summary,
+                )
+            except Exception as e:
+                logger.error(f"ResponseBuilder.build failed: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Response building error: {str(e)}")
 
+            return response
+
+        except HTTPException as he:
+            raise he
         except Exception as e:
             logger.error(f"Dashboard generation failed: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
@@ -1860,7 +1894,6 @@ class DashboardService:
         city_pairs = self._repo.fetch_warehouse_city_pairs()
         avg_distances = DistanceCalculationEngine.compute_average_distance_per_warehouse(city_pairs)
         summaries = WarehouseIntelligenceEngine.compute_warehouse_intelligence(warehouse_raw, avg_distances, [])
-        # Add AI insights
         for w in summaries:
             w['ai_insight'] = RecommendationEngine.generate_short_insight(w)
         return summaries
