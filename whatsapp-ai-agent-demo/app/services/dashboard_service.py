@@ -1167,6 +1167,9 @@ class ExecutiveSummaryEngine:
 
 # ============================================================
 # BLOCK 16: Response Builder (ENHANCED - Warehouse Command Center)
+
+# ============================================================
+# BLOCK 16: Response Builder (ENHANCED - Warehouse Command Center)
 # ============================================================
 
 class ResponseBuilder:
@@ -1330,8 +1333,33 @@ class ResponseBuilder:
                 "status": c['status'],
             })
 
-        # --- Critical alerts and recommendations ---
-        critical_alerts = [a for a in alerts if a.get('severity') in ('CRITICAL', 'HIGH')]
+        # ============================================================
+        # UPDATED: CRITICAL ALERTS – Top 10 Most Important
+        # ============================================================
+        severity_order = {'CRITICAL': 3, 'HIGH': 2, 'WARNING': 1, 'LOW': 0}
+
+        def alert_urgency(alert):
+            """Calculate urgency score for sorting alerts."""
+            base = severity_order.get(alert.get('severity', 'LOW'), 0)
+            msg = alert.get('message', '').lower()
+            # Boost alerts that indicate high operational impact
+            if 'pending' in msg or 'units' in msg:
+                base += 1.0
+            if 'cycle' in msg or 'delay' in msg:
+                base += 0.5
+            if 'critical' in msg or 'risk' in msg:
+                base += 1.5
+            # Also consider alerts that mention specific warehouses (more actionable)
+            if alert.get('source') and alert.get('source') != 'System':
+                base += 0.3
+            return base
+
+        # Filter only CRITICAL and HIGH severity alerts
+        filtered_alerts = [a for a in alerts if a.get('severity') in ('CRITICAL', 'HIGH')]
+        # Sort by urgency (descending) and take top 10
+        sorted_alerts = sorted(filtered_alerts, key=alert_urgency, reverse=True)
+        critical_alerts = sorted_alerts[:10]  # Only top 10 most important
+
         director_recommendations = recommendations
         import_summary_data = import_summary or {}
         metadata = metadata or {}
@@ -1369,12 +1397,11 @@ class ResponseBuilder:
             "division_performance": division_performance,
             "delivery_compliance": compliance,
             "pending_analysis": pending_analysis,
-            "critical_alerts": critical_alerts,
+            "critical_alerts": critical_alerts,      # ✅ UPDATED: only top 10
             "director_recommendations": director_recommendations,
             "import_summary": import_summary_data,
             "insights": insights,
         }
-
 # ============================================================
 # BLOCK 17: Dashboard Service
 # ============================================================
