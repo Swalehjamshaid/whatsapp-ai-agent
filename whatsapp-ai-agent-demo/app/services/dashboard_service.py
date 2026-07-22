@@ -1,8 +1,5 @@
 # ============================================================
-# FILE: app/services/dashboard_service.py
-# VERSION: 19.3 - FIXED avg_distances UnboundLocalError
-# ============================================================
-# EXCEEDS SAP ANALYTICS CLOUD | MICROSOFT FABRIC | POWER BI PREMIUM
+# BLOCK 1: Imports and Logging Configuration
 # ============================================================
 
 import hashlib
@@ -104,10 +101,6 @@ except ImportError:
     logger = logging.getLogger(__name__)
     logger.warning("GeoService not available, distance features will be disabled.")
 
-# ============================================================
-# LOGGING CONFIGURATION
-# ============================================================
-
 logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=logging.INFO,
@@ -119,7 +112,7 @@ logging.basicConfig(
 )
 
 # ============================================================
-# ENUMERATIONS & CONSTANTS
+# BLOCK 2: Enumerations & Constants
 # ============================================================
 
 class WarehouseStatus(Enum):
@@ -147,14 +140,12 @@ class PriorityLevel(Enum):
     MEDIUM = "medium"
     LOW = "low"
 
-
 # ============================================================
-# CONFIGURATION
+# BLOCK 3: Configuration
 # ============================================================
 
 @dataclass
 class DashboardConfig:
-    """Enterprise configuration with all tunable parameters."""
     cache_ttl_seconds: int = 300
     cache_max_size: int = 1000
     pgi_target_days: float = 1.0
@@ -164,20 +155,15 @@ class DashboardConfig:
     health_score_good: float = 75.0
     health_score_average: float = 60.0
     health_score_poor: float = 40.0
-    # For Total Value (if dn_amount column not available)
-    avg_unit_price: float = 0.0  # override with actual average price
-
+    avg_unit_price: float = 0.0
 
 config = DashboardConfig()
 
-
 # ============================================================
-# UTILITY LAYER
+# BLOCK 4: Utility Layer (SafeNumber, DateUtils)
 # ============================================================
 
 class SafeNumber:
-    """Safe numeric operations with None/error handling."""
-    
     @staticmethod
     def to_float(value: Any, default: float = 0.0) -> float:
         try:
@@ -214,10 +200,7 @@ class SafeNumber:
             return default
         return round((numerator / denominator) * 100, 2)
 
-
 class DateUtils:
-    """Enterprise date utilities."""
-    
     @staticmethod
     def parse_date(value: Any) -> Optional[date]:
         if value is None:
@@ -242,9 +225,8 @@ class DateUtils:
             return 0.0
         return (end - start).days
 
-
 # ============================================================
-# EXCEPTION HANDLING
+# BLOCK 5: Exception Handling
 # ============================================================
 
 class DashboardServiceError(Exception):
@@ -253,14 +235,11 @@ class DashboardServiceError(Exception):
 class DatabaseError(DashboardServiceError):
     pass
 
-
 # ============================================================
-# CACHING LAYER
+# BLOCK 6: Caching Layer (EnterpriseCache, cached decorator)
 # ============================================================
 
 class EnterpriseCache:
-    """Advanced multi-tier cache with TTL and LRU eviction."""
-    
     def __init__(self, max_size: int = 2000, default_ttl: int = 300):
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._max_size = max_size
@@ -312,9 +291,7 @@ class EnterpriseCache:
         self._cache.clear()
         self._access_order.clear()
 
-
 cache = EnterpriseCache()
-
 
 def cached(ttl: Optional[int] = None):
     def decorator(func):
@@ -332,14 +309,11 @@ def cached(ttl: Optional[int] = None):
         return wrapper
     return decorator
 
-
 # ============================================================
-# REPOSITORY LAYER (ENHANCED + COLUMN CHECK)
+# BLOCK 7: Repository Layer (DashboardRepository) - Data Access
 # ============================================================
 
 class DashboardRepository:
-    """High-performance data access layer matching database schemas."""
-    
     def __init__(self, db_session: Optional[Session] = None):
         self._db_session = db_session
         self._has_dn_amount = None
@@ -355,11 +329,9 @@ class DashboardRepository:
             raise DatabaseError(f"Database query failed: {str(e)}")
     
     def _check_column_exists(self, column: str, table: str = "delivery_reports") -> bool:
-        """Check if a column exists in the table."""
         if self._has_dn_amount is not None:
             return self._has_dn_amount
         try:
-            # Try to select the column with LIMIT 1
             self._execute(f"SELECT {column} FROM {table} LIMIT 1")
             self._has_dn_amount = True
             logger.info(f"Column '{column}' exists in table '{table}'.")
@@ -368,7 +340,7 @@ class DashboardRepository:
             logger.warning(f"Column '{column}' does NOT exist in table '{table}'. Revenue will use avg_unit_price fallback.")
         return self._has_dn_amount
 
-    # ==================== Core Summary (with Revenue) ====================
+    # ---------- Core Summary ----------
     def fetch_summary(self) -> Dict[str, Any]:
         has_amount = self._check_column_exists("dn_amount")
         revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
@@ -426,7 +398,7 @@ class DashboardRepository:
             "total_revenue": SafeNumber.to_float(row.total_revenue),
         }
 
-    # ==================== Warehouse Data (with Revenue) ====================
+    # ---------- Warehouse Data ----------
     def fetch_warehouse_data(self) -> List[Dict[str, Any]]:
         has_amount = self._check_column_exists("dn_amount")
         revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
@@ -498,7 +470,6 @@ class DashboardRepository:
                 "avg_cycle_days": SafeNumber.to_float(row.avg_cycle_days),
                 "first_dn": row.first_dn,
                 "last_dn": row.last_dn,
-                # new unit-based keys
                 "total_units": SafeNumber.to_int(row.total_units),
                 "pgi_units": SafeNumber.to_int(row.pgi_units),
                 "delivered_units": SafeNumber.to_int(row.delivered_units),
@@ -511,7 +482,7 @@ class DashboardRepository:
             })
         return result
 
-    # ==================== Dealer Data (with Revenue) ====================
+    # ---------- Dealer Data ----------
     def fetch_dealer_data(self) -> List[Dict[str, Any]]:
         has_amount = self._check_column_exists("dn_amount")
         revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
@@ -546,7 +517,7 @@ class DashboardRepository:
             })
         return result
 
-    # ==================== Product Data (with Revenue) ====================
+    # ---------- Product Data ----------
     def fetch_product_data(self) -> List[Dict[str, Any]]:
         has_amount = self._check_column_exists("dn_amount")
         revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
@@ -579,7 +550,7 @@ class DashboardRepository:
             })
         return result
 
-    # ==================== Division Data (with Revenue) ====================
+    # ---------- Division Data ----------
     def fetch_division_data(self) -> List[Dict[str, Any]]:
         has_amount = self._check_column_exists("dn_amount")
         revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
@@ -609,7 +580,7 @@ class DashboardRepository:
             })
         return result
 
-    # ==================== City Data (with Revenue) ====================
+    # ---------- City Data ----------
     def fetch_city_data(self) -> List[Dict[str, Any]]:
         has_amount = self._check_column_exists("dn_amount")
         revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
@@ -642,7 +613,7 @@ class DashboardRepository:
             })
         return result
 
-    # ==================== Trends ====================
+    # ---------- Daily Trend ----------
     def fetch_daily_trend(self, days: int = 90) -> List[Dict[str, Any]]:
         has_amount = self._check_column_exists("dn_amount")
         revenue_sql = "COALESCE(SUM(dn_amount), 0) AS revenue" if has_amount else "0 AS revenue"
@@ -676,6 +647,7 @@ class DashboardRepository:
             })
         return result
 
+    # ---------- Monthly Trend ----------
     def fetch_monthly_trend(self, months: int = 12) -> List[Dict[str, Any]]:
         has_amount = self._check_column_exists("dn_amount")
         revenue_sql = "COALESCE(SUM(dn_amount), 0) AS revenue" if has_amount else "0 AS revenue"
@@ -705,7 +677,7 @@ class DashboardRepository:
             })
         return result
 
-    # ==================== Pending Analysis ====================
+    # ---------- Pending Analysis ----------
     def fetch_pending_analysis(self) -> List[Dict[str, Any]]:
         has_amount = self._check_column_exists("dn_amount")
         revenue_sql = "SUM(dn_amount) AS revenue" if has_amount else "0 AS revenue"
@@ -748,7 +720,7 @@ class DashboardRepository:
             })
         return result
 
-    # ==================== City Delays ====================
+    # ---------- City Delays ----------
     def fetch_city_delay_data(self) -> List[Dict[str, Any]]:
         sql = """
             SELECT
@@ -776,7 +748,7 @@ class DashboardRepository:
             })
         return result
 
-    # ==================== Distance Pairs (for compliance) ====================
+    # ---------- Distance Pairs ----------
     def fetch_warehouse_city_pairs(self) -> List[Dict[str, Any]]:
         sql = """
             SELECT
@@ -805,9 +777,7 @@ class DashboardRepository:
         sql = "SELECT COUNT(*) FROM delivery_reports"
         return SafeNumber.to_int(self._execute(sql).scalar())
 
-    # ==================== Import Summary ====================
     def get_import_summary(self) -> Dict[str, Any]:
-        # In production, you would query a separate import_logs table
         return {
             "files_imported": 42,
             "rows_imported": 125000,
@@ -816,9 +786,8 @@ class DashboardRepository:
             "last_upload_date": datetime.utcnow().isoformat(),
         }
 
-
 # ============================================================
-# DISTANCE & BUSINESS RULE ENGINES
+# BLOCK 8: Distance Calculation Engine
 # ============================================================
 
 class DistanceCalculationEngine:
@@ -860,11 +829,13 @@ class DistanceCalculationEngine:
             return 0.0
         return round((target_days / actual_days) * 100 if actual_days > 0 else 100.0, 2)
 
+# ============================================================
+# BLOCK 9: Business Rule Engine
+# ============================================================
 
 class BusinessRuleEngine:
     @staticmethod
     def calculate_health_score(pgi_rate: float, delivery_rate: float, pod_rate: float, cycle_days: float) -> float:
-        # Weighted: Delivery 30%, PGI 30%, POD 20%, Cycle 20%
         cycle_score = max(0, 100 - (cycle_days - 0.5) * 15)
         return round((delivery_rate * 0.30) + (pgi_rate * 0.30) + (pod_rate * 0.20) + (cycle_score * 0.20), 2)
     
@@ -885,9 +856,8 @@ class BusinessRuleEngine:
         if cycle_days > 5: risk_score += 2
         return RiskLevel.CRITICAL if risk_score >= 5 else (RiskLevel.HIGH if risk_score >= 3 else RiskLevel.LOW)
 
-
 # ============================================================
-# INTELLIGENCE ENGINES (ENHANCED)
+# BLOCK 10: Warehouse Intelligence Engine
 # ============================================================
 
 class WarehouseIntelligenceEngine:
@@ -905,7 +875,7 @@ class WarehouseIntelligenceEngine:
             pgi_rate = SafeNumber.pct(pgi_units, total_units)
             delivery_rate = SafeNumber.pct(delivered_units, total_units)
             pending_rate = SafeNumber.pct(pending_units, total_units)
-            pod_rate = delivery_rate  # same as delivered
+            pod_rate = delivery_rate
             pending_pgi_rate = SafeNumber.pct(pending_pgi_units, total_units)
             
             avg_cycle = w.get('avg_cycle_days', 0)
@@ -929,7 +899,7 @@ class WarehouseIntelligenceEngine:
                 'pod_rate': pod_rate,
                 'pending_pgi_rate': pending_pgi_rate,
                 'health_score': health_score,
-                'performance_score': health_score,  # alias
+                'performance_score': health_score,
                 'performance_tier': classification['tier'],
                 'performance_label': classification['label'],
                 'performance_color': classification['color'],
@@ -959,6 +929,9 @@ class WarehouseIntelligenceEngine:
         if not warehouses: return {}, {}
         return max(warehouses, key=lambda x: x.get('health_score', 0)), min(warehouses, key=lambda x: x.get('health_score', 0))
 
+# ============================================================
+# BLOCK 11: KPI Engine (Day-over-day)
+# ============================================================
 
 class KPIEngine:
     @staticmethod
@@ -973,43 +946,14 @@ class KPIEngine:
             "revenue_growth": SafeNumber.pct(today['revenue'] - yesterday['revenue'], yesterday['revenue']) if yesterday['revenue'] else 0,
         }
 
-
-class ExecutiveSummaryEngine:
-    @staticmethod
-    def generate_summary(kpis: Dict, warehouses: List[Dict], alerts: List[Dict], recommendations: List[Dict]) -> str:
-        health = kpis.get('health_score', {}).get('value', 0)
-        delivery_pct = kpis.get('delivery_achievement', {}).get('value', 0)
-        pod_pct = kpis.get('pod_achievement', {}).get('value', 0)
-        pending_dn = kpis.get('pending_dn', {}).get('value', 0)
-        pending_units = kpis.get('pending_units', {}).get('value', 0)
-        
-        best = warehouses[0] if warehouses else None
-        worst = warehouses[-1] if warehouses else None
-        
-        lines = [
-            f"Overall logistics performance is {'good' if health >= 80 else 'fair'} with health score of {health:.1f}%.",
-            f"Delivery achievement is {delivery_pct:.1f}%, {'above' if delivery_pct >= 90 else 'below'} target.",
-            f"POD achievement is {pod_pct:.1f}%, {'above' if pod_pct >= 90 else 'below'} target.",
-            f"{pending_dn} DNs and {pending_units} units are still pending."
-        ]
-        if best:
-            lines.append(f"{best['warehouse_name']} warehouse is the top performer.")
-        if worst:
-            lines.append(f"{worst['warehouse_name']} warehouse needs immediate attention.")
-        if alerts:
-            first_alert = alerts[0]
-            lines.append(f"Alert: {first_alert['source']} - {first_alert['message']}")
-        if recommendations:
-            first_rec = recommendations[0]
-            lines.append(f"Recommendation: {first_rec['warehouse']} - {first_rec['recommendation']}")
-        return " ".join(lines)
-
+# ============================================================
+# BLOCK 12: Alert Engine
+# ============================================================
 
 class AlertEngine:
     @staticmethod
     def generate_alerts(warehouses: List[Dict[str, Any]], kpis: Dict) -> List[Dict[str, Any]]:
         alerts = []
-        # Warehouse-level alerts
         for w in warehouses:
             warehouse = w.get('warehouse_name', 'Unknown')
             if w.get('delivery_rate', 100) < 85:
@@ -1061,7 +1005,6 @@ class AlertEngine:
                     "category": "Missing POD",
                     "message": f"POD rate is only {w['pod_rate']}%",
                 })
-        # Global alerts
         if kpis.get('pod_achievement', {}).get('value', 100) < 85:
             alerts.append({
                 "source": "System",
@@ -1078,6 +1021,9 @@ class AlertEngine:
             })
         return alerts
 
+# ============================================================
+# BLOCK 13: Recommendation Engine
+# ============================================================
 
 class RecommendationEngine:
     @staticmethod
@@ -1111,41 +1057,108 @@ class RecommendationEngine:
             })
         return recs
 
+# ============================================================
+# BLOCK 14: Performance Trend Engine
+# ============================================================
 
 class PerformanceTrendEngine:
     @staticmethod
     def compute_trends(daily_trend: List[Dict]) -> Dict[str, Any]:
         if not daily_trend:
             return {}
-        # Compute daily percentages
         trend_data = []
         for day in daily_trend:
             total_units = day.get('units', 0)
-            pgi_units = day.get('pgi_count', 0)  # we use DN count as proxy; ideally we need units
+            pgi_units = day.get('pgi_count', 0)
             delivered_units = day.get('delivered_count', 0)
-            # For percentages, we need units; we'll compute from daily aggregates if available
-            # Since we don't have daily units for PGI/Delivery, we use counts as proxy
             pgi_pct = SafeNumber.pct(pgi_units, total_units)
             delivery_pct = SafeNumber.pct(delivered_units, total_units)
-            pod_pct = delivery_pct  # proxy
+            pod_pct = delivery_pct
             trend_data.append({
                 "date": day.get('date'),
                 "pgi_pct": pgi_pct,
                 "delivery_pct": delivery_pct,
                 "pod_pct": pod_pct,
-                "avg_delivery_days": 0,  # not in daily
+                "avg_delivery_days": 0,
                 "avg_pod_days": 0,
             })
-        # Provide weekly/monthly summaries if needed
         return {
             "daily": trend_data,
             "weekly": trend_data[-7:] if len(trend_data) >= 7 else trend_data,
             "monthly": trend_data[-30:] if len(trend_data) >= 30 else trend_data,
         }
 
+# ============================================================
+# BLOCK 15: Executive Summary Engine (UPDATED)
+# ============================================================
+#
+#  🔥 THIS IS THE BLOCK THAT WAS CHANGED TO FIX THE EMPTY SUMMARY.
+#  Replace this entire block with the code below.
+# ============================================================
+
+class ExecutiveSummaryEngine:
+    @staticmethod
+    def generate_summary(kpis: Dict, warehouses: List[Dict], alerts: List[Dict], recommendations: List[Dict]) -> str:
+        # Safely extract values with defaults
+        health = kpis.get('health_score', {}).get('value', 0)
+        delivery_pct = kpis.get('delivery_achievement', {}).get('value', 0)
+        pod_pct = kpis.get('pod_achievement', {}).get('value', 0)
+        pending_dn = kpis.get('pending_dn', {}).get('value', 0)
+        pending_units = kpis.get('pending_units', {}).get('value', 0)
+
+        best = warehouses[0] if warehouses else None
+        worst = warehouses[-1] if warehouses else None
+
+        # If no data at all, provide a clear message
+        if not warehouses and health == 0 and delivery_pct == 0 and pod_pct == 0:
+            return "No delivery data available. Please upload an Excel report using the Import Center to populate the dashboard."
+
+        # Build summary lines
+        lines = []
+
+        # Health assessment
+        if health > 0:
+            lines.append(f"Overall logistics performance is {'good' if health >= 80 else 'fair'} with health score of {health:.1f}%.")
+        else:
+            lines.append("Overall logistics performance data is currently unavailable.")
+
+        # Delivery achievement
+        if delivery_pct > 0:
+            lines.append(f"Delivery achievement is {delivery_pct:.1f}%, {'above' if delivery_pct >= 90 else 'below'} target.")
+        else:
+            lines.append("Delivery achievement data is currently unavailable.")
+
+        # POD achievement
+        if pod_pct > 0:
+            lines.append(f"POD achievement is {pod_pct:.1f}%, {'above' if pod_pct >= 90 else 'below'} target.")
+        else:
+            lines.append("POD achievement data is currently unavailable.")
+
+        # Pending items
+        if pending_dn > 0 or pending_units > 0:
+            lines.append(f"{pending_dn} DNs and {pending_units} units are still pending.")
+        else:
+            lines.append("No pending DNs or units at this time.")
+
+        # Best and worst warehouses
+        if best:
+            lines.append(f"{best['warehouse_name']} warehouse is the top performer.")
+        if worst:
+            lines.append(f"{worst['warehouse_name']} warehouse needs immediate attention.")
+
+        # Alerts and recommendations
+        if alerts:
+            first_alert = alerts[0]
+            lines.append(f"Alert: {first_alert['source']} - {first_alert['message']}")
+        if recommendations:
+            first_rec = recommendations[0]
+            lines.append(f"Recommendation: {first_rec['warehouse']} - {first_rec['recommendation']}")
+
+        # Join all lines into a single paragraph
+        return " ".join(lines) if lines else "Executive summary is not available."
 
 # ============================================================
-# RESPONSE BUILDER (19.3)
+# BLOCK 16: Response Builder
 # ============================================================
 
 class ResponseBuilder:
@@ -1164,7 +1177,6 @@ class ResponseBuilder:
         pgi_units = sum(w.get('pgi_units', 0) for w in warehouses)
         total_revenue = summary.get('total_revenue', 0) or (total_units * config.avg_unit_price)
 
-        # Core KPI cards (8 cards)
         cards = {
             "total_dn": {"value": total_dn, "label": "Total Delivery Notes", "icon": "fa-file-invoice"},
             "total_units": {"value": total_units, "label": "Total Units", "icon": "fa-boxes"},
@@ -1175,16 +1187,13 @@ class ResponseBuilder:
             "pending_units": {"value": pending_units, "label": "Pending Units", "icon": "fa-hourglass"},
             "health_score": {"value": kpis.get('health_score', {}).get('value', 0), "label": "Health Score", "icon": "fa-heart-pulse"},
         }
-        # Add pending_dn to cards (used by HTML for KPI)
         cards["pending_dn"] = {"value": kpis.get('pending_dn', {}).get('value', 0)}
 
-        # Vs yesterday growth
         growth = KPIEngine.compute_day_over_day(daily_trend)
         for key in ["total_dn", "total_units", "total_value"]:
             if key in cards:
                 cards[key]["vs_yesterday"] = growth.get(key.replace("total_", "").replace("_value", "revenue") + "_growth", 0)
 
-        # Pipeline
         pipeline_old = {
             "dn_created": total_dn,
             "pgi_completed": summary.get('pgi_completed', 0),
@@ -1199,7 +1208,6 @@ class ResponseBuilder:
             "delivery_achievement_units": SafeNumber.pct(delivered_units, total_units),
         }
 
-        # Warehouse ranking for frontend
         warehouse_ranking = []
         for w in warehouses:
             warehouse_ranking.append({
@@ -1218,7 +1226,6 @@ class ResponseBuilder:
                 "performance_score": w['health_score'],
             })
 
-        # Top delayed cities with risk status
         top_delayed_cities = []
         for city in sorted(city_delays, key=lambda x: x['avg_delivery_days'], reverse=True)[:10]:
             days = city['avg_delivery_days']
@@ -1237,41 +1244,31 @@ class ResponseBuilder:
                 "status": risk,
             })
 
-        # Top pending warehouses
         sorted_by_pending = sorted(warehouses, key=lambda w: w.get('pending_units', 0), reverse=True)[:5]
         top_pending_warehouses = [
-            {
-                "warehouse": w['warehouse_name'],
-                "pending_dns": w['pending_dns'],
-                "pending_units": w['pending_units'],
-            }
+            {"warehouse": w['warehouse_name'], "pending_dns": w['pending_dns'], "pending_units": w['pending_units']}
             for w in sorted_by_pending
         ]
 
-        # Top dealers by revenue
         sorted_dealers = sorted(dealers, key=lambda d: d.get('total_revenue', 0), reverse=True)[:5]
         top_dealers = [
             {"dealer": d['dealer_name'], "dns": d['delivery_notes'], "units": d['units'], "revenue": d['total_revenue']}
             for d in sorted_dealers
         ]
 
-        # Top products by units
         sorted_products = sorted(products, key=lambda p: p.get('units', 0), reverse=True)[:5]
         top_products = [
             {"product": p['product_name'], "units": p['units'], "revenue": p['total_revenue'], "delivery_notes": p['delivery_notes']}
             for p in sorted_products
         ]
 
-        # Division performance
         division_performance = [
             {"division": d['division'], "dns": d['delivery_notes'], "units": d['units'], "revenue": d['total_revenue']}
             for d in divisions
         ]
 
-        # Delivery standard compliance - use top warehouses with distance
         compliance = []
         for c in compliance_data[:6]:
-            # Determine distance range
             dist = c.get('avg_distance_km', 0)
             if dist <= 100:
                 range_label = "0-100"
@@ -1293,23 +1290,15 @@ class ResponseBuilder:
                 "status": c['status'],
             })
 
-        # Critical alerts
         critical_alerts = [a for a in alerts if a.get('severity') in ('CRITICAL', 'HIGH')]
-
-        # Director recommendations
         director_recommendations = recommendations
-
-        # Import summary
         import_summary_data = import_summary or {}
-
-        # Metadata
         metadata = metadata or {}
 
         return {
-            # Legacy keys (kept for backward compatibility)
             "executive_summary": summary,
             "cards": cards,
-            "kpis": cards,  # alias
+            "kpis": cards,
             "pipeline": pipeline_old,
             "warehouse": warehouses,
             "warehouses": warehouses,
@@ -1327,29 +1316,26 @@ class ResponseBuilder:
             "recommendations": recommendations,
             "charts": charts,
             "metadata": metadata,
-
-            # NEW keys for all 24 modules
             "total_revenue": total_revenue,
             "executive_summary_text": exec_summary,
-            "pipeline_detailed": pipeline,  # detailed funnel
+            "pipeline_detailed": pipeline,
             "performance_trends": trends,
             "warehouse_ranking": warehouse_ranking,
             "top_delayed_cities": top_delayed_cities,
-            "top_pending_warehouses": top_pending_warehouses,  # added for HTML
+            "top_pending_warehouses": top_pending_warehouses,
             "top_dealers": top_dealers,
             "top_products": top_products,
             "division_performance": division_performance,
             "delivery_compliance": compliance,
             "pending_analysis": pending_analysis,
             "critical_alerts": critical_alerts,
-            "director_recommendations": director_recommendations,  # alias
+            "director_recommendations": director_recommendations,
             "import_summary": import_summary_data,
-            "insights": insights,  # AI insights
+            "insights": insights,
         }
 
-
 # ============================================================
-# DASHBOARD SERVICE (19.3)
+# BLOCK 17: Dashboard Service
 # ============================================================
 
 class DashboardService:
@@ -1360,7 +1346,6 @@ class DashboardService:
     @cached(ttl=300)
     async def get_full_dashboard(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
         try:
-            # ====== 1. Fetch all raw data ======
             summary = self._repo.fetch_summary()
             warehouse_raw = self._repo.fetch_warehouse_data()
             dealer_raw = self._repo.fetch_dealer_data()
@@ -1374,14 +1359,11 @@ class DashboardService:
             import_summary = self._repo.get_import_summary()
             record_count = self._repo.fetch_record_count()
 
-            # ====== 2. Compute distance for compliance ======
-            # Initialize variables to avoid UnboundLocalError
             avg_distances = {}
             compliance_data = []
             try:
                 city_pairs = self._repo.fetch_warehouse_city_pairs()
                 avg_distances = DistanceCalculationEngine.compute_average_distance_per_warehouse(city_pairs)
-                # Also compute per-warehouse compliance
                 for pair in city_pairs:
                     wh = pair['warehouse']
                     dist = avg_distances.get(wh, 0)
@@ -1399,13 +1381,10 @@ class DashboardService:
                     })
             except Exception as e:
                 logger.warning(f"Distance compliance calculation failed: {e}")
-                # avg_distances and compliance_data remain as initialized
 
-            # ====== 3. Enrich warehouse data ======
             warehouses = WarehouseIntelligenceEngine.compute_warehouse_metrics(warehouse_raw, avg_distances)
             best, worst = WarehouseIntelligenceEngine.get_best_and_worst(warehouses)
 
-            # ====== 4. Compute KPIs ======
             total_units = summary.get('total_units', 0)
             pgi_units = sum(w.get('pgi_units', 0) for w in warehouses)
             delivered_units = sum(w.get('delivered_units', 0) for w in warehouses)
@@ -1430,14 +1409,12 @@ class DashboardService:
                 "avg_pod_days": {"value": summary.get('avg_pod_days', 0)},
             }
 
-            # ====== 5. Alerts & Recommendations ======
             alerts = AlertEngine.generate_alerts(warehouses, kpis)
             recommendations = RecommendationEngine.generate_recommendations(warehouses)
 
-            # ====== 6. Executive Summary ======
+            # ====== BLOCK 15 is called here to generate exec_summary ======
             exec_summary = ExecutiveSummaryEngine.generate_summary(kpis, warehouses, alerts, recommendations)
 
-            # ====== 7. Pipeline ======
             pipeline = {
                 "dn_created": {"dn": summary.get('total_dn', 0), "units": total_units, "pct": 100, "avg_days": 0, "pending": 0},
                 "pgi_completed": {"dn": summary.get('pgi_completed', 0), "units": pgi_units, "pct": SafeNumber.pct(summary.get('pgi_completed', 0), summary.get('total_dn', 1)), "avg_days": summary.get('avg_pgi_days', 0), "pending": summary.get('total_dn', 0) - summary.get('pgi_completed', 0)},
@@ -1446,10 +1423,8 @@ class DashboardService:
                 "pod_received": {"dn": summary.get('pod_completed', 0), "units": delivered_units, "pct": SafeNumber.pct(summary.get('pod_completed', 0), summary.get('delivered_dns', 1)), "avg_days": summary.get('avg_pod_days', 0), "pending": summary.get('delivered_dns', 0) - summary.get('pod_completed', 0)},
             }
 
-            # ====== 8. Performance Trends ======
             trends = PerformanceTrendEngine.compute_trends(daily_trend)
 
-            # ====== 9. Insights (AI) ======
             insights = {
                 "insights": [
                     {"type": "best_performing", "text": f"Best Warehouse: {best.get('warehouse_name', 'N/A')} (Score: {best.get('health_score', 0)})"},
@@ -1459,7 +1434,6 @@ class DashboardService:
                 ]
             }
 
-            # ====== 10. Charts (Plotly) ======
             charts = {
                 "warehouse_ranking": "{}",
                 "pgi_performance": "{}",
@@ -1470,7 +1444,6 @@ class DashboardService:
                 "daily_trend": "{}",
             }
 
-            # ====== 11. Metadata ======
             metadata = {
                 "version": "19.3",
                 "timestamp": datetime.utcnow().isoformat(),
@@ -1478,7 +1451,6 @@ class DashboardService:
                 "warehouse_count": len(warehouses),
             }
 
-            # ====== 12. Build final response ======
             return ResponseBuilder.build(
                 summary=summary,
                 warehouses=warehouses,
@@ -1517,9 +1489,8 @@ class DashboardService:
         avg_distances = DistanceCalculationEngine.compute_average_distance_per_warehouse(city_pairs)
         return WarehouseIntelligenceEngine.compute_warehouse_metrics(warehouse_raw, avg_distances)
 
-
 # ============================================================
-# FASTAPI ROUTER
+# BLOCK 18: FastAPI Router
 # ============================================================
 
 router = APIRouter(prefix="/dashboard/api", tags=["dashboard"])
