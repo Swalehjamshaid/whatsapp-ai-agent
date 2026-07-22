@@ -310,15 +310,15 @@ def cached(ttl: Optional[int] = None):
     return decorator
 
 # ============================================================
-# BLOCK 7: Repository Layer (DashboardRepository) - Data Access
+# BLOCK 7: Repository Layer (DashboardRepository) - ENHANCED
 # ============================================================
 
 class DashboardRepository:
     def __init__(self, db_session: Optional[Session] = None):
         self._db_session = db_session
         self._has_dn_amount = None
-        logger.info("DashboardRepository initialized")
-    
+        logger.info("DashboardRepository initialized (v20.0)")
+
     def _execute(self, sql: str, params: Optional[Dict[str, Any]] = None) -> Any:
         try:
             with engine.connect() as conn:
@@ -398,7 +398,7 @@ class DashboardRepository:
             "total_revenue": SafeNumber.to_float(row.total_revenue),
         }
 
-    # ---------- Warehouse Data ----------
+    # ---------- Warehouse Data (enhanced) ----------
     def fetch_warehouse_data(self) -> List[Dict[str, Any]]:
         has_amount = self._check_column_exists("dn_amount")
         revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
@@ -424,6 +424,20 @@ class DashboardRepository:
                         THEN EXTRACT(EPOCH FROM (pod_date::timestamp - good_issue_date::timestamp))/86400 END), 0) AS avg_pod_days,
                     COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
                         THEN EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400 END), 0) AS avg_cycle_days,
+                    -- Minimum, Maximum for delivery, pod, cycle
+                    COALESCE(MIN(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400 END), 0) AS min_delivery_days,
+                    COALESCE(MAX(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400 END), 0) AS max_delivery_days,
+                    COALESCE(MIN(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date::timestamp - good_issue_date::timestamp))/86400 END), 0) AS min_pod_days,
+                    COALESCE(MAX(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date::timestamp - good_issue_date::timestamp))/86400 END), 0) AS max_pod_days,
+                    COALESCE(MIN(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400 END), 0) AS min_cycle_days,
+                    COALESCE(MAX(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400 END), 0) AS max_cycle_days,
+                    -- Delayed counts (delivery days > target; we'll compute target later)
                     MIN(dn_create_date) AS first_dn,
                     MAX(dn_create_date) AS last_dn
                 FROM delivery_reports
@@ -446,6 +460,12 @@ class DashboardRepository:
                 avg_pgi_days,
                 avg_pod_days,
                 avg_cycle_days,
+                min_delivery_days,
+                max_delivery_days,
+                min_pod_days,
+                max_pod_days,
+                min_cycle_days,
+                max_cycle_days,
                 first_dn,
                 last_dn,
                 CASE WHEN total_units > 0 THEN ROUND((pgi_units / total_units) * 100, 2) ELSE 0 END AS pgi_achievement_rate,
@@ -468,6 +488,12 @@ class DashboardRepository:
                 "avg_pgi_days": SafeNumber.to_float(row.avg_pgi_days),
                 "avg_pod_days": SafeNumber.to_float(row.avg_pod_days),
                 "avg_cycle_days": SafeNumber.to_float(row.avg_cycle_days),
+                "min_delivery_days": SafeNumber.to_float(row.min_delivery_days),
+                "max_delivery_days": SafeNumber.to_float(row.max_delivery_days),
+                "min_pod_days": SafeNumber.to_float(row.min_pod_days),
+                "max_pod_days": SafeNumber.to_float(row.max_pod_days),
+                "min_cycle_days": SafeNumber.to_float(row.min_cycle_days),
+                "max_cycle_days": SafeNumber.to_float(row.max_cycle_days),
                 "first_dn": row.first_dn,
                 "last_dn": row.last_dn,
                 "total_units": SafeNumber.to_int(row.total_units),
@@ -756,7 +782,9 @@ class DashboardRepository:
                 ship_to_city,
                 COUNT(DISTINCT dn_no) AS dn_count,
                 SUM(dn_qty) AS total_units,
-                AVG(EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400) AS avg_delivery_days
+                AVG(EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400) AS avg_delivery_days,
+                MIN(EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400) AS min_delivery_days,
+                MAX(EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400) AS max_delivery_days
             FROM delivery_reports
             WHERE warehouse IS NOT NULL AND ship_to_city IS NOT NULL AND pod_date IS NOT NULL
             GROUP BY warehouse, ship_to_city
@@ -769,6 +797,8 @@ class DashboardRepository:
                 "dn_count": SafeNumber.to_int(row.dn_count),
                 "total_units": SafeNumber.to_int(row.total_units),
                 "avg_delivery_days": SafeNumber.to_float(row.avg_delivery_days),
+                "min_delivery_days": SafeNumber.to_float(row.min_delivery_days),
+                "max_delivery_days": SafeNumber.to_float(row.max_delivery_days),
             }
             for row in rows
         ]
@@ -787,7 +817,7 @@ class DashboardRepository:
         }
 
 # ============================================================
-# BLOCK 8: Distance Calculation Engine
+# BLOCK 8: Distance Calculation Engine (Enhanced)
 # ============================================================
 
 class DistanceCalculationEngine:
@@ -827,18 +857,65 @@ class DistanceCalculationEngine:
     def compute_compliance(cls, actual_days: float, target_days: int) -> float:
         if target_days == 0:
             return 0.0
-        return round((target_days / actual_days) * 100 if actual_days > 0 else 100.0, 2)
+        if actual_days == 0:
+            return 100.0
+        return round((target_days / actual_days) * 100, 2)
+
+    @classmethod
+    def get_performance_rating(cls, gap: float) -> str:
+        if gap <= 0:
+            return "Excellent"
+        if gap <= 1:
+            return "Good"
+        if gap <= 2:
+            return "Average"
+        return "Poor"
 
 # ============================================================
-# BLOCK 9: Business Rule Engine
+# BLOCK 9: Business Rule Engine (Enhanced)
 # ============================================================
 
 class BusinessRuleEngine:
     @staticmethod
+    def calculate_performance_score(delivery_pct: float, pod_pct: float, cycle_pct: float, pending_pct: float, pgi_pct: float) -> float:
+        # Weighted score: Delivery 30%, POD 25%, Cycle 20%, Pending 15%, PGI 10%
+        # Pending inverse: lower pending is better, so use (100 - pending_pct)
+        pending_score = max(0, 100 - pending_pct)
+        score = (delivery_pct * 0.30) + (pod_pct * 0.25) + (cycle_pct * 0.20) + (pending_score * 0.15) + (pgi_pct * 0.10)
+        return round(score, 2)
+
+    @staticmethod
+    def get_grade(score: float) -> str:
+        if score >= 95:
+            return "A+"
+        elif score >= 85:
+            return "A"
+        elif score >= 75:
+            return "B"
+        elif score >= 65:
+            return "C"
+        elif score >= 55:
+            return "D"
+        else:
+            return "Critical"
+
+    @staticmethod
+    def get_risk_level(score: float) -> RiskLevel:
+        if score >= 75:
+            return RiskLevel.LOW
+        elif score >= 60:
+            return RiskLevel.MEDIUM
+        elif score >= 45:
+            return RiskLevel.HIGH
+        else:
+            return RiskLevel.CRITICAL
+
+    @staticmethod
     def calculate_health_score(pgi_rate: float, delivery_rate: float, pod_rate: float, cycle_days: float) -> float:
+        # Keep the old health score for backward compatibility
         cycle_score = max(0, 100 - (cycle_days - 0.5) * 15)
         return round((delivery_rate * 0.30) + (pgi_rate * 0.30) + (pod_rate * 0.20) + (cycle_score * 0.20), 2)
-    
+
     @staticmethod
     def classify_performance(score: float) -> Dict[str, Any]:
         if score >= 90: return {"tier": "tier_1", "label": "Excellent", "color": "#22c55e", "status": "Excellent"}
@@ -846,82 +923,155 @@ class BusinessRuleEngine:
         elif score >= 70: return {"tier": "tier_3", "label": "Average", "color": "#f59e0b", "status": "Average"}
         elif score >= 60: return {"tier": "tier_4", "label": "Poor", "color": "#f97316", "status": "Poor"}
         else: return {"tier": "tier_5", "label": "Critical", "color": "#ef4444", "status": "Critical"}
-    
-    @staticmethod
-    def assess_risk_level(score: float, pending: int, cycle_days: float) -> RiskLevel:
-        risk_score = 0
-        if score < 60: risk_score += 3
-        elif score < 75: risk_score += 2
-        if pending > 50: risk_score += 2
-        if cycle_days > 5: risk_score += 2
-        return RiskLevel.CRITICAL if risk_score >= 5 else (RiskLevel.HIGH if risk_score >= 3 else RiskLevel.LOW)
 
 # ============================================================
-# BLOCK 10: Warehouse Intelligence Engine
+# BLOCK 10: Warehouse Intelligence Engine (Enhanced)
 # ============================================================
 
 class WarehouseIntelligenceEngine:
     @staticmethod
-    def compute_warehouse_metrics(warehouse_records: List[Dict[str, Any]], avg_distances: Dict[str, float] = None) -> List[Dict[str, Any]]:
+    def compute_warehouse_intelligence(
+        warehouse_records: List[Dict[str, Any]],
+        avg_distances: Dict[str, float],
+        compliance_data: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Build rich warehouse summary objects with all new KPIs.
+        """
         enriched = []
-        for idx, w in enumerate(warehouse_records, 1):
+        for w in warehouse_records:
+            # Extract basic metrics
             total_units = w.get('total_units', 0)
             pgi_units = w.get('pgi_units', 0)
             delivered_units = w.get('delivered_units', 0)
             pending_units = w.get('pending_units', 0)
             pending_pgi_units = w.get('pending_pgi_units', 0)
             revenue = w.get('total_revenue', 0)
-            
+            avg_cycle = w.get('avg_cycle_days', 0)
+            avg_pgi = w.get('avg_pgi_days', 0)
+            avg_pod = w.get('avg_pod_days', 0)
+            min_delivery = w.get('min_delivery_days', 0)
+            max_delivery = w.get('max_delivery_days', 0)
+            min_pod = w.get('min_pod_days', 0)
+            max_pod = w.get('max_pod_days', 0)
+            min_cycle = w.get('min_cycle_days', 0)
+            max_cycle = w.get('max_cycle_days', 0)
+
+            # Percentages
             pgi_rate = SafeNumber.pct(pgi_units, total_units)
             delivery_rate = SafeNumber.pct(delivered_units, total_units)
             pending_rate = SafeNumber.pct(pending_units, total_units)
-            pod_rate = delivery_rate
-            pending_pgi_rate = SafeNumber.pct(pending_pgi_units, total_units)
-            
-            avg_cycle = w.get('avg_cycle_days', 0)
+            pod_rate = delivery_rate  # same as delivered for now
+
+            # Distance and target
+            dist = avg_distances.get(w['warehouse_name'], 0.0)
+            target_days = DistanceCalculationEngine.get_target_days(dist) if dist > 0 else 1
+
+            # Gap and compliance for delivery (total cycle)
+            delivery_gap = avg_cycle - target_days
+            delivery_compliance = DistanceCalculationEngine.compute_compliance(avg_cycle, target_days)
+            delivery_rating = DistanceCalculationEngine.get_performance_rating(delivery_gap)
+
+            # POD target: assume POD should be within 1 day after delivery, so target_pod = 1
+            pod_target = 1.0
+            pod_gap = avg_pod - pod_target
+            pod_compliance = DistanceCalculationEngine.compute_compliance(avg_pod, pod_target)
+            pod_rating = DistanceCalculationEngine.get_performance_rating(pod_gap)
+
+            # Cycle target: same as delivery target
+            cycle_gap = avg_cycle - target_days
+            cycle_compliance = DistanceCalculationEngine.compute_compliance(avg_cycle, target_days)
+            cycle_rating = DistanceCalculationEngine.get_performance_rating(cycle_gap)
+
+            # Performance score
+            perf_score = BusinessRuleEngine.calculate_performance_score(
+                delivery_compliance,
+                pod_compliance,
+                cycle_compliance,
+                pending_rate,
+                pgi_rate
+            )
+            grade = BusinessRuleEngine.get_grade(perf_score)
+            risk = BusinessRuleEngine.get_risk_level(perf_score)
             health_score = BusinessRuleEngine.calculate_health_score(pgi_rate, delivery_rate, pod_rate, avg_cycle)
             classification = BusinessRuleEngine.classify_performance(health_score)
-            risk = BusinessRuleEngine.assess_risk_level(health_score, pending_units, avg_cycle)
-            
-            avg_dist = avg_distances.get(w['warehouse_name'], 0.0) if avg_distances else 0.0
-            target_days = DistanceCalculationEngine.get_target_days(avg_dist) if avg_dist > 0 else 1
-            actual_days = avg_cycle
-            gap_days = actual_days - target_days
-            status = "Within Standard" if gap_days <= 0 else "Above Standard"
-            
-            enriched_record = w.copy()
-            enriched_record.update({
-                'rank': idx,
-                'ranking': idx,
-                'pgi_rate': pgi_rate,
-                'delivery_rate': delivery_rate,
-                'pending_rate': pending_rate,
-                'pod_rate': pod_rate,
-                'pending_pgi_rate': pending_pgi_rate,
-                'health_score': health_score,
-                'performance_score': health_score,
-                'performance_tier': classification['tier'],
-                'performance_label': classification['label'],
-                'performance_color': classification['color'],
-                'status': classification['status'],
-                'risk_level': risk.value,
-                'avg_distance_km': round(avg_dist, 1),
-                'target_days': target_days,
-                'actual_days': actual_days,
-                'gap_days': round(gap_days, 2),
-                'standard_status': status,
-                'avg_delivery_days': avg_cycle,
-                'avg_pgi_days': w.get('avg_pgi_days', 0),
-                'avg_pod_days': w.get('avg_pod_days', 0),
-                'average_logistics_cycle': avg_cycle,
-                'pending_dns': w.get('pending_delivery', 0) + w.get('pending_pgi', 0),
-                'revenue': revenue,
+
+            # Build the enriched object
+            warehouse_summary = {
+                "warehouse": w['warehouse_name'],
+                "rank": 0,  # will be filled later
+                "health_score": health_score,
+                "performance_score": perf_score,
+                "grade": grade,
+                "risk": risk.value,
+                "delivery": {
+                    "avg_days": avg_cycle,
+                    "min_days": min_delivery,
+                    "max_days": max_delivery,
+                    "target_days": target_days,
+                    "gap_days": delivery_gap,
+                    "compliance_pct": delivery_compliance,
+                    "status": delivery_rating
+                },
+                "pod": {
+                    "avg_days": avg_pod,
+                    "min_days": min_pod,
+                    "max_days": max_pod,
+                    "target_days": pod_target,
+                    "gap_days": pod_gap,
+                    "compliance_pct": pod_compliance,
+                    "status": pod_rating
+                },
+                "cycle": {
+                    "avg_days": avg_cycle,
+                    "min_days": min_cycle,
+                    "max_days": max_cycle,
+                    "target_days": target_days,
+                    "gap_days": cycle_gap,
+                    "compliance_pct": cycle_compliance,
+                    "status": cycle_rating
+                },
+                "pending": {
+                    "dn": w.get('pending_delivery', 0) + w.get('pending_pgi', 0),
+                    "units": pending_units,
+                    "avg_days": 0,  # we don't have this yet
+                    "oldest_days": 0
+                },
+                "delayed": {
+                    "dn": 0,  # we need to compute this separately
+                    "units": 0,
+                    "revenue": 0
+                },
+                "trend": "▬ Stable",  # placeholder
+                "ai_insight": ""  # filled by recommendation engine
+            }
+
+            # Keep original fields for backward compatibility
+            warehouse_summary.update({
+                "dns": w.get('delivery_notes', 0),
+                "units": total_units,
+                "revenue": revenue,
+                "pgi_pct": pgi_rate,
+                "delivery_pct": delivery_rate,
+                "pod_pct": pod_rate,
+                "avg_days": avg_cycle,
+                "avg_delivery_days": avg_cycle,
+                "avg_pod_days": avg_pod,
+                "avg_pgi_days": avg_pgi,
+                "pending_dns": w.get('pending_delivery', 0) + w.get('pending_pgi', 0),
+                "pending_units": pending_units,
+                "status": classification['status'],
+                "performance_score": health_score,
+                "risk_emoji": "🟢" if risk == RiskLevel.LOW else "🟡" if risk == RiskLevel.MEDIUM else "🟠" if risk == RiskLevel.HIGH else "🔴"
             })
-            enriched.append(enriched_record)
-        enriched.sort(key=lambda x: x.get('health_score', 0), reverse=True)
+
+            enriched.append(warehouse_summary)
+
+        # Sort by performance score descending
+        enriched.sort(key=lambda x: x.get('performance_score', 0), reverse=True)
         for i, w in enumerate(enriched, 1):
             w['rank'] = i
-            w['ranking'] = i
+
         return enriched
 
     @staticmethod
@@ -930,7 +1080,7 @@ class WarehouseIntelligenceEngine:
         return max(warehouses, key=lambda x: x.get('health_score', 0)), min(warehouses, key=lambda x: x.get('health_score', 0))
 
 # ============================================================
-# BLOCK 11: KPI Engine (Day-over-day)
+# BLOCK 11: KPI Engine (National Averages & Rankings)
 # ============================================================
 
 class KPIEngine:
@@ -946,108 +1096,214 @@ class KPIEngine:
             "revenue_growth": SafeNumber.pct(today['revenue'] - yesterday['revenue'], yesterday['revenue']) if yesterday['revenue'] else 0,
         }
 
+    @staticmethod
+    def compute_national_kpis(warehouse_summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not warehouse_summaries:
+            return {}
+
+        # Compute averages
+        total_warehouses = len(warehouse_summaries)
+        avg_delivery = sum(w['delivery']['avg_days'] for w in warehouse_summaries) / total_warehouses if total_warehouses > 0 else 0
+        avg_pod = sum(w['pod']['avg_days'] for w in warehouse_summaries) / total_warehouses if total_warehouses > 0 else 0
+        avg_cycle = sum(w['cycle']['avg_days'] for w in warehouse_summaries) / total_warehouses if total_warehouses > 0 else 0
+
+        # Rankings
+        fastest = min(warehouse_summaries, key=lambda w: w['cycle']['avg_days']) if warehouse_summaries else None
+        slowest = max(warehouse_summaries, key=lambda w: w['cycle']['avg_days']) if warehouse_summaries else None
+        best_pod = min(warehouse_summaries, key=lambda w: w['pod']['avg_days']) if warehouse_summaries else None
+        worst_pod = max(warehouse_summaries, key=lambda w: w['pod']['avg_days']) if warehouse_summaries else None
+        best_cycle = min(warehouse_summaries, key=lambda w: w['cycle']['avg_days']) if warehouse_summaries else None
+        worst_cycle = max(warehouse_summaries, key=lambda w: w['cycle']['avg_days']) if warehouse_summaries else None
+
+        # Top 5 and Bottom 5 (by performance score)
+        sorted_by_perf = sorted(warehouse_summaries, key=lambda w: w['performance_score'], reverse=True)
+        top_5 = [{"warehouse": w['warehouse'], "score": w['performance_score']} for w in sorted_by_perf[:5]]
+        bottom_5 = [{"warehouse": w['warehouse'], "score": w['performance_score']} for w in sorted_by_perf[-5:]]
+
+        return {
+            "national_averages": {
+                "delivery_days": round(avg_delivery, 2),
+                "pod_days": round(avg_pod, 2),
+                "cycle_days": round(avg_cycle, 2)
+            },
+            "fastest_warehouse": fastest['warehouse'] if fastest else "",
+            "slowest_warehouse": slowest['warehouse'] if slowest else "",
+            "best_pod": best_pod['warehouse'] if best_pod else "",
+            "worst_pod": worst_pod['warehouse'] if worst_pod else "",
+            "best_cycle": best_cycle['warehouse'] if best_cycle else "",
+            "worst_cycle": worst_cycle['warehouse'] if worst_cycle else "",
+            "top_5_warehouses": top_5,
+            "bottom_5_warehouses": bottom_5
+        }
+
 # ============================================================
-# BLOCK 12: Alert Engine
+# BLOCK 12: Alert Engine (Enhanced – Max 8, Deduplicated)
 # ============================================================
 
 class AlertEngine:
     @staticmethod
     def generate_alerts(warehouses: List[Dict[str, Any]], kpis: Dict) -> List[Dict[str, Any]]:
-        alerts = []
+        raw_alerts = []
+
+        # Warehouse-level alerts
         for w in warehouses:
             warehouse = w.get('warehouse_name', 'Unknown')
-            if w.get('delivery_rate', 100) < 85:
-                alerts.append({
+            # Delivery gap
+            gap = w.get('delivery', {}).get('gap_days', 0)
+            if gap > 0:
+                raw_alerts.append({
                     "source": warehouse,
-                    "severity": "WARNING",
-                    "category": "Delivery Achievement",
-                    "message": f"Delivery rate below 85% ({w['delivery_rate']}%)",
+                    "severity": "CRITICAL" if gap > 3 else "HIGH" if gap > 2 else "WARNING",
+                    "category": "Delivery Gap",
+                    "message": f"Delivery gap of {gap:.1f} days",
+                    "urgency": 3 + gap  # higher gap = more urgent
                 })
-            if w.get('pgi_rate', 100) < 85:
-                alerts.append({
+            # POD gap
+            pod_gap = w.get('pod', {}).get('gap_days', 0)
+            if pod_gap > 0:
+                raw_alerts.append({
                     "source": warehouse,
-                    "severity": "WARNING",
-                    "category": "PGI Achievement",
-                    "message": f"PGI rate below 85% ({w['pgi_rate']}%)",
+                    "severity": "CRITICAL" if pod_gap > 2 else "HIGH" if pod_gap > 1 else "WARNING",
+                    "category": "POD Gap",
+                    "message": f"POD gap of {pod_gap:.1f} days",
+                    "urgency": 2 + pod_gap
                 })
-            if w.get('avg_cycle_days', 0) > w.get('target_days', 1) + 2:
-                alerts.append({
+            # Pending units
+            pending_units = w.get('pending', {}).get('units', 0)
+            if pending_units > 1000:
+                raw_alerts.append({
                     "source": warehouse,
-                    "severity": "CRITICAL",
-                    "category": "Cycle Time",
-                    "message": f"Average cycle days ({w['avg_cycle_days']:.1f}) exceed target ({w['target_days']}) by more than 2 days",
-                })
-            if w.get('pending_units', 0) > 1000:
-                alerts.append({
-                    "source": warehouse,
-                    "severity": "HIGH",
+                    "severity": "HIGH" if pending_units > 2000 else "WARNING",
                     "category": "Pending Units",
-                    "message": f"High pending units: {w['pending_units']}",
+                    "message": f"High pending units: {pending_units}",
+                    "urgency": 2 if pending_units > 2000 else 1
                 })
-            if w.get('risk_level') == 'critical':
-                alerts.append({
+            # Pending DNs
+            pending_dn = w.get('pending', {}).get('dn', 0)
+            if pending_dn > 50:
+                raw_alerts.append({
                     "source": warehouse,
-                    "severity": "CRITICAL",
-                    "category": "Risk",
-                    "message": f"Warehouse is in critical risk state",
+                    "severity": "HIGH" if pending_dn > 100 else "WARNING",
+                    "category": "Pending DNs",
+                    "message": f"High pending DNs: {pending_dn}",
+                    "urgency": 2 if pending_dn > 100 else 1
                 })
-            if w.get('pgi_units', 0) == 0 and w.get('total_units', 0) > 0:
-                alerts.append({
+            # Below standard delivery
+            compliance = w.get('delivery', {}).get('compliance_pct', 100)
+            if compliance < 80:
+                raw_alerts.append({
                     "source": warehouse,
-                    "severity": "CRITICAL",
-                    "category": "Missing PGI",
-                    "message": "No PGI recorded for any units",
+                    "severity": "HIGH" if compliance < 70 else "WARNING",
+                    "category": "Below Standard",
+                    "message": f"Delivery compliance below 80% ({compliance}%)",
+                    "urgency": 2 if compliance < 70 else 1
                 })
-            if w.get('pod_rate', 100) < 50:
-                alerts.append({
+            # PGI low
+            pgi = w.get('pgi_pct', 100)
+            if pgi < 80:
+                raw_alerts.append({
                     "source": warehouse,
-                    "severity": "HIGH",
-                    "category": "Missing POD",
-                    "message": f"POD rate is only {w['pod_rate']}%",
+                    "severity": "WARNING",
+                    "category": "PGI",
+                    "message": f"PGI rate below 80% ({pgi}%)",
+                    "urgency": 1
                 })
+            # POD low
+            pod = w.get('pod_pct', 100)
+            if pod < 80:
+                raw_alerts.append({
+                    "source": warehouse,
+                    "severity": "WARNING",
+                    "category": "POD",
+                    "message": f"POD rate below 80% ({pod}%)",
+                    "urgency": 1
+                })
+
+        # Global alerts
         if kpis.get('pod_achievement', {}).get('value', 100) < 85:
-            alerts.append({
+            raw_alerts.append({
                 "source": "System",
                 "severity": "WARNING",
                 "category": "POD Achievement",
                 "message": f"Overall POD achievement is {kpis['pod_achievement']['value']:.1f}%, below target.",
+                "urgency": 1
             })
         if kpis.get('pending_dn', {}).get('value', 0) > 5000:
-            alerts.append({
+            raw_alerts.append({
                 "source": "System",
                 "severity": "HIGH",
                 "category": "Pending DNs",
                 "message": f"High number of pending DNs: {kpis['pending_dn']['value']}",
+                "urgency": 2
             })
-        return alerts
+
+        # Deduplicate: keep the most urgent alert per warehouse-category combination
+        seen = set()
+        deduped = []
+        for alert in raw_alerts:
+            key = (alert['source'], alert['category'])
+            if key not in seen:
+                seen.add(key)
+                deduped.append(alert)
+            else:
+                # If same key, keep the one with higher urgency
+                for existing in deduped:
+                    if existing['source'] == alert['source'] and existing['category'] == alert['category']:
+                        if alert.get('urgency', 0) > existing.get('urgency', 0):
+                            deduped.remove(existing)
+                            deduped.append(alert)
+                        break
+
+        # Sort by urgency descending and take top 8
+        deduped.sort(key=lambda x: x.get('urgency', 0), reverse=True)
+        return deduped[:8]
 
 # ============================================================
-# BLOCK 13: Recommendation Engine (with Short Insight helper)
+# BLOCK 13: Recommendation Engine (Enhanced)
 # ============================================================
 
 class RecommendationEngine:
     @staticmethod
-    def generate_recommendations(warehouses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def generate_recommendations(warehouse_summaries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         recs = []
-        for w in warehouses:
-            warehouse = w.get('warehouse_name', 'Unknown')
+        for w in warehouse_summaries:
+            warehouse = w['warehouse']
             actions = []
             priority = "Low"
-            if w.get('delivery_rate', 100) < 85:
-                actions.append("Improve delivery speed by optimizing last-mile routing and reducing staging time.")
+
+            # Delivery gap
+            delivery_gap = w['delivery']['gap_days']
+            if delivery_gap > 1:
+                actions.append(f"Reduce delivery gap by improving dispatch and last-mile routing.")
+                priority = "High" if delivery_gap > 2 else "Medium"
+
+            # POD gap
+            pod_gap = w['pod']['gap_days']
+            if pod_gap > 1:
+                actions.append(f"Improve POD collection process; follow up with transporters.")
+                priority = "High" if pod_gap > 2 else "Medium"
+
+            # Cycle gap
+            cycle_gap = w['cycle']['gap_days']
+            if cycle_gap > 2:
+                actions.append(f"Reduce total cycle time by synchronizing PGI and POD.")
                 priority = "High"
-            if w.get('pgi_rate', 100) < 85:
-                actions.append("Accelerate PGI process by streamlining packing and dispatch workflows.")
+
+            # Pending units
+            pending_units = w['pending']['units']
+            if pending_units > 500:
+                actions.append(f"Prioritize clearance of {pending_units} pending units.")
                 priority = "High"
-            if w.get('avg_cycle_days', 0) > w.get('target_days', 1):
-                actions.append("Reduce total cycle time by synchronizing PGI and POD processes.")
-                priority = "Medium" if priority == "Low" else priority
-            if w.get('pending_units', 0) > 500:
-                actions.append("Prioritize clearance of pending units to improve cash flow and customer satisfaction.")
+
+            # PGI
+            if w['pgi_pct'] < 85:
+                actions.append(f"Accelerate PGI process (current {w['pgi_pct']}%).")
                 priority = "High"
+
             if not actions:
-                actions.append("Continue maintaining excellent performance; monitor for seasonal fluctuations.")
+                actions.append("Maintain excellent performance; monitor seasonal variations.")
                 priority = "Low"
+
             recs.append({
                 "warehouse": warehouse,
                 "priority": priority,
@@ -1060,19 +1316,19 @@ class RecommendationEngine:
     @staticmethod
     def generate_short_insight(warehouse: Dict[str, Any]) -> str:
         """Return a short AI insight for a single warehouse."""
-        pgi = warehouse.get('pgi_rate', 0)
-        delivery = warehouse.get('delivery_rate', 0)
-        pod = warehouse.get('pod_rate', 0)
-        pending = warehouse.get('pending_units', 0)
+        pgi = warehouse.get('pgi_pct', 0)
+        delivery = warehouse.get('delivery', {}).get('compliance_pct', 0)
+        pod = warehouse.get('pod', {}).get('compliance_pct', 0)
+        pending = warehouse.get('pending', {}).get('units', 0)
         health = warehouse.get('health_score', 0)
 
         if health >= 90 and delivery >= 95 and pgi >= 95 and pod >= 90:
             return "🟢 Excellent performance."
-        if delivery < 85:
+        if delivery < 80:
             return "🔴 Delivery delay increasing."
-        if pod < 85:
+        if pod < 80:
             return "🟡 POD collection needs improvement."
-        if pgi < 85:
+        if pgi < 80:
             return "🟡 PGI process needs attention."
         if pending > 1000:
             return "🟠 High pending units."
@@ -1081,7 +1337,7 @@ class RecommendationEngine:
         return "🔴 Critical risk – immediate action required."
 
 # ============================================================
-# BLOCK 14: Performance Trend Engine
+# BLOCK 14: Performance Trend Engine (Enhanced)
 # ============================================================
 
 class PerformanceTrendEngine:
@@ -1111,13 +1367,36 @@ class PerformanceTrendEngine:
             "monthly": trend_data[-30:] if len(trend_data) >= 30 else trend_data,
         }
 
+    @staticmethod
+    def calculate_trend(warehouse_name: str, daily_trend: List[Dict]) -> str:
+        # Simplified: we need 14 days of data to compare 7 days vs previous 7
+        if len(daily_trend) < 14:
+            return "▬ Stable"
+        # Compute average delivery days for last 7 days and previous 7 days
+        last_7 = [day.get('avg_delivery_days', 0) for day in daily_trend[-7:]]
+        prev_7 = [day.get('avg_delivery_days', 0) for day in daily_trend[-14:-7]]
+        if not last_7 or not prev_7:
+            return "▬ Stable"
+        avg_last = sum(last_7) / len(last_7)
+        avg_prev = sum(prev_7) / len(prev_7)
+        if avg_prev == 0:
+            return "▬ Stable"
+        change = (avg_last - avg_prev) / avg_prev * 100
+        if change < -5:
+            return "▲ Improving"
+        elif change > 5:
+            return "▼ Declining"
+        else:
+            return "▬ Stable"
+
 # ============================================================
-# BLOCK 15: Executive Summary Engine (UPDATED)
+# BLOCK 15: Executive Summary Engine (Enhanced)
 # ============================================================
 
 class ExecutiveSummaryEngine:
     @staticmethod
     def generate_summary(kpis: Dict, warehouses: List[Dict], alerts: List[Dict], recommendations: List[Dict]) -> str:
+        # Keep existing text summary for backward compatibility
         health = kpis.get('health_score', {}).get('value', 0)
         delivery_pct = kpis.get('delivery_achievement', {}).get('value', 0)
         pod_pct = kpis.get('pod_achievement', {}).get('value', 0)
@@ -1165,29 +1444,87 @@ class ExecutiveSummaryEngine:
 
         return " ".join(lines) if lines else "Executive summary is not available."
 
+    @staticmethod
+    def generate_detailed_summary(warehouse_summaries: List[Dict[str, Any]], national_kpis: Dict) -> Dict[str, Any]:
+        if not warehouse_summaries:
+            return {
+                "overall_health": 0,
+                "overall_delivery": 0,
+                "overall_pod": 0,
+                "overall_cycle": 0,
+                "best_warehouse": "",
+                "worst_warehouse": "",
+                "fastest_warehouse": "",
+                "highest_delay_warehouse": "",
+                "critical_warehouses": 0,
+                "ai_recommendation": "No data available."
+            }
+
+        # Compute averages
+        total = len(warehouse_summaries)
+        avg_health = sum(w['health_score'] for w in warehouse_summaries) / total
+        avg_delivery = sum(w['delivery']['compliance_pct'] for w in warehouse_summaries) / total
+        avg_pod = sum(w['pod']['compliance_pct'] for w in warehouse_summaries) / total
+        avg_cycle = sum(w['cycle']['compliance_pct'] for w in warehouse_summaries) / total
+
+        # Best and worst by health
+        best = max(warehouse_summaries, key=lambda w: w['health_score'])
+        worst = min(warehouse_summaries, key=lambda w: w['health_score'])
+
+        # Fastest (lowest cycle)
+        fastest = min(warehouse_summaries, key=lambda w: w['cycle']['avg_days'])
+
+        # Highest delay (largest delivery gap)
+        highest_delay = max(warehouse_summaries, key=lambda w: w['delivery']['gap_days'])
+
+        # Critical warehouses (grade Critical or risk Critical)
+        critical = [w for w in warehouse_summaries if w.get('grade') == 'Critical' or w.get('risk') == 'critical']
+
+        # AI recommendation
+        if critical:
+            rec = f"Focus on {len(critical)} critical warehouses: {', '.join([w['warehouse'] for w in critical[:3]])}. Immediate action required."
+        elif avg_delivery < 80:
+            rec = "Overall delivery compliance is below 80%. Review dispatch processes across all warehouses."
+        elif avg_pod < 80:
+            rec = "POD compliance is low. Strengthen POD collection follow-up."
+        else:
+            rec = "Performance is satisfactory. Continue monitoring and optimize further."
+
+        return {
+            "overall_health": round(avg_health, 2),
+            "overall_delivery": round(avg_delivery, 2),
+            "overall_pod": round(avg_pod, 2),
+            "overall_cycle": round(avg_cycle, 2),
+            "best_warehouse": best['warehouse'],
+            "worst_warehouse": worst['warehouse'],
+            "fastest_warehouse": fastest['warehouse'],
+            "highest_delay_warehouse": highest_delay['warehouse'],
+            "critical_warehouses": len(critical),
+            "ai_recommendation": rec
+        }
+
 # ============================================================
-# BLOCK 16: Response Builder (ENHANCED - Warehouse Command Center)
-# ============================================================
-# BLOCK 16: Response Builder (ENHANCED - Warehouse Command Center)
+# BLOCK 16: Response Builder (Enhanced with new keys)
 # ============================================================
 
 class ResponseBuilder:
     @staticmethod
     def build(
-        summary, warehouses, dealers, cities, products, divisions,
+        summary, warehouse_summaries, dealers, cities, products, divisions,
         daily_trend, monthly_trend, pending_analysis, city_delays,
         kpis, insights, alerts, recommendations,
         exec_summary, pipeline, trends, compliance_data,
-        import_summary, metadata, charts
+        import_summary, metadata, charts,
+        national_kpis, detailed_summary
     ):
         total_dn = summary.get('total_dn', 0)
         total_units = summary.get('total_units', 0)
-        delivered_units = sum(w.get('delivered_units', 0) for w in warehouses)
+        delivered_units = sum(w.get('delivered_units', 0) for w in warehouse_summaries)
         pending_units = total_units - delivered_units
-        pgi_units = sum(w.get('pgi_units', 0) for w in warehouses)
+        pgi_units = sum(w.get('pgi_units', 0) for w in warehouse_summaries)
         total_revenue = summary.get('total_revenue', 0) or (total_units * config.avg_unit_price)
 
-        # --- Executive KPI Cards (unchanged) ---
+        # --- KPI Cards (unchanged) ---
         cards = {
             "total_dn": {"value": total_dn, "label": "Total Delivery Notes", "icon": "fa-file-invoice"},
             "total_units": {"value": total_units, "label": "Total Units", "icon": "fa-boxes"},
@@ -1205,7 +1542,7 @@ class ResponseBuilder:
             if key in cards:
                 cards[key]["vs_yesterday"] = growth.get(key.replace("total_", "").replace("_value", "revenue") + "_growth", 0)
 
-        # --- Legacy pipeline (unchanged) ---
+        # --- Legacy pipeline ---
         pipeline_old = {
             "dn_created": total_dn,
             "pgi_completed": summary.get('pgi_completed', 0),
@@ -1220,60 +1557,36 @@ class ResponseBuilder:
             "delivery_achievement_units": SafeNumber.pct(delivered_units, total_units),
         }
 
-        # ============================================================
-        # 🏢 WAREHOUSE COMMAND CENTER – ENTERPRISE TABLE
-        # ============================================================
+        # --- Build warehouse ranking (backward compatible) ---
         warehouse_ranking = []
-        for w in warehouses:
-            # Generate trend placeholder (can be enhanced with historical data)
-            trend = "▬ Stable"
-            # Determine risk emoji based on status
-            risk_map = {
-                "Excellent": "🟢",
-                "Good": "🟢",
-                "Average": "🟡",
-                "Poor": "🟠",
-                "Critical": "🔴"
-            }
-            risk_emoji = risk_map.get(w.get('status', 'Unknown'), "⚪")
-
-            # Generate short AI insight
-            ai_insight = RecommendationEngine.generate_short_insight(w)
-
+        for w in warehouse_summaries:
             warehouse_ranking.append({
                 "rank": w['rank'],
-                "warehouse": w['warehouse_name'],
-                "dns": w['delivery_notes'],
-                "units": w['total_units'],
+                "warehouse": w['warehouse'],
+                "dns": w.get('dns', 0),
+                "units": w.get('units', 0),
                 "revenue": w.get('revenue', 0),
-                "pgi_pct": w['pgi_rate'],
-                "delivery_pct": w['delivery_rate'],
-                "pod_pct": w['pod_rate'],
-                "avg_days": w['avg_cycle_days'],               # total cycle
-                "avg_delivery_days": w.get('avg_delivery_days', 0),  # alias for total cycle
+                "pgi_pct": w.get('pgi_pct', 0),
+                "delivery_pct": w.get('delivery_pct', 0),
+                "pod_pct": w.get('pod_pct', 0),
+                "avg_days": w.get('avg_days', 0),
+                "avg_delivery_days": w.get('avg_delivery_days', 0),
                 "avg_pod_days": w.get('avg_pod_days', 0),
                 "avg_pgi_days": w.get('avg_pgi_days', 0),
-                "pending_dns": w['pending_dns'],
+                "pending_dns": w.get('pending_dns', 0),
                 "pending_units": w.get('pending_units', 0),
-                "status": w['status'],           # Excellent, Good, Average, Poor, Critical
-                "performance_score": w['health_score'],
-                "risk": risk_emoji,
-                "trend": trend,
-                "ai_insight": ai_insight,
+                "status": w.get('status', 'Unknown'),
+                "performance_score": w.get('health_score', 0),
+                "risk": w.get('risk_emoji', '⚪'),
+                "trend": w.get('trend', '▬ Stable'),
+                "ai_insight": w.get('ai_insight', ''),
             })
 
         # --- Top delayed cities ---
         top_delayed_cities = []
         for city in sorted(city_delays, key=lambda x: x['avg_delivery_days'], reverse=True)[:10]:
             days = city['avg_delivery_days']
-            if days > 5:
-                risk = "Critical"
-            elif days > 4:
-                risk = "High"
-            elif days > 3:
-                risk = "Medium"
-            else:
-                risk = "Low"
+            risk = "Critical" if days > 5 else "High" if days > 4 else "Medium" if days > 3 else "Low"
             top_delayed_cities.append({
                 "city": city['city'],
                 "avg_delivery_days": days,
@@ -1282,9 +1595,9 @@ class ResponseBuilder:
             })
 
         # --- Top pending warehouses ---
-        sorted_by_pending = sorted(warehouses, key=lambda w: w.get('pending_units', 0), reverse=True)[:5]
+        sorted_by_pending = sorted(warehouse_summaries, key=lambda w: w['pending']['units'], reverse=True)[:5]
         top_pending_warehouses = [
-            {"warehouse": w['warehouse_name'], "pending_dns": w['pending_dns'], "pending_units": w['pending_units']}
+            {"warehouse": w['warehouse'], "pending_dns": w['pending']['dn'], "pending_units": w['pending']['units']}
             for w in sorted_by_pending
         ]
 
@@ -1312,18 +1625,7 @@ class ResponseBuilder:
         compliance = []
         for c in compliance_data[:6]:
             dist = c.get('avg_distance_km', 0)
-            if dist <= 100:
-                range_label = "0-100"
-            elif dist <= 250:
-                range_label = "101-250"
-            elif dist <= 450:
-                range_label = "251-450"
-            elif dist <= 700:
-                range_label = "451-700"
-            elif dist <= 900:
-                range_label = "701-900"
-            else:
-                range_label = ">900"
+            range_label = "0-100" if dist <= 100 else "101-250" if dist <= 250 else "251-450" if dist <= 450 else "451-700" if dist <= 700 else "701-900" if dist <= 900 else ">900"
             compliance.append({
                 "distance": range_label,
                 "target_days": c['target_days'],
@@ -1332,43 +1634,18 @@ class ResponseBuilder:
                 "status": c['status'],
             })
 
-        # ============================================================
-        # UPDATED: CRITICAL ALERTS – Top 10 Most Important
-        # ============================================================
-        # Define severity weights (higher = more important)
-        severity_order = {'CRITICAL': 3, 'HIGH': 2, 'WARNING': 1, 'LOW': 0}
-
-        def alert_urgency(alert):
-            """Calculate urgency score for sorting alerts."""
-            base = severity_order.get(alert.get('severity', 'LOW'), 0)
-            msg = alert.get('message', '').lower()
-            # Boost alerts that indicate high operational impact
-            if 'pending' in msg or 'units' in msg:
-                base += 1.0
-            if 'cycle' in msg or 'delay' in msg:
-                base += 0.5
-            if 'critical' in msg or 'risk' in msg:
-                base += 1.5
-            # Also consider alerts that mention specific warehouses (more actionable)
-            if alert.get('source') and alert.get('source') != 'System':
-                base += 0.3
-            return base
-
-        # Sort ALL alerts by urgency and take top 10
-        sorted_alerts = sorted(alerts, key=alert_urgency, reverse=True)
-        critical_alerts = sorted_alerts[:10]  # Only top 10 most important
-
+        # --- Director recommendations ---
         director_recommendations = recommendations
-        import_summary_data = import_summary or {}
-        metadata = metadata or {}
 
+        # --- Final response ---
         return {
+            # Legacy keys (backward compatible)
             "executive_summary": summary,
             "cards": cards,
             "kpis": cards,
             "pipeline": pipeline_old,
-            "warehouse": warehouses,          # legacy full warehouse objects
-            "warehouses": warehouses,
+            "warehouse": warehouse_summaries,  # rich objects
+            "warehouses": warehouse_summaries,
             "dealer": dealers,
             "dealers": dealers,
             "city": cities,
@@ -1379,7 +1656,7 @@ class ResponseBuilder:
             "divisions": divisions,
             "daily_trend": daily_trend,
             "monthly_trend": monthly_trend,
-            "alerts": alerts,
+            "alerts": alerts,                 # limited to top 8
             "recommendations": recommendations,
             "charts": charts,
             "metadata": metadata,
@@ -1387,7 +1664,7 @@ class ResponseBuilder:
             "executive_summary_text": exec_summary,
             "pipeline_detailed": pipeline,
             "performance_trends": trends,
-            "warehouse_ranking": warehouse_ranking,   # ✅ ENHANCED TABLE
+            "warehouse_ranking": warehouse_ranking,
             "top_delayed_cities": top_delayed_cities,
             "top_pending_warehouses": top_pending_warehouses,
             "top_dealers": top_dealers,
@@ -1395,23 +1672,30 @@ class ResponseBuilder:
             "division_performance": division_performance,
             "delivery_compliance": compliance,
             "pending_analysis": pending_analysis,
-            "critical_alerts": critical_alerts,      # ✅ UPDATED: only top 10
+            "critical_alerts": alerts,
             "director_recommendations": director_recommendations,
-            "import_summary": import_summary_data,
+            "import_summary": import_summary,
             "insights": insights,
+
+            # NEW keys for v20.0
+            "warehouse_summary": warehouse_summaries,  # structured objects
+            "national_averages": national_kpis,
+            "executive_summary_detailed": detailed_summary,
         }
+
 # ============================================================
-# BLOCK 17: Dashboard Service
+# BLOCK 17: Dashboard Service (Orchestrator)
 # ============================================================
 
 class DashboardService:
     def __init__(self):
         self._repo = DashboardRepository()
-        logger.info("DashboardService initialized (v19.4 - Warehouse Command Center)")
+        logger.info("DashboardService initialized (v20.0 - Enterprise Intelligence)")
 
     @cached(ttl=300)
     async def get_full_dashboard(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
         try:
+            # 1. Fetch raw data
             summary = self._repo.fetch_summary()
             warehouse_raw = self._repo.fetch_warehouse_data()
             dealer_raw = self._repo.fetch_dealer_data()
@@ -1425,6 +1709,7 @@ class DashboardService:
             import_summary = self._repo.get_import_summary()
             record_count = self._repo.fetch_record_count()
 
+            # 2. Compute distance and compliance
             avg_distances = {}
             compliance_data = []
             try:
@@ -1448,12 +1733,18 @@ class DashboardService:
             except Exception as e:
                 logger.warning(f"Distance compliance calculation failed: {e}")
 
-            warehouses = WarehouseIntelligenceEngine.compute_warehouse_metrics(warehouse_raw, avg_distances)
-            best, worst = WarehouseIntelligenceEngine.get_best_and_worst(warehouses)
+            # 3. Build warehouse intelligence summaries
+            warehouse_summaries = WarehouseIntelligenceEngine.compute_warehouse_intelligence(
+                warehouse_raw, avg_distances, compliance_data
+            )
 
+            # 4. Compute national KPIs and rankings
+            national_kpis = KPIEngine.compute_national_kpis(warehouse_summaries)
+
+            # 5. Generate alerts (max 8, deduplicated)
             total_units = summary.get('total_units', 0)
-            pgi_units = sum(w.get('pgi_units', 0) for w in warehouses)
-            delivered_units = sum(w.get('delivered_units', 0) for w in warehouses)
+            pgi_units = sum(w.get('pgi_units', 0) for w in warehouse_summaries)
+            delivered_units = sum(w.get('delivered_units', 0) for w in warehouse_summaries)
             pending_units = total_units - delivered_units
             pgi_rate = SafeNumber.pct(pgi_units, total_units)
             delivery_rate = SafeNumber.pct(delivered_units, total_units)
@@ -1475,11 +1766,19 @@ class DashboardService:
                 "avg_pod_days": {"value": summary.get('avg_pod_days', 0)},
             }
 
-            alerts = AlertEngine.generate_alerts(warehouses, kpis)
-            recommendations = RecommendationEngine.generate_recommendations(warehouses)
+            alerts = AlertEngine.generate_alerts(warehouse_summaries, kpis)
+            recommendations = RecommendationEngine.generate_recommendations(warehouse_summaries)
 
-            exec_summary = ExecutiveSummaryEngine.generate_summary(kpis, warehouses, alerts, recommendations)
+            # 6. Add AI insights and trends to warehouse summaries
+            for w in warehouse_summaries:
+                w['ai_insight'] = RecommendationEngine.generate_short_insight(w)
+                w['trend'] = PerformanceTrendEngine.calculate_trend(w['warehouse'], daily_trend)
 
+            # 7. Executive Summary
+            exec_summary_text = ExecutiveSummaryEngine.generate_summary(kpis, warehouse_summaries, alerts, recommendations)
+            detailed_summary = ExecutiveSummaryEngine.generate_detailed_summary(warehouse_summaries, national_kpis)
+
+            # 8. Pipeline
             pipeline = {
                 "dn_created": {"dn": summary.get('total_dn', 0), "units": total_units, "pct": 100, "avg_days": 0, "pending": 0},
                 "pgi_completed": {"dn": summary.get('pgi_completed', 0), "units": pgi_units, "pct": SafeNumber.pct(summary.get('pgi_completed', 0), summary.get('total_dn', 1)), "avg_days": summary.get('avg_pgi_days', 0), "pending": summary.get('total_dn', 0) - summary.get('pgi_completed', 0)},
@@ -1488,17 +1787,21 @@ class DashboardService:
                 "pod_received": {"dn": summary.get('pod_completed', 0), "units": delivered_units, "pct": SafeNumber.pct(summary.get('pod_completed', 0), summary.get('delivered_dns', 1)), "avg_days": summary.get('avg_pod_days', 0), "pending": summary.get('delivered_dns', 0) - summary.get('pod_completed', 0)},
             }
 
+            # 9. Trends
             trends = PerformanceTrendEngine.compute_trends(daily_trend)
 
+            # 10. Insights
+            best, worst = WarehouseIntelligenceEngine.get_best_and_worst(warehouse_summaries)
             insights = {
                 "insights": [
-                    {"type": "best_performing", "text": f"Best Warehouse: {best.get('warehouse_name', 'N/A')} (Score: {best.get('health_score', 0)})"},
-                    {"type": "worst_performing", "text": f"Worst Warehouse: {worst.get('warehouse_name', 'N/A')} (Score: {worst.get('health_score', 0)})"},
+                    {"type": "best_performing", "text": f"Best Warehouse: {best.get('warehouse', 'N/A')} (Score: {best.get('health_score', 0)})"},
+                    {"type": "worst_performing", "text": f"Worst Warehouse: {worst.get('warehouse', 'N/A')} (Score: {worst.get('health_score', 0)})"},
                     {"type": "overall_delivery", "text": f"Overall Delivery Achievement: {delivery_rate}%"},
                     {"type": "pending_units", "text": f"Total Pending Units: {pending_units}"},
                 ]
             }
 
+            # 11. Charts (placeholder)
             charts = {
                 "warehouse_ranking": "{}",
                 "pgi_performance": "{}",
@@ -1509,16 +1812,18 @@ class DashboardService:
                 "daily_trend": "{}",
             }
 
+            # 12. Metadata
             metadata = {
-                "version": "19.4",
+                "version": "20.0",
                 "timestamp": datetime.utcnow().isoformat(),
                 "record_count": record_count,
-                "warehouse_count": len(warehouses),
+                "warehouse_count": len(warehouse_summaries),
             }
 
+            # 13. Build final response
             return ResponseBuilder.build(
                 summary=summary,
-                warehouses=warehouses,
+                warehouse_summaries=warehouse_summaries,
                 dealers=dealer_raw,
                 cities=city_raw,
                 products=product_raw,
@@ -1531,13 +1836,15 @@ class DashboardService:
                 insights=insights,
                 alerts=alerts,
                 recommendations=recommendations,
-                exec_summary=exec_summary,
+                exec_summary=exec_summary_text,
                 pipeline=pipeline,
                 trends=trends,
                 compliance_data=compliance_data,
                 import_summary=import_summary,
                 metadata=metadata,
                 charts=charts,
+                national_kpis=national_kpis,
+                detailed_summary=detailed_summary,
             )
 
         except Exception as e:
@@ -1552,7 +1859,11 @@ class DashboardService:
         warehouse_raw = self._repo.fetch_warehouse_data()
         city_pairs = self._repo.fetch_warehouse_city_pairs()
         avg_distances = DistanceCalculationEngine.compute_average_distance_per_warehouse(city_pairs)
-        return WarehouseIntelligenceEngine.compute_warehouse_metrics(warehouse_raw, avg_distances)
+        summaries = WarehouseIntelligenceEngine.compute_warehouse_intelligence(warehouse_raw, avg_distances, [])
+        # Add AI insights
+        for w in summaries:
+            w['ai_insight'] = RecommendationEngine.generate_short_insight(w)
+        return summaries
 
 # ============================================================
 # BLOCK 18: FastAPI Router
@@ -1590,7 +1901,7 @@ async def get_warehouses(service: DashboardService = Depends(get_dashboard_servi
 
 @router.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "19.4", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "healthy", "version": "20.0", "timestamp": datetime.utcnow().isoformat()}
 
 @router.post("/upload")
 async def upload_excel_report(
@@ -1613,4 +1924,4 @@ async def upload_excel_report(
         logger.error(f"Excel upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-logger.info("DashboardService router mounted (v19.4 - Warehouse Command Center) with /upload")
+logger.info("DashboardService router mounted (v20.0 - Enterprise Logistics Performance Intelligence) with /upload")
