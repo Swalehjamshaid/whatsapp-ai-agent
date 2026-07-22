@@ -1,6 +1,6 @@
 <!-- ============================================================
      FILE: whatsapp-ai-agent-demo/app/templates/dashboard.html
-     VERSION: 15.6 – FULLY INTEGRATED BULLETPROOF COMMAND SUITE
+     VERSION: 16.3 – FULLY INTEGRATED BULLETPROOF COMMAND SUITE
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
@@ -514,7 +514,7 @@
       <a class="nav-link" href="#productGrid"><i class="fas fa-boxes"></i> Products</a>
       <a class="nav-link" href="#executiveIntelligence"><i class="fas fa-brain"></i> AI Intelligence</a>
     </nav>
-    <div class="sidebar-footer">v15.5 · Enterprise</div>
+    <div class="sidebar-footer">v16.3 · Enterprise</div>
   </aside>
 
   <!-- ============================================================
@@ -640,7 +640,7 @@
         <div class="card upload-highlight mb-0">
           <div class="card-header"><i class="fas fa-file-excel text-success"></i> Import Center - Enterprise Excel Loader</div>
           <div class="card-body p-4">
-            <form class="form-toolbar" id="uploadForm" action="/upload" method="post" enctype="multipart/form-data">
+            <form class="form-toolbar" id="uploadForm" action="/dashboard/api/upload" method="post" enctype="multipart/form-data">
               <div class="form-group mb-0">
                 <label><i class="fas fa-file-arrow-up me-1"></i> Choose Excel File (.xlsx, .xls)</label>
                 <input type="file" name="file" accept=".xlsx,.xls" class="form-control" required />
@@ -853,7 +853,7 @@
             const footer = document.getElementById('footer');
             if (footer) {
                 footer.innerHTML = `
-                    <i class="fas fa-shield-halved text-success me-1"></i> Haier Pakistan v15.5 &nbsp;|&nbsp;
+                    <i class="fas fa-shield-halved text-success me-1"></i> Haier Pakistan v16.3 &nbsp;|&nbsp;
                     <i class="fas fa-database text-info mx-1"></i> PostgreSQL &nbsp;|&nbsp;
                     <i class="fas fa-clock text-muted mx-1"></i> Sync: ${new Date().toLocaleTimeString()} &nbsp;|&nbsp;
                     <i class="fas fa-cubes text-primary mx-1"></i> Records: ${formatNumber(data.metadata?.record_count || 0)}
