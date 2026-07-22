@@ -1,6 +1,6 @@
 <!-- ============================================================
      FILE: whatsapp-ai-agent-demo/app/templates/dashboard.html
-     VERSION: 18.0 – 100% MATCHING BACKEND V18.0 COMMAND CENTER
+     VERSION: 19.4 – FULLY ALIGNED WITH BACKEND (COMMAND CENTER)
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
@@ -24,7 +24,7 @@
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
   <!-- ============================================================
-  ULTRA-PREMIUM DESIGN SYSTEM (100% MATCHING COMMAND CENTER)
+  ULTRA-PREMIUM DESIGN SYSTEM
   ============================================================ -->
   <style>
     :root {
@@ -486,12 +486,12 @@
       <a class="nav-link" href="#divisionsSection"><i class="fas fa-layer-group"></i> Divisions</a>
       <a class="nav-link" href="#salesOfficesSection"><i class="fas fa-building"></i> Sales Offices</a>
       <a class="nav-link" href="#salesManagersSection"><i class="fas fa-user-tie"></i> Sales Managers</a>
-      <a class="nav-link" href="#alertsSection"><i class="fas fa-triangle-exclamation"></i> Alerts & Insights <span class="badge bg-danger ms-auto" style="font-size:0.55rem;">5</span></a>
+      <a class="nav-link" href="#alertsSection"><i class="fas fa-triangle-exclamation"></i> Alerts & Insights <span class="badge bg-danger ms-auto" style="font-size:0.55rem;" id="alertBadge">0</span></a>
       <a class="nav-link" href="#reportsSection"><i class="fas fa-file-lines"></i> Reports</a>
       <a class="nav-link" href="#dataQualitySection"><i class="fas fa-database"></i> Data Quality</a>
       <a class="nav-link" href="#settingsSection"><i class="fas fa-gear"></i> Settings</a>
     </nav>
-    <div class="sidebar-footer">Haier Pakistan v18.0</div>
+    <div class="sidebar-footer">Haier Pakistan v19.4</div>
   </aside>
 
   <!-- ============================================================
@@ -546,7 +546,7 @@
       </div>
     </div>
 
-    <!-- EXECUTIVE KPI CARDS (Dynamically populated from backend v18.0) -->
+    <!-- EXECUTIVE KPI CARDS (Dynamically populated from backend v19.4) -->
     <section id="kpiCards" class="row g-2 mb-3"></section>
 
     <!-- EXECUTIVE SUMMARY (AI) & DELIVERY PIPELINE & PERFORMANCE TREND -->
@@ -555,7 +555,7 @@
       <div class="col-xl-4">
         <div class="card h-100 mb-0">
           <div class="card-header"><i class="fas fa-star text-warning"></i> EXECUTIVE SUMMARY (AI)</div>
-          <div class="card-body p-2.5" id="executiveSummaryAiBody" style="font-size: 0.74rem; line-height: 1.5;">
+          <div class="card-body p-2.5" id="executiveSummaryAiBody" style="font-size: 0.74rem; line-height: 1.5; color: var(--color-text-primary);">
             Loading executive AI summary...
           </div>
         </div>
@@ -625,18 +625,21 @@
               <table class="table-custom">
                 <thead>
                   <tr>
+                    <th>Rank</th>
                     <th>Warehouse</th>
+                    <th>Health Score</th>
                     <th>DNs</th>
                     <th>Units</th>
                     <th>Revenue (PKR)</th>
                     <th>PGI %</th>
                     <th>Delivery %</th>
                     <th>POD %</th>
-                    <th>Pending Days</th>
-                    <th>Avg PGIr Days</th>
-                    <th>Cycle G Days</th>
-                    <th>Health Score</th>
-                    <th>Rank</th>
+                    <th>Avg Delivery Days</th>
+                    <th>Avg POD Days</th>
+                    <th>Pending Units</th>
+                    <th>Risk</th>
+                    <th>Trend</th>
+                    <th>AI Insight</th>
                   </tr>
                 </thead>
                 <tbody id="warehouseRankingTbody">
@@ -673,7 +676,7 @@
                       </tr>
                     </thead>
                     <tbody id="topDelayedCitiesTbody">
-                      <!-- Injected via backend data / fallback -->
+                      <!-- Injected via backend data -->
                     </tbody>
                   </table>
                 </div>
@@ -725,7 +728,7 @@
                   <tr><th>Dealer</th><th>Units</th><th>Revenue (PKR)</th></tr>
                 </thead>
                 <tbody id="topDealersTbody">
-                  <!-- Injected via backend v18.0 top_dealers -->
+                  <!-- Injected via backend -->
                 </tbody>
               </table>
             </div>
@@ -749,7 +752,7 @@
                   <tr><th>Product / Model</th><th>Units</th><th>DNs</th></tr>
                 </thead>
                 <tbody id="topProductsTbody">
-                  <!-- Injected via backend v18.0 top_products -->
+                  <!-- Injected via backend -->
                 </tbody>
               </table>
             </div>
@@ -791,7 +794,7 @@
                   <tr><th>Distance (KM)</th><th>Target Days</th><th>Actual Avg</th><th>Compliance %</th></tr>
                 </thead>
                 <tbody id="standardComplianceTbody">
-                  <!-- Injected via backend warehouse_standard_comparison -->
+                  <!-- Injected via backend -->
                 </tbody>
               </table>
             </div>
@@ -809,7 +812,7 @@
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
           <div class="card-header d-flex justify-content-between align-items-center" id="criticalAlertsHeader">
-            <span><i class="fas fa-triangle-exclamation text-danger"></i> CRITICAL ALERTS (5)</span>
+            <span><i class="fas fa-triangle-exclamation text-danger"></i> CRITICAL ALERTS (<span id="alertCount">0</span>)</span>
             <span class="text-muted" style="font-size:0.65rem;">Function: generate_critical_alerts()</span>
           </div>
           <div class="card-body p-2.5" id="criticalAlertsContainer">
@@ -917,7 +920,7 @@
     <!-- FOOTER BAR -->
     <footer id="footer" class="footer-bar d-flex justify-content-between align-items-center">
       <div>
-        <span class="text-primary fw-bold" id="footerVersion">Haier Pakistan v18.0</span> &nbsp;|&nbsp; 
+        <span class="text-primary fw-bold" id="footerVersion">Haier Pakistan v19.4</span> &nbsp;|&nbsp; 
         <span class="text-info"><i class="fas fa-database me-1"></i>PostgreSQL</span>
       </div>
       <div>
@@ -936,7 +939,7 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
 <!-- ============================================================
-     APPLICATION JAVASCRIPT & BACKEND v18.0 DATA BINDING
+     APPLICATION JAVASCRIPT – FULLY ALIGNED WITH BACKEND v19.4
      ============================================================ -->
 <script>
 (function() {
@@ -944,40 +947,39 @@
 
     function formatNumber(v) { return (v || 0).toLocaleString(); }
     function formatPct(v) { return (v || 0).toFixed(1) + '%'; }
+    function formatCurrency(v) { 
+        if (v >= 1e9) return (v/1e9).toFixed(1) + ' B';
+        if (v >= 1e6) return (v/1e6).toFixed(1) + ' M';
+        return (v/1e3).toFixed(1) + ' K';
+    }
 
-    // ---- Render 8 Executive KPI Cards matching backend v18.0 payload ----
+    // ---- Render Executive KPI Cards (8 cards) ----
     function renderKPIs(cards) {
         const container = document.getElementById('kpiCards');
         if (!container) return;
-        
+        if (!cards || typeof cards !== 'object') {
+            container.innerHTML = '<div class="col-12"><div class="empty-state"><p>No KPIs available</p></div></div>';
+            return;
+        }
         const kpiConfig = [
-            { key: 'total_dn', label: 'TOTAL DELIVERY NOTES', icon: 'fa-file-invoice' },
-            { key: 'total_units', label: 'TOTAL UNITS', icon: 'fa-boxes' },
-            { key: 'total_value', label: 'TOTAL VALUE (DN AMOUNT)', icon: 'fa-money-bill-wave' },
-            { key: 'pgi_achievement', label: 'PGI ACHIEVEMENT', icon: 'fa-check-circle' },
-            { key: 'pod_achievement', label: 'POD ACHIEVEMENT', icon: 'fa-file-signature' },
-            { key: 'pending_dn', label: 'PENDING DNS', icon: 'fa-hourglass-half' },
-            { key: 'pending_units', label: 'PENDING UNITS', icon: 'fa-hourglass' },
-            { key: 'health_score', label: 'LOGISTICS HEALTH SCORE', icon: 'fa-heart-pulse' }
+            { key: 'total_dn', label: 'TOTAL DELIVERY NOTES', icon: 'fa-file-invoice', fmt: v => formatNumber(v) },
+            { key: 'total_units', label: 'TOTAL UNITS', icon: 'fa-boxes', fmt: v => formatNumber(v) },
+            { key: 'total_value', label: 'TOTAL REVENUE', icon: 'fa-money-bill-wave', fmt: v => 'PKR ' + formatCurrency(v) },
+            { key: 'pgi_achievement', label: 'PGI ACHIEVEMENT', icon: 'fa-check-circle', fmt: v => formatPct(v) },
+            { key: 'pod_achievement', label: 'POD ACHIEVEMENT', icon: 'fa-file-signature', fmt: v => formatPct(v) },
+            { key: 'pending_dn', label: 'PENDING DNS', icon: 'fa-hourglass-half', fmt: v => formatNumber(v) },
+            { key: 'pending_units', label: 'PENDING UNITS', icon: 'fa-hourglass', fmt: v => formatNumber(v) },
+            { key: 'health_score', label: 'LOGISTICS HEALTH SCORE', icon: 'fa-heart-pulse', fmt: v => formatPct(v) }
         ];
 
         let html = '';
         kpiConfig.forEach(cfg => {
-            const cardObj = cards[cfg.key] || { value: 0 };
-            let valStr = cardObj.value;
-            if (cfg.key === 'total_value') {
-                valStr = 'PKR ' + (valStr ? (valStr / 1e9).toFixed(2) + ' B' : '0.00 B');
-            } else if (cfg.key.includes('achievement') || cfg.key === 'health_score') {
-                valStr = formatPct(valStr);
-            } else {
-                valStr = formatNumber(valStr);
-            }
-
+            const val = (cards[cfg.key] && cards[cfg.key].value !== undefined) ? cards[cfg.key].value : 0;
             html += `
                 <div class="col-xl-3 col-lg-4 col-md-6 mb-2">
                     <div class="card kpi-card">
                         <h6><i class="fas ${cfg.icon}"></i> ${cfg.label}</h6>
-                        <div class="kpi-value">${valStr}</div>
+                        <div class="kpi-value">${cfg.fmt(val)}</div>
                         <div class="kpi-sub">Real-time metric</div>
                     </div>
                 </div>
@@ -1026,33 +1028,33 @@
         container.innerHTML = html;
     }
 
-    // ---- Render Warehouse Ranking Table ----
+    // ---- Render Warehouse Ranking Table (enhanced with new fields) ----
     function renderWarehouseRanking(ranking) {
         const tbody = document.getElementById('warehouseRankingTbody');
         if (!tbody || !ranking) return;
 
         let html = '';
         ranking.forEach(w => {
-            let badgeClass = 'success';
-            if (w.status === 'Warning') badgeClass = 'warning';
-            else if (w.status === 'Critical') badgeClass = 'critical';
-            else if (w.status === 'Average') badgeClass = 'warning';
-            else if (w.status === 'Good') badgeClass = 'good';
-
+            const riskEmoji = w.risk || '⚪';
+            const trend = w.trend || '▬';
+            const aiInsight = w.ai_insight || '—';
             html += `
                 <tr>
+                    <td>${w.rank}</td>
                     <td><strong>${w.warehouse}</strong></td>
-                    <td>${formatNumber(w.dns)}</td>
-                    <td>${formatNumber(w.units)}</td>
-                    <td>${(w.revenue / 1e6 || 0).toFixed(1)} M</td>
-                    <td>${formatPct(w.pgi_pct)}</td>
-                    <td>${formatPct(w.pod_pct)}</td>
-                    <td>${formatPct(w.pod_pct)}</td>
-                    <td>${formatNumber(w.pending_dns)}</td>
-                    <td>${(w.avg_pgi_days || 0.8).toFixed(1)}</td>
-                    <td>${(w.avg_days || 3.2).toFixed(1)}</td>
-                    <td><strong>${(w.performance_score || 92).toFixed(0)}%</strong></td>
-                    <td><span class="badge-status ${badgeClass}"><i class="fas fa-circle" style="font-size:0.35rem;"></i> ${w.status}</span></td>
+                    <td>${formatPct(w.performance_score || 0)}</td>
+                    <td>${formatNumber(w.dns || 0)}</td>
+                    <td>${formatNumber(w.units || 0)}</td>
+                    <td>${formatCurrency(w.revenue || 0)}</td>
+                    <td>${formatPct(w.pgi_pct || 0)}</td>
+                    <td>${formatPct(w.delivery_pct || 0)}</td>
+                    <td>${formatPct(w.pod_pct || 0)}</td>
+                    <td>${(w.avg_delivery_days || 0).toFixed(1)}</td>
+                    <td>${(w.avg_pod_days || 0).toFixed(1)}</td>
+                    <td>${formatNumber(w.pending_units || 0)}</td>
+                    <td><span style="font-size:1.2rem;">${riskEmoji}</span></td>
+                    <td>${trend}</td>
+                    <td style="font-size:0.7rem; max-width:150px;">${aiInsight}</td>
                 </tr>
             `;
         });
@@ -1072,7 +1074,7 @@
                 <tr>
                     <td><strong>${c.city}</strong></td>
                     <td>${c.avg_delivery_days.toFixed(1)} Days</td>
-                    <td>${formatNumber(c.dns)} Units</td>
+                    <td>${formatNumber(c.pending_units || 0)} Units</td>
                     <td><span class="badge-status ${badgeClass}"><i class="fas fa-circle" style="font-size:0.35rem;"></i> ${c.status}</span></td>
                 </tr>
             `;
@@ -1090,8 +1092,8 @@
             html += `
                 <tr>
                     <td><strong>${w.warehouse}</strong></td>
-                    <td>${formatNumber(w.pending_dns)}</td>
-                    <td>${formatNumber(w.pending_units)}</td>
+                    <td>${formatNumber(w.pending_dns || 0)}</td>
+                    <td>${formatNumber(w.pending_units || 0)}</td>
                 </tr>
             `;
         });
@@ -1109,7 +1111,7 @@
                 <tr>
                     <td><strong>${d.dealer}</strong></td>
                     <td>${formatNumber(d.units)}</td>
-                    <td>${(d.value / 1e6).toFixed(1)} M</td>
+                    <td>${formatCurrency(d.revenue || 0)}</td>
                 </tr>
             `;
         });
@@ -1126,8 +1128,8 @@
             html += `
                 <tr>
                     <td><strong>${p.product}</strong></td>
-                    <td>${formatNumber(p.units)}</td>
-                    <td>${formatNumber(p.delivery_notes || 1000)}</td>
+                    <td>${formatNumber(p.units || 0)}</td>
+                    <td>${formatNumber(p.delivery_notes || 0)}</td>
                 </tr>
             `;
         });
@@ -1141,7 +1143,7 @@
         if (!divisions || divisions.length === 0) return;
 
         const labels = divisions.map(d => d.division);
-        const values = divisions.map(d => d.value);
+        const values = divisions.map(d => d.revenue || d.value || 0);
         const colors = ['#2563eb', '#10b981', '#f59e0b', '#38bdf8', '#64748b'];
 
         if (chartContainer) {
@@ -1166,11 +1168,11 @@
             let legendHtml = '';
             const totalVal = values.reduce((a, b) => a + b, 0) || 1;
             divisions.forEach((d, i) => {
-                const pct = ((d.value / totalVal) * 100).toFixed(0);
+                const pct = ((values[i] / totalVal) * 100).toFixed(0);
                 legendHtml += `
                     <div class="d-flex justify-content-between align-items-center">
                         <span><i class="fas fa-square" style="color: ${colors[i % colors.length]};"></i> ${d.division}</span>
-                        <strong>${(d.value / 1e9).toFixed(2)} B (${pct}%)</strong>
+                        <strong>${formatCurrency(values[i])} (${pct}%)</strong>
                     </div>
                 `;
             });
@@ -1188,23 +1190,28 @@
             const statusClass = c.status === 'Within Standard' ? 'text-success' : 'text-danger';
             html += `
                 <tr>
-                    <td>0 - ${c.avg_distance_km ? Math.round(c.avg_distance_km) : 100}</td>
-                    <td>${c.standard_delivery_days} Day(s)</td>
-                    <td>${c.actual_delivery_days.toFixed(1)}</td>
-                    <td><strong class="${statusClass}">97.8%</strong></td>
+                    <td>${c.distance || '0-100'}</td>
+                    <td>${c.target_days} Day(s)</td>
+                    <td>${c.actual_days.toFixed(1)}</td>
+                    <td><strong class="${statusClass}">${c.compliance_pct || 0}%</strong></td>
                 </tr>
             `;
         });
         tbody.innerHTML = html;
     }
 
-    // ---- Render Alerts ----
+    // ---- Render Alerts (now limited to top 10) ----
     function renderAlerts(alerts) {
         const container = document.getElementById('criticalAlertsContainer');
         const header = document.getElementById('criticalAlertsHeader');
+        const countSpan = document.getElementById('alertCount');
+        const badge = document.getElementById('alertBadge');
         if (!container || !alerts) return;
 
-        if (header) header.innerHTML = `<span><i class="fas fa-triangle-exclamation text-danger"></i> CRITICAL ALERTS (${alerts.length})</span><span class="text-muted" style="font-size:0.65rem;">Function: generate_critical_alerts()</span>`;
+        const count = alerts.length;
+        if (header) header.innerHTML = `<span><i class="fas fa-triangle-exclamation text-danger"></i> CRITICAL ALERTS (${count})</span><span class="text-muted" style="font-size:0.65rem;">Function: generate_critical_alerts()</span>`;
+        if (countSpan) countSpan.innerText = count;
+        if (badge) badge.innerText = count;
 
         let html = '';
         alerts.forEach(a => {
@@ -1228,11 +1235,12 @@
         if (!container || !recs) return;
 
         let html = '';
-        recs.forEach(r => {
+        recs.slice(0, 4).forEach(r => {
+            const recText = typeof r === 'string' ? r : r.recommendation;
             html += `
                 <div class="recommendation-item">
                     <i class="fas fa-check"></i>
-                    <span>${r.recommendation}</span>
+                    <span>${recText || 'No specific recommendation.'}</span>
                 </div>
             `;
         });
@@ -1263,7 +1271,7 @@
         Plotly.newPlot(trendContainer, [trace1, trace2], layout, { responsive: true, displayModeBar: false });
     }
 
-    // ---- Load Dashboard Data from API v18.0 ----
+    // ---- Load Dashboard Data from API ----
     async function loadDashboard() {
         try {
             const res = await fetch(API_URL);
@@ -1279,20 +1287,17 @@
                 if (data.top_dealers) renderTopDealers(data.top_dealers);
                 if (data.top_products) renderTopProducts(data.top_products);
                 if (data.division_performance) renderDivisions(data.division_performance);
-                if (data.warehouse_standard_comparison) renderCompliance(data.warehouse_standard_comparison);
+                if (data.delivery_compliance) renderCompliance(data.delivery_compliance);
                 if (data.alerts) renderAlerts(data.alerts);
-                if (data.director_recommendations) {
-                    const recObjs = data.director_recommendations.map(text => ({ warehouse: "Director Guidance", recommendation: text }));
-                    renderRecommendations(recObjs);
-                } else if (data.recommendations) {
-                    renderRecommendations(data.recommendations);
-                }
+                if (data.recommendations) renderRecommendations(data.recommendations);
                 if (data.monthly_trend) initTrendChart(data.monthly_trend);
 
                 // Footer metadata
                 if (data.metadata) {
                     const recEl = document.getElementById('footerRecords');
                     if (recEl) recEl.innerText = formatNumber(data.metadata.record_count);
+                    const verEl = document.getElementById('footerVersion');
+                    if (verEl) verEl.innerText = `Haier Pakistan v${data.metadata.version || '19.4'}`;
                 }
             }
         } catch(e) {
@@ -1321,7 +1326,7 @@
             });
         }
 
-        // Upload Form AJAX submission (matches v18.0 /upload endpoint)
+        // Upload Form AJAX submission
         const uploadForm = document.getElementById('uploadForm');
         if (uploadForm) {
             uploadForm.addEventListener('submit', function(e) {
@@ -1334,7 +1339,7 @@
                 }
                 Swal.fire({
                     title: 'Importing Report',
-                    html: '<div class="spinner-border text-info mb-2" role="status"></div><div class="small text-muted">Processing Excel file via v18.0 engine...</div>',
+                    html: '<div class="spinner-border text-info mb-2" role="status"></div><div class="small text-muted">Processing Excel file via v19.4 engine...</div>',
                     background: '#0f172a', color: '#f8fafc',
                     allowOutsideClick: false, showConfirmButton: false
                 });
@@ -1352,6 +1357,8 @@
         }
 
         loadDashboard();
+        // Auto-refresh every 30 seconds
+        setInterval(loadDashboard, 30000);
     });
 })();
 </script>
