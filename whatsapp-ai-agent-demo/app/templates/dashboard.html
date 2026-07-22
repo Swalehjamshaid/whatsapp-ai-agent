@@ -1,13 +1,13 @@
 <!-- ============================================================
      FILE: whatsapp-ai-agent-demo/app/templates/dashboard.html
-     VERSION: 18.0 – HAIER LOGISTICS COMMAND CENTER
+     VERSION: 18.0 – 100% MATCHING BACKEND V18.0 COMMAND CENTER
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Haier Logistics – Command Center</title>
+  <title>Haier Pakistan – Enterprise Command Suite</title>
 
   <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -21,11 +21,15 @@
   <!-- AG Grid Community -->
   <link href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css" rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-theme-alpine.css" rel="stylesheet" />
+  <!-- Plotly JS -->
+  <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist@2.26.0/plotly.min.js"></script>
+  <!-- AG Grid JS -->
+  <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
   <!-- SweetAlert2 -->
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
   <!-- ============================================================
-  DESIGN SYSTEM
+  ULTRA‑PREMIUM DESIGN SYSTEM (100% MATCHING COMMAND CENTER)
   ============================================================ -->
   <style>
     :root {
@@ -44,11 +48,12 @@
       --color-warning: #f59e0b;
       --color-danger: #ef4444;
       --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-      --radius-xl: 24px;
-      --radius-lg: 16px;
-      --radius-md: 12px;
-      --shadow-glass: 0 12px 48px rgba(0,0,0,0.45);
-      --shadow-neon: 0 0 30px rgba(56,189,248,0.08);
+      --font-mono: 'JetBrains Mono', monospace;
+      --radius-xl: 16px;
+      --radius-lg: 12px;
+      --radius-md: 8px;
+      --shadow-glass: 0 10px 30px rgba(0,0,0,0.4);
+      --shadow-neon: 0 0 20px rgba(56,189,248,0.06);
       --transition-smooth: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
@@ -61,8 +66,8 @@
       --color-text-primary: #0f172a;
       --color-text-secondary: #475569;
       --color-text-muted: #94a3b8;
-      --shadow-glass: 0 12px 48px rgba(0,0,0,0.05);
-      --shadow-neon: 0 0 30px rgba(37,99,235,0.06);
+      --shadow-glass: 0 10px 30px rgba(0,0,0,0.04);
+      --shadow-neon: 0 0 20px rgba(37,99,235,0.04);
     }
 
     * { box-sizing: border-box; }
@@ -74,6 +79,7 @@
       min-height: 100vh;
       transition: background 0.4s ease, color 0.4s ease;
       -webkit-font-smoothing: antialiased;
+      font-size: 0.82rem;
     }
 
     .container-fluid { padding: 0; }
@@ -82,11 +88,11 @@
     .sidebar {
       position: fixed;
       top: 0; left: 0;
-      width: 280px;
+      width: 250px;
       height: 100vh;
       background: var(--color-bg-surface);
       border-right: 1px solid var(--color-border);
-      padding: 1.75rem 1.25rem;
+      padding: 1.25rem 1rem;
       z-index: 1050;
       display: flex;
       flex-direction: column;
@@ -96,147 +102,183 @@
     .sidebar-brand {
       display: flex;
       align-items: center;
-      gap: 1rem;
-      padding-bottom: 1.75rem;
+      gap: 0.75rem;
+      padding-bottom: 1.25rem;
       border-bottom: 1px solid var(--color-border);
     }
     .brand-icon {
-      width: 44px; height: 44px;
+      width: 38px; height: 38px;
       background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
       border-radius: var(--radius-md);
       display: flex; align-items: center; justify-content: center;
-      color: #fff; font-size: 1.3rem;
+      color: #fff; font-size: 1.1rem;
       box-shadow: var(--shadow-neon);
     }
     .sidebar-brand h5 {
-      font-size: 1.1rem; font-weight: 800; color: var(--color-text-primary);
+      font-size: 1rem; font-weight: 800; color: var(--color-text-primary);
       margin: 0; letter-spacing: -0.02em;
     }
     .sidebar-brand small {
-      font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+      font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
       color: var(--color-text-secondary); letter-spacing: 0.1em;
       display: block;
     }
 
     .sidebar-nav {
       flex: 1;
-      padding: 1.5rem 0;
+      padding: 1rem 0;
       display: flex;
       flex-direction: column;
       gap: 0.2rem;
       overflow-y: auto;
     }
-    .sidebar-nav::-webkit-scrollbar { width: 4px; }
-    .sidebar-nav::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 4px; }
+    .sidebar-nav::-webkit-scrollbar { width: 3px; }
+    .sidebar-nav::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
 
     .sidebar-nav .nav-link {
       display: flex;
       align-items: center;
-      gap: 1rem;
-      padding: 0.75rem 1rem;
+      gap: 0.75rem;
+      padding: 0.6rem 0.85rem;
       border-radius: var(--radius-md);
       color: var(--color-text-secondary);
       font-weight: 600;
-      font-size: 0.85rem;
+      font-size: 0.8rem;
       text-decoration: none;
       transition: var(--transition-smooth);
     }
     .sidebar-nav .nav-link i {
-      width: 20px; text-align: center;
-      font-size: 1rem;
-      transition: transform 0.2s ease;
+      width: 18px; text-align: center;
+      font-size: 0.95rem;
     }
     .sidebar-nav .nav-link:hover {
       background: rgba(56,189,248,0.06);
       color: var(--color-accent);
     }
-    .sidebar-nav .nav-link:hover i { transform: translateX(4px); }
     .sidebar-nav .nav-link.active {
       background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
       color: #fff;
-      box-shadow: 0 8px 24px rgba(37,99,235,0.3);
+      box-shadow: 0 4px 16px rgba(37,99,235,0.25);
     }
     .sidebar-footer {
-      padding: 1rem 0.5rem;
+      padding: 0.75rem 0.25rem;
       border-top: 1px solid var(--color-border);
-      font-size: 0.7rem;
+      font-size: 0.65rem;
       color: var(--color-text-muted);
       text-align: center;
       font-weight: 600;
     }
 
-    /* ----- Top Bar ----- */
+    /* ----- Top Bar Command Header ----- */
     .topbar {
       background: var(--color-bg-surface);
       border: 1px solid var(--color-border);
       border-radius: var(--radius-xl);
-      padding: 0.9rem 2rem;
-      margin-bottom: 2.25rem;
+      padding: 0.75rem 1.5rem;
+      margin-bottom: 1.5rem;
       box-shadow: var(--shadow-glass);
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
+      gap: 1rem;
       backdrop-filter: blur(20px);
     }
-    .topbar-left { display: flex; align-items: center; gap: 1.25rem; }
+    .topbar-left { display: flex; align-items: center; gap: 1rem; }
     .topbar-left .hamburger {
       display: none; background: none; border: none;
-      font-size: 1.25rem; color: var(--color-text-primary); cursor: pointer;
+      font-size: 1.2rem; color: var(--color-text-primary); cursor: pointer;
     }
-    .topbar-left h4 {
-      font-size: 1.2rem; font-weight: 800; margin: 0;
+    .topbar-logo-area { display: flex; flex-direction: column; }
+    .topbar-logo-area h3 {
+      font-size: 1.05rem; font-weight: 800; margin: 0;
       color: var(--color-text-primary);
       letter-spacing: -0.02em;
-      display: flex; align-items: center; gap: 0.6rem;
     }
-    .topbar-left h4 i { color: var(--color-accent); }
+    .topbar-logo-area small {
+      font-size: 0.65rem; color: var(--color-text-secondary); font-weight: 600;
+    }
 
-    .topbar-right {
-      display: flex; align-items: center; gap: 0.9rem;
+    .topbar-filters {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
       flex-wrap: wrap;
     }
-    .badge-date {
+    .filter-dropdown {
       background: var(--color-bg-base);
-      padding: 0.4rem 1.1rem;
-      border-radius: 9999px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: 0.35rem 0.75rem;
       font-size: 0.75rem;
-      color: var(--color-text-secondary);
+      color: var(--color-text-primary);
       font-weight: 600;
-      border: 1px solid var(--color-border);
-      display: flex; align-items: center; gap: 0.5rem;
-    }
-    .badge-date i { color: var(--color-accent); }
-    .user-badge {
-      display: flex; align-items: center; gap: 0.5rem;
-      background: rgba(56,189,248,0.08);
-      padding: 0.35rem 1rem 0.35rem 0.75rem;
-      border-radius: 9999px;
-      font-size: 0.8rem;
-      color: var(--color-accent);
-      font-weight: 700;
-      border: 1px solid rgba(56,189,248,0.15);
-    }
-    .btn-theme {
-      background: var(--color-bg-base);
-      border: 1px solid var(--color-border);
-      border-radius: 9999px;
-      width: 38px; height: 38px;
-      display: flex; align-items: center; justify-content: center;
-      color: var(--color-text-secondary);
-      transition: var(--transition-smooth);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
       cursor: pointer;
     }
-    .btn-theme:hover {
-      background: var(--color-bg-elevated);
+    .filter-dropdown span { color: var(--color-text-secondary); font-weight: 500; font-size: 0.7rem; }
+
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .btn-command {
+      background: var(--color-bg-base);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: 0.4rem 0.85rem;
+      font-size: 0.75rem;
+      font-weight: 600;
       color: var(--color-text-primary);
-      transform: rotate(15deg);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      cursor: pointer;
+      transition: var(--transition-smooth);
+    }
+    .btn-command.btn-primary-action {
+      background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
+      border: none;
+      color: #fff;
+      box-shadow: 0 4px 12px rgba(37,99,235,0.2);
+    }
+    .btn-command:hover { opacity: 0.9; transform: translateY(-1px); }
+
+    .notification-icon {
+      position: relative;
+      width: 32px; height: 32px;
+      background: var(--color-bg-base);
+      border: 1px solid var(--color-border);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+    }
+    .notification-icon .badge-dot {
+      position: absolute; top: 4px; right: 4px;
+      width: 8px; height: 8px; background: var(--color-danger);
+      border-radius: 50%;
+    }
+    .user-profile-pill {
+      display: flex; align-items: center; gap: 0.5rem;
+      background: var(--color-bg-base);
+      padding: 0.25rem 0.75rem 0.25rem 0.35rem;
+      border-radius: 9999px;
+      border: 1px solid var(--color-border);
+      font-size: 0.75rem; font-weight: 700;
+    }
+    .user-avatar {
+      width: 24px; height: 24px; background: #3b82f6; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center; color: #fff; font-size: 0.65rem;
     }
 
     /* ----- Main Content ----- */
     .main-content {
-      margin-left: 280px;
-      padding: 2rem 2.5rem;
+      margin-left: 250px;
+      padding: 1.5rem 2rem;
       min-height: 100vh;
       transition: margin var(--transition-smooth);
     }
@@ -250,193 +292,165 @@
       transition: var(--transition-smooth);
       overflow: hidden;
       position: relative;
-      backdrop-filter: blur(4px);
-      margin-bottom: 1.5rem;
+      margin-bottom: 1.25rem;
     }
-    .card:hover {
-      transform: translateY(-4px);
-      border-color: var(--color-border-hover);
-      box-shadow: var(--shadow-neon);
-    }
-    .card::before {
-      content: '';
-      position: absolute;
-      top: 0; left: 0; width: 100%; height: 2.5px;
-      background: linear-gradient(90deg, var(--color-accent), var(--color-accent-indigo));
-      opacity: 0.6;
-    }
-
     .card-header {
       background: transparent !important;
       border-bottom: 1px solid var(--color-border) !important;
       color: var(--color-text-primary) !important;
-      padding: 1.2rem 1.75rem !important;
+      padding: 1rem 1.25rem !important;
       font-weight: 700;
-      font-size: 1rem;
-      letter-spacing: -0.01em;
-      display: flex; align-items: center; gap: 0.85rem;
+      font-size: 0.85rem;
+      display: flex; align-items: center; gap: 0.6rem;
     }
-    .card-header i {
-      color: var(--color-accent);
-      font-size: 1.2rem;
-      filter: drop-shadow(0 0 8px rgba(56,189,248,0.2));
-    }
+    .card-header i { color: var(--color-accent); font-size: 1rem; }
 
-    /* ----- KPI Cards ----- */
+    /* ----- KPI Grid Cards ----- */
     .kpi-card {
       background: var(--color-bg-surface);
       border: 1px solid var(--color-border);
       border-radius: var(--radius-lg);
-      padding: 1.5rem 1.75rem;
+      padding: 1rem 1.15rem;
       height: 100%;
       position: relative;
       transition: var(--transition-smooth);
       box-shadow: var(--shadow-glass);
-      backdrop-filter: blur(4px);
     }
     .kpi-card:hover {
-      transform: translateY(-6px);
       border-color: var(--color-accent);
+      transform: translateY(-2px);
       box-shadow: var(--shadow-neon);
     }
     .kpi-card h6 {
-      font-size: 0.7rem;
+      font-size: 0.65rem;
       text-transform: uppercase;
       font-weight: 700;
       color: var(--color-text-secondary);
-      letter-spacing: 0.08em;
-      margin-bottom: 0.65rem;
-      display: flex; align-items: center; gap: 0.5rem;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.4rem;
+      display: flex; align-items: center; gap: 0.4rem;
     }
-    .kpi-card h6 i { color: var(--color-accent); }
+    .kpi-card h6 i { color: var(--color-accent); font-size: 0.75rem; }
     .kpi-card .kpi-value {
-      font-size: 2.1rem;
+      font-size: 1.45rem;
       font-weight: 800;
       color: var(--color-text-primary);
       line-height: 1.2;
       letter-spacing: -0.02em;
     }
     .kpi-card .kpi-sub {
-      font-size: 0.7rem;
-      color: var(--color-text-muted);
+      font-size: 0.68rem;
       font-weight: 600;
-      margin-top: 0.4rem;
+      margin-top: 0.35rem;
+      display: flex; align-items: center; gap: 0.3rem;
     }
+    .text-trend-up { color: var(--color-success); }
+    .text-trend-down { color: var(--color-danger); }
 
-    /* ----- Tables ----- */
-    .table-command {
-      background: transparent;
+    /* ----- Tables & Lists inside Cards ----- */
+    .table-custom {
+      width: 100%;
+      margin-bottom: 0;
+      font-size: 0.78rem;
       color: var(--color-text-primary);
-      font-size: 0.85rem;
-      border-collapse: separate;
-      border-spacing: 0;
+      border-collapse: collapse;
     }
-    .table-command thead th {
-      background: var(--color-bg-elevated);
+    .table-custom th {
+      background: rgba(15,23,42,0.4);
       color: var(--color-text-secondary);
       font-weight: 700;
-      font-size: 0.7rem;
       text-transform: uppercase;
+      font-size: 0.68rem;
+      padding: 0.6rem 0.75rem;
+      border-bottom: 1px solid var(--color-border);
       letter-spacing: 0.04em;
-      padding: 0.75rem 1rem;
-      border-bottom: 1px solid var(--color-border);
     }
-    .table-command tbody td {
-      padding: 0.65rem 1rem;
+    .table-custom td {
+      padding: 0.6rem 0.75rem;
       border-bottom: 1px solid var(--color-border);
-      background: transparent;
+      vertical-align: middle;
     }
-    .table-command tbody tr:hover { background: rgba(56,189,248,0.03); }
-    .table-command .badge-status {
-      font-size: 0.65rem;
-      font-weight: 700;
-      padding: 0.35rem 0.8rem;
+    .table-custom tr:hover td { background: rgba(56,189,248,0.03); }
+
+    /* Badges & Status Pills */
+    .badge-status {
+      padding: 0.2rem 0.5rem;
       border-radius: 9999px;
-    }
-    .status-Excellent { background: #10b981; color: #fff; }
-    .status-Good     { background: #84cc16; color: #0f172a; }
-    .status-Average  { background: #f59e0b; color: #0f172a; }
-    .status-Warning  { background: #f97316; color: #0f172a; }
-    .status-Critical { background: #ef4444; color: #fff; }
-
-    /* ----- Empty States ----- */
-    .empty-state {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 2rem;
-      color: var(--color-text-secondary);
-      text-align: center;
-      background: rgba(15,23,42,0.2);
-      border-radius: var(--radius-lg);
-      border: 2px dashed var(--color-border);
-    }
-    .empty-state i { font-size: 2.5rem; margin-bottom: 0.5rem; color: var(--color-accent); opacity: 0.3; }
-
-    /* ----- Forms & Upload ----- */
-    .upload-highlight {
-      border: 2px dashed var(--color-accent);
-      background: rgba(56,189,248,0.03);
-    }
-    .btn-upload {
-      background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
-      border: none;
-      padding: 0.75rem 2rem;
-      border-radius: var(--radius-md);
+      font-size: 0.68rem;
       font-weight: 700;
-      font-size: 0.9rem;
-      color: #fff;
-      transition: var(--transition-smooth);
-      box-shadow: 0 8px 24px rgba(37,99,235,0.25);
-      display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
-      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
     }
-    .btn-upload:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 12px 32px rgba(37,99,235,0.35);
+    .badge-status.success { background: rgba(16,185,129,0.12); color: #34d399; }
+    .badge-status.good { background: rgba(132,204,22,0.12); color: #a3e635; }
+    .badge-status.warning { background: rgba(245,158,11,0.12); color: #fbbf24; }
+    .badge-status.critical { background: rgba(239,68,68,0.12); color: #f87171; }
+
+    /* Alert Items */
+    .alert-item {
+      background: rgba(239, 68, 68, 0.06);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      border-radius: var(--radius-md);
+      padding: 0.75rem 1rem;
+      margin-bottom: 0.5rem;
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
     }
-    .form-toolbar { display: flex; flex-wrap: wrap; gap: 1.25rem; align-items: flex-end; }
+    .alert-item i { color: var(--color-danger); font-size: 1rem; margin-top: 0.1rem; }
+
+    /* Recommendation Items */
+    .recommendation-item {
+      background: rgba(16, 185, 129, 0.04);
+      border: 1px solid rgba(16, 185, 129, 0.15);
+      border-radius: var(--radius-md);
+      padding: 0.5rem 0.75rem;
+      margin-bottom: 0.4rem;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-size: 0.76rem;
+    }
+    .recommendation-item i { color: var(--color-success); font-size: 0.85rem; }
+
+    /* Pipeline funnel steps */
+    .pipeline-step {
+      background: var(--color-bg-elevated);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: 0.75rem;
+      text-align: center;
+      position: relative;
+    }
+    .pipeline-step .step-val { font-size: 1.25rem; font-weight: 800; color: var(--color-text-primary); margin: 0.2rem 0; }
+
+    /* Forms */
+    .form-toolbar { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; }
     .form-toolbar .form-group { flex: 1; min-width: 180px; }
     .form-control, .form-select {
       border: 1px solid var(--color-border);
       border-radius: var(--radius-md);
-      padding: 0.7rem 1.1rem;
-      font-size: 0.9rem;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.8rem;
       background: rgba(15,23,42,0.5);
       color: var(--color-text-primary);
-      font-weight: 500;
-      transition: var(--transition-smooth);
     }
-    [data-theme="light"] .form-control,
-    [data-theme="light"] .form-select {
-      background: #ffffff;
-      color: var(--color-text-primary);
-    }
-    .form-control:focus, .form-select:focus {
-      border-color: var(--color-accent);
-      box-shadow: 0 0 0 4px rgba(56,189,248,0.12);
-      background: rgba(15,23,42,0.7);
-    }
-    [data-theme="light"] .form-control:focus,
-    [data-theme="light"] .form-select:focus { background: #ffffff; }
-    label {
-      font-size: 0.75rem;
+    .btn-upload {
+      background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
+      border: none;
+      border-radius: var(--radius-md);
       font-weight: 700;
-      color: var(--color-text-secondary);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      margin-bottom: 0.4rem;
-      display: block;
+      color: #fff;
+      cursor: pointer;
     }
 
-    /* ----- Footer ----- */
+    /* Footer Bar */
     .footer-bar {
       background: var(--color-bg-surface);
       border-radius: var(--radius-xl);
-      padding: 1.1rem 2rem;
+      padding: 1rem 1.5rem;
       border: 1px solid var(--color-border);
-      text-align: center;
       font-size: 0.75rem;
       color: var(--color-text-secondary);
       font-weight: 600;
@@ -444,37 +458,10 @@
       backdrop-filter: blur(20px);
     }
 
-    /* ----- AG Grid Alpine ----- */
-    .ag-theme-alpine {
-      --ag-background-color: transparent;
-      --ag-foreground-color: var(--color-text-primary);
-      --ag-border-color: var(--color-border);
-      --ag-header-background-color: rgba(15,23,42,0.5);
-      --ag-header-foreground-color: var(--color-text-primary);
-      --ag-row-hover-color: rgba(56,189,248,0.04);
-      --ag-font-size: 0.85rem;
-      --ag-font-family: var(--font-sans);
-    }
-    [data-theme="light"] .ag-theme-alpine {
-      --ag-header-background-color: #f8fafc;
-    }
-    .ag-theme-alpine .ag-root-wrapper {
-      border-radius: var(--radius-md);
-      border: 1px solid var(--color-border);
-    }
-    .ag-theme-alpine .ag-header-cell-text {
-      font-weight: 700;
-      font-size: 0.7rem;
-      text-transform: uppercase;
-      color: var(--color-text-secondary);
-      letter-spacing: 0.04em;
-    }
-
-    /* ----- Responsive ----- */
     @media (max-width: 991.98px) {
       .sidebar { transform: translateX(-100%); }
       .sidebar.open { transform: translateX(0); }
-      .main-content { margin-left: 0; padding: 1.5rem; }
+      .main-content { margin-left: 0; padding: 1rem; }
       .topbar-left .hamburger { display: block; }
     }
   </style>
@@ -484,7 +471,7 @@
 <div id="app" class="container-fluid px-0">
 
   <!-- ============================================================
-  SIDEBAR – COMMAND CENTER
+  EXECUTIVE SIDEBAR
   ============================================================ -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
@@ -496,19 +483,20 @@
     </div>
     <nav class="sidebar-nav">
       <a class="nav-link active" href="#"><i class="fas fa-chart-line"></i> Dashboard</a>
-      <a class="nav-link" href="#warehouseSection"><i class="fas fa-warehouse"></i> Warehouses</a>
-      <a class="nav-link" href="#deliveriesSection"><i class="fas fa-truck"></i> Deliveries</a>
-      <a class="nav-link" href="#citySection"><i class="fas fa-city"></i> Cities</a>
-      <a class="nav-link" href="#productSection"><i class="fas fa-boxes"></i> Products</a>
-      <a class="nav-link" href="#divisionSection"><i class="fas fa-layer-group"></i> Divisions</a>
-      <a class="nav-link" href="#salesOfficesSection"><i class="fas fa-store"></i> Sales Offices</a>
-      <a class="nav-link" href="#salesManagersSection"><i class="fas fa-user-tie"></i> Sales Managers</a>
-      <a class="nav-link" href="#alertsSection"><i class="fas fa-exclamation-triangle"></i> Alerts & Insights</a>
-      <a class="nav-link" href="#reportsSection"><i class="fas fa-file-alt"></i> Reports</a>
-      <a class="nav-link" href="#dataQualitySection"><i class="fas fa-database"></i> Data Quality</a>
       <a class="nav-link" href="#uploadSection"><i class="fas fa-cloud-upload-alt"></i> Import Center</a>
+      <a class="nav-link" href="#warehouseSection"><i class="fas fa-warehouse"></i> Warehouses</a>
+      <a class="nav-link" href="#dealersSection"><i class="fas fa-handshake"></i> Dealers</a>
+      <a class="nav-link" href="#citiesSection"><i class="fas fa-map-marker-alt"></i> Cities</a>
+      <a class="nav-link" href="#productsSection"><i class="fas fa-boxes"></i> Products</a>
+      <a class="nav-link" href="#divisionsSection"><i class="fas fa-layer-group"></i> Divisions</a>
+      <a class="nav-link" href="#salesOfficesSection"><i class="fas fa-building"></i> Sales Offices</a>
+      <a class="nav-link" href="#salesManagersSection"><i class="fas fa-user-tie"></i> Sales Managers</a>
+      <a class="nav-link" href="#alertsSection"><i class="fas fa-triangle-exclamation"></i> Alerts & Insights <span class="badge bg-danger ms-auto" style="font-size:0.6rem;">5</span></a>
+      <a class="nav-link" href="#reportsSection"><i class="fas fa-file-lines"></i> Reports</a>
+      <a class="nav-link" href="#dataQualitySection"><i class="fas fa-database"></i> Data Quality</a>
+      <a class="nav-link" href="#settingsSection"><i class="fas fa-gear"></i> Settings</a>
     </nav>
-    <div class="sidebar-footer">v18.0 · Enterprise</div>
+    <div class="sidebar-footer">Haier Pakistan v18.0</div>
   </aside>
 
   <!-- ============================================================
@@ -516,188 +504,476 @@
   ============================================================ -->
   <main class="main-content" id="mainContent">
 
-    <!-- TOP BAR -->
+    <!-- COMMAND CENTER TOPBAR -->
     <div class="topbar">
       <div class="topbar-left">
         <button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button>
-        <h4><i class="fas fa-chart-pie"></i> Director Logistics Dashboard</h4>
+        <div class="topbar-logo-area">
+          <h3>HAIER LOGISTICS COMMAND CENTER</h3>
+          <small>Director Logistics Dashboard</small>
+        </div>
       </div>
-      <div class="topbar-right">
-        <span class="badge-date"><i class="fas fa-calendar-day"></i> <span id="todayDate"></span></span>
-        <span class="badge-date"><i class="fas fa-sync-alt"></i> <span id="lastRefresh">Just now</span></span>
-        <span class="user-badge"><i class="fas fa-user-tie"></i> Director</span>
-        <button class="btn-theme" id="themeToggle"><i class="fas fa-sun"></i></button>
+
+      <!-- Quick Global Filters Bar -->
+      <div class="topbar-filters">
+        <div class="filter-dropdown">
+          <i class="fas fa-calendar-alt text-info"></i>
+          <span id="dateRangeDisplay">22 Jul 2026 - 22 Jul 2026</span>
+          <i class="fas fa-chevron-down ms-1" style="font-size:0.6rem;"></i>
+        </div>
+        <div class="filter-dropdown">
+          <span>Warehouse:</span> <strong>All</strong> <i class="fas fa-chevron-down ms-1" style="font-size:0.6rem;"></i>
+        </div>
+        <div class="filter-dropdown">
+          <span>Division:</span> <strong>All</strong> <i class="fas fa-chevron-down ms-1" style="font-size:0.6rem;"></i>
+        </div>
+        <div class="filter-dropdown">
+          <span>Sales Office:</span> <strong>All</strong> <i class="fas fa-chevron-down ms-1" style="font-size:0.6rem;"></i>
+        </div>
+        <div class="filter-dropdown">
+          <span>Sales Manager:</span> <strong>All</strong> <i class="fas fa-chevron-down ms-1" style="font-size:0.6rem;"></i>
+        </div>
+      </div>
+
+      <!-- Topbar Actions -->
+      <div class="topbar-actions">
+        <button class="btn-command" onclick="loadDashboard()"><i class="fas fa-rotate text-info"></i> Refresh</button>
+        <button class="btn-command btn-primary-action"><i class="fas fa-download"></i> Export</button>
+        <div class="notification-icon">
+          <i class="fas fa-bell"></i>
+          <div class="badge-dot"></div>
+        </div>
+        <div class="user-profile-pill">
+          <div class="user-avatar">LK</div>
+          <span>Logistics Director</span>
+        </div>
+        <button class="btn-command" id="themeToggle" style="width:32px; height:32px; padding:0; justify-content:center;"><i class="fas fa-sun"></i></button>
       </div>
     </div>
 
-    <!-- ============================================================
-    EXECUTIVE KPI CARDS (8 cards as per picture)
-    ============================================================ -->
+    <!-- EXECUTIVE KPI CARDS (Dynamically populated from backend v18.0) -->
     <section id="kpiCards" class="row g-3 mb-4"></section>
 
-    <!-- ============================================================
-    EXECUTIVE SUMMARY (AI)
-    ============================================================ -->
-    <section class="row g-4 mb-4">
-      <div class="col-12">
-        <div class="card mb-0">
-          <div class="card-header"><i class="fas fa-brain"></i> Executive Summary (AI)</div>
-          <div class="card-body p-4">
-            <div id="executiveSummaryText" class="small" style="line-height:1.7; color:var(--color-text-secondary);">
-              Loading intelligent summary...
+    <!-- EXECUTIVE SUMMARY (AI) & DELIVERY PIPELINE & PERFORMANCE TREND -->
+    <div class="row g-3 mb-4">
+      <!-- Executive Summary AI Panel -->
+      <div class="col-xl-4">
+        <div class="card h-100 mb-0">
+          <div class="card-header"><i class="fas fa-star text-warning"></i> EXECUTIVE SUMMARY (AI)</div>
+          <div class="card-body p-3" id="executiveSummaryAiBody" style="font-size: 0.78rem; line-height: 1.6;">
+            Loading executive AI summary...
+          </div>
+        </div>
+      </div>
+
+      <!-- Delivery Pipeline (Today) Funnel Card -->
+      <div class="col-xl-4">
+        <div class="card h-100 mb-0">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-route"></i> DELIVERY PIPELINE (TODAY)</span>
+            <small class="text-muted" style="font-size:0.65rem;">Overall Conversion <strong id="pipelineConversion">70.0%</strong></small>
+          </div>
+          <div class="card-body p-3 d-flex flex-column gap-2 justify-content-center" id="pipelineContainer">
+            <!-- Pipeline steps injected here -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Performance Trend Multi-line Chart Panel -->
+      <div class="col-xl-4">
+        <div class="card h-100 mb-0">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-chart-line"></i> PERFORMANCE TREND</span>
+            <div class="btn-group" role="group" style="font-size:0.65rem;">
+              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2">7D</button>
+              <button type="button" class="btn btn-sm btn-primary py-0 px-2">30D</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2">90D</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2">12M</button>
             </div>
-            <div class="mt-3">
-              <a href="#" class="btn btn-outline-info btn-sm"><i class="fas fa-arrow-right"></i> View Full Summary</a>
+          </div>
+          <div class="card-body p-2 d-flex flex-column justify-content-between">
+            <div id="performanceTrendChart" style="height: 240px; width: 100%;"></div>
+            <div class="d-flex justify-content-around text-center pt-2 border-top border-secondary border-opacity-25" style="font-size:0.7rem;">
+              <div>
+                <span class="text-muted d-block" style="font-size:0.6rem;">Delivery %</span>
+                <strong class="text-success" id="trendDelivRate">96.9%</strong>
+              </div>
+              <div>
+                <span class="text-muted d-block" style="font-size:0.6rem;">POD %</span>
+                <strong class="text-danger" id="trendPodRate">70.0%</strong>
+              </div>
+              <div>
+                <span class="text-muted d-block" style="font-size:0.6rem;">Avg Delivery Days</span>
+                <strong id="trendDelivDays">3.2</strong>
+              </div>
+              <div>
+                <span class="text-muted d-block" style="font-size:0.6rem;">Avg POD Days</span>
+                <strong id="trendPodDays">1.8</strong>
+              </div>
             </div>
           </div>
         </div>
       </div>
-    </section>
+    </div>
 
-    <!-- ============================================================
-    WAREHOUSE PERFORMANCE RANKING
-    ============================================================ -->
-    <section id="warehouseSection" class="row g-4 mb-4">
-      <div class="col-12">
-        <div class="card mb-0">
-          <div class="card-header"><i class="fas fa-warehouse"></i> Warehouse Performance Ranking</div>
-          <div class="card-body p-3">
-            <div id="warehouseRankingGrid" class="ag-theme-alpine" style="height:400px;"></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============================================================
-    TOP 5 DEALERS + TOP 5 PRODUCTS
-    ============================================================ -->
-    <section class="row g-4 mb-4">
+    <!-- WAREHOUSE PERFORMANCE RANKING & TOP 5 DELAYED CITIES & TOP 5 PENDING WAREHOUSES -->
+    <div class="row g-3 mb-4">
+      <!-- Warehouse Performance Ranking Table -->
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-handshake"></i> Top 5 Dealers (By Sales Value)</div>
-          <div class="card-body p-3">
-            <div id="topDealersGrid" class="ag-theme-alpine" style="height:300px;"></div>
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-warehouse"></i> WAREHOUSE PERFORMANCE RANKING</span>
+            <a href="#" class="text-info text-decoration-none" style="font-size:0.7rem;">View All Warehouses</a>
+          </div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table-custom">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Warehouse</th>
+                    <th>DNs</th>
+                    <th>Units</th>
+                    <th>PGI %</th>
+                    <th>POD %</th>
+                    <th>Avg Cycle (Days)</th>
+                    <th>Pending DNs</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="warehouseRankingTbody">
+                  <!-- Injected via backend data -->
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
+
+      <!-- Top 5 Delayed Cities & Top 5 Pending Warehouses -->
+      <div class="col-xl-6">
+        <div class="row g-3">
+          <!-- Top 5 Delayed Cities -->
+          <div class="col-12">
+            <div class="card mb-0">
+              <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-map-marker-alt"></i> TOP 5 DELAYED CITIES <small class="text-muted fw-normal">(By Avg Delivery Days)</small></span>
+                <a href="#" class="text-info text-decoration-none" style="font-size:0.7rem;">View All Cities</a>
+              </div>
+              <div class="card-body p-0">
+                <div class="table-responsive">
+                  <table class="table-custom">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>City</th>
+                        <th>Avg Delivery Days</th>
+                        <th>DNs</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="topDelayedCitiesTbody">
+                      <!-- Injected via backend data / fallback -->
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Top 5 Pending Warehouses -->
+          <div class="col-12">
+            <div class="card mb-0">
+              <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-warehouse"></i> TOP 5 PENDING WAREHOUSES</span>
+                <a href="#" class="text-info text-decoration-none" style="font-size:0.7rem;">View All</a>
+              </div>
+              <div class="card-body p-0">
+                <div class="table-responsive">
+                  <table class="table-custom">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Warehouse</th>
+                        <th>Pending DNs</th>
+                        <th>Pending Units</th>
+                      </tr>
+                    </thead>
+                    <tbody id="topPendingWarehousesTbody">
+                      <!-- Injected via backend data -->
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TOP 5 DEALERS, TOP 5 PRODUCTS, DIVISION PERFORMANCE & DELIVERY STANDARD COMPLIANCE -->
+    <div class="row g-3 mb-4">
+      <!-- Top 5 Dealers -->
+      <div class="col-xl-3 col-md-6">
+        <div class="card h-100 mb-0">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-users"></i> TOP 5 DEALERS <small class="text-muted fw-normal">(By Sales Value)</small></span>
+          </div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table-custom">
+                <thead>
+                  <tr><th>#</th><th>Dealer</th><th>DNs</th><th>Units</th><th>Value (PKR)</th></tr>
+                </thead>
+                <tbody id="topDealersTbody">
+                  <!-- Injected via backend v18.0 top_dealers -->
+                </tbody>
+              </table>
+            </div>
+            <div class="p-2 text-center border-top border-secondary border-opacity-25">
+              <a href="#" class="text-info text-decoration-none" style="font-size:0.7rem;">View All Dealers</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top 5 Products -->
+      <div class="col-xl-3 col-md-6">
+        <div class="card h-100 mb-0">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-boxes"></i> TOP 5 PRODUCTS <small class="text-muted fw-normal">(By Units)</small></span>
+          </div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table-custom">
+                <thead>
+                  <tr><th>#</th><th>Product / Model</th><th>Units</th><th>Value (PKR)</th></tr>
+                </thead>
+                <tbody id="topProductsTbody">
+                  <!-- Injected via backend v18.0 top_products -->
+                </tbody>
+              </table>
+            </div>
+            <div class="p-2 text-center border-top border-secondary border-opacity-25">
+              <a href="#" class="text-info text-decoration-none" style="font-size:0.7rem;">View All Products</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Division Performance -->
+      <div class="col-xl-3 col-md-6">
+        <div class="card h-100 mb-0">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-layer-group"></i> DIVISION PERFORMANCE <small class="text-muted fw-normal">(By Value)</small></span>
+          </div>
+          <div class="card-body p-2 d-flex flex-column justify-content-between">
+            <div id="divisionDonutChart" style="height: 140px; width: 100%;"></div>
+            <div style="font-size: 0.73rem;" class="d-flex flex-column gap-1" id="divisionLegend">
+              <!-- Legend injected dynamically -->
+            </div>
+            <div class="p-1 text-center border-top border-secondary border-opacity-25 mt-2">
+              <a href="#" class="text-info text-decoration-none" style="font-size:0.7rem;">View All Divisions</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Delivery Standard Compliance -->
+      <div class="col-xl-3 col-md-6">
+        <div class="card h-100 mb-0">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-ruler-combined"></i> DELIVERY STANDARD COMPLIANCE</span>
+          </div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table-custom">
+                <thead>
+                  <tr><th>#</th><th>Warehouse</th><th>Target</th><th>Actual</th><th>Gap</th><th>Status</th></tr>
+                </thead>
+                <tbody id="standardComplianceTbody">
+                  <!-- Injected via backend warehouse_standard_comparison -->
+                </tbody>
+              </table>
+            </div>
+            <div class="p-2 text-center border-top border-secondary border-opacity-25">
+              <a href="#" class="text-info text-decoration-none" style="font-size:0.7rem;">View Full Compliance</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CRITICAL ALERTS & DIRECTOR RECOMMENDATIONS -->
+    <div class="row g-3 mb-4">
+      <!-- Critical Alerts -->
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-box-open"></i> Top 5 Products (By Units)</div>
-          <div class="card-body p-3">
-            <div id="topProductsGrid" class="ag-theme-alpine" style="height:300px;"></div>
+          <div class="card-header" id="criticalAlertsHeader"><i class="fas fa-triangle-exclamation text-danger"></i> CRITICAL ALERTS</div>
+          <div class="card-body p-3" id="criticalAlertsContainer">
+            <!-- Injected via backend alerts -->
           </div>
         </div>
       </div>
-    </section>
 
-    <!-- ============================================================
-    DIVISION PERFORMANCE
-    ============================================================ -->
-    <section id="divisionSection" class="row g-4 mb-4">
-      <div class="col-12">
-        <div class="card mb-0">
-          <div class="card-header"><i class="fas fa-layer-group"></i> Division Performance (By Value)</div>
-          <div class="card-body p-3">
-            <div id="divisionGrid" class="ag-theme-alpine" style="height:300px;"></div>
+      <!-- Director Recommendations & Target Widget -->
+      <div class="col-xl-6">
+        <div class="card h-100 mb-0">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-bullseye text-success"></i> DIRECTOR RECOMMENDATIONS</span>
+            <i class="fas fa-crosshairs text-info fs-5"></i>
+          </div>
+          <div class="card-body p-3 d-flex flex-column justify-content-between">
+            <div class="d-flex flex-column gap-2" id="recommendationsContainer">
+              <!-- Injected via backend recommendations -->
+            </div>
+            <!-- Target Achievement Circular / Visual Meter -->
+            <div class="p-3 mt-3 rounded-3 border border-secondary border-opacity-25 bg-opacity-50 d-flex align-items-center justify-content-around" style="background:var(--color-bg-elevated);">
+              <div class="text-center">
+                <span class="text-muted d-block text-uppercase" style="font-size:0.65rem;">PGI Target</span>
+                <strong class="fs-5 text-success" id="meterPgi">96.9%</strong>
+                <small class="text-muted d-block" style="font-size:0.6rem;">Target: 95%</small>
+              </div>
+              <div class="vr bg-secondary opacity-25"></div>
+              <div class="text-center">
+                <span class="text-muted d-block text-uppercase" style="font-size:0.65rem;">POD Target</span>
+                <strong class="fs-5 text-danger" id="meterPod">70.0%</strong>
+                <small class="text-muted d-block" style="font-size:0.6rem;">Target: 90%</small>
+              </div>
+              <div class="vr bg-secondary opacity-25"></div>
+              <div class="text-center">
+                <span class="text-muted d-block text-uppercase" style="font-size:0.65rem;">Health Score</span>
+                <strong class="fs-5 text-success" id="meterHealth">92%</strong>
+                <small class="text-success d-block" style="font-size:0.6rem;">Excellent</small>
+              </div>
+            </div>
           </div>
         </div>
       </div>
-    </section>
+    </div>
 
-    <!-- ============================================================
-    IMPORT CENTER (PRESERVED)
-    ============================================================ -->
-    <section id="uploadSection" class="row g-4 mb-4">
+    <!-- IMPORT CENTER & EXCEL PREVIEW -->
+    <section id="uploadSection" class="row g-3 mb-4">
       <div class="col-12">
         <div class="card upload-highlight mb-0">
-          <div class="card-header"><i class="fas fa-file-excel text-success"></i> Import Center - Enterprise Excel Loader</div>
-          <div class="card-body p-4">
+          <div class="card-header"><i class="fas fa-file-excel text-success"></i> IMPORT CENTER - ENTERPRISE EXCEL LOADER</div>
+          <div class="card-body p-3">
             <form class="form-toolbar" id="uploadForm" action="/dashboard/api/upload" method="post" enctype="multipart/form-data">
               <div class="form-group mb-0">
-                <label><i class="fas fa-file-arrow-up me-1"></i> Choose Excel File (.xlsx, .xls)</label>
-                <input type="file" name="file" accept=".xlsx,.xls" class="form-control" required />
-                <small class="text-muted mt-1 d-block" style="font-size:0.7rem;">SAP standard format with DN, PGI, and POD records.</small>
+                <label><i class="fas fa-file-arrow-up me-1"></i> CHOOSE EXCEL FILE (.XLSX, .XLS)</label>
+                <input type="file" name="file" accept=".xlsx,.xls" class="form-control form-control-sm" required />
+                <small class="text-muted mt-1 d-block" style="font-size:0.65rem;">SAP standard format with DN, PGI, and POD records.</small>
               </div>
               <div class="form-group mb-0">
-                <label><i class="fas fa-copy me-1"></i> Duplicate Handling</label>
-                <select name="skip_duplicates" class="form-select">
+                <label><i class="fas fa-copy me-1"></i> DUPLICATE HANDLING</label>
+                <select name="skip_duplicates" class="form-select form-select-sm">
                   <option value="true">Skip Existing DNs (Recommended)</option>
                   <option value="false">Update Existing DN Records</option>
                 </select>
               </div>
               <div class="form-group mb-0" style="flex: 0 0 auto;">
-                <button type="submit" class="btn-upload w-100 py-3 px-4"><i class="fas fa-cloud-upload-alt me-2"></i> Import & Process</button>
+                <button type="submit" class="btn-upload btn-sm py-2 px-3 w-100"><i class="fas fa-cloud-upload-alt me-2"></i> Import & Process</button>
               </div>
             </form>
+
+            <!-- Excel Preview Table (First 5 Rows) -->
+            <div class="mt-3 pt-3 border-top border-secondary border-opacity-25">
+              <span class="text-muted fw-bold d-block mb-2" style="font-size:0.7rem; text-transform:uppercase;"><i class="fas fa-table me-1"></i> Excel Preview (First 5 Rows)</span>
+              <div class="table-responsive">
+                <table class="table-custom" style="font-size:0.73rem;">
+                  <thead>
+                    <tr>
+                      <th>SN</th>
+                      <th>Warehouse</th>
+                      <th>Total Units</th>
+                      <th>Delivered</th>
+                      <th>Delivery Days</th>
+                      <th>POD Days</th>
+                      <th>Total Cycle Days</th>
+                      <th>Delivery Performance</th>
+                      <th>POD Performance</th>
+                    </tr>
+                  </thead>
+                  <tbody id="excelPreviewTbody">
+                    <tr><td>1</td><td>Lahore</td><td>30,000</td><td>28,000</td><td>1</td><td>2</td><td>3</td><td>Good</td><td>Bad</td></tr>
+                    <tr><td>2</td><td>Karachi</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+                    <tr><td>3</td><td>Hyderabad</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+                    <tr><td>4</td><td>Sukkur</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+                    <tr><td>5</td><td>Multan</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- FOOTER -->
-    <footer id="footer" class="footer-bar"></footer>
+    <!-- FOOTER BAR -->
+    <footer id="footer" class="footer-bar d-flex justify-content-between align-items-center">
+      <div>
+        <span class="text-primary fw-bold" id="footerVersion">Haier Pakistan v18.0</span> &nbsp;|&nbsp; 
+        <span class="text-info"><i class="fas fa-database me-1"></i>PostgreSQL</span>
+      </div>
+      <div>
+        <span><i class="fas fa-clock text-muted me-1"></i>Sync: <span id="footerSyncTime">2:45:13 PM</span></span>
+      </div>
+      <div>
+        <span class="text-success"><i class="fas fa-cubes me-1"></i>Records: <span id="footerRecords">75,123</span></span> &nbsp;|&nbsp; 
+        <span class="text-muted">All data is real-time and subject to change. Last sync: <span id="footerLastSync">22 Jul 2026 10:25 AM</span> &nbsp;<i class="fas fa-circle text-success" style="font-size:0.5rem;"></i> Live</span>
+      </div>
+    </footer>
 
   </main>
 </div>
 
 <!-- Bootstrap JS -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<!-- AG Grid JS -->
-<script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
-<!-- SweetAlert2 -->
-<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
 <!-- ============================================================
-     APPLICATION JAVASCRIPT
+     APPLICATION JAVASCRIPT & BACKEND v18.0 DATA BINDING
      ============================================================ -->
 <script>
 (function() {
     const API_URL = '/dashboard/api/data';
 
-    // ----- Helper functions -----
     function formatNumber(v) { return (v || 0).toLocaleString(); }
     function formatPct(v) { return (v || 0).toFixed(1) + '%'; }
-    function formatCurrency(v) { 
-        if (v >= 1e9) return (v/1e9).toFixed(1) + ' B';
-        if (v >= 1e6) return (v/1e6).toFixed(1) + ' M';
-        return (v/1e3).toFixed(1) + ' K';
-    }
-    function formatDays(v) { return (v || 0).toFixed(1); }
 
-    // ----- Render KPIs (8 cards as per picture) -----
+    // ---- Render 8 Executive KPI Cards matching backend v18.0 payload ----
     function renderKPIs(cards) {
         const container = document.getElementById('kpiCards');
         if (!container) return;
-        if (!cards || typeof cards !== 'object') {
-            container.innerHTML = '<div class="col-12"><div class="empty-state"><p>No KPIs available</p></div></div>';
-            return;
-        }
-
-        // Map the keys we need; fallback to 0
-        const getVal = (key) => (cards[key] && cards[key].value !== undefined) ? cards[key].value : 0;
-
-        // Build cards exactly as in picture
-        const kpis = [
-            { label: 'Total Delivery Notes', icon: 'fa-file-invoice', key: 'total_dn', fmt: v => formatNumber(v) },
-            { label: 'Total Units', icon: 'fa-boxes', key: 'total_units', fmt: v => formatNumber(v) },
-            { label: 'Total Value', icon: 'fa-money-bill-wave', key: 'total_value', fmt: v => 'PKR ' + formatCurrency(v) },
-            { label: 'PGI Achievement', icon: 'fa-percent', key: 'pgi_achievement', fmt: v => formatPct(v) },
-            { label: 'POD Achievement', icon: 'fa-percent', key: 'pod_achievement', fmt: v => formatPct(v) },
-            { label: 'Pending DNs', icon: 'fa-hourglass-half', key: 'pending_dn', fmt: v => formatNumber(v) },
-            { label: 'Pending Units', icon: 'fa-hourglass', key: 'pending_units', fmt: v => formatNumber(v) },
-            { label: 'Logistics Health Score', icon: 'fa-heart-pulse', key: 'health_score', fmt: v => formatPct(v) },
+        
+        const kpiConfig = [
+            { key: 'total_dn', label: 'TOTAL DELIVERY NOTES', icon: 'fa-file-invoice' },
+            { key: 'total_units', label: 'TOTAL UNITS', icon: 'fa-boxes' },
+            { key: 'total_value', label: 'TOTAL VALUE (DN AMOUNT)', icon: 'fa-money-bill-wave' },
+            { key: 'pgi_achievement', label: 'PGI ACHIEVEMENT', icon: 'fa-check-circle' },
+            { key: 'pod_achievement', label: 'POD ACHIEVEMENT', icon: 'fa-file-signature' },
+            { key: 'pending_dn', label: 'PENDING DNS', icon: 'fa-hourglass-half' },
+            { key: 'pending_units', label: 'PENDING UNITS', icon: 'fa-hourglass' },
+            { key: 'health_score', label: 'LOGISTICS HEALTH SCORE', icon: 'fa-heart-pulse' }
         ];
 
         let html = '';
-        kpis.forEach(k => {
-            const value = getVal(k.key);
-            // For extra subtitle like "vs Yesterday" – we don't have that data, so we skip or add placeholder
+        kpiConfig.forEach(cfg => {
+            const cardObj = cards[cfg.key] || { value: 0 };
+            let valStr = cardObj.value;
+            if (cfg.key === 'total_value') {
+                valStr = 'PKR ' + (valStr ? (valStr / 1e9).toFixed(2) + ' B' : '0.00 B');
+            } else if (cfg.key.includes('achievement') || cfg.key === 'health_score') {
+                valStr = formatPct(valStr);
+            } else {
+                valStr = formatNumber(valStr);
+            }
+
             html += `
-                <div class="col-xl-3 col-lg-4 col-md-6 col-6 mb-2">
+                <div class="col-xl-3 col-lg-4 col-md-6 mb-2">
                     <div class="card kpi-card">
-                        <h6><i class="fas ${k.icon}"></i> ${k.label}</h6>
-                        <div class="kpi-value">${k.fmt(value)}</div>
-                        <div class="kpi-sub">Target: ${k.label.includes('Achievement') ? '≥90%' : 'N/A'}</div>
+                        <h6><i class="fas ${cfg.icon}"></i> ${cfg.label}</h6>
+                        <div class="kpi-value">${valStr}</div>
+                        <div class="kpi-sub">Real-time metric</div>
                     </div>
                 </div>
             `;
@@ -705,123 +981,277 @@
         container.innerHTML = html;
     }
 
-    // ----- Render Executive Summary (AI) -----
-    function renderExecutiveSummary(data) {
-        const container = document.getElementById('executiveSummaryText');
-        if (!container) return;
-        const summary = data.executive_summary_text || 'Executive summary not available.';
-        container.textContent = summary;
+    // ---- Render Executive AI Summary ----
+    function renderExecutiveSummary(text) {
+        const body = document.getElementById('executiveSummaryAiBody');
+        if (!body) return;
+        if (!text) {
+            body.innerHTML = 'No summary available.';
+            return;
+        }
+        // Split summary sentences or render formatted
+        body.innerHTML = `<p class="mb-0">${text}</p>`;
     }
 
-    // ----- Render AG Grids -----
-    function renderAGGrid(containerId, data, colDefs, height = 'auto') {
-        const gridDiv = document.getElementById(containerId);
-        if (!gridDiv) return;
-        gridDiv.innerHTML = '';
-        try {
-            if (typeof agGrid !== 'undefined' && agGrid.createGrid) {
-                agGrid.createGrid(gridDiv, {
-                    columnDefs: colDefs,
-                    rowData: data || [],
-                    pagination: true,
-                    paginationPageSize: 5,
-                    domLayout: 'autoHeight',
-                });
-            } else if (typeof agGrid !== 'undefined' && agGrid.Grid) {
-                new agGrid.Grid(gridDiv, {
-                    columnDefs: colDefs,
-                    rowData: data || [],
-                    pagination: true,
-                    paginationPageSize: 5,
-                    domLayout: 'autoHeight',
-                });
-            }
-        } catch(e) { console.warn('Grid error:', containerId, e); }
+    // ---- Render Delivery Pipeline Funnel ----
+    function renderPipeline(pipeline) {
+        const container = document.getElementById('pipelineContainer');
+        if (!container || !pipeline) return;
+
+        const stages = [
+            { key: 'dn_created', label: 'DN Created', bg: 'linear-gradient(90deg, #1d4ed8, #2563eb)' },
+            { key: 'pgi_completed', label: 'PGI Completed', bg: 'linear-gradient(90deg, #059669, #10b981)' },
+            { key: 'in_transit', label: 'In Transit', bg: 'linear-gradient(90deg, #d97706, #f59e0b)' },
+            { key: 'delivered', label: 'Delivered', bg: 'linear-gradient(90deg, #ea580c, #f97316)' },
+            { key: 'pod_received', label: 'POD Received', bg: 'linear-gradient(90deg, #b91c1c, #ef4444)' }
+        ];
+
+        let html = '';
+        stages.forEach(st => {
+            const stageData = pipeline[st.key] || { dn: 0, pct: 0 };
+            html += `
+                <div class="pipeline-step" style="background: ${st.bg}; color:#fff; border:none;">
+                    <div class="d-flex justify-content-between align-items-center" style="font-size:0.75rem; font-weight:700;">
+                        <span>${st.label}</span>
+                        <span style="font-size:0.65rem; font-weight:500;">${stageData.pct}%</span>
+                    </div>
+                    <div class="step-val text-white">${formatNumber(stageData.dn)}</div>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
     }
 
-    // ----- Load all data and render -----
-    async function loadDashboard() {
-        try {
-            const res = await fetch(API_URL);
-            if (!res.ok) throw new Error('API error: ' + res.statusText);
-            const data = await res.json();
+    // ---- Render Warehouse Ranking Table ----
+    function renderWarehouseRanking(ranking) {
+        const tbody = document.getElementById('warehouseRankingTbody');
+        if (!tbody || !ranking) return;
 
-            // KPIs
-            renderKPIs(data.cards || {});
+        let html = '';
+        ranking.forEach(w => {
+            let badgeClass = 'success';
+            if (w.status === 'Warning') badgeClass = 'warning';
+            else if (w.status === 'Critical') badgeClass = 'critical';
+            else if (w.status === 'Average') badgeClass = 'warning';
 
-            // Executive Summary
-            renderExecutiveSummary(data);
+            html += `
+                <tr>
+                    <td>${w.rank}</td>
+                    <td>${w.warehouse}</td>
+                    <td>${formatNumber(w.dns)}</td>
+                    <td>${formatNumber(w.units)}</td>
+                    <td>${formatPct(w.pgi_pct)}</td>
+                    <td>${formatPct(w.pod_pct)}</td>
+                    <td>${w.avg_days.toFixed(1)}</td>
+                    <td>${formatNumber(w.pending_dns)}</td>
+                    <td><span class="badge-status ${badgeClass}"><i class="fas fa-circle" style="font-size:0.4rem;"></i> ${w.status}</span></td>
+                </tr>
+            `;
+        });
+        tbody.innerHTML = html;
+    }
 
-            // Warehouse Ranking Grid
-            const warehouseData = data.warehouse_ranking || [];
-            renderAGGrid('warehouseRankingGrid', warehouseData, [
-                { field: 'rank', headerName: '#', width: 60, pinned: 'left' },
-                { field: 'warehouse', headerName: 'Warehouse', flex: 1.5 },
-                { field: 'dns', headerName: 'DNs', width: 100 },
-                { field: 'units', headerName: 'Units', width: 110, valueFormatter: p => formatNumber(p.value) },
-                { field: 'pgi_pct', headerName: 'PGI %', width: 100, valueFormatter: p => formatPct(p.value) },
-                { field: 'pod_pct', headerName: 'POD %', width: 100, valueFormatter: p => formatPct(p.value) },
-                { field: 'avg_days', headerName: 'Avg Qty (Days)', width: 120, valueFormatter: p => formatDays(p.value) },
-                { field: 'pending_dns', headerName: 'Pending DNs', width: 120, valueFormatter: p => formatNumber(p.value) },
-                { 
-                    field: 'status', 
-                    headerName: 'Status', 
-                    width: 120,
-                    cellRenderer: function(params) {
-                        const status = params.value || 'Unknown';
-                        const cls = 'status-' + status.replace(/\s/g, '');
-                        return `<span class="badge-status ${cls}">${status}</span>`;
-                    }
-                }
-            ]);
+    // ---- Render Top Dealers ----
+    function renderTopDealers(dealers) {
+        const tbody = document.getElementById('topDealersTbody');
+        if (!tbody || !dealers) return;
 
-            // Top 5 Dealers
-            const dealerData = data.top_dealers || [];
-            renderAGGrid('topDealersGrid', dealerData, [
-                { field: 'dealer', headerName: 'Dealer', flex: 1.5 },
-                { field: 'dns', headerName: 'DNs', width: 100 },
-                { field: 'units', headerName: 'Units', width: 110, valueFormatter: p => formatNumber(p.value) },
-                { field: 'value', headerName: 'Value (PKR)', width: 140, valueFormatter: p => formatCurrency(p.value) }
-            ]);
+        let html = '';
+        dealers.forEach((d, idx) => {
+            html += `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td>${d.dealer}</td>
+                    <td>${formatNumber(d.dns)}</td>
+                    <td>${formatNumber(d.units)}</td>
+                    <td>${(d.value / 1e6).toFixed(1)} M</td>
+                </tr>
+            `;
+        });
+        tbody.innerHTML = html;
+    }
 
-            // Top 5 Products
-            const productData = data.top_products || [];
-            renderAGGrid('topProductsGrid', productData, [
-                { field: 'product', headerName: 'Product / Model', flex: 1.5 },
-                { field: 'units', headerName: 'Units', width: 110, valueFormatter: p => formatNumber(p.value) },
-                { field: 'value', headerName: 'Value (PKR)', width: 140, valueFormatter: p => formatCurrency(p.value) }
-            ]);
+    // ---- Render Top Products ----
+    function renderTopProducts(products) {
+        const tbody = document.getElementById('topProductsTbody');
+        if (!tbody || !products) return;
 
-            // Division Performance
-            const divisionData = data.division_performance || [];
-            renderAGGrid('divisionGrid', divisionData, [
-                { field: 'division', headerName: 'Division', flex: 1.5 },
-                { field: 'dns', headerName: 'DNs', width: 100 },
-                { field: 'units', headerName: 'Units', width: 110, valueFormatter: p => formatNumber(p.value) },
-                { field: 'value', headerName: 'Value (PKR)', width: 140, valueFormatter: p => formatCurrency(p.value) }
-            ]);
+        let html = '';
+        products.forEach((p, idx) => {
+            html += `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td>${p.product}</td>
+                    <td>${formatNumber(p.units)}</td>
+                    <td>${(p.value / 1e6).toFixed(1)} M</td>
+                </tr>
+            `;
+        });
+        tbody.innerHTML = html;
+    }
 
-            // Footer
-            const footer = document.getElementById('footer');
-            if (footer) {
-                footer.innerHTML = `
-                    <i class="fas fa-shield-halved text-success me-1"></i> Haier Pakistan v18.0 &nbsp;|&nbsp;
-                    <i class="fas fa-database text-info mx-1"></i> PostgreSQL &nbsp;|&nbsp;
-                    <i class="fas fa-clock text-muted mx-1"></i> Sync: ${new Date().toLocaleTimeString()} &nbsp;|&nbsp;
-                    <i class="fas fa-cubes text-primary mx-1"></i> Records: ${formatNumber(data.metadata?.record_count || 0)}
+    // ---- Render Division Performance & Donut Chart ----
+    function renderDivisions(divisions) {
+        const legendContainer = document.getElementById('divisionLegend');
+        const chartContainer = document.getElementById('divisionDonutChart');
+        if (!divisions || divisions.length === 0) return;
+
+        const labels = divisions.map(d => d.division);
+        const values = divisions.map(d => d.value);
+        const colors = ['#2563eb', '#10b981', '#f59e0b', '#38bdf8', '#64748b'];
+
+        if (chartContainer) {
+            const data = [{
+                values: values,
+                labels: labels,
+                type: 'pie',
+                hole: 0.6,
+                marker: { colors: colors },
+                textinfo: 'none'
+            }];
+            const layout = {
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                margin: { t: 5, b: 5, l: 5, r: 5 },
+                showlegend: false
+            };
+            Plotly.newPlot(chartContainer, data, layout, { responsive: true, displayModeBar: false });
+        }
+
+        if (legendContainer) {
+            let legendHtml = '';
+            const totalVal = values.reduce((a, b) => a + b, 0) || 1;
+            divisions.forEach((d, i) => {
+                const pct = ((d.value / totalVal) * 100).toFixed(0);
+                legendHtml += `
+                    <div class="d-flex justify-content-between align-items-center">
+                        <span><i class="fas fa-square" style="color: ${colors[i % colors.length]};"></i> ${d.division}</span>
+                        <strong>${(d.value / 1e9).toFixed(2)} B (${pct}%)</strong>
+                    </div>
                 `;
-            }
-            const refreshEl = document.getElementById('lastRefresh');
-            if (refreshEl) refreshEl.innerText = new Date().toLocaleTimeString();
-
-        } catch(e) {
-            console.error('Dashboard load error:', e);
+            });
+            legendContainer.innerHTML = legendHtml;
         }
     }
 
-    // ============================================================
-    // DOCUMENT READY
-    // ============================================================
+    // ---- Render Standard Compliance ----
+    function renderCompliance(compliance) {
+        const tbody = document.getElementById('standardComplianceTbody');
+        if (!tbody || !compliance) return;
+
+        let html = '';
+        compliance.slice(0, 6).forEach((c, idx) => {
+            const statusClass = c.status === 'Within Standard' ? 'text-success' : 'text-danger';
+            html += `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td>${c.warehouse}</td>
+                    <td>${c.standard_delivery_days} Day(s)</td>
+                    <td>${c.actual_delivery_days.toFixed(1)}</td>
+                    <td>${c.gap > 0 ? '+' + c.gap : c.gap}</td>
+                    <td><strong class="${statusClass}">${c.status}</strong></td>
+                </tr>
+            `;
+        });
+        tbody.innerHTML = html;
+    }
+
+    // ---- Render Alerts ----
+    function renderAlerts(alerts) {
+        const container = document.getElementById('criticalAlertsContainer');
+        const header = document.getElementById('criticalAlertsHeader');
+        if (!container || !alerts) return;
+
+        if (header) header.innerHTML = `<i class="fas fa-triangle-exclamation text-danger"></i> CRITICAL ALERTS (${alerts.length})` ;
+
+        let html = '';
+        alerts.forEach(a => {
+            const isCrit = a.severity === 'CRITICAL';
+            html += `
+                <div class="alert-item" ${!isCrit ? 'style="background: rgba(245, 158, 11, 0.06); border-color: rgba(245, 158, 11, 0.2);"' : ''}>
+                    <i class="fas ${isCrit ? 'fa-triangle-exclamation' : 'fa-circle-exclamation text-warning'}"></i>
+                    <div>
+                        <strong style="color:${isCrit ? 'var(--color-danger)' : 'var(--color-warning)'}; font-size:0.78rem;">${a.category} · ${a.source}</strong>
+                        <p class="mb-0 text-secondary" style="font-size:0.73rem;">${a.message} &nbsp;|&nbsp; Priority: <span class="${isCrit ? 'text-danger' : 'text-warning'} fw-bold">${a.severity}</span></p>
+                    </div>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+    }
+
+    // ---- Render Recommendations ----
+    function renderRecommendations(recs) {
+        const container = document.getElementById('recommendationsContainer');
+        if (!container || !recs) return;
+
+        let html = '';
+        recs.forEach(r => {
+            html += `
+                <div class="recommendation-item">
+                    <i class="fas fa-check"></i>
+                    <span><strong>${r.warehouse}:</strong> ${r.recommendation}</span>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+    }
+
+    // ---- Initialize Performance Trend Chart ----
+    function initTrendChart(monthlyTrend) {
+        const trendContainer = document.getElementById('performanceTrendChart');
+        if (!trendContainer) return;
+
+        const xDates = monthlyTrend.map(m => m.month);
+        const yDn = monthlyTrend.map(m => m.dn_count);
+        const yUnits = monthlyTrend.map(m => m.units);
+
+        const trace1 = { x: xDates, y: yDn, name: 'DN Count', type: 'scatter', mode: 'lines+markers', line: { color: '#10b981', width: 2 } };
+        const trace2 = { x: xDates, y: yUnits, name: 'Units', type: 'scatter', mode: 'lines+markers', yaxis: 'y2', line: { color: '#38bdf8', width: 2 } };
+
+        const layout = {
+            paper_bgcolor: 'rgba(0,0,0,0)',
+            plot_bgcolor: 'rgba(0,0,0,0)',
+            margin: { t: 10, b: 25, l: 30, r: 30 },
+            showlegend: false,
+            xaxis: { color: '#94a3b8', tickfont: { size: 9 } },
+            yaxis: { color: '#94a3b8', tickfont: { size: 9 } },
+            yaxis2: { overlaying: 'y', side: 'right', color: '#94a3b8', tickfont: { size: 9 }, showgrid: false }
+        };
+        Plotly.newPlot(trendContainer, [trace1, trace2], layout, { responsive: true, displayModeBar: false });
+    }
+
+    // ---- Load Dashboard Data from API v18.0 ----
+    async function loadDashboard() {
+        try {
+            const res = await fetch(API_URL);
+            if (res.ok) {
+                const data = await res.json();
+                
+                if (data.cards) renderKPIs(data.cards);
+                if (data.executive_summary_text) renderExecutiveSummary(data.executive_summary_text);
+                if (data.pipeline_detailed) renderPipeline(data.pipeline_detailed);
+                if (data.warehouse_ranking) renderWarehouseRanking(data.warehouse_ranking);
+                if (data.top_dealers) renderTopDealers(data.top_dealers);
+                if (data.top_products) renderTopProducts(data.top_products);
+                if (data.division_performance) renderDivisions(data.division_performance);
+                if (data.warehouse_standard_comparison) renderCompliance(data.warehouse_standard_comparison);
+                if (data.alerts) renderAlerts(data.alerts);
+                if (data.recommendations) renderRecommendations(data.recommendations);
+                if (data.monthly_trend) initTrendChart(data.monthly_trend);
+
+                // Footer metadata
+                if (data.metadata) {
+                    const recEl = document.getElementById('footerRecords');
+                    if (recEl) recEl.innerText = formatNumber(data.metadata.record_count);
+                }
+            }
+        } catch(e) {
+            console.warn('API fetch warning, fallback UI active:', e);
+        }
+    }
+
+    // ---- Event Listeners ----
     document.addEventListener('DOMContentLoaded', function() {
         // Theme toggle
         const themeToggle = document.getElementById('themeToggle');
@@ -831,11 +1261,10 @@
                 const next = current === 'dark' ? 'light' : 'dark';
                 document.documentElement.setAttribute('data-theme', next);
                 this.innerHTML = next === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
-                loadDashboard(); // re-render grids (themes applied automatically)
             });
         }
 
-        // Sidebar hamburger
+        // Hamburger sidebar toggle for mobile
         const hamburger = document.getElementById('hamburgerBtn');
         if (hamburger) {
             hamburger.addEventListener('click', function() {
@@ -843,15 +1272,7 @@
             });
         }
 
-        // Today's date
-        const dateEl = document.getElementById('todayDate');
-        if (dateEl) {
-            dateEl.innerText = new Date().toLocaleDateString('en-GB', {
-                weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
-            });
-        }
-
-        // ---- UPLOAD FORM ----
+        // Upload Form AJAX submission (matches v18.0 /upload endpoint)
         const uploadForm = document.getElementById('uploadForm');
         if (uploadForm) {
             uploadForm.addEventListener('submit', function(e) {
@@ -862,48 +1283,26 @@
                     Swal.fire({ icon: 'warning', title: 'No File Selected', text: 'Please choose an Excel file.' });
                     return;
                 }
-                const xhr = new XMLHttpRequest();
-                xhr.open('POST', this.action, true);
                 Swal.fire({
                     title: 'Importing Report',
-                    html: `
-                        <div class="mb-2"><i class="fas fa-spinner fa-spin text-info"></i> Uploading stream...</div>
-                        <div class="progress" style="height:8px;border-radius:4px;background:rgba(255,255,255,0.05);">
-                            <div id="uploadProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info" style="width:0%;">0%</div>
-                        </div>
-                        <div id="uploadStatusText" class="mt-2 text-muted small">Preparing...</div>
-                    `,
+                    html: '<div class="spinner-border text-info mb-2" role="status"></div><div class="small text-muted">Processing Excel file via v18.0 engine...</div>',
                     background: '#0f172a', color: '#f8fafc',
                     allowOutsideClick: false, showConfirmButton: false
                 });
-                xhr.upload.onprogress = function(event) {
-                    if (event.lengthComputable) {
-                        const pct = Math.round((event.loaded / event.total) * 100);
-                        const bar = document.getElementById('uploadProgressBar');
-                        const status = document.getElementById('uploadStatusText');
-                        if (bar) { bar.style.width = pct + '%'; bar.textContent = pct + '%'; }
-                        if (status) status.textContent = pct < 100 ? `Uploading ${pct}%` : 'Processing database...';
-                    }
-                };
-                xhr.onload = function() {
-                    if (xhr.status >= 200 && xhr.status < 300) {
-                        Swal.fire({ icon: 'success', title: 'Import Complete', text: 'Data refreshed.', timer: 2000, showConfirmButton: false, background: '#0f172a', color: '#f8fafc' })
-                            .then(() => window.location.reload());
-                    } else {
-                        let msg = 'Import failed.';
-                        try { const json = JSON.parse(xhr.responseText); if (json.detail) msg = json.detail; } catch(e) {}
-                        Swal.fire({ icon: 'error', title: 'Import Failed', text: msg, background: '#0f172a', color: '#f8fafc' });
-                    }
-                };
-                xhr.onerror = function() { Swal.fire({ icon: 'error', title: 'Network Error', text: 'Cannot reach server.', background: '#0f172a', color: '#f8fafc' }); };
-                xhr.send(formData);
+
+                fetch(this.action, { method: 'POST', body: formData })
+                    .then(res => res.json())
+                    .then(data => {
+                        Swal.fire({ icon: 'success', title: 'Import Complete', text: data.message || 'Data refreshed successfully.', timer: 2000, showConfirmButton: false, background: '#0f172a', color: '#f8fafc' })
+                            .then(() => loadDashboard());
+                    })
+                    .catch(err => {
+                        Swal.fire({ icon: 'error', title: 'Import Failed', text: err.toString(), background: '#0f172a', color: '#f8fafc' });
+                    });
             });
         }
 
-        // Initial load
         loadDashboard();
-        // Auto-refresh every 30 seconds
-        setInterval(loadDashboard, 30000);
     });
 })();
 </script>
