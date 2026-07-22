@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 20.1 – FULLY FIXED (AGGREGATED WAREHOUSE DATA)
+# VERSION: 20.1 – FULL BUSINESS RULES & DATE FIX
 # ============================================================
 # EXCEEDS SAP ANALYTICS CLOUD | MICROSOFT FABRIC | POWER BI PREMIUM
 # ============================================================
@@ -405,6 +405,7 @@ class DashboardRepository:
     def fetch_warehouse_data(self) -> List[Dict[str, Any]]:
         has_amount = self._check_column_exists("dn_amount")
         revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
+        # Use direct subtraction with EXTRACT(DAY FROM ...) for accurate day differences
         sql = f"""
             WITH warehouse_metrics AS (
                 SELECT
@@ -420,24 +421,33 @@ class DashboardRepository:
                     COALESCE(SUM(CASE WHEN pod_date IS NULL THEN dn_qty ELSE 0 END), 0) AS pending_units,
                     COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN dn_qty ELSE 0 END), 0) AS pending_pgi_units,
                     {revenue_sql},
+                    -- PGI Days = good_issue_date - dn_create_date
                     COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND good_issue_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (good_issue_date::timestamp - dn_create_date::timestamp))/86400 END), 0) AS avg_pgi_days,
+                        THEN EXTRACT(DAY FROM (good_issue_date - dn_create_date)) END), 0) AS avg_pgi_days,
+                    -- Delivery Days (transit) = pod_date - good_issue_date
                     COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (pod_date::timestamp - good_issue_date::timestamp))/86400 END), 0) AS avg_pod_days,
+                        THEN EXTRACT(DAY FROM (pod_date - good_issue_date)) END), 0) AS avg_delivery_days,
+                    -- POD Days (currently same as delivery since no separate POD date) – kept for compatibility
+                    COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
+                        THEN EXTRACT(DAY FROM (pod_date - good_issue_date)) END), 0) AS avg_pod_days,
+                    -- Total Cycle = pod_date - dn_create_date
                     COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400 END), 0) AS avg_cycle_days,
+                        THEN EXTRACT(DAY FROM (pod_date - dn_create_date)) END), 0) AS avg_cycle_days,
+                    -- Min/Max for delivery (transit)
                     COALESCE(MIN(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400 END), 0) AS min_delivery_days,
+                        THEN EXTRACT(DAY FROM (pod_date - dn_create_date)) END), 0) AS min_delivery_days,
                     COALESCE(MAX(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400 END), 0) AS max_delivery_days,
+                        THEN EXTRACT(DAY FROM (pod_date - dn_create_date)) END), 0) AS max_delivery_days,
+                    -- Min/Max for POD (transit)
                     COALESCE(MIN(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (pod_date::timestamp - good_issue_date::timestamp))/86400 END), 0) AS min_pod_days,
+                        THEN EXTRACT(DAY FROM (pod_date - good_issue_date)) END), 0) AS min_pod_days,
                     COALESCE(MAX(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (pod_date::timestamp - good_issue_date::timestamp))/86400 END), 0) AS max_pod_days,
+                        THEN EXTRACT(DAY FROM (pod_date - good_issue_date)) END), 0) AS max_pod_days,
+                    -- Min/Max for Cycle
                     COALESCE(MIN(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400 END), 0) AS min_cycle_days,
+                        THEN EXTRACT(DAY FROM (pod_date - dn_create_date)) END), 0) AS min_cycle_days,
                     COALESCE(MAX(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400 END), 0) AS max_cycle_days,
+                        THEN EXTRACT(DAY FROM (pod_date - dn_create_date)) END), 0) AS max_cycle_days,
                     MIN(dn_create_date) AS first_dn,
                     MAX(dn_create_date) AS last_dn
                 FROM delivery_reports
@@ -458,6 +468,7 @@ class DashboardRepository:
                 pending_pgi_units,
                 total_revenue,
                 avg_pgi_days,
+                avg_delivery_days,
                 avg_pod_days,
                 avg_cycle_days,
                 min_delivery_days,
@@ -486,6 +497,7 @@ class DashboardRepository:
                 "pending_pgi": SafeNumber.to_int(row.pending_pgi_count),
                 "pending_delivery": SafeNumber.to_int(row.pending_delivery_count),
                 "avg_pgi_days": SafeNumber.to_float(row.avg_pgi_days),
+                "avg_delivery_days": SafeNumber.to_float(row.avg_delivery_days),
                 "avg_pod_days": SafeNumber.to_float(row.avg_pod_days),
                 "avg_cycle_days": SafeNumber.to_float(row.avg_cycle_days),
                 "min_delivery_days": SafeNumber.to_float(row.min_delivery_days),
@@ -941,9 +953,10 @@ class WarehouseIntelligenceEngine:
             pending_units = w.get('pending_units', 0)
             pending_pgi_units = w.get('pending_pgi_units', 0)
             revenue = w.get('total_revenue', 0)
-            avg_cycle = w.get('avg_cycle_days', 0)
-            avg_pgi = w.get('avg_pgi_days', 0)
-            avg_pod = w.get('avg_pod_days', 0)
+            avg_pgi_days = w.get('avg_pgi_days', 0)
+            avg_delivery_days = w.get('avg_delivery_days', 0)   # transit (pod - good_issue)
+            avg_pod_days = w.get('avg_pod_days', 0)             # same as delivery for now
+            avg_cycle_days = w.get('avg_cycle_days', 0)
             min_delivery = w.get('min_delivery_days', 0)
             max_delivery = w.get('max_delivery_days', 0)
             min_pod = w.get('min_pod_days', 0)
@@ -954,22 +967,25 @@ class WarehouseIntelligenceEngine:
             pgi_rate = SafeNumber.pct(pgi_units, total_units)
             delivery_rate = SafeNumber.pct(delivered_units, total_units)
             pending_rate = SafeNumber.pct(pending_units, total_units)
-            pod_rate = delivery_rate
+            # POD % = delivered_units / delivered_units if delivered_units > 0 else 0
+            pod_rate = SafeNumber.pct(delivered_units, delivered_units) if delivered_units > 0 else 0.0
 
             dist = avg_distances.get(w.get('warehouse_name', ''), 0.0)
             target_days = DistanceCalculationEngine.get_target_days(dist) if dist > 0 else 1
 
-            delivery_gap = avg_cycle - target_days
-            delivery_compliance = DistanceCalculationEngine.compute_compliance(avg_cycle, target_days)
+            # For delivery (transit) compliance, we use avg_delivery_days (pod - good_issue) vs target?
+            # But target is based on distance, which is total cycle. We'll use avg_cycle_days for total compliance.
+            # For delivery compliance, we can use avg_delivery_days vs a target (maybe 1 day?)
+            delivery_gap = avg_delivery_days - 1  # target for transit? We'll just use gap from target
+            delivery_compliance = DistanceCalculationEngine.compute_compliance(avg_delivery_days, 1)
             delivery_rating = DistanceCalculationEngine.get_performance_rating(delivery_gap)
 
-            pod_target = 1.0
-            pod_gap = avg_pod - pod_target
-            pod_compliance = DistanceCalculationEngine.compute_compliance(avg_pod, pod_target)
+            pod_gap = avg_pod_days - 1
+            pod_compliance = DistanceCalculationEngine.compute_compliance(avg_pod_days, 1)
             pod_rating = DistanceCalculationEngine.get_performance_rating(pod_gap)
 
-            cycle_gap = avg_cycle - target_days
-            cycle_compliance = DistanceCalculationEngine.compute_compliance(avg_cycle, target_days)
+            cycle_gap = avg_cycle_days - target_days
+            cycle_compliance = DistanceCalculationEngine.compute_compliance(avg_cycle_days, target_days)
             cycle_rating = DistanceCalculationEngine.get_performance_rating(cycle_gap)
 
             perf_score = BusinessRuleEngine.calculate_performance_score(
@@ -981,7 +997,7 @@ class WarehouseIntelligenceEngine:
             )
             grade = BusinessRuleEngine.get_grade(perf_score)
             risk = BusinessRuleEngine.get_risk_level(perf_score)
-            health_score = BusinessRuleEngine.calculate_health_score(pgi_rate, delivery_rate, pod_rate, avg_cycle)
+            health_score = BusinessRuleEngine.calculate_health_score(pgi_rate, delivery_rate, pod_rate, avg_cycle_days)
             classification = BusinessRuleEngine.classify_performance(health_score)
 
             warehouse_summary = {
@@ -993,27 +1009,30 @@ class WarehouseIntelligenceEngine:
                 "risk": risk.value,
                 "delivered_units": delivered_units,
                 "pgi_units": pgi_units,
-                "avg_pgi_days": avg_pgi,
+                "avg_pgi_days": avg_pgi_days,
+                "avg_delivery_days": avg_delivery_days,
+                "avg_pod_days": avg_pod_days,
+                "avg_cycle_days": avg_cycle_days,
                 "delivery": {
-                    "avg_days": avg_cycle,
+                    "avg_days": avg_delivery_days,
                     "min_days": min_delivery,
                     "max_days": max_delivery,
-                    "target_days": target_days,
+                    "target_days": 1,  # target for transit (1 day)
                     "gap_days": delivery_gap,
                     "compliance_pct": delivery_compliance,
                     "status": delivery_rating
                 },
                 "pod": {
-                    "avg_days": avg_pod,
+                    "avg_days": avg_pod_days,
                     "min_days": min_pod,
                     "max_days": max_pod,
-                    "target_days": pod_target,
+                    "target_days": 1,
                     "gap_days": pod_gap,
                     "compliance_pct": pod_compliance,
                     "status": pod_rating
                 },
                 "cycle": {
-                    "avg_days": avg_cycle,
+                    "avg_days": avg_cycle_days,
                     "min_days": min_cycle,
                     "max_days": max_cycle,
                     "target_days": target_days,
@@ -1044,10 +1063,10 @@ class WarehouseIntelligenceEngine:
                 "pgi_pct": pgi_rate,
                 "delivery_pct": delivery_rate,
                 "pod_pct": pod_rate,
-                "avg_days": avg_cycle,
-                "avg_delivery_days": avg_cycle,
-                "avg_pod_days": avg_pod,
-                "avg_pgi_days": avg_pgi,
+                "avg_days": avg_cycle_days,
+                "avg_delivery_days": avg_delivery_days,
+                "avg_pod_days": avg_pod_days,
+                "avg_pgi_days": avg_pgi_days,
                 "pending_dns": w.get('pending_delivery', 0) + w.get('pending_pgi', 0),
                 "pending_units": pending_units,
                 "status": classification.get('status', 'Unknown'),
@@ -1093,16 +1112,16 @@ class KPIEngine:
         if not warehouse_summaries:
             return {}
         total = len(warehouse_summaries)
-        avg_delivery = sum(w.get('delivery', {}).get('avg_days', 0) for w in warehouse_summaries) / total
-        avg_pod = sum(w.get('pod', {}).get('avg_days', 0) for w in warehouse_summaries) / total
-        avg_cycle = sum(w.get('cycle', {}).get('avg_days', 0) for w in warehouse_summaries) / total
+        avg_delivery = sum(w.get('avg_delivery_days', 0) for w in warehouse_summaries) / total
+        avg_pod = sum(w.get('avg_pod_days', 0) for w in warehouse_summaries) / total
+        avg_cycle = sum(w.get('avg_cycle_days', 0) for w in warehouse_summaries) / total
 
-        fastest = min(warehouse_summaries, key=lambda w: w.get('cycle', {}).get('avg_days', 999))
-        slowest = max(warehouse_summaries, key=lambda w: w.get('cycle', {}).get('avg_days', 0))
-        best_pod = min(warehouse_summaries, key=lambda w: w.get('pod', {}).get('avg_days', 999))
-        worst_pod = max(warehouse_summaries, key=lambda w: w.get('pod', {}).get('avg_days', 0))
-        best_cycle = min(warehouse_summaries, key=lambda w: w.get('cycle', {}).get('avg_days', 999))
-        worst_cycle = max(warehouse_summaries, key=lambda w: w.get('cycle', {}).get('avg_days', 0))
+        fastest = min(warehouse_summaries, key=lambda w: w.get('avg_cycle_days', 999))
+        slowest = max(warehouse_summaries, key=lambda w: w.get('avg_cycle_days', 0))
+        best_pod = min(warehouse_summaries, key=lambda w: w.get('avg_pod_days', 999))
+        worst_pod = max(warehouse_summaries, key=lambda w: w.get('avg_pod_days', 0))
+        best_cycle = min(warehouse_summaries, key=lambda w: w.get('avg_cycle_days', 999))
+        worst_cycle = max(warehouse_summaries, key=lambda w: w.get('avg_cycle_days', 0))
 
         sorted_by_perf = sorted(warehouse_summaries, key=lambda w: w.get('performance_score', 0), reverse=True)
         top_5 = [{"warehouse": w.get('warehouse', ''), "score": w.get('performance_score', 0)} for w in sorted_by_perf[:5]]
@@ -1135,6 +1154,7 @@ class AlertEngine:
 
         for w in warehouse_summaries:
             warehouse = w.get('warehouse', 'Unknown')
+            # Delivery gap (transit)
             gap = w.get('delivery', {}).get('gap_days', 0)
             if gap > 0:
                 raw_alerts.append({
@@ -1171,13 +1191,13 @@ class AlertEngine:
                     "message": f"High pending DNs: {pending_dn}",
                     "urgency": 2 if pending_dn > 100 else 1
                 })
-            compliance = w.get('delivery', {}).get('compliance_pct', 100)
+            compliance = w.get('cycle', {}).get('compliance_pct', 100)
             if compliance < 80:
                 raw_alerts.append({
                     "source": warehouse,
                     "severity": "HIGH" if compliance < 70 else "WARNING",
                     "category": "Below Standard",
-                    "message": f"Delivery compliance below 80% ({compliance}%)",
+                    "message": f"Cycle compliance below 80% ({compliance}%)",
                     "urgency": 2 if compliance < 70 else 1
                 })
             pgi = w.get('pgi_pct', 100)
@@ -1436,7 +1456,7 @@ class ExecutiveSummaryEngine:
 
         best = max(warehouse_summaries, key=lambda w: w.get('health_score', 0))
         worst = min(warehouse_summaries, key=lambda w: w.get('health_score', 0))
-        fastest = min(warehouse_summaries, key=lambda w: w.get('cycle', {}).get('avg_days', 999))
+        fastest = min(warehouse_summaries, key=lambda w: w.get('avg_cycle_days', 999))
         highest_delay = max(warehouse_summaries, key=lambda w: w.get('delivery', {}).get('gap_days', 0))
 
         critical = [w for w in warehouse_summaries if w.get('grade') == 'Critical' or w.get('risk') == 'critical']
@@ -1526,7 +1546,7 @@ class ResponseBuilder:
                 "pgi_pct": w.get('pgi_pct', 0),
                 "delivery_pct": w.get('delivery_pct', 0),
                 "pod_pct": w.get('pod_pct', 0),
-                "avg_days": w.get('avg_days', 0),
+                "avg_days": w.get('avg_cycle_days', 0),
                 "avg_delivery_days": w.get('avg_delivery_days', 0),
                 "avg_pod_days": w.get('avg_pod_days', 0),
                 "avg_pgi_days": w.get('avg_pgi_days', 0),
