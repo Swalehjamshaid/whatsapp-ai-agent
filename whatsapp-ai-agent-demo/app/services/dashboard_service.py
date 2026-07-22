@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 19.2 - FIXED MISSING dn_amount COLUMN
+# VERSION: 19.3 - FIXED avg_distances UnboundLocalError
 # ============================================================
 # EXCEEDS SAP ANALYTICS CLOUD | MICROSOFT FABRIC | POWER BI PREMIUM
 # ============================================================
@@ -1145,7 +1145,7 @@ class PerformanceTrendEngine:
 
 
 # ============================================================
-# RESPONSE BUILDER (19.2 - FIXED)
+# RESPONSE BUILDER (19.3)
 # ============================================================
 
 class ResponseBuilder:
@@ -1349,13 +1349,13 @@ class ResponseBuilder:
 
 
 # ============================================================
-# DASHBOARD SERVICE (19.2)
+# DASHBOARD SERVICE (19.3)
 # ============================================================
 
 class DashboardService:
     def __init__(self):
         self._repo = DashboardRepository()
-        logger.info("DashboardService initialized (v19.2 - Fixed dn_amount)")
+        logger.info("DashboardService initialized (v19.3 - Fixed avg_distances)")
 
     @cached(ttl=300)
     async def get_full_dashboard(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
@@ -1375,11 +1375,13 @@ class DashboardService:
             record_count = self._repo.fetch_record_count()
 
             # ====== 2. Compute distance for compliance ======
+            # Initialize variables to avoid UnboundLocalError
+            avg_distances = {}
+            compliance_data = []
             try:
                 city_pairs = self._repo.fetch_warehouse_city_pairs()
                 avg_distances = DistanceCalculationEngine.compute_average_distance_per_warehouse(city_pairs)
                 # Also compute per-warehouse compliance
-                compliance_data = []
                 for pair in city_pairs:
                     wh = pair['warehouse']
                     dist = avg_distances.get(wh, 0)
@@ -1397,7 +1399,7 @@ class DashboardService:
                     })
             except Exception as e:
                 logger.warning(f"Distance compliance calculation failed: {e}")
-                compliance_data = []
+                # avg_distances and compliance_data remain as initialized
 
             # ====== 3. Enrich warehouse data ======
             warehouses = WarehouseIntelligenceEngine.compute_warehouse_metrics(warehouse_raw, avg_distances)
@@ -1470,7 +1472,7 @@ class DashboardService:
 
             # ====== 11. Metadata ======
             metadata = {
-                "version": "19.2",
+                "version": "19.3",
                 "timestamp": datetime.utcnow().isoformat(),
                 "record_count": record_count,
                 "warehouse_count": len(warehouses),
@@ -1552,7 +1554,7 @@ async def get_warehouses(service: DashboardService = Depends(get_dashboard_servi
 
 @router.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "19.2", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "healthy", "version": "19.3", "timestamp": datetime.utcnow().isoformat()}
 
 @router.post("/upload")
 async def upload_excel_report(
@@ -1575,4 +1577,4 @@ async def upload_excel_report(
         logger.error(f"Excel upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-logger.info("DashboardService router mounted (v19.2 - Fixed dn_amount) with /upload")
+logger.info("DashboardService router mounted (v19.3 - Fixed avg_distances) with /upload")
