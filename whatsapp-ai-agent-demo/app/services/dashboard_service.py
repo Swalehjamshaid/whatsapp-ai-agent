@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 15.4 - ENTERPRISE WAREHOUSE INTELLIGENCE PLATFORM
+# VERSION: 15.5 - ENTERPRISE WAREHOUSE INTELLIGENCE PLATFORM
 # ============================================================
 # EXCEEDS SAP ANALYTICS CLOUD | MICROSOFT FABRIC | POWER BI PREMIUM
 # ============================================================
@@ -1010,7 +1010,7 @@ class DashboardService:
         }
         
         metadata = {
-            "version": "15.4",
+            "version": "15.5",
             "timestamp": datetime.utcnow().isoformat(),
             "record_count": record_count,
             "warehouse_count": len(warehouses),
@@ -1021,6 +1021,10 @@ class DashboardService:
             daily_trend, monthly_trend, aging, network, kpis,
             insights, charts, metadata
         )
+
+    async def get_dashboard_data(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
+        """Alias/wrapper method to maintain backwards compatibility with external callers."""
+        return await self.get_full_dashboard(filters)
     
     @cached(ttl=60)
     async def get_warehouse_ranking(self) -> List[Dict]:
@@ -1047,7 +1051,7 @@ async def get_dashboard_data(
     service: DashboardService = Depends(get_dashboard_service)
 ):
     try:
-        return await service.get_full_dashboard({"theme": theme})
+        return await service.get_dashboard_data({"theme": theme})
     except Exception as e:
         logger.error(f"Dashboard error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1058,6 +1062,6 @@ async def get_warehouses(service: DashboardService = Depends(get_dashboard_servi
 
 @router.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "15.4", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "healthy", "version": "15.5", "timestamp": datetime.utcnow().isoformat()}
 
 logger.info("DashboardService router mounted at /dashboard/api")
