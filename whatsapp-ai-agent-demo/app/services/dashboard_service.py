@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 15.6 - ENTERPRISE WAREHOUSE INTELLIGENCE PLATFORM
+# VERSION: 15.7 - ENTERPRISE WAREHOUSE INTELLIGENCE PLATFORM
 # ============================================================
 # EXCEEDS SAP ANALYTICS CLOUD | MICROSOFT FABRIC | POWER BI PREMIUM
 # ============================================================
@@ -431,8 +431,8 @@ class DashboardRepository:
                 avg_cycle_days,
                 first_dn,
                 last_dn,
-                CASE WHEN delivery_notes > 0 THEN ROUND((pgi_completed::float / delivery_notes) * 100, 2) ELSE 0 END AS pgi_achievement_rate,
-                CASE WHEN delivery_notes > 0 THEN ROUND((delivered_dns::float / delivery_notes) * 100, 2) ELSE 0 END AS delivery_achievement_rate
+                CASE WHEN delivery_notes > 0 THEN ROUND((pgi_completed::numeric / delivery_notes) * 100, 2) ELSE 0 END AS pgi_achievement_rate,
+                CASE WHEN delivery_notes > 0 THEN ROUND((delivered_dns::numeric / delivery_notes) * 100, 2) ELSE 0 END AS delivery_achievement_rate
             FROM warehouse_metrics
             ORDER BY delivery_notes DESC
         """
@@ -1011,7 +1011,7 @@ class DashboardService:
         }
         
         metadata = {
-            "version": "15.6",
+            "version": "15.7",
             "timestamp": datetime.utcnow().isoformat(),
             "record_count": record_count,
             "warehouse_count": len(warehouses),
@@ -1063,7 +1063,7 @@ async def get_warehouses(service: DashboardService = Depends(get_dashboard_servi
 
 @router.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "15.6", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "healthy", "version": "15.7", "timestamp": datetime.utcnow().isoformat()}
 
 # --- Added POST /upload Endpoint to Link Frontend Import Center ---
 @router.post("/upload")
