@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 17.0 - ENTERPRISE WAREHOUSE INTELLIGENCE PLATFORM
+# VERSION: 17.1 - FULLY INTEGRATED WITH dashboard.html
 # ============================================================
 # EXCEEDS SAP ANALYTICS CLOUD | MICROSOFT FABRIC | POWER BI PREMIUM
 # ============================================================
@@ -96,7 +96,6 @@ except ImportError:
 
 from app.database import engine, get_db
 from app.models import DeliveryReport
-# GeoService may be unavailable; handle gracefully
 try:
     from app.services.geo_service import GeoService
     GEO_SERVICE_AVAILABLE = True
@@ -330,7 +329,7 @@ def cached(ttl: Optional[int] = None):
 
 
 # ============================================================
-# REPOSITORY LAYER (ENHANCED)
+# REPOSITORY LAYER
 # ============================================================
 
 class DashboardRepository:
@@ -348,8 +347,6 @@ class DashboardRepository:
         except SQLAlchemyError as e:
             logger.error(f"SQL execution failed: {str(e)}")
             raise DatabaseError(f"Database query failed: {str(e)}")
-    
-    # ==================== Existing Methods (unchanged) ====================
     
     def fetch_summary(self) -> Dict[str, Any]:
         sql = """
@@ -482,152 +479,6 @@ class DashboardRepository:
             })
         return result
 
-    # ==================== NEW METHODS FOR ENHANCED DASHBOARD ====================
-
-    def fetch_warehouse_delivery_distribution(self) -> List[Dict[str, Any]]:
-        """
-        For each warehouse, count DNs and units by delivery days bucket (1-6, Above Standard).
-        Delivery Days = POD Date - DN Create Date (full days).
-        """
-        sql = """
-            WITH dist AS (
-                SELECT
-                    warehouse,
-                    dn_no,
-                    dn_qty,
-                    EXTRACT(DAY FROM (pod_date::timestamp - dn_create_date::timestamp)) AS delivery_days
-                FROM delivery_reports
-                WHERE dn_create_date IS NOT NULL AND pod_date IS NOT NULL
-            )
-            SELECT
-                warehouse,
-                CASE
-                    WHEN delivery_days <= 1 THEN '1 Day'
-                    WHEN delivery_days = 2 THEN '2 Days'
-                    WHEN delivery_days = 3 THEN '3 Days'
-                    WHEN delivery_days = 4 THEN '4 Days'
-                    WHEN delivery_days = 5 THEN '5 Days'
-                    WHEN delivery_days = 6 THEN '6 Days'
-                    ELSE 'Above Standard'
-                END AS bucket,
-                COUNT(DISTINCT dn_no) AS dn_count,
-                SUM(dn_qty) AS units
-            FROM dist
-            GROUP BY warehouse, bucket
-            ORDER BY warehouse, MIN(delivery_days)
-        """
-        rows = self._execute(sql).fetchall()
-        result = []
-        for row in rows:
-            result.append({
-                "warehouse": row.warehouse,
-                "bucket": row.bucket,
-                "dn_count": SafeNumber.to_int(row.dn_count),
-                "units": SafeNumber.to_int(row.units),
-            })
-        return result
-
-    def fetch_warehouse_pod_distribution(self) -> List[Dict[str, Any]]:
-        """
-        For each warehouse, count DNs and units by POD days bucket (1-3, >3).
-        POD Days = POD Date - Good Issue Date.
-        """
-        sql = """
-            WITH dist AS (
-                SELECT
-                    warehouse,
-                    dn_no,
-                    dn_qty,
-                    EXTRACT(DAY FROM (pod_date::timestamp - good_issue_date::timestamp)) AS pod_days
-                FROM delivery_reports
-                WHERE good_issue_date IS NOT NULL AND pod_date IS NOT NULL
-            )
-            SELECT
-                warehouse,
-                CASE
-                    WHEN pod_days <= 1 THEN '1 Day'
-                    WHEN pod_days = 2 THEN '2 Days'
-                    WHEN pod_days = 3 THEN '3 Days'
-                    ELSE '>3 Days'
-                END AS bucket,
-                COUNT(DISTINCT dn_no) AS dn_count,
-                SUM(dn_qty) AS units
-            FROM dist
-            GROUP BY warehouse, bucket
-            ORDER BY warehouse, MIN(pod_days)
-        """
-        rows = self._execute(sql).fetchall()
-        result = []
-        for row in rows:
-            result.append({
-                "warehouse": row.warehouse,
-                "bucket": row.bucket,
-                "dn_count": SafeNumber.to_int(row.dn_count),
-                "units": SafeNumber.to_int(row.units),
-            })
-        return result
-
-    def fetch_warehouse_cycle_distribution(self) -> List[Dict[str, Any]]:
-        """
-        For each warehouse, count DNs and units by total cycle days bucket (2-6, Above Standard).
-        Cycle Days = POD Date - DN Create Date.
-        """
-        sql = """
-            WITH dist AS (
-                SELECT
-                    warehouse,
-                    dn_no,
-                    dn_qty,
-                    EXTRACT(DAY FROM (pod_date::timestamp - dn_create_date::timestamp)) AS cycle_days
-                FROM delivery_reports
-                WHERE dn_create_date IS NOT NULL AND pod_date IS NOT NULL
-            )
-            SELECT
-                warehouse,
-                CASE
-                    WHEN cycle_days <= 2 THEN '2 Days'
-                    WHEN cycle_days = 3 THEN '3 Days'
-                    WHEN cycle_days = 4 THEN '4 Days'
-                    WHEN cycle_days = 5 THEN '5 Days'
-                    WHEN cycle_days = 6 THEN '6 Days'
-                    ELSE 'Above Standard'
-                END AS bucket,
-                COUNT(DISTINCT dn_no) AS dn_count,
-                SUM(dn_qty) AS units
-            FROM dist
-            GROUP BY warehouse, bucket
-            ORDER BY warehouse, MIN(cycle_days)
-        """
-        rows = self._execute(sql).fetchall()
-        result = []
-        for row in rows:
-            result.append({
-                "warehouse": row.warehouse,
-                "bucket": row.bucket,
-                "dn_count": SafeNumber.to_int(row.dn_count),
-                "units": SafeNumber.to_int(row.units),
-            })
-        return result
-
-    def fetch_warehouse_standard_comparison(self) -> List[Dict[str, Any]]:
-        """
-        For each warehouse, compute actual average delivery days and compare with distance-based target.
-        Requires city pairs for distance.
-        """
-        # First get average delivery days per warehouse
-        sql_avg = """
-            SELECT
-                warehouse,
-                COALESCE(AVG(EXTRACT(DAY FROM (pod_date::timestamp - dn_create_date::timestamp))), 0) AS avg_delivery_days
-            FROM delivery_reports
-            WHERE dn_create_date IS NOT NULL AND pod_date IS NOT NULL
-            GROUP BY warehouse
-        """
-        rows = self._execute(sql_avg).fetchall()
-        avg_dict = {row.warehouse: SafeNumber.to_float(row.avg_delivery_days) for row in rows}
-        # Get distances from warehouse-city pairs (computed elsewhere)
-        return avg_dict
-
     def fetch_warehouse_city_pairs(self) -> List[Dict[str, Any]]:
         sql = """
             SELECT
@@ -649,7 +500,7 @@ class DashboardRepository:
             }
             for row in rows
         ]
-
+    
     def fetch_dealer_data(self) -> List[Dict[str, Any]]:
         sql = """
             SELECT
@@ -877,7 +728,118 @@ class DashboardRepository:
         sql = "SELECT COUNT(*) FROM delivery_reports"
         return SafeNumber.to_int(self._execute(sql).scalar())
 
-    # ==================== NEW: Pending and Delay Analysis ====================
+    def fetch_warehouse_delivery_distribution(self) -> List[Dict[str, Any]]:
+        sql = """
+            WITH dist AS (
+                SELECT
+                    warehouse,
+                    dn_no,
+                    dn_qty,
+                    EXTRACT(DAY FROM (pod_date::timestamp - dn_create_date::timestamp)) AS delivery_days
+                FROM delivery_reports
+                WHERE dn_create_date IS NOT NULL AND pod_date IS NOT NULL
+            )
+            SELECT
+                warehouse,
+                CASE
+                    WHEN delivery_days <= 1 THEN '1 Day'
+                    WHEN delivery_days = 2 THEN '2 Days'
+                    WHEN delivery_days = 3 THEN '3 Days'
+                    WHEN delivery_days = 4 THEN '4 Days'
+                    WHEN delivery_days = 5 THEN '5 Days'
+                    WHEN delivery_days = 6 THEN '6 Days'
+                    ELSE 'Above Standard'
+                END AS bucket,
+                COUNT(DISTINCT dn_no) AS dn_count,
+                SUM(dn_qty) AS units
+            FROM dist
+            GROUP BY warehouse, bucket
+            ORDER BY warehouse, MIN(delivery_days)
+        """
+        rows = self._execute(sql).fetchall()
+        result = []
+        for row in rows:
+            result.append({
+                "warehouse": row.warehouse,
+                "bucket": row.bucket,
+                "dn_count": SafeNumber.to_int(row.dn_count),
+                "units": SafeNumber.to_int(row.units),
+            })
+        return result
+
+    def fetch_warehouse_pod_distribution(self) -> List[Dict[str, Any]]:
+        sql = """
+            WITH dist AS (
+                SELECT
+                    warehouse,
+                    dn_no,
+                    dn_qty,
+                    EXTRACT(DAY FROM (pod_date::timestamp - good_issue_date::timestamp)) AS pod_days
+                FROM delivery_reports
+                WHERE good_issue_date IS NOT NULL AND pod_date IS NOT NULL
+            )
+            SELECT
+                warehouse,
+                CASE
+                    WHEN pod_days <= 1 THEN '1 Day'
+                    WHEN pod_days = 2 THEN '2 Days'
+                    WHEN pod_days = 3 THEN '3 Days'
+                    ELSE '>3 Days'
+                END AS bucket,
+                COUNT(DISTINCT dn_no) AS dn_count,
+                SUM(dn_qty) AS units
+            FROM dist
+            GROUP BY warehouse, bucket
+            ORDER BY warehouse, MIN(pod_days)
+        """
+        rows = self._execute(sql).fetchall()
+        result = []
+        for row in rows:
+            result.append({
+                "warehouse": row.warehouse,
+                "bucket": row.bucket,
+                "dn_count": SafeNumber.to_int(row.dn_count),
+                "units": SafeNumber.to_int(row.units),
+            })
+        return result
+
+    def fetch_warehouse_cycle_distribution(self) -> List[Dict[str, Any]]:
+        sql = """
+            WITH dist AS (
+                SELECT
+                    warehouse,
+                    dn_no,
+                    dn_qty,
+                    EXTRACT(DAY FROM (pod_date::timestamp - dn_create_date::timestamp)) AS cycle_days
+                FROM delivery_reports
+                WHERE dn_create_date IS NOT NULL AND pod_date IS NOT NULL
+            )
+            SELECT
+                warehouse,
+                CASE
+                    WHEN cycle_days <= 2 THEN '2 Days'
+                    WHEN cycle_days = 3 THEN '3 Days'
+                    WHEN cycle_days = 4 THEN '4 Days'
+                    WHEN cycle_days = 5 THEN '5 Days'
+                    WHEN cycle_days = 6 THEN '6 Days'
+                    ELSE 'Above Standard'
+                END AS bucket,
+                COUNT(DISTINCT dn_no) AS dn_count,
+                SUM(dn_qty) AS units
+            FROM dist
+            GROUP BY warehouse, bucket
+            ORDER BY warehouse, MIN(cycle_days)
+        """
+        rows = self._execute(sql).fetchall()
+        result = []
+        for row in rows:
+            result.append({
+                "warehouse": row.warehouse,
+                "bucket": row.bucket,
+                "dn_count": SafeNumber.to_int(row.dn_count),
+                "units": SafeNumber.to_int(row.units),
+            })
+        return result
 
     def fetch_pending_summary(self) -> Dict[str, Any]:
         sql = """
@@ -905,31 +867,23 @@ class DashboardRepository:
         }
 
     def fetch_delay_breakdown(self) -> Dict[str, Any]:
-        """
-        Breakdown delays into PGI, Delivery, POD, and Total Cycle.
-        Returns min/max/avg days and counts for each stage.
-        """
         sql = """
             SELECT
-                -- PGI Delay (Good Issue Date - DN Create Date)
                 COALESCE(AVG(EXTRACT(EPOCH FROM (good_issue_date::timestamp - dn_create_date::timestamp))/86400), 0) AS avg_pgi_delay,
                 COALESCE(MAX(EXTRACT(EPOCH FROM (good_issue_date::timestamp - dn_create_date::timestamp))/86400), 0) AS max_pgi_delay,
                 COALESCE(MIN(EXTRACT(EPOCH FROM (good_issue_date::timestamp - dn_create_date::timestamp))/86400), 0) AS min_pgi_delay,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_dn_count,
                 SUM(CASE WHEN good_issue_date IS NOT NULL THEN dn_qty ELSE 0 END) AS pgi_units,
-                -- Delivery Delay (POD Date - DN Create Date) - overall delivery time
                 COALESCE(AVG(EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400), 0) AS avg_delivery_delay,
                 COALESCE(MAX(EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400), 0) AS max_delivery_delay,
                 COALESCE(MIN(EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400), 0) AS min_delivery_delay,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dn_count,
                 SUM(CASE WHEN pod_date IS NOT NULL THEN dn_qty ELSE 0 END) AS delivered_units,
-                -- POD Delay (POD Date - Good Issue Date)
                 COALESCE(AVG(EXTRACT(EPOCH FROM (pod_date::timestamp - good_issue_date::timestamp))/86400), 0) AS avg_pod_delay,
                 COALESCE(MAX(EXTRACT(EPOCH FROM (pod_date::timestamp - good_issue_date::timestamp))/86400), 0) AS max_pod_delay,
                 COALESCE(MIN(EXTRACT(EPOCH FROM (pod_date::timestamp - good_issue_date::timestamp))/86400), 0) AS min_pod_delay,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL THEN dn_no END) AS pod_dn_count,
                 SUM(CASE WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL THEN dn_qty ELSE 0 END) AS pod_units,
-                -- Total Cycle (POD Date - DN Create Date)
                 COALESCE(AVG(EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400), 0) AS avg_cycle_delay,
                 COALESCE(MAX(EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400), 0) AS max_cycle_delay,
                 COALESCE(MIN(EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400), 0) AS min_cycle_delay
@@ -962,49 +916,9 @@ class DashboardRepository:
                 "avg_days": SafeNumber.to_float(row.avg_cycle_delay),
                 "max_days": SafeNumber.to_float(row.max_cycle_delay),
                 "min_days": SafeNumber.to_float(row.min_cycle_delay),
-                "dn_count": SafeNumber.to_int(row.delivered_dn_count),  # same as delivered
+                "dn_count": SafeNumber.to_int(row.delivered_dn_count),
                 "units": SafeNumber.to_int(row.delivered_units),
             }
-        }
-
-    def fetch_warehouse_drilldown(self, warehouse_name: str) -> Dict[str, Any]:
-        """
-        Fetch detailed metrics for a single warehouse (for drill-down).
-        """
-        sql = """
-            SELECT
-                COUNT(DISTINCT dn_no) AS total_dn,
-                SUM(dn_qty) AS total_units,
-                COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_dn,
-                SUM(CASE WHEN good_issue_date IS NOT NULL THEN dn_qty ELSE 0 END) AS pgi_units,
-                COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dn,
-                SUM(CASE WHEN pod_date IS NOT NULL THEN dn_qty ELSE 0 END) AS delivered_units,
-                COUNT(DISTINCT CASE WHEN pod_date IS NULL THEN dn_no END) AS pending_dn,
-                SUM(CASE WHEN pod_date IS NULL THEN dn_qty ELSE 0 END) AS pending_units,
-                COALESCE(AVG(EXTRACT(EPOCH FROM (good_issue_date::timestamp - dn_create_date::timestamp))/86400), 0) AS avg_pgi_days,
-                COALESCE(AVG(EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400), 0) AS avg_delivery_days,
-                COALESCE(AVG(EXTRACT(EPOCH FROM (pod_date::timestamp - good_issue_date::timestamp))/86400), 0) AS avg_pod_days,
-                COALESCE(AVG(EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400), 0) AS avg_cycle_days
-            FROM delivery_reports
-            WHERE warehouse = :warehouse
-        """
-        row = self._execute(sql, {"warehouse": warehouse_name}).first()
-        if not row:
-            return {}
-        return {
-            "warehouse": warehouse_name,
-            "total_dn": SafeNumber.to_int(row.total_dn),
-            "total_units": SafeNumber.to_int(row.total_units),
-            "pgi_dn": SafeNumber.to_int(row.pgi_dn),
-            "pgi_units": SafeNumber.to_int(row.pgi_units),
-            "delivered_dn": SafeNumber.to_int(row.delivered_dn),
-            "delivered_units": SafeNumber.to_int(row.delivered_units),
-            "pending_dn": SafeNumber.to_int(row.pending_dn),
-            "pending_units": SafeNumber.to_int(row.pending_units),
-            "avg_pgi_days": SafeNumber.to_float(row.avg_pgi_days),
-            "avg_delivery_days": SafeNumber.to_float(row.avg_delivery_days),
-            "avg_pod_days": SafeNumber.to_float(row.avg_pod_days),
-            "avg_cycle_days": SafeNumber.to_float(row.avg_cycle_days),
         }
 
 
@@ -1097,7 +1011,7 @@ class BusinessRuleEngine:
 
 
 # ============================================================
-# INTELLIGENCE ENGINES (ENHANCED)
+# INTELLIGENCE ENGINES
 # ============================================================
 
 class WarehouseIntelligenceEngine:
@@ -1154,10 +1068,10 @@ class WarehouseIntelligenceEngine:
                 'actual_days': actual_days,
                 'gap_days': round(gap_days, 2),
                 'standard_status': status,
-                # additional for drill-down
-                'avg_delivery_days': w.get('avg_cycle_days', 0),  # alias
+                'avg_delivery_days': w.get('avg_cycle_days', 0),
                 'avg_pgi_days': w.get('avg_pgi_days', 0),
                 'avg_pod_days': w.get('avg_pod_days', 0),
+                'average_logistics_cycle': w.get('avg_cycle_days', 0),  # added for HTML
             })
             enriched.append(enriched_record)
         enriched.sort(key=lambda x: x.get('performance_score', 0), reverse=True)
@@ -1187,9 +1101,8 @@ class ExecutiveKPIEngine:
         health = BusinessRuleEngine.calculate_health_score(pgi_rate, delivery_rate, pod_rate)
         best, worst = WarehouseIntelligenceEngine.get_best_and_worst(warehouses)
         
-        # Additional KPIs
         critical_warehouses = sum(1 for w in warehouses if w.get('risk_level') == 'critical')
-        critical_dns = summary.get('pending_delivery', 0) + summary.get('pending_pgi', 0)  # DN count pending
+        critical_dns = summary.get('pending_delivery', 0) + summary.get('pending_pgi', 0)
 
         return {
             "total_dn": {"value": total_dn, "label": "Total Delivery Notes", "icon": "fa-file-invoice"},
@@ -1211,6 +1124,8 @@ class ExecutiveKPIEngine:
             "avg_delivery_days": {"value": round(summary.get('avg_delivery_days', 0), 2), "label": "Average Delivery Days", "icon": "fa-clock"},
             "avg_pod_days": {"value": round(summary.get('avg_pod_days', 0), 2), "label": "Average POD Days", "icon": "fa-clock"},
             "avg_cycle_days": {"value": round(summary.get('avg_cycle_days', 0), 2), "label": "Average Logistics Cycle", "icon": "fa-clock"},
+            # HTML expects 'avg_cycle' specifically
+            "avg_cycle": {"value": round(summary.get('avg_cycle_days', 0), 2), "label": "Average Cycle Time", "icon": "fa-stopwatch"},
         }
 
 
@@ -1226,7 +1141,7 @@ class PipelineEngine:
         pending_dn = total_dn - delivered_dn
         pending_units = total_units - delivered_units
         pod_dn = summary.get('pod_completed', 0)
-        pod_units = delivered_units  # POD = delivered
+        pod_units = delivered_units
 
         return {
             "dn_created": {"dn": total_dn, "units": total_units, "pct": 100, "avg_days": 0, "pending": 0},
@@ -1240,9 +1155,6 @@ class PipelineEngine:
 class DistributionEngine:
     @staticmethod
     def build_distribution_data(raw_dist: List[Dict[str, Any]], warehouse: str = None) -> Dict[str, Any]:
-        """
-        Convert list of (warehouse, bucket, dn_count, units) into a per-warehouse dict of bucket -> counts.
-        """
         result = {}
         for item in raw_dist:
             wh = item['warehouse']
@@ -1258,10 +1170,6 @@ class DistributionEngine:
         return result
 
 
-# ============================================================
-# ALERT AND AI ENGINES
-# ============================================================
-
 class AlertEngine:
     @staticmethod
     def generate_alerts(warehouses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1270,50 +1178,49 @@ class AlertEngine:
             warehouse = w.get('warehouse_name', 'Unknown')
             if w.get('delivery_rate', 100) < 85:
                 alerts.append({
-                    "warehouse": warehouse,
+                    "source": warehouse,
                     "severity": "WARNING",
                     "category": "Delivery Achievement",
                     "message": f"Delivery rate below 85% ({w['delivery_rate']}%)",
                 })
             if w.get('pgi_rate', 100) < 85:
                 alerts.append({
-                    "warehouse": warehouse,
+                    "source": warehouse,
                     "severity": "WARNING",
                     "category": "PGI Achievement",
                     "message": f"PGI rate below 85% ({w['pgi_rate']}%)",
                 })
             if w.get('avg_cycle_days', 0) > w.get('target_days', 1) + 2:
                 alerts.append({
-                    "warehouse": warehouse,
+                    "source": warehouse,
                     "severity": "CRITICAL",
                     "category": "Cycle Time",
                     "message": f"Average cycle days ({w['avg_cycle_days']:.1f}) exceed target ({w['target_days']}) by more than 2 days",
                 })
             if w.get('pending_units', 0) > 1000:
                 alerts.append({
-                    "warehouse": warehouse,
+                    "source": warehouse,
                     "severity": "HIGH",
                     "category": "Pending Units",
                     "message": f"High pending units: {w['pending_units']}",
                 })
             if w.get('risk_level') == 'critical':
                 alerts.append({
-                    "warehouse": warehouse,
+                    "source": warehouse,
                     "severity": "CRITICAL",
                     "category": "Risk",
                     "message": f"Warehouse is in critical risk state",
                 })
-            # Missing PGI / POD
             if w.get('pgi_units', 0) == 0 and w.get('total_units', 0) > 0:
                 alerts.append({
-                    "warehouse": warehouse,
+                    "source": warehouse,
                     "severity": "CRITICAL",
                     "category": "Missing PGI",
                     "message": "No PGI recorded for any units",
                 })
             if w.get('pod_rate', 100) < 50:
                 alerts.append({
-                    "warehouse": warehouse,
+                    "source": warehouse,
                     "severity": "HIGH",
                     "category": "Missing POD",
                     "message": f"POD rate is only {w['pod_rate']}%",
@@ -1341,17 +1248,19 @@ class AIRecommendationEngine:
         if not recs:
             recs.append("Continue maintaining excellent performance; monitor for seasonal fluctuations.")
             priority = "Low"
+        # Combine recommendations into a single sentence for HTML
+        recommendation_text = ". ".join(recs) + "."
         return {
             "warehouse": warehouse.get('warehouse_name', 'Unknown'),
             "priority": priority,
-            "recommendations": recs,
+            "recommendation": recommendation_text,  # single string
             "expected_improvement": "5-10% increase in on-time delivery" if priority == "High" else "2-5% improvement",
             "target_kpi": "Delivery Rate" if "delivery" in " ".join(recs).lower() else "Cycle Time"
         }
 
 
 # ============================================================
-# GRAPH ENGINE (Plotly) - EXTENDED
+# GRAPH ENGINE (Plotly)
 # ============================================================
 
 class GraphEngine:
@@ -1407,13 +1316,8 @@ class GraphEngine:
         fig.update_layout(title=title, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#f0f4ff'))
         return fig.to_json()
 
-    # New charts for warehouse distribution
     @staticmethod
     def warehouse_distribution_chart(data: Dict[str, Dict[str, Any]], bucket_order: List[str], title: str = "") -> str:
-        """
-        data: {warehouse: {bucket: {'dn_count': ..., 'units': ...}}}
-        Returns stacked bar chart (units) per warehouse.
-        """
         if not data:
             return "{}"
         warehouses = list(data.keys())
@@ -1426,7 +1330,7 @@ class GraphEngine:
 
 
 # ============================================================
-# RESPONSE BUILDER (EXTENDED)
+# RESPONSE BUILDER (FULLY INTEGRATED)
 # ============================================================
 
 class ResponseBuilder:
@@ -1435,7 +1339,6 @@ class ResponseBuilder:
         summary, warehouses, dealers, cities, products, divisions,
         daily_trend, monthly_trend, aging, network, kpis, insights, charts,
         metadata,
-        # new data structures
         pipeline,
         delivery_distribution,
         pod_distribution,
@@ -1455,7 +1358,7 @@ class ResponseBuilder:
         pgi_rate = SafeNumber.pct(pgi_units, total_units)
         delivery_rate = SafeNumber.pct(delivered_units, total_units)
         
-        # Existing pipeline (backward compatible)
+        # Legacy pipeline (backward compatible)
         pipeline_old = {
             "dn_created": total_dn,
             "pgi_completed": summary.get('pgi_completed', 0),
@@ -1470,7 +1373,7 @@ class ResponseBuilder:
             "delivery_achievement_units": delivery_rate,
         }
         
-        # Build warehouse heatmap (risk levels)
+        # Heatmap
         heatmap = []
         for w in warehouses:
             heatmap.append({
@@ -1480,7 +1383,7 @@ class ResponseBuilder:
                 "label": w['performance_label'],
             })
         
-        # Build executive summary
+        # Executive summary
         best, worst = WarehouseIntelligenceEngine.get_best_and_worst(warehouses)
         exec_summary = {
             "overall_health": kpis.get("health_score", {}).get("value", 0),
@@ -1494,14 +1397,14 @@ class ResponseBuilder:
             "avg_cycle": summary.get('avg_cycle_days', 0),
             "critical_warehouses": kpis.get("critical_warehouses", {}).get("value", 0),
             "high_risk_cities": len([c for c in cities if c.get('avg_cycle_days', 0) > 5]),
-            "ai_recommendation": "Focus on reducing POD delays in North Region."  # placeholder
+            "ai_recommendation": "Focus on reducing POD delays in North Region."
         }
         
         return {
             # --- Existing keys (unchanged) ---
             "executive_summary": summary,
-            "cards": kpis,
-            "kpis": kpis,
+            "cards": kpis,      # HTML uses 'cards'
+            "kpis": kpis,       # legacy
             "pipeline": pipeline_old,
             "warehouse": warehouses,
             "warehouses": warehouses,
@@ -1518,16 +1421,16 @@ class ResponseBuilder:
             "aging_distribution": aging,
             "network": network,
             "insights": insights,
-            "alerts": alerts,
-            "recommendations": recommendations,
+            "alerts": alerts,           # alerts now have 'source'
+            "recommendations": recommendations,  # each has 'recommendation'
             "warehouse_charts": {"delivery_performance": charts.get("pgi_performance"), "ranking": charts.get("warehouse_ranking")},
             "trend_charts": {"daily_operations": charts.get("daily_trend"), "monthly_operations": charts.get("monthly_trend")},
             "charts": charts,
             "metadata": metadata,
             
-            # --- NEW KEYS for enhanced dashboard ---
-            "pipeline_detailed": pipeline,  # funnel with percentages, avg days, pending
-            "warehouse_scorecard": warehouses,  # enriched with all metrics
+            # --- NEW keys for enhanced features ---
+            "pipeline_detailed": pipeline,
+            "warehouse_scorecard": warehouses,
             "delivery_distribution": delivery_distribution,
             "pod_distribution": pod_distribution,
             "cycle_distribution": cycle_distribution,
@@ -1537,23 +1440,22 @@ class ResponseBuilder:
             "warehouse_kpis": warehouse_kpis_summary,
             "heatmap": heatmap,
             "executive_summary_detailed": exec_summary,
-            "warehouse_drilldown": {},  # to be filled on demand; we keep placeholder
+            "warehouse_drilldown": {},
         }
 
 
 # ============================================================
-# DASHBOARD SERVICE (MAIN)
+# DASHBOARD SERVICE
 # ============================================================
 
 class DashboardService:
     def __init__(self):
         self._repo = DashboardRepository()
-        logger.info("DashboardService initialized (v17.0)")
+        logger.info("DashboardService initialized (v17.1)")
     
     @cached(ttl=300)
     async def get_full_dashboard(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
         try:
-            # --- Fetch all data ---
             summary = self._repo.fetch_summary()
             warehouse_raw = self._repo.fetch_warehouse_data()
             dealer_raw = self._repo.fetch_dealer_data()
@@ -1566,14 +1468,12 @@ class DashboardService:
             network = self._repo.fetch_network_data()
             record_count = self._repo.fetch_record_count()
             
-            # --- New data fetches ---
             delivery_dist_raw = self._repo.fetch_warehouse_delivery_distribution()
             pod_dist_raw = self._repo.fetch_warehouse_pod_distribution()
             cycle_dist_raw = self._repo.fetch_warehouse_cycle_distribution()
             pending_summary = self._repo.fetch_pending_summary()
             delay_breakdown = self._repo.fetch_delay_breakdown()
             
-            # --- Compute distances ---
             try:
                 city_pairs = self._repo.fetch_warehouse_city_pairs()
                 avg_distances = DistanceCalculationEngine.compute_average_distance_per_warehouse(city_pairs)
@@ -1581,25 +1481,18 @@ class DashboardService:
                 logger.warning(f"Distance calculation failed: {e}")
                 avg_distances = {}
             
-            # --- Enrich warehouse data ---
             warehouses = WarehouseIntelligenceEngine.compute_warehouse_metrics(warehouse_raw, avg_distances)
             
-            # --- Build distributions ---
             delivery_dist = DistributionEngine.build_distribution_data(delivery_dist_raw)
             pod_dist = DistributionEngine.build_distribution_data(pod_dist_raw)
             cycle_dist = DistributionEngine.build_distribution_data(cycle_dist_raw)
             
-            # --- Build pipeline ---
             pipeline = PipelineEngine.build_pipeline(summary, warehouses)
-            
-            # --- KPIs ---
             kpis = ExecutiveKPIEngine.generate_kpis(summary, warehouses)
             
-            # --- Alerts & AI ---
             alerts = AlertEngine.generate_alerts(warehouses)
             recommendations = [AIRecommendationEngine.generate_recommendations(w) for w in warehouses]
             
-            # --- Warehouse summary KPIs ---
             sorted_wh = sorted(warehouses, key=lambda x: x.get('performance_score', 0), reverse=True)
             best = sorted_wh[0] if sorted_wh else {}
             worst = sorted_wh[-1] if sorted_wh else {}
@@ -1610,8 +1503,6 @@ class DashboardService:
                 "bottom_5": [{"name": w['warehouse_name'], "score": w['performance_score']} for w in sorted_wh[-5:]],
             }
             
-            # --- Standard comparison (distance-based) ---
-            # We already have avg_distances; compute target and gap per warehouse
             standard_comp = []
             for w in warehouses:
                 standard_comp.append({
@@ -1623,7 +1514,6 @@ class DashboardService:
                     "avg_distance_km": w['avg_distance_km'],
                 })
             
-            # --- Charts (existing) ---
             charts = {
                 "warehouse_ranking": GraphEngine.horizontal_bar_chart(warehouses, 'delivery_notes', 'warehouse_name', 'Warehouse Ranking', 'performance_color'),
                 "pgi_performance": GraphEngine.vertical_bar_chart(warehouses, 'warehouse_name', 'avg_pgi_days', 'PGI Days'),
@@ -1634,8 +1524,6 @@ class DashboardService:
                 "daily_trend": GraphEngine.timeline_chart(daily_trend, 'date', 'dn_count', 'Daily DNs'),
             }
             
-            # --- Additional charts (new) ---
-            # Distribution charts (stacked bars)
             bucket_order_delivery = ['1 Day', '2 Days', '3 Days', '4 Days', '5 Days', '6 Days', 'Above Standard']
             bucket_order_pod = ['1 Day', '2 Days', '3 Days', '>3 Days']
             bucket_order_cycle = ['2 Days', '3 Days', '4 Days', '5 Days', '6 Days', 'Above Standard']
@@ -1649,7 +1537,6 @@ class DashboardService:
                 cycle_dist, bucket_order_cycle, "Total Cycle Days Distribution (Units)"
             )
             
-            # --- Insights (AI) ---
             insights = {
                 "insights": [
                     {"type": "best_performing", "text": f"Best Warehouse: {best.get('warehouse_name', 'N/A')} (Score: {best.get('performance_score', 0)})"},
@@ -1660,13 +1547,12 @@ class DashboardService:
             }
             
             metadata = {
-                "version": "17.0",
+                "version": "17.1",
                 "timestamp": datetime.utcnow().isoformat(),
                 "record_count": record_count,
                 "warehouse_count": len(warehouses),
             }
             
-            # --- Build final response ---
             return ResponseBuilder.build(
                 summary=summary,
                 warehouses=warehouses,
@@ -1744,9 +1630,8 @@ async def get_warehouses(service: DashboardService = Depends(get_dashboard_servi
 
 @router.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "17.0", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "healthy", "version": "17.1", "timestamp": datetime.utcnow().isoformat()}
 
-# --- Upload endpoint ---
 @router.post("/upload")
 async def upload_excel_report(
     file: UploadFile = File(...),
@@ -1757,7 +1642,6 @@ async def upload_excel_report(
         contents = await file.read()
         if PANDAS_AVAILABLE:
             df = pd.read_excel(io.BytesIO(contents))
-            # Insert logic here (if needed)
             logger.info(f"Successfully received Excel file: {file.filename} with {len(df)} rows.")
         cache.clear()
         return {
@@ -1769,4 +1653,4 @@ async def upload_excel_report(
         logger.error(f"Excel upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-logger.info("DashboardService router mounted (v17.0) with /upload")
+logger.info("DashboardService router mounted (v17.1) with /upload")
