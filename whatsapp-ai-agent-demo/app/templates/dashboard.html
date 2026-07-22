@@ -1,13 +1,13 @@
 <!-- ============================================================
      FILE: whatsapp-ai-agent-demo/app/templates/dashboard.html
-     VERSION: 17.1 – FULLY INTEGRATED WITH BACKEND
+     VERSION: 18.0 – HAIER LOGISTICS COMMAND CENTER
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Haier Pakistan – Enterprise Command Suite</title>
+  <title>Haier Logistics – Command Center</title>
 
   <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -21,15 +21,11 @@
   <!-- AG Grid Community -->
   <link href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css" rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-theme-alpine.css" rel="stylesheet" />
-  <!-- Plotly JS -->
-  <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist@2.26.0/plotly.min.js"></script>
-  <!-- AG Grid JS -->
-  <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
   <!-- SweetAlert2 -->
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
   <!-- ============================================================
-  ULTRA‑PREMIUM DESIGN SYSTEM
+  DESIGN SYSTEM
   ============================================================ -->
   <style>
     :root {
@@ -48,7 +44,6 @@
       --color-warning: #f59e0b;
       --color-danger: #ef4444;
       --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-      --font-mono: 'JetBrains Mono', monospace;
       --radius-xl: 24px;
       --radius-lg: 16px;
       --radius-md: 12px;
@@ -128,7 +123,7 @@
       padding: 1.5rem 0;
       display: flex;
       flex-direction: column;
-      gap: 0.3rem;
+      gap: 0.2rem;
       overflow-y: auto;
     }
     .sidebar-nav::-webkit-scrollbar { width: 4px; }
@@ -148,7 +143,7 @@
     }
     .sidebar-nav .nav-link i {
       width: 20px; text-align: center;
-      font-size: 1.05rem;
+      font-size: 1rem;
       transition: transform 0.2s ease;
     }
     .sidebar-nav .nav-link:hover {
@@ -183,7 +178,6 @@
       align-items: center;
       justify-content: space-between;
       backdrop-filter: blur(20px);
-      transition: background 0.3s ease;
     }
     .topbar-left { display: flex; align-items: center; gap: 1.25rem; }
     .topbar-left .hamburger {
@@ -329,59 +323,56 @@
       margin-top: 0.4rem;
     }
 
+    /* ----- Tables ----- */
+    .table-command {
+      background: transparent;
+      color: var(--color-text-primary);
+      font-size: 0.85rem;
+      border-collapse: separate;
+      border-spacing: 0;
+    }
+    .table-command thead th {
+      background: var(--color-bg-elevated);
+      color: var(--color-text-secondary);
+      font-weight: 700;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--color-border);
+    }
+    .table-command tbody td {
+      padding: 0.65rem 1rem;
+      border-bottom: 1px solid var(--color-border);
+      background: transparent;
+    }
+    .table-command tbody tr:hover { background: rgba(56,189,248,0.03); }
+    .table-command .badge-status {
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 0.35rem 0.8rem;
+      border-radius: 9999px;
+    }
+    .status-Excellent { background: #10b981; color: #fff; }
+    .status-Good     { background: #84cc16; color: #0f172a; }
+    .status-Average  { background: #f59e0b; color: #0f172a; }
+    .status-Warning  { background: #f97316; color: #0f172a; }
+    .status-Critical { background: #ef4444; color: #fff; }
+
     /* ----- Empty States ----- */
     .empty-state {
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 3rem 2rem;
+      padding: 2rem;
       color: var(--color-text-secondary);
       text-align: center;
       background: rgba(15,23,42,0.2);
       border-radius: var(--radius-lg);
       border: 2px dashed var(--color-border);
     }
-    .empty-state i {
-      font-size: 3rem;
-      margin-bottom: 1rem;
-      color: var(--color-accent);
-      opacity: 0.3;
-    }
-
-    /* ----- Pipeline Flow ----- */
-    .pipeline-stage {
-      background: rgba(15,23,42,0.4);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-md);
-      padding: 1.25rem 1.5rem;
-      min-width: 160px;
-      text-align: center;
-      transition: var(--transition-smooth);
-    }
-    .pipeline-stage:hover {
-      border-color: var(--color-accent);
-      transform: scale(1.04);
-      box-shadow: var(--shadow-neon);
-    }
-    .pipeline-stage .stage-label {
-      font-size: 0.7rem;
-      text-transform: uppercase;
-      font-weight: 700;
-      color: var(--color-text-secondary);
-      letter-spacing: 0.06em;
-    }
-    .pipeline-stage .stage-value {
-      font-size: 1.75rem;
-      font-weight: 800;
-      color: var(--color-text-primary);
-      margin-top: 0.25rem;
-    }
-    .pipeline-arrow {
-      font-size: 1.2rem;
-      color: var(--color-accent);
-      opacity: 0.6;
-    }
+    .empty-state i { font-size: 2.5rem; margin-bottom: 0.5rem; color: var(--color-accent); opacity: 0.3; }
 
     /* ----- Forms & Upload ----- */
     .upload-highlight {
@@ -405,7 +396,6 @@
       transform: translateY(-2px);
       box-shadow: 0 12px 32px rgba(37,99,235,0.35);
     }
-
     .form-toolbar { display: flex; flex-wrap: wrap; gap: 1.25rem; align-items: flex-end; }
     .form-toolbar .form-group { flex: 1; min-width: 180px; }
     .form-control, .form-select {
@@ -429,9 +419,7 @@
       background: rgba(15,23,42,0.7);
     }
     [data-theme="light"] .form-control:focus,
-    [data-theme="light"] .form-select:focus {
-      background: #ffffff;
-    }
+    [data-theme="light"] .form-select:focus { background: #ffffff; }
     label {
       font-size: 0.75rem;
       font-weight: 700;
@@ -442,7 +430,21 @@
       display: block;
     }
 
-    /* ----- AG Grid Alpine Customization ----- */
+    /* ----- Footer ----- */
+    .footer-bar {
+      background: var(--color-bg-surface);
+      border-radius: var(--radius-xl);
+      padding: 1.1rem 2rem;
+      border: 1px solid var(--color-border);
+      text-align: center;
+      font-size: 0.75rem;
+      color: var(--color-text-secondary);
+      font-weight: 600;
+      box-shadow: var(--shadow-glass);
+      backdrop-filter: blur(20px);
+    }
+
+    /* ----- AG Grid Alpine ----- */
     .ag-theme-alpine {
       --ag-background-color: transparent;
       --ag-foreground-color: var(--color-text-primary);
@@ -468,31 +470,7 @@
       letter-spacing: 0.04em;
     }
 
-    /* ----- Footer ----- */
-    .footer-bar {
-      background: var(--color-bg-surface);
-      border-radius: var(--radius-xl);
-      padding: 1.1rem 2rem;
-      border: 1px solid var(--color-border);
-      text-align: center;
-      font-size: 0.75rem;
-      color: var(--color-text-secondary);
-      font-weight: 600;
-      box-shadow: var(--shadow-glass);
-      backdrop-filter: blur(20px);
-    }
-
-    /* ----- Heatmap cards ----- */
-    .heatmap-card {
-      border-radius: var(--radius-md);
-      padding: 0.75rem 1rem;
-      text-align: center;
-      border: 1px solid var(--color-border);
-      background: var(--color-bg-elevated);
-      transition: var(--transition-smooth);
-    }
-    .heatmap-card:hover { transform: scale(1.04); }
-
+    /* ----- Responsive ----- */
     @media (max-width: 991.98px) {
       .sidebar { transform: translateX(-100%); }
       .sidebar.open { transform: translateX(0); }
@@ -506,7 +484,7 @@
 <div id="app" class="container-fluid px-0">
 
   <!-- ============================================================
-  EXECUTIVE SIDEBAR
+  SIDEBAR – COMMAND CENTER
   ============================================================ -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
@@ -518,14 +496,19 @@
     </div>
     <nav class="sidebar-nav">
       <a class="nav-link active" href="#"><i class="fas fa-chart-line"></i> Dashboard</a>
+      <a class="nav-link" href="#warehouseSection"><i class="fas fa-warehouse"></i> Warehouses</a>
+      <a class="nav-link" href="#deliveriesSection"><i class="fas fa-truck"></i> Deliveries</a>
+      <a class="nav-link" href="#citySection"><i class="fas fa-city"></i> Cities</a>
+      <a class="nav-link" href="#productSection"><i class="fas fa-boxes"></i> Products</a>
+      <a class="nav-link" href="#divisionSection"><i class="fas fa-layer-group"></i> Divisions</a>
+      <a class="nav-link" href="#salesOfficesSection"><i class="fas fa-store"></i> Sales Offices</a>
+      <a class="nav-link" href="#salesManagersSection"><i class="fas fa-user-tie"></i> Sales Managers</a>
+      <a class="nav-link" href="#alertsSection"><i class="fas fa-exclamation-triangle"></i> Alerts & Insights</a>
+      <a class="nav-link" href="#reportsSection"><i class="fas fa-file-alt"></i> Reports</a>
+      <a class="nav-link" href="#dataQualitySection"><i class="fas fa-database"></i> Data Quality</a>
       <a class="nav-link" href="#uploadSection"><i class="fas fa-cloud-upload-alt"></i> Import Center</a>
-      <a class="nav-link" href="#warehouseGrid"><i class="fas fa-warehouse"></i> Warehouses</a>
-      <a class="nav-link" href="#dealerGrid"><i class="fas fa-handshake"></i> Dealers</a>
-      <a class="nav-link" href="#cityGrid"><i class="fas fa-map-marker-alt"></i> Cities</a>
-      <a class="nav-link" href="#productGrid"><i class="fas fa-boxes"></i> Products</a>
-      <a class="nav-link" href="#executiveIntelligence"><i class="fas fa-brain"></i> AI Intelligence</a>
     </nav>
-    <div class="sidebar-footer">v17.1 · Enterprise</div>
+    <div class="sidebar-footer">v18.0 · Enterprise</div>
   </aside>
 
   <!-- ============================================================
@@ -533,11 +516,11 @@
   ============================================================ -->
   <main class="main-content" id="mainContent">
 
-    <!-- TOPBAR -->
+    <!-- TOP BAR -->
     <div class="topbar">
       <div class="topbar-left">
         <button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button>
-        <h4><i class="fas fa-chart-pie"></i> Logistics Operations Command</h4>
+        <h4><i class="fas fa-chart-pie"></i> Director Logistics Dashboard</h4>
       </div>
       <div class="topbar-right">
         <span class="badge-date"><i class="fas fa-calendar-day"></i> <span id="todayDate"></span></span>
@@ -547,151 +530,83 @@
       </div>
     </div>
 
-    <!-- EXECUTIVE KPI CARDS (NOW SHOWING ALL 16) -->
+    <!-- ============================================================
+    EXECUTIVE KPI CARDS (8 cards as per picture)
+    ============================================================ -->
     <section id="kpiCards" class="row g-3 mb-4"></section>
 
-    <!-- EXECUTIVE INTELLIGENCE CENTER -->
-    <section id="executiveIntelligence" class="row g-4 mb-4">
+    <!-- ============================================================
+    EXECUTIVE SUMMARY (AI)
+    ============================================================ -->
+    <section class="row g-4 mb-4">
       <div class="col-12">
         <div class="card mb-0">
-          <div class="card-header"><i class="fas fa-brain"></i> Executive Intelligence Center & AI Summary</div>
+          <div class="card-header"><i class="fas fa-brain"></i> Executive Summary (AI)</div>
           <div class="card-body p-4">
-            <div class="row g-4">
-              <div class="col-lg-6">
-                <h6 class="text-uppercase text-muted fw-bold mb-3" style="font-size:0.75rem;"><i class="fas fa-robot text-info me-1"></i> AI Operational Insights</h6>
-                <div id="aiInsightsContainer" class="p-3 bg-opacity-10 bg-info border border-info border-opacity-25 rounded-3 mb-3" style="font-size:0.9rem; line-height:1.6;">
-                  Loading intelligent executive breakdown...
-                </div>
-                <div class="row g-3">
-                  <div class="col-6">
-                    <div class="p-3 border rounded-3 bg-opacity-50" style="background:var(--color-bg-elevated);">
-                      <small class="text-muted d-block text-uppercase fw-bold" style="font-size:0.65rem;">Top Warehouse</small>
-                      <span id="aiTopWarehouse" class="fw-bold fs-6" style="color:var(--color-success);">-</span>
-                    </div>
-                  </div>
-                  <div class="col-6">
-                    <div class="p-3 border rounded-3 bg-opacity-50" style="background:var(--color-bg-elevated);">
-                      <small class="text-muted d-block text-uppercase fw-bold" style="font-size:0.65rem;">Worst Warehouse</small>
-                      <span id="aiWorstWarehouse" class="fw-bold fs-6" style="color:var(--color-danger);">-</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div class="col-lg-6">
-                <h6 class="text-uppercase text-muted fw-bold mb-3" style="font-size:0.75rem;"><i class="fas fa-shield-exclamation text-warning me-1"></i> Critical Alerts & Recommendations</h6>
-                <div id="aiAlertsContainer" class="d-flex flex-column gap-2">
-                  <div class="text-muted small">Analyzing operational performance and identifying bottlenecks...</div>
-                </div>
-              </div>
+            <div id="executiveSummaryText" class="small" style="line-height:1.7; color:var(--color-text-secondary);">
+              Loading intelligent summary...
+            </div>
+            <div class="mt-3">
+              <a href="#" class="btn btn-outline-info btn-sm"><i class="fas fa-arrow-right"></i> View Full Summary</a>
             </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- PIPELINE -->
-    <section class="row g-4 mb-4">
-      <div class="col-12">
-        <div class="card">
-          <div class="card-header"><i class="fas fa-route"></i> End‑to‑End Fulfillment Pipeline</div>
-          <div class="card-body p-4" id="pipelineContainer">
-            <div class="empty-state"><i class="fas fa-sitemap"></i><p>Pipeline awaiting data</p><small>Upload SAP logistics report to populate</small></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- WAREHOUSE SCORECARD (AG Grid) -->
-    <section class="row g-4 mb-4">
-      <div class="col-12">
-        <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-warehouse"></i> Warehouse Performance Scorecard</div>
-          <div class="card-body p-3">
-            <div id="warehouseGrid" class="ag-theme-alpine" style="height:420px;"></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- WAREHOUSE HEATMAP (NEW) -->
-    <section class="row g-3 mb-4" id="heatmapContainer">
+    <!-- ============================================================
+    WAREHOUSE PERFORMANCE RANKING
+    ============================================================ -->
+    <section id="warehouseSection" class="row g-4 mb-4">
       <div class="col-12">
         <div class="card mb-0">
-          <div class="card-header"><i class="fas fa-fire"></i> Warehouse Performance Heatmap</div>
+          <div class="card-header"><i class="fas fa-warehouse"></i> Warehouse Performance Ranking</div>
           <div class="card-body p-3">
-            <div id="heatmapGrid" class="row g-2"></div>
+            <div id="warehouseRankingGrid" class="ag-theme-alpine" style="height:400px;"></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- STANDARD COMPARISON TABLE (NEW) -->
-    <section class="row g-4 mb-4">
-      <div class="col-12">
-        <div class="card mb-0">
-          <div class="card-header"><i class="fas fa-ruler-combined"></i> Distance‑Based Delivery Standard Compliance</div>
-          <div class="card-body p-3">
-            <div id="standardGrid" class="ag-theme-alpine" style="height:300px;"></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- DEALER + PRODUCT -->
+    <!-- ============================================================
+    TOP 5 DEALERS + TOP 5 PRODUCTS
+    ============================================================ -->
     <section class="row g-4 mb-4">
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-users"></i> Dealer Accounts</div>
+          <div class="card-header"><i class="fas fa-handshake"></i> Top 5 Dealers (By Sales Value)</div>
           <div class="card-body p-3">
-            <div id="dealerGrid" class="ag-theme-alpine" style="height:420px;"></div>
+            <div id="topDealersGrid" class="ag-theme-alpine" style="height:300px;"></div>
           </div>
         </div>
       </div>
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-box-open"></i> Product / SKU Performance</div>
+          <div class="card-header"><i class="fas fa-box-open"></i> Top 5 Products (By Units)</div>
           <div class="card-body p-3">
-            <div id="productGrid" class="ag-theme-alpine" style="height:420px;"></div>
+            <div id="topProductsGrid" class="ag-theme-alpine" style="height:300px;"></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- CITY -->
-    <section class="row g-4 mb-4">
+    <!-- ============================================================
+    DIVISION PERFORMANCE
+    ============================================================ -->
+    <section id="divisionSection" class="row g-4 mb-4">
       <div class="col-12">
-        <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-city"></i> City Hub Performance</div>
+        <div class="card mb-0">
+          <div class="card-header"><i class="fas fa-layer-group"></i> Division Performance (By Value)</div>
           <div class="card-body p-3">
-            <div id="cityGrid" class="ag-theme-alpine" style="height:420px;"></div>
+            <div id="divisionGrid" class="ag-theme-alpine" style="height:300px;"></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- PLOTLY CHARTS: Delivery / POD / Cycle Distribution (NEW) -->
-    <section class="row g-4 mb-4">
-      <div class="col-md-4">
-        <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-calendar-day"></i> Delivery Days Distribution</div>
-          <div class="card-body p-2" id="deliveryDistChart" style="height:350px;"></div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-file-signature"></i> POD Days Distribution</div>
-          <div class="card-body p-2" id="podDistChart" style="height:350px;"></div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-sync-alt"></i> Total Cycle Distribution</div>
-          <div class="card-body p-2" id="cycleDistChart" style="height:350px;"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- IMPORT CENTER (PRESERVED EXCEL UPLOAD FORM) -->
+    <!-- ============================================================
+    IMPORT CENTER (PRESERVED)
+    ============================================================ -->
     <section id="uploadSection" class="row g-4 mb-4">
       <div class="col-12">
         <div class="card upload-highlight mb-0">
@@ -727,6 +642,10 @@
 
 <!-- Bootstrap JS -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<!-- AG Grid JS -->
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
+<!-- SweetAlert2 -->
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
 <!-- ============================================================
      APPLICATION JAVASCRIPT
@@ -735,11 +654,17 @@
 (function() {
     const API_URL = '/dashboard/api/data';
 
+    // ----- Helper functions -----
     function formatNumber(v) { return (v || 0).toLocaleString(); }
     function formatPct(v) { return (v || 0).toFixed(1) + '%'; }
-    function formatDays(v) { return (v || 0).toFixed(1) + ' days'; }
+    function formatCurrency(v) { 
+        if (v >= 1e9) return (v/1e9).toFixed(1) + ' B';
+        if (v >= 1e6) return (v/1e6).toFixed(1) + ' M';
+        return (v/1e3).toFixed(1) + ' K';
+    }
+    function formatDays(v) { return (v || 0).toFixed(1); }
 
-    // ---- Render all 16 KPIs ----
+    // ----- Render KPIs (8 cards as per picture) -----
     function renderKPIs(cards) {
         const container = document.getElementById('kpiCards');
         if (!container) return;
@@ -747,39 +672,32 @@
             container.innerHTML = '<div class="col-12"><div class="empty-state"><p>No KPIs available</p></div></div>';
             return;
         }
-        // Define all KPI cards in order
-        const kpiConfig = [
-            { key: 'total_dn', label: 'Total Delivery Notes', icon: 'fa-file-invoice-dollar', fmt: v => formatNumber(v) },
-            { key: 'total_units', label: 'Total Units', icon: 'fa-boxes-packing', fmt: v => formatNumber(v) },
-            { key: 'pgi_completed_dn', label: 'PGI Completed (DN)', icon: 'fa-check-circle', fmt: v => formatNumber(v) },
-            { key: 'pgi_units', label: 'PGI Units', icon: 'fa-boxes', fmt: v => formatNumber(v) },
-            { key: 'delivered_dn', label: 'Delivered DN', icon: 'fa-truck', fmt: v => formatNumber(v) },
-            { key: 'delivered_units', label: 'Delivered Units', icon: 'fa-check', fmt: v => formatNumber(v) },
-            { key: 'pending_dn', label: 'Pending DN', icon: 'fa-hourglass-half', fmt: v => formatNumber(v) },
-            { key: 'pending_units', label: 'Pending Units', icon: 'fa-hourglass', fmt: v => formatNumber(v) },
-            { key: 'pod_completed', label: 'POD Completed', icon: 'fa-file-signature', fmt: v => formatNumber(v) },
-            { key: 'pod_units', label: 'POD Units', icon: 'fa-file-signature', fmt: v => formatNumber(v) },
-            { key: 'pgi_achievement', label: 'PGI Achievement %', icon: 'fa-percent', fmt: v => formatPct(v) },
-            { key: 'delivery_achievement', label: 'Delivery Achievement %', icon: 'fa-percent', fmt: v => formatPct(v) },
-            { key: 'pod_achievement', label: 'POD Achievement %', icon: 'fa-percent', fmt: v => formatPct(v) },
-            { key: 'health_score', label: 'Logistics Health Score', icon: 'fa-heart-pulse', fmt: v => formatPct(v) },
-            { key: 'critical_warehouses', label: 'Critical Warehouses', icon: 'fa-exclamation-triangle', fmt: v => formatNumber(v) },
-            { key: 'critical_dns', label: 'Critical DNs', icon: 'fa-exclamation-circle', fmt: v => formatNumber(v) },
-            // extra average cards
-            { key: 'avg_delivery_days', label: 'Avg Delivery Days', icon: 'fa-clock', fmt: v => formatDays(v) },
-            { key: 'avg_pod_days', label: 'Avg POD Days', icon: 'fa-clock', fmt: v => formatDays(v) },
-            { key: 'avg_cycle_days', label: 'Avg Logistics Cycle', icon: 'fa-stopwatch', fmt: v => formatDays(v) },
+
+        // Map the keys we need; fallback to 0
+        const getVal = (key) => (cards[key] && cards[key].value !== undefined) ? cards[key].value : 0;
+
+        // Build cards exactly as in picture
+        const kpis = [
+            { label: 'Total Delivery Notes', icon: 'fa-file-invoice', key: 'total_dn', fmt: v => formatNumber(v) },
+            { label: 'Total Units', icon: 'fa-boxes', key: 'total_units', fmt: v => formatNumber(v) },
+            { label: 'Total Value', icon: 'fa-money-bill-wave', key: 'total_value', fmt: v => 'PKR ' + formatCurrency(v) },
+            { label: 'PGI Achievement', icon: 'fa-percent', key: 'pgi_achievement', fmt: v => formatPct(v) },
+            { label: 'POD Achievement', icon: 'fa-percent', key: 'pod_achievement', fmt: v => formatPct(v) },
+            { label: 'Pending DNs', icon: 'fa-hourglass-half', key: 'pending_dn', fmt: v => formatNumber(v) },
+            { label: 'Pending Units', icon: 'fa-hourglass', key: 'pending_units', fmt: v => formatNumber(v) },
+            { label: 'Logistics Health Score', icon: 'fa-heart-pulse', key: 'health_score', fmt: v => formatPct(v) },
         ];
 
         let html = '';
-        kpiConfig.forEach(cfg => {
-            const dataObj = cards[cfg.key] || { value: 0 };
-            const value = dataObj.value !== undefined ? dataObj.value : 0;
+        kpis.forEach(k => {
+            const value = getVal(k.key);
+            // For extra subtitle like "vs Yesterday" – we don't have that data, so we skip or add placeholder
             html += `
-                <div class="col-xl-2 col-lg-3 col-md-4 col-6 mb-2">
+                <div class="col-xl-3 col-lg-4 col-md-6 col-6 mb-2">
                     <div class="card kpi-card">
-                        <h6><i class="fas ${cfg.icon}"></i> ${cfg.label}</h6>
-                        <div class="kpi-value">${cfg.fmt(value)}</div>
+                        <h6><i class="fas ${k.icon}"></i> ${k.label}</h6>
+                        <div class="kpi-value">${k.fmt(value)}</div>
+                        <div class="kpi-sub">Target: ${k.label.includes('Achievement') ? '≥90%' : 'N/A'}</div>
                     </div>
                 </div>
             `;
@@ -787,147 +705,16 @@
         container.innerHTML = html;
     }
 
-    // ---- Render Executive Intelligence ----
-    function renderExecutiveIntelligence(data) {
-        const insightsContainer = document.getElementById('aiInsightsContainer');
-        const alertsContainer = document.getElementById('aiAlertsContainer');
-        const topWhEl = document.getElementById('aiTopWarehouse');
-        const worstWhEl = document.getElementById('aiWorstWarehouse');
-
-        const warehouses = data.warehouse || [];
-        if (warehouses.length > 0) {
-            const best = warehouses[0];
-            const worst = warehouses[warehouses.length - 1];
-            if (topWhEl) topWhEl.innerText = best.warehouse_name || 'N/A';
-            if (worstWhEl) worstWhEl.innerText = worst.warehouse_name || 'N/A';
-        }
-
-        if (insightsContainer) {
-            const insights = data.insights?.insights || [];
-            if (insights.length > 0) {
-                insightsContainer.innerHTML = insights.map(i => `<div class="mb-1"><i class="fas fa-check-circle text-info me-2"></i>${i.text}</div>`).join('');
-            } else {
-                insightsContainer.innerHTML = 'All warehouse networks are operating smoothly under normal operational parameters.';
-            }
-        }
-
-        if (alertsContainer) {
-            const alerts = data.alerts || [];
-            const recommendations = data.recommendations || [];
-            let alertHtml = '';
-            
-            if (alerts.length > 0) {
-                alertHtml += alerts.slice(0, 4).map(a => `
-                    <div class="p-2.5 rounded-2 bg-opacity-10 bg-danger border border-danger border-opacity-25 text-danger font-monospace" style="font-size:0.8rem;">
-                        <i class="fas fa-triangle-exclamation me-1"></i><strong>${a.source || a.warehouse}:</strong> ${a.message}
-                    </div>
-                `).join('');
-            }
-
-            if (recommendations.length > 0) {
-                alertHtml += recommendations.slice(0, 2).map(r => `
-                    <div class="p-2.5 rounded-2 bg-opacity-10 bg-warning border border-warning border-opacity-25 text-warning font-monospace" style="font-size:0.8rem;">
-                        <i class="fas fa-lightbulb me-1"></i><strong>${r.warehouse}:</strong> ${r.recommendation}
-                    </div>
-                `).join('');
-            }
-
-            if (!alertHtml) {
-                alertHtml = '<div class="text-success small"><i class="fas fa-circle-check me-1"></i> No critical risks or warnings detected. Operations optimal.</div>';
-            }
-            alertsContainer.innerHTML = alertHtml;
-        }
-    }
-
-    // ---- Render Pipeline ----
-    function renderPipeline(data) {
-        const container = document.getElementById('pipelineContainer');
+    // ----- Render Executive Summary (AI) -----
+    function renderExecutiveSummary(data) {
+        const container = document.getElementById('executiveSummaryText');
         if (!container) return;
-        // Use detailed pipeline if available, else fallback to legacy
-        const pipeline = data.pipeline_detailed || data.pipeline || {};
-        if (!pipeline.dn_created) {
-            container.innerHTML = '<div class="empty-state"><i class="fas fa-sitemap"></i><p>Pipeline awaiting data</p><small>Upload SAP report to populate</small></div>';
-            return;
-        }
-        // Build stages from detailed pipeline
-        const stages = [
-            { label: 'DN Created', key: 'dn_created' },
-            { label: 'PGI Completed', key: 'pgi_completed' },
-            { label: 'In Transit', key: 'in_transit' },
-            { label: 'Delivered', key: 'delivered' },
-            { label: 'POD Received', key: 'pod_received' }
-        ];
-        let html = '<div class="d-flex flex-wrap align-items-center justify-content-center gap-3">';
-        stages.forEach((s, idx) => {
-            const stage = pipeline[s.key] || { dn: 0, units: 0, pct: 0, avg_days: 0 };
-            html += `
-                <div class="pipeline-stage" title="Units: ${formatNumber(stage.units)} | Avg: ${formatDays(stage.avg_days)}">
-                    <div class="stage-label">${s.label}</div>
-                    <div class="stage-value">${formatNumber(stage.dn || 0)}</div>
-                    <div style="font-size:0.7rem;color:var(--color-text-secondary);">
-                        Units: ${formatNumber(stage.units || 0)} &nbsp;|&nbsp; ${formatPct(stage.pct || 0)}
-                        ${stage.avg_days ? `&nbsp;|&nbsp; ${formatDays(stage.avg_days)}` : ''}
-                    </div>
-                </div>
-            `;
-            if (idx < stages.length - 1) html += `<span class="pipeline-arrow px-1"><i class="fas fa-chevron-right"></i></span>`;
-        });
-        html += '</div>';
-        container.innerHTML = html;
+        const summary = data.executive_summary_text || 'Executive summary not available.';
+        container.textContent = summary;
     }
 
-    // ---- Render Heatmap ----
-    function renderHeatmap(heatmap) {
-        const container = document.getElementById('heatmapGrid');
-        if (!container) return;
-        if (!heatmap || heatmap.length === 0) {
-            container.innerHTML = '<div class="col-12 text-muted">No warehouse data for heatmap.</div>';
-            return;
-        }
-        let html = '';
-        heatmap.forEach(h => {
-            html += `
-                <div class="col-lg-2 col-md-3 col-sm-4 col-6">
-                    <div class="heatmap-card" style="border-left: 4px solid ${h.color};">
-                        <div style="font-weight:700;font-size:0.85rem;">${h.warehouse}</div>
-                        <div style="font-size:1.2rem;font-weight:800;color:${h.color};">${h.score}</div>
-                        <div style="font-size:0.7rem;color:var(--color-text-secondary);">${h.label}</div>
-                    </div>
-                </div>
-            `;
-        });
-        container.innerHTML = html;
-    }
-
-    // ---- Render Standard Comparison Grid ----
-    function renderStandardGrid(data) {
-        const gridDiv = document.getElementById('standardGrid');
-        if (!gridDiv) return;
-        const standardData = data.warehouse_standard_comparison || [];
-        try {
-            if (typeof agGrid !== 'undefined' && agGrid.createGrid) {
-                agGrid.createGrid(gridDiv, {
-                    columnDefs: [
-                        { field: 'warehouse', headerName: 'Warehouse', flex: 1.5 },
-                        { field: 'standard_delivery_days', headerName: 'Target Days', width: 120 },
-                        { field: 'actual_delivery_days', headerName: 'Actual Days', width: 120, valueFormatter: p => formatDays(p.value) },
-                        { field: 'gap', headerName: 'Gap', width: 100, valueFormatter: p => (p.value > 0 ? '+' : '') + p.value.toFixed(1) },
-                        { field: 'status', headerName: 'Status', width: 150, cellStyle: params => {
-                            return params.value === 'Within Standard' ? { color: '#10b981' } : { color: '#ef4444' };
-                        }},
-                        { field: 'avg_distance_km', headerName: 'Avg Distance (km)', width: 140 }
-                    ],
-                    rowData: standardData,
-                    pagination: true,
-                    paginationPageSize: 5,
-                    domLayout: 'autoHeight',
-                });
-            }
-        } catch(e) { console.warn('Standard grid error:', e); }
-    }
-
-    // ---- Render AG Grids ----
-    function renderAGGrid(containerId, data, colDefs) {
+    // ----- Render AG Grids -----
+    function renderAGGrid(containerId, data, colDefs, height = 'auto') {
         const gridDiv = document.getElementById(containerId);
         if (!gridDiv) return;
         gridDiv.innerHTML = '';
@@ -937,7 +724,7 @@
                     columnDefs: colDefs,
                     rowData: data || [],
                     pagination: true,
-                    paginationPageSize: 8,
+                    paginationPageSize: 5,
                     domLayout: 'autoHeight',
                 });
             } else if (typeof agGrid !== 'undefined' && agGrid.Grid) {
@@ -945,31 +732,14 @@
                     columnDefs: colDefs,
                     rowData: data || [],
                     pagination: true,
-                    paginationPageSize: 8,
+                    paginationPageSize: 5,
                     domLayout: 'autoHeight',
                 });
             }
         } catch(e) { console.warn('Grid error:', containerId, e); }
     }
 
-    // ---- Render Plotly Charts ----
-    function renderPlotlyChart(containerId, chartJson) {
-        const container = document.getElementById(containerId);
-        if (!container) return;
-        if (!chartJson || chartJson === '{}') {
-            container.innerHTML = '<div class="empty-state small"><i class="fas fa-chart-simple"></i> No data</div>';
-            return;
-        }
-        try {
-            const fig = JSON.parse(chartJson);
-            Plotly.newPlot(container, fig.data, fig.layout, { responsive: true });
-        } catch(e) {
-            console.warn('Plotly error:', containerId, e);
-            container.innerHTML = '<div class="empty-state small"><i class="fas fa-chart-simple"></i> Chart unavailable</div>';
-        }
-    }
-
-    // ---- Load Dashboard ----
+    // ----- Load all data and render -----
     async function loadDashboard() {
         try {
             const res = await fetch(API_URL);
@@ -979,62 +749,63 @@
             // KPIs
             renderKPIs(data.cards || {});
 
-            // Executive intelligence
-            renderExecutiveIntelligence(data);
+            // Executive Summary
+            renderExecutiveSummary(data);
 
-            // Pipeline
-            renderPipeline(data);
-
-            // Warehouse grid
-            renderAGGrid('warehouseGrid', data.warehouse || [], [
-                { field: 'ranking', headerName: 'Rank', width: 70, pinned: 'left' },
-                { field: 'warehouse_name', headerName: 'Warehouse', flex: 1.5 },
-                { field: 'delivery_notes', headerName: 'DNs', width: 100 },
-                { field: 'units', headerName: 'Units', width: 110 },
-                { field: 'average_logistics_cycle', headerName: 'Cycle (days)', width: 110, valueFormatter: p => formatDays(p.value) },
-                { field: 'health_score', headerName: 'Health %', width: 100, valueFormatter: p => formatPct(p.value) },
-                { field: 'performance_label', headerName: 'Tier', width: 100 }
+            // Warehouse Ranking Grid
+            const warehouseData = data.warehouse_ranking || [];
+            renderAGGrid('warehouseRankingGrid', warehouseData, [
+                { field: 'rank', headerName: '#', width: 60, pinned: 'left' },
+                { field: 'warehouse', headerName: 'Warehouse', flex: 1.5 },
+                { field: 'dns', headerName: 'DNs', width: 100 },
+                { field: 'units', headerName: 'Units', width: 110, valueFormatter: p => formatNumber(p.value) },
+                { field: 'pgi_pct', headerName: 'PGI %', width: 100, valueFormatter: p => formatPct(p.value) },
+                { field: 'pod_pct', headerName: 'POD %', width: 100, valueFormatter: p => formatPct(p.value) },
+                { field: 'avg_days', headerName: 'Avg Qty (Days)', width: 120, valueFormatter: p => formatDays(p.value) },
+                { field: 'pending_dns', headerName: 'Pending DNs', width: 120, valueFormatter: p => formatNumber(p.value) },
+                { 
+                    field: 'status', 
+                    headerName: 'Status', 
+                    width: 120,
+                    cellRenderer: function(params) {
+                        const status = params.value || 'Unknown';
+                        const cls = 'status-' + status.replace(/\s/g, '');
+                        return `<span class="badge-status ${cls}">${status}</span>`;
+                    }
+                }
             ]);
 
-            // Dealer grid
-            renderAGGrid('dealerGrid', data.dealer || [], [
-                { field: 'dealer_name', headerName: 'Dealer', flex: 1.5 },
-                { field: 'delivery_notes', headerName: 'DNs', width: 100 },
-                { field: 'units', headerName: 'Units', width: 110 },
-                { field: 'avg_cycle_days', headerName: 'Cycle (days)', width: 110, valueFormatter: p => formatDays(p.value) }
+            // Top 5 Dealers
+            const dealerData = data.top_dealers || [];
+            renderAGGrid('topDealersGrid', dealerData, [
+                { field: 'dealer', headerName: 'Dealer', flex: 1.5 },
+                { field: 'dns', headerName: 'DNs', width: 100 },
+                { field: 'units', headerName: 'Units', width: 110, valueFormatter: p => formatNumber(p.value) },
+                { field: 'value', headerName: 'Value (PKR)', width: 140, valueFormatter: p => formatCurrency(p.value) }
             ]);
 
-            // Product grid
-            renderAGGrid('productGrid', data.product || [], [
-                { field: 'product_name', headerName: 'Model / SKU', flex: 1.5 },
-                { field: 'delivery_notes', headerName: 'DNs', width: 100 },
-                { field: 'units', headerName: 'Units', width: 110 }
+            // Top 5 Products
+            const productData = data.top_products || [];
+            renderAGGrid('topProductsGrid', productData, [
+                { field: 'product', headerName: 'Product / Model', flex: 1.5 },
+                { field: 'units', headerName: 'Units', width: 110, valueFormatter: p => formatNumber(p.value) },
+                { field: 'value', headerName: 'Value (PKR)', width: 140, valueFormatter: p => formatCurrency(p.value) }
             ]);
 
-            // City grid
-            renderAGGrid('cityGrid', data.city || [], [
-                { field: 'city', headerName: 'City', flex: 1.5 },
-                { field: 'delivery_notes', headerName: 'DNs', width: 100 },
-                { field: 'units', headerName: 'Units', width: 110 }
+            // Division Performance
+            const divisionData = data.division_performance || [];
+            renderAGGrid('divisionGrid', divisionData, [
+                { field: 'division', headerName: 'Division', flex: 1.5 },
+                { field: 'dns', headerName: 'DNs', width: 100 },
+                { field: 'units', headerName: 'Units', width: 110, valueFormatter: p => formatNumber(p.value) },
+                { field: 'value', headerName: 'Value (PKR)', width: 140, valueFormatter: p => formatCurrency(p.value) }
             ]);
-
-            // Heatmap
-            renderHeatmap(data.heatmap || []);
-
-            // Standard comparison grid
-            renderStandardGrid(data);
-
-            // Plotly charts
-            const charts = data.charts || {};
-            renderPlotlyChart('deliveryDistChart', charts.delivery_distribution_chart);
-            renderPlotlyChart('podDistChart', charts.pod_distribution_chart);
-            renderPlotlyChart('cycleDistChart', charts.cycle_distribution_chart);
 
             // Footer
             const footer = document.getElementById('footer');
             if (footer) {
                 footer.innerHTML = `
-                    <i class="fas fa-shield-halved text-success me-1"></i> Haier Pakistan v17.1 &nbsp;|&nbsp;
+                    <i class="fas fa-shield-halved text-success me-1"></i> Haier Pakistan v18.0 &nbsp;|&nbsp;
                     <i class="fas fa-database text-info mx-1"></i> PostgreSQL &nbsp;|&nbsp;
                     <i class="fas fa-clock text-muted mx-1"></i> Sync: ${new Date().toLocaleTimeString()} &nbsp;|&nbsp;
                     <i class="fas fa-cubes text-primary mx-1"></i> Records: ${formatNumber(data.metadata?.record_count || 0)}
@@ -1048,7 +819,9 @@
         }
     }
 
-    // ---- Document Ready ----
+    // ============================================================
+    // DOCUMENT READY
+    // ============================================================
     document.addEventListener('DOMContentLoaded', function() {
         // Theme toggle
         const themeToggle = document.getElementById('themeToggle');
@@ -1058,11 +831,11 @@
                 const next = current === 'dark' ? 'light' : 'dark';
                 document.documentElement.setAttribute('data-theme', next);
                 this.innerHTML = next === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
-                loadDashboard();
+                loadDashboard(); // re-render grids (themes applied automatically)
             });
         }
 
-        // Hamburger
+        // Sidebar hamburger
         const hamburger = document.getElementById('hamburgerBtn');
         if (hamburger) {
             hamburger.addEventListener('click', function() {
@@ -1127,8 +900,9 @@
             });
         }
 
-        // Initial load and auto-refresh every 30 seconds
+        // Initial load
         loadDashboard();
+        // Auto-refresh every 30 seconds
         setInterval(loadDashboard, 30000);
     });
 })();
