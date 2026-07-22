@@ -1,6 +1,6 @@
 <!-- ============================================================
      FILE: whatsapp-ai-agent-demo/app/templates/dashboard.html
-     VERSION: 15.5 – PRODUCTION BULLETPROOF COMMAND SUITE
+     VERSION: 15.6 – FULLY INTEGRATED BULLETPROOF COMMAND SUITE
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
@@ -539,7 +539,7 @@
     <!-- EXECUTIVE KPI CARDS -->
     <section id="kpiCards" class="row g-4 mb-4"></section>
 
-    <!-- EXECUTIVE INTELLIGENCE CENTER (REPLACING QUICK LOOKUP) -->
+    <!-- EXECUTIVE INTELLIGENCE CENTER -->
     <section id="executiveIntelligence" class="row g-4 mb-4">
       <div class="col-12">
         <div class="card mb-0">
@@ -640,7 +640,7 @@
         <div class="card upload-highlight mb-0">
           <div class="card-header"><i class="fas fa-file-excel text-success"></i> Import Center - Enterprise Excel Loader</div>
           <div class="card-body p-4">
-            <form class="form-toolbar" id="uploadForm" action="/dashboard/api/upload" method="post" enctype="multipart/form-data">
+            <form class="form-toolbar" id="uploadForm" action="/upload" method="post" enctype="multipart/form-data">
               <div class="form-group mb-0">
                 <label><i class="fas fa-file-arrow-up me-1"></i> Choose Excel File (.xlsx, .xls)</label>
                 <input type="file" name="file" accept=".xlsx,.xls" class="form-control" required />
