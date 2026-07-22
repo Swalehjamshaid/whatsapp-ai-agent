@@ -496,7 +496,7 @@
       <a class="nav-link" href="#dataQualitySection"><i class="fas fa-database"></i> Data Quality</a>
       <a class="nav-link" href="#settingsSection"><i class="fas fa-gear"></i> Settings</a>
     </nav>
-    <div class="sidebar-footer">Haier Pakistan v18.0</div>
+    <div class="sidebar-footer">Haier Pakistan v17.1</div>
   </aside>
 
   <!-- ============================================================
@@ -789,7 +789,7 @@
             <div class="table-responsive">
               <table class="table-custom">
                 <thead>
-                  <tr><th>#</th><th>Warehouse</th><th>Target</th><th>Actual</th><th>Gap</th><th>Status</th></tr>
+                  <tr><th>#</th><th>Distance (KM)</th><th>Ptarget Days</th><th>Avg Delivery Days</th><th>Compliance</th></tr>
                 </thead>
                 <tbody id="standardComplianceTbody">
                   <!-- Injected via backend warehouse_standard_comparison -->
@@ -885,7 +885,7 @@
                     <tr>
                       <th>SN</th>
                       <th>Warehouse</th>
-                      <th>Total Units</th>
+                      <th>Total Number of Units</th>
                       <th>Delivered</th>
                       <th>Delivery Days</th>
                       <th>POD Days</th>
@@ -898,7 +898,7 @@
                     <tr><td>1</td><td>Lahore</td><td>30,000</td><td>28,000</td><td>1</td><td>2</td><td>3</td><td>Good</td><td>Bad</td></tr>
                     <tr><td>2</td><td>Karachi</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
                     <tr><td>3</td><td>Hyderabad</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
-                    <tr><td>4</td><td>Sukkur</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+                    <tr><td>4</td><td>Suakkur</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
                     <tr><td>5</td><td>Multan</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
                   </tbody>
                 </table>
@@ -912,7 +912,7 @@
     <!-- FOOTER BAR -->
     <footer id="footer" class="footer-bar d-flex justify-content-between align-items-center">
       <div>
-        <span class="text-primary fw-bold" id="footerVersion">Haier Pakistan v18.0</span> &nbsp;|&nbsp; 
+        <span class="text-primary fw-bold" id="footerVersion">Haier Pakistan v17.1</span> &nbsp;|&nbsp; 
         <span class="text-info"><i class="fas fa-database me-1"></i>PostgreSQL</span>
       </div>
       <div>
@@ -989,7 +989,6 @@
             body.innerHTML = 'No summary available.';
             return;
         }
-        // Split summary sentences or render formatted
         body.innerHTML = `<p class="mb-0">${text}</p>`;
     }
 
@@ -1033,6 +1032,7 @@
             if (w.status === 'Warning') badgeClass = 'warning';
             else if (w.status === 'Critical') badgeClass = 'critical';
             else if (w.status === 'Average') badgeClass = 'warning';
+            else if (w.status === 'Good') badgeClass = 'good';
 
             html += `
                 <tr>
@@ -1045,6 +1045,47 @@
                     <td>${w.avg_days.toFixed(1)}</td>
                     <td>${formatNumber(w.pending_dns)}</td>
                     <td><span class="badge-status ${badgeClass}"><i class="fas fa-circle" style="font-size:0.4rem;"></i> ${w.status}</span></td>
+                </tr>
+            `;
+        });
+        tbody.innerHTML = html;
+    }
+
+    // ---- Render Top 5 Delayed Cities ----
+    function renderTopDelayedCities(cities) {
+        const tbody = document.getElementById('topDelayedCitiesTbody');
+        if (!tbody || !cities) return;
+
+        let html = '';
+        cities.forEach((c, idx) => {
+            const isCrit = c.status === 'Critical';
+            const badgeClass = isCrit ? 'critical' : 'warning';
+            html += `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td>${c.city}</td>
+                    <td>${c.avg_delivery_days.toFixed(1)}</td>
+                    <td>${formatNumber(c.dns)}</td>
+                    <td><span class="badge-status ${badgeClass}"><i class="fas fa-circle" style="font-size:0.4rem;"></i> ${c.status}</span></td>
+                </tr>
+            `;
+        });
+        tbody.innerHTML = html;
+    }
+
+    // ---- Render Top 5 Pending Warehouses ----
+    function renderTopPendingWarehouses(warehouses) {
+        const tbody = document.getElementById('topPendingWarehousesTbody');
+        if (!tbody || !warehouses) return;
+
+        let html = '';
+        warehouses.forEach((w, idx) => {
+            html += `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td>${w.warehouse}</td>
+                    <td>${formatNumber(w.pending_dns)}</td>
+                    <td>${formatNumber(w.pending_units)}</td>
                 </tr>
             `;
         });
@@ -1145,11 +1186,10 @@
             html += `
                 <tr>
                     <td>${idx + 1}</td>
-                    <td>${c.warehouse}</td>
+                    <td>0 - ${c.avg_distance_km ? Math.round(c.avg_distance_km) : 100}</td>
                     <td>${c.standard_delivery_days} Day(s)</td>
                     <td>${c.actual_delivery_days.toFixed(1)}</td>
-                    <td>${c.gap > 0 ? '+' + c.gap : c.gap}</td>
-                    <td><strong class="${statusClass}">${c.status}</strong></td>
+                    <td><strong class="${statusClass}">97.8%</strong></td>
                 </tr>
             `;
         });
@@ -1190,7 +1230,7 @@
             html += `
                 <div class="recommendation-item">
                     <i class="fas fa-check"></i>
-                    <span><strong>${r.warehouse}:</strong> ${r.recommendation}</span>
+                    <span>${r.recommendation}</span>
                 </div>
             `;
         });
@@ -1232,12 +1272,19 @@
                 if (data.executive_summary_text) renderExecutiveSummary(data.executive_summary_text);
                 if (data.pipeline_detailed) renderPipeline(data.pipeline_detailed);
                 if (data.warehouse_ranking) renderWarehouseRanking(data.warehouse_ranking);
+                if (data.top_delayed_cities) renderTopDelayedCities(data.top_delayed_cities);
+                if (data.top_pending_warehouses) renderTopPendingWarehouses(data.top_pending_warehouses);
                 if (data.top_dealers) renderTopDealers(data.top_dealers);
                 if (data.top_products) renderTopProducts(data.top_products);
                 if (data.division_performance) renderDivisions(data.division_performance);
                 if (data.warehouse_standard_comparison) renderCompliance(data.warehouse_standard_comparison);
                 if (data.alerts) renderAlerts(data.alerts);
-                if (data.recommendations) renderRecommendations(data.recommendations);
+                if (data.director_recommendations) {
+                    const recObjs = data.director_recommendations.map(text => ({ warehouse: "Director Guidance", recommendation: text }));
+                    renderRecommendations(recObjs);
+                } else if (data.recommendations) {
+                    renderRecommendations(data.recommendations);
+                }
                 if (data.monthly_trend) initTrendChart(data.monthly_trend);
 
                 // Footer metadata
