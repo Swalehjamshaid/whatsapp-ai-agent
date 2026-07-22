@@ -490,7 +490,7 @@ class DashboardRepository:
                 "pending_rate": SafeNumber.to_float(row.pending_rate),
             })
         return result
-
+    
     def fetch_warehouse_city_pairs(self) -> List[Dict[str, Any]]:
         sql = """
             SELECT
