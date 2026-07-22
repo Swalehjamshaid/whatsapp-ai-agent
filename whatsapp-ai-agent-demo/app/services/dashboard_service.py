@@ -1022,7 +1022,7 @@ class AlertEngine:
         return alerts
 
 # ============================================================
-# BLOCK 13: Recommendation Engine
+# BLOCK 13: Recommendation Engine (with Short Insight helper)
 # ============================================================
 
 class RecommendationEngine:
@@ -1056,6 +1056,29 @@ class RecommendationEngine:
                 "target_kpi": "Delivery Rate" if "delivery" in " ".join(actions).lower() else "Cycle Time"
             })
         return recs
+
+    @staticmethod
+    def generate_short_insight(warehouse: Dict[str, Any]) -> str:
+        """Return a short AI insight for a single warehouse."""
+        pgi = warehouse.get('pgi_rate', 0)
+        delivery = warehouse.get('delivery_rate', 0)
+        pod = warehouse.get('pod_rate', 0)
+        pending = warehouse.get('pending_units', 0)
+        health = warehouse.get('health_score', 0)
+
+        if health >= 90 and delivery >= 95 and pgi >= 95 and pod >= 90:
+            return "🟢 Excellent performance."
+        if delivery < 85:
+            return "🔴 Delivery delay increasing."
+        if pod < 85:
+            return "🟡 POD collection needs improvement."
+        if pgi < 85:
+            return "🟡 PGI process needs attention."
+        if pending > 1000:
+            return "🟠 High pending units."
+        if health >= 70:
+            return "🟡 Performance stable, monitor closely."
+        return "🔴 Critical risk – immediate action required."
 
 # ============================================================
 # BLOCK 14: Performance Trend Engine
@@ -1091,15 +1114,10 @@ class PerformanceTrendEngine:
 # ============================================================
 # BLOCK 15: Executive Summary Engine (UPDATED)
 # ============================================================
-#
-#  🔥 THIS IS THE BLOCK THAT WAS CHANGED TO FIX THE EMPTY SUMMARY.
-#  Replace this entire block with the code below.
-# ============================================================
 
 class ExecutiveSummaryEngine:
     @staticmethod
     def generate_summary(kpis: Dict, warehouses: List[Dict], alerts: List[Dict], recommendations: List[Dict]) -> str:
-        # Safely extract values with defaults
         health = kpis.get('health_score', {}).get('value', 0)
         delivery_pct = kpis.get('delivery_achievement', {}).get('value', 0)
         pod_pct = kpis.get('pod_achievement', {}).get('value', 0)
@@ -1109,44 +1127,35 @@ class ExecutiveSummaryEngine:
         best = warehouses[0] if warehouses else None
         worst = warehouses[-1] if warehouses else None
 
-        # If no data at all, provide a clear message
         if not warehouses and health == 0 and delivery_pct == 0 and pod_pct == 0:
             return "No delivery data available. Please upload an Excel report using the Import Center to populate the dashboard."
 
-        # Build summary lines
         lines = []
-
-        # Health assessment
         if health > 0:
             lines.append(f"Overall logistics performance is {'good' if health >= 80 else 'fair'} with health score of {health:.1f}%.")
         else:
             lines.append("Overall logistics performance data is currently unavailable.")
 
-        # Delivery achievement
         if delivery_pct > 0:
             lines.append(f"Delivery achievement is {delivery_pct:.1f}%, {'above' if delivery_pct >= 90 else 'below'} target.")
         else:
             lines.append("Delivery achievement data is currently unavailable.")
 
-        # POD achievement
         if pod_pct > 0:
             lines.append(f"POD achievement is {pod_pct:.1f}%, {'above' if pod_pct >= 90 else 'below'} target.")
         else:
             lines.append("POD achievement data is currently unavailable.")
 
-        # Pending items
         if pending_dn > 0 or pending_units > 0:
             lines.append(f"{pending_dn} DNs and {pending_units} units are still pending.")
         else:
             lines.append("No pending DNs or units at this time.")
 
-        # Best and worst warehouses
         if best:
             lines.append(f"{best['warehouse_name']} warehouse is the top performer.")
         if worst:
             lines.append(f"{worst['warehouse_name']} warehouse needs immediate attention.")
 
-        # Alerts and recommendations
         if alerts:
             first_alert = alerts[0]
             lines.append(f"Alert: {first_alert['source']} - {first_alert['message']}")
@@ -1154,11 +1163,10 @@ class ExecutiveSummaryEngine:
             first_rec = recommendations[0]
             lines.append(f"Recommendation: {first_rec['warehouse']} - {first_rec['recommendation']}")
 
-        # Join all lines into a single paragraph
         return " ".join(lines) if lines else "Executive summary is not available."
 
 # ============================================================
-# BLOCK 16: Response Builder
+# BLOCK 16: Response Builder (ENHANCED - Warehouse Command Center)
 # ============================================================
 
 class ResponseBuilder:
@@ -1177,6 +1185,7 @@ class ResponseBuilder:
         pgi_units = sum(w.get('pgi_units', 0) for w in warehouses)
         total_revenue = summary.get('total_revenue', 0) or (total_units * config.avg_unit_price)
 
+        # --- Executive KPI Cards (unchanged) ---
         cards = {
             "total_dn": {"value": total_dn, "label": "Total Delivery Notes", "icon": "fa-file-invoice"},
             "total_units": {"value": total_units, "label": "Total Units", "icon": "fa-boxes"},
@@ -1194,6 +1203,7 @@ class ResponseBuilder:
             if key in cards:
                 cards[key]["vs_yesterday"] = growth.get(key.replace("total_", "").replace("_value", "revenue") + "_growth", 0)
 
+        # --- Legacy pipeline (unchanged) ---
         pipeline_old = {
             "dn_created": total_dn,
             "pgi_completed": summary.get('pgi_completed', 0),
@@ -1208,8 +1218,26 @@ class ResponseBuilder:
             "delivery_achievement_units": SafeNumber.pct(delivered_units, total_units),
         }
 
+        # ============================================================
+        # 🏢 WAREHOUSE COMMAND CENTER – ENTERPRISE TABLE
+        # ============================================================
         warehouse_ranking = []
         for w in warehouses:
+            # Generate trend placeholder (can be enhanced with historical data)
+            trend = "▬ Stable"
+            # Determine risk emoji based on status
+            risk_map = {
+                "Excellent": "🟢",
+                "Good": "🟢",
+                "Average": "🟡",
+                "Poor": "🟠",
+                "Critical": "🔴"
+            }
+            risk_emoji = risk_map.get(w.get('status', 'Unknown'), "⚪")
+
+            # Generate short AI insight
+            ai_insight = RecommendationEngine.generate_short_insight(w)
+
             warehouse_ranking.append({
                 "rank": w['rank'],
                 "warehouse": w['warehouse_name'],
@@ -1219,13 +1247,20 @@ class ResponseBuilder:
                 "pgi_pct": w['pgi_rate'],
                 "delivery_pct": w['delivery_rate'],
                 "pod_pct": w['pod_rate'],
-                "avg_days": w['avg_cycle_days'],
-                "pending_dns": w['pending_dns'],
-                "status": w['status'],
+                "avg_days": w['avg_cycle_days'],               # total cycle
+                "avg_delivery_days": w.get('avg_delivery_days', 0),  # alias for total cycle
+                "avg_pod_days": w.get('avg_pod_days', 0),
                 "avg_pgi_days": w.get('avg_pgi_days', 0),
+                "pending_dns": w['pending_dns'],
+                "pending_units": w.get('pending_units', 0),
+                "status": w['status'],           # Excellent, Good, Average, Poor, Critical
                 "performance_score": w['health_score'],
+                "risk": risk_emoji,
+                "trend": trend,
+                "ai_insight": ai_insight,
             })
 
+        # --- Top delayed cities ---
         top_delayed_cities = []
         for city in sorted(city_delays, key=lambda x: x['avg_delivery_days'], reverse=True)[:10]:
             days = city['avg_delivery_days']
@@ -1244,29 +1279,34 @@ class ResponseBuilder:
                 "status": risk,
             })
 
+        # --- Top pending warehouses ---
         sorted_by_pending = sorted(warehouses, key=lambda w: w.get('pending_units', 0), reverse=True)[:5]
         top_pending_warehouses = [
             {"warehouse": w['warehouse_name'], "pending_dns": w['pending_dns'], "pending_units": w['pending_units']}
             for w in sorted_by_pending
         ]
 
+        # --- Top dealers ---
         sorted_dealers = sorted(dealers, key=lambda d: d.get('total_revenue', 0), reverse=True)[:5]
         top_dealers = [
             {"dealer": d['dealer_name'], "dns": d['delivery_notes'], "units": d['units'], "revenue": d['total_revenue']}
             for d in sorted_dealers
         ]
 
+        # --- Top products ---
         sorted_products = sorted(products, key=lambda p: p.get('units', 0), reverse=True)[:5]
         top_products = [
             {"product": p['product_name'], "units": p['units'], "revenue": p['total_revenue'], "delivery_notes": p['delivery_notes']}
             for p in sorted_products
         ]
 
+        # --- Division performance ---
         division_performance = [
             {"division": d['division'], "dns": d['delivery_notes'], "units": d['units'], "revenue": d['total_revenue']}
             for d in divisions
         ]
 
+        # --- Compliance data ---
         compliance = []
         for c in compliance_data[:6]:
             dist = c.get('avg_distance_km', 0)
@@ -1290,6 +1330,7 @@ class ResponseBuilder:
                 "status": c['status'],
             })
 
+        # --- Critical alerts and recommendations ---
         critical_alerts = [a for a in alerts if a.get('severity') in ('CRITICAL', 'HIGH')]
         director_recommendations = recommendations
         import_summary_data = import_summary or {}
@@ -1300,7 +1341,7 @@ class ResponseBuilder:
             "cards": cards,
             "kpis": cards,
             "pipeline": pipeline_old,
-            "warehouse": warehouses,
+            "warehouse": warehouses,          # legacy full warehouse objects
             "warehouses": warehouses,
             "dealer": dealers,
             "dealers": dealers,
@@ -1320,7 +1361,7 @@ class ResponseBuilder:
             "executive_summary_text": exec_summary,
             "pipeline_detailed": pipeline,
             "performance_trends": trends,
-            "warehouse_ranking": warehouse_ranking,
+            "warehouse_ranking": warehouse_ranking,   # ✅ ENHANCED TABLE
             "top_delayed_cities": top_delayed_cities,
             "top_pending_warehouses": top_pending_warehouses,
             "top_dealers": top_dealers,
@@ -1341,7 +1382,7 @@ class ResponseBuilder:
 class DashboardService:
     def __init__(self):
         self._repo = DashboardRepository()
-        logger.info("DashboardService initialized (v19.3 - Fixed avg_distances)")
+        logger.info("DashboardService initialized (v19.4 - Warehouse Command Center)")
 
     @cached(ttl=300)
     async def get_full_dashboard(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
@@ -1412,7 +1453,6 @@ class DashboardService:
             alerts = AlertEngine.generate_alerts(warehouses, kpis)
             recommendations = RecommendationEngine.generate_recommendations(warehouses)
 
-            # ====== BLOCK 15 is called here to generate exec_summary ======
             exec_summary = ExecutiveSummaryEngine.generate_summary(kpis, warehouses, alerts, recommendations)
 
             pipeline = {
@@ -1445,7 +1485,7 @@ class DashboardService:
             }
 
             metadata = {
-                "version": "19.3",
+                "version": "19.4",
                 "timestamp": datetime.utcnow().isoformat(),
                 "record_count": record_count,
                 "warehouse_count": len(warehouses),
@@ -1525,7 +1565,7 @@ async def get_warehouses(service: DashboardService = Depends(get_dashboard_servi
 
 @router.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "19.3", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "healthy", "version": "19.4", "timestamp": datetime.utcnow().isoformat()}
 
 @router.post("/upload")
 async def upload_excel_report(
@@ -1548,4 +1588,4 @@ async def upload_excel_report(
         logger.error(f"Excel upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-logger.info("DashboardService router mounted (v19.3 - Fixed avg_distances) with /upload")
+logger.info("DashboardService router mounted (v19.4 - Warehouse Command Center) with /upload")
