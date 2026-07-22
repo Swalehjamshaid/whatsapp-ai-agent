@@ -1,6 +1,6 @@
 <!-- ============================================================
      FILE: whatsapp-ai-agent-demo/app/templates/dashboard.html
-     VERSION: 15.4 – PRODUCTION BULLETPROOF COMMAND SUITE
+     VERSION: 15.5 – PRODUCTION BULLETPROOF COMMAND SUITE
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
@@ -388,7 +388,7 @@
       border: 2px dashed var(--color-accent);
       background: rgba(56,189,248,0.03);
     }
-    .btn-upload, .btn-search {
+    .btn-upload {
       background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
       border: none;
       padding: 0.75rem 2rem;
@@ -399,8 +399,9 @@
       transition: var(--transition-smooth);
       box-shadow: 0 8px 24px rgba(37,99,235,0.25);
       display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+      cursor: pointer;
     }
-    .btn-upload:hover, .btn-search:hover {
+    .btn-upload:hover {
       transform: translateY(-2px);
       box-shadow: 0 12px 32px rgba(37,99,235,0.35);
     }
@@ -511,9 +512,9 @@
       <a class="nav-link" href="#dealerGrid"><i class="fas fa-handshake"></i> Dealers</a>
       <a class="nav-link" href="#cityGrid"><i class="fas fa-map-marker-alt"></i> Cities</a>
       <a class="nav-link" href="#productGrid"><i class="fas fa-boxes"></i> Products</a>
-      <a class="nav-link" href="#alertsContainer"><i class="fas fa-shield-alt"></i> Alerts</a>
+      <a class="nav-link" href="#executiveIntelligence"><i class="fas fa-brain"></i> AI Intelligence</a>
     </nav>
-    <div class="sidebar-footer">v15.4 · Enterprise</div>
+    <div class="sidebar-footer">v15.5 · Enterprise</div>
   </aside>
 
   <!-- ============================================================
@@ -535,8 +536,47 @@
       </div>
     </div>
 
-    <!-- KPI CARDS -->
+    <!-- EXECUTIVE KPI CARDS -->
     <section id="kpiCards" class="row g-4 mb-4"></section>
+
+    <!-- EXECUTIVE INTELLIGENCE CENTER (REPLACING QUICK LOOKUP) -->
+    <section id="executiveIntelligence" class="row g-4 mb-4">
+      <div class="col-12">
+        <div class="card mb-0">
+          <div class="card-header"><i class="fas fa-brain"></i> Executive Intelligence Center & AI Summary</div>
+          <div class="card-body p-4">
+            <div class="row g-4">
+              <div class="col-lg-6">
+                <h6 class="text-uppercase text-muted fw-bold mb-3" style="font-size:0.75rem;"><i class="fas fa-robot text-info me-1"></i> AI Operational Insights</h6>
+                <div id="aiInsightsContainer" class="p-3 bg-opacity-10 bg-info border border-info border-opacity-25 rounded-3 mb-3" style="font-size:0.9rem; line-height:1.6;">
+                  Loading intelligent executive breakdown...
+                </div>
+                <div class="row g-3">
+                  <div class="col-6">
+                    <div class="p-3 border rounded-3 bg-opacity-50" style="background:var(--color-bg-elevated);">
+                      <small class="text-muted d-block text-uppercase fw-bold" style="font-size:0.65rem;">Top Warehouse</small>
+                      <span id="aiTopWarehouse" class="fw-bold fs-6" style="color:var(--color-success);">-</span>
+                    </div>
+                  </div>
+                  <div class="col-6">
+                    <div class="p-3 border rounded-3 bg-opacity-50" style="background:var(--color-bg-elevated);">
+                      <small class="text-muted d-block text-uppercase fw-bold" style="font-size:0.65rem;">Worst Warehouse</small>
+                      <span id="aiWorstWarehouse" class="fw-bold fs-6" style="color:var(--color-danger);">-</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-lg-6">
+                <h6 class="text-uppercase text-muted fw-bold mb-3" style="font-size:0.75rem;"><i class="fas fa-shield-exclamation text-warning me-1"></i> Critical Alerts & Recommendations</h6>
+                <div id="aiAlertsContainer" class="d-flex flex-column gap-2">
+                  <div class="text-muted small">Analyzing operational performance and identifying bottlenecks...</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <!-- PIPELINE -->
     <section class="row g-4 mb-4">
@@ -594,40 +634,28 @@
       </div>
     </section>
 
-    <!-- UPLOAD + SEARCH -->
+    <!-- IMPORT CENTER (PRESERVED EXCEL UPLOAD FORM & DUPLICATE HANDLING) -->
     <section id="uploadSection" class="row g-4 mb-4">
-      <div class="col-md-6">
-        <div class="card upload-highlight h-100 mb-0">
-          <div class="card-header"><i class="fas fa-file-excel text-success"></i> Import Excel Report</div>
+      <div class="col-12">
+        <div class="card upload-highlight mb-0">
+          <div class="card-header"><i class="fas fa-file-excel text-success"></i> Import Center - Enterprise Excel Loader</div>
           <div class="card-body p-4">
-            <form class="form-toolbar flex-column align-items-stretch" id="uploadForm" action="/dashboard/api/upload" method="post" enctype="multipart/form-data">
-              <div class="form-group w-100 mb-3">
+            <form class="form-toolbar" id="uploadForm" action="/dashboard/api/upload" method="post" enctype="multipart/form-data">
+              <div class="form-group mb-0">
                 <label><i class="fas fa-file-arrow-up me-1"></i> Choose Excel File (.xlsx, .xls)</label>
                 <input type="file" name="file" accept=".xlsx,.xls" class="form-control" required />
-                <small class="text-muted mt-1 d-block" style="font-size:0.7rem;">SAP standard format with DN, PGI, POD records.</small>
+                <small class="text-muted mt-1 d-block" style="font-size:0.7rem;">SAP standard format with DN, PGI, and POD records.</small>
               </div>
-              <div class="form-group w-100 mb-3">
+              <div class="form-group mb-0">
                 <label><i class="fas fa-copy me-1"></i> Duplicate Handling</label>
                 <select name="skip_duplicates" class="form-select">
                   <option value="true">Skip Existing DNs (Recommended)</option>
                   <option value="false">Update Existing DN Records</option>
                 </select>
               </div>
-              <button type="submit" class="btn-upload w-100 py-3"><i class="fas fa-cloud-upload-alt me-2"></i> Import & Process</button>
-            </form>
-          </div>
-        </div>
-      </div>
-      <div class="col-md-6">
-        <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-search"></i> Quick Lookup</div>
-          <div class="card-body p-4 d-flex flex-column justify-content-center">
-            <form class="form-toolbar flex-column align-items-stretch" id="searchForm" onsubmit="event.preventDefault(); Swal.fire('Quick Lookup', 'Use AG Grid column filters for advanced search.', 'info');">
-              <div class="form-group w-100 mb-3">
-                <label>Search Query</label>
-                <input type="text" id="searchInput" class="form-control" placeholder="Enter DN, dealer, city…" />
+              <div class="form-group mb-0" style="flex: 0 0 auto;">
+                <button type="submit" class="btn-upload w-100 py-3 px-4"><i class="fas fa-cloud-upload-alt me-2"></i> Import & Process</button>
               </div>
-              <button type="submit" class="btn-search w-100 py-3"><i class="fas fa-search me-2"></i> Execute</button>
             </form>
           </div>
         </div>
@@ -644,8 +672,8 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
 <!-- ============================================================
-  APPLICATION JAVASCRIPT
-  ============================================================ -->
+     APPLICATION JAVASCRIPT
+     ============================================================ -->
 <script>
 (function() {
     const API_URL = '/dashboard/api/data';
@@ -679,6 +707,57 @@
                 </div>
             `;
         }).join('');
+    }
+
+    function renderExecutiveIntelligence(data) {
+        const insightsContainer = document.getElementById('aiInsightsContainer');
+        const alertsContainer = document.getElementById('aiAlertsContainer');
+        const topWhEl = document.getElementById('aiTopWarehouse');
+        const worstWhEl = document.getElementById('aiWorstWarehouse');
+
+        const warehouses = data.warehouse || [];
+        if (warehouses.length > 0) {
+            const best = warehouses[0];
+            const worst = warehouses[warehouses.length - 1];
+            if (topWhEl) topWhEl.innerText = best.warehouse_name || 'N/A';
+            if (worstWhEl) worstWhEl.innerText = worst.warehouse_name || 'N/A';
+        }
+
+        if (insightsContainer) {
+            const insights = data.insights?.insights || [];
+            if (insights.length > 0) {
+                insightsContainer.innerHTML = insights.map(i => `<div class="mb-1"><i class="fas fa-check-circle text-info me-2"></i>${i.text}</div>`).join('');
+            } else {
+                insightsContainer.innerHTML = 'All warehouse networks are operating smoothly under normal operational parameters.';
+            }
+        }
+
+        if (alertsContainer) {
+            const alerts = data.alerts || [];
+            const recommendations = data.recommendations || [];
+            let alertHtml = '';
+            
+            if (alerts.length > 0) {
+                alertHtml += alerts.slice(0, 3).map(a => `
+                    <div class="p-2.5 rounded-2 bg-opacity-10 bg-danger border border-danger border-opacity-25 text-danger font-monospace" style="font-size:0.8rem;">
+                        <i class="fas fa-triangle-exclamation me-1"></i><strong>${a.source}:</strong> ${a.message}
+                    </div>
+                `).join('');
+            }
+
+            if (recommendations.length > 0) {
+                alertHtml += recommendations.slice(0, 2).map(r => `
+                    <div class="p-2.5 rounded-2 bg-opacity-10 bg-warning border border-warning border-opacity-25 text-warning font-monospace" style="font-size:0.8rem;">
+                        <i class="fas fa-lightbulb me-1"></i><strong>${r.warehouse}:</strong> ${r.recommendation}
+                    </div>
+                `).join('');
+            }
+
+            if (!alertHtml) {
+                alertHtml = '<div class="text-success small"><i class="fas fa-circle-check me-1"></i> No critical risks or warnings detected. Operations optimal.</div>';
+            }
+            alertsContainer.innerHTML = alertHtml;
+        }
     }
 
     function renderPipeline(pipeline) {
@@ -740,6 +819,7 @@
             const data = await res.json();
 
             renderKPIs(data.cards || {});
+            renderExecutiveIntelligence(data);
             renderPipeline(data.pipeline || {});
 
             renderAGGrid('warehouseGrid', data.warehouse || [], [
@@ -773,7 +853,7 @@
             const footer = document.getElementById('footer');
             if (footer) {
                 footer.innerHTML = `
-                    <i class="fas fa-shield-halved text-success me-1"></i> Haier Pakistan v15.4 &nbsp;|&nbsp;
+                    <i class="fas fa-shield-halved text-success me-1"></i> Haier Pakistan v15.5 &nbsp;|&nbsp;
                     <i class="fas fa-database text-info mx-1"></i> PostgreSQL &nbsp;|&nbsp;
                     <i class="fas fa-clock text-muted mx-1"></i> Sync: ${new Date().toLocaleTimeString()} &nbsp;|&nbsp;
                     <i class="fas fa-cubes text-primary mx-1"></i> Records: ${formatNumber(data.metadata?.record_count || 0)}
