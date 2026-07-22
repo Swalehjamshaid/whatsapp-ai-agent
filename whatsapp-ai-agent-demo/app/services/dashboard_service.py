@@ -1167,7 +1167,6 @@ class ExecutiveSummaryEngine:
 
 # ============================================================
 # BLOCK 16: Response Builder (ENHANCED - Warehouse Command Center)
-
 # ============================================================
 # BLOCK 16: Response Builder (ENHANCED - Warehouse Command Center)
 # ============================================================
@@ -1336,6 +1335,7 @@ class ResponseBuilder:
         # ============================================================
         # UPDATED: CRITICAL ALERTS – Top 10 Most Important
         # ============================================================
+        # Define severity weights (higher = more important)
         severity_order = {'CRITICAL': 3, 'HIGH': 2, 'WARNING': 1, 'LOW': 0}
 
         def alert_urgency(alert):
@@ -1354,10 +1354,8 @@ class ResponseBuilder:
                 base += 0.3
             return base
 
-        # Filter only CRITICAL and HIGH severity alerts
-        filtered_alerts = [a for a in alerts if a.get('severity') in ('CRITICAL', 'HIGH')]
-        # Sort by urgency (descending) and take top 10
-        sorted_alerts = sorted(filtered_alerts, key=alert_urgency, reverse=True)
+        # Sort ALL alerts by urgency and take top 10
+        sorted_alerts = sorted(alerts, key=alert_urgency, reverse=True)
         critical_alerts = sorted_alerts[:10]  # Only top 10 most important
 
         director_recommendations = recommendations
