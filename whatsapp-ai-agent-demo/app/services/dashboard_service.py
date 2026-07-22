@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 20.1 – FULL BUSINESS RULES & DATE FIX
+# VERSION: 20.2 – FIXED POSTGRESQL DATE EXTRACTION
 # ============================================================
 # EXCEEDS SAP ANALYTICS CLOUD | MICROSOFT FABRIC | POWER BI PREMIUM
 # ============================================================
@@ -320,7 +320,7 @@ class DashboardRepository:
     def __init__(self, db_session: Optional[Session] = None):
         self._db_session = db_session
         self._has_dn_amount = None
-        logger.info("DashboardRepository initialized (v20.1)")
+        logger.info("DashboardRepository initialized (v20.2)")
 
     def _execute(self, sql: str, params: Optional[Dict[str, Any]] = None) -> Any:
         try:
@@ -401,11 +401,11 @@ class DashboardRepository:
             "total_revenue": SafeNumber.to_float(row.total_revenue),
         }
 
-    # ---------- Warehouse Data (aggregated per warehouse) ----------
+    # ---------- Warehouse Data (aggregated per warehouse) - FIXED ----------
     def fetch_warehouse_data(self) -> List[Dict[str, Any]]:
         has_amount = self._check_column_exists("dn_amount")
         revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
-        # Use direct subtraction with EXTRACT(DAY FROM ...) for accurate day differences
+        # Use (date1 - date2) which returns integer days in PostgreSQL
         sql = f"""
             WITH warehouse_metrics AS (
                 SELECT
@@ -421,33 +421,33 @@ class DashboardRepository:
                     COALESCE(SUM(CASE WHEN pod_date IS NULL THEN dn_qty ELSE 0 END), 0) AS pending_units,
                     COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN dn_qty ELSE 0 END), 0) AS pending_pgi_units,
                     {revenue_sql},
-                    -- PGI Days = good_issue_date - dn_create_date
+                    -- PGI Days = good_issue_date - dn_create_date (integer)
                     COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND good_issue_date IS NOT NULL 
-                        THEN EXTRACT(DAY FROM (good_issue_date - dn_create_date)) END), 0) AS avg_pgi_days,
+                        THEN (good_issue_date - dn_create_date) END), 0) AS avg_pgi_days,
                     -- Delivery Days (transit) = pod_date - good_issue_date
                     COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(DAY FROM (pod_date - good_issue_date)) END), 0) AS avg_delivery_days,
-                    -- POD Days (currently same as delivery since no separate POD date) – kept for compatibility
+                        THEN (pod_date - good_issue_date) END), 0) AS avg_delivery_days,
+                    -- POD Days (same as delivery for now)
                     COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(DAY FROM (pod_date - good_issue_date)) END), 0) AS avg_pod_days,
+                        THEN (pod_date - good_issue_date) END), 0) AS avg_pod_days,
                     -- Total Cycle = pod_date - dn_create_date
                     COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(DAY FROM (pod_date - dn_create_date)) END), 0) AS avg_cycle_days,
+                        THEN (pod_date - dn_create_date) END), 0) AS avg_cycle_days,
                     -- Min/Max for delivery (transit)
                     COALESCE(MIN(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(DAY FROM (pod_date - dn_create_date)) END), 0) AS min_delivery_days,
+                        THEN (pod_date - dn_create_date) END), 0) AS min_delivery_days,
                     COALESCE(MAX(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(DAY FROM (pod_date - dn_create_date)) END), 0) AS max_delivery_days,
+                        THEN (pod_date - dn_create_date) END), 0) AS max_delivery_days,
                     -- Min/Max for POD (transit)
                     COALESCE(MIN(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(DAY FROM (pod_date - good_issue_date)) END), 0) AS min_pod_days,
+                        THEN (pod_date - good_issue_date) END), 0) AS min_pod_days,
                     COALESCE(MAX(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(DAY FROM (pod_date - good_issue_date)) END), 0) AS max_pod_days,
+                        THEN (pod_date - good_issue_date) END), 0) AS max_pod_days,
                     -- Min/Max for Cycle
                     COALESCE(MIN(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(DAY FROM (pod_date - dn_create_date)) END), 0) AS min_cycle_days,
+                        THEN (pod_date - dn_create_date) END), 0) AS min_cycle_days,
                     COALESCE(MAX(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN EXTRACT(DAY FROM (pod_date - dn_create_date)) END), 0) AS max_cycle_days,
+                        THEN (pod_date - dn_create_date) END), 0) AS max_cycle_days,
                     MIN(dn_create_date) AS first_dn,
                     MAX(dn_create_date) AS last_dn
                 FROM delivery_reports
@@ -1484,7 +1484,7 @@ class ExecutiveSummaryEngine:
         }
 
 # ============================================================
-# BLOCK 16: Response Builder (Enhanced + Safe)
+# BLOCK 16: Response Builder (Enhanced + Warehouse Preview)
 # ============================================================
 
 class ResponseBuilder:
@@ -1504,6 +1504,7 @@ class ResponseBuilder:
         pgi_units = sum(w.get('pgi_units', 0) for w in warehouse_summaries)
         total_revenue = summary.get('total_revenue', 0) or (total_units * config.avg_unit_price)
 
+        # --- Executive KPI Cards (unchanged) ---
         cards = {
             "total_dn": {"value": total_dn, "label": "Total Delivery Notes", "icon": "fa-file-invoice"},
             "total_units": {"value": total_units, "label": "Total Units", "icon": "fa-boxes"},
@@ -1521,6 +1522,7 @@ class ResponseBuilder:
             if key in cards:
                 cards[key]["vs_yesterday"] = growth.get(key.replace("total_", "").replace("_value", "revenue") + "_growth", 0)
 
+        # --- Legacy pipeline (unchanged) ---
         pipeline_old = {
             "dn_created": total_dn,
             "pgi_completed": summary.get('pgi_completed', 0),
@@ -1535,8 +1537,21 @@ class ResponseBuilder:
             "delivery_achievement_units": SafeNumber.pct(delivered_units, total_units),
         }
 
+        # ============================================================
+        # 🏢 WAREHOUSE COMMAND CENTER – ENTERPRISE TABLE
+        # ============================================================
         warehouse_ranking = []
         for w in warehouse_summaries:
+            trend = "▬ Stable"
+            risk_map = {
+                "Excellent": "🟢",
+                "Good": "🟢",
+                "Average": "🟡",
+                "Poor": "🟠",
+                "Critical": "🔴"
+            }
+            risk_emoji = risk_map.get(w.get('status', 'Unknown'), "⚪")
+            ai_insight = RecommendationEngine.generate_short_insight(w)
             warehouse_ranking.append({
                 "rank": w.get('rank', 0),
                 "warehouse": w.get('warehouse', ''),
@@ -1554,11 +1569,50 @@ class ResponseBuilder:
                 "pending_units": w.get('pending_units', 0),
                 "status": w.get('status', 'Unknown'),
                 "performance_score": w.get('health_score', 0),
-                "risk": w.get('risk_emoji', '⚪'),
-                "trend": w.get('trend', '▬ Stable'),
-                "ai_insight": w.get('ai_insight', ''),
+                "risk": risk_emoji,
+                "trend": trend,
+                "ai_insight": ai_insight,
             })
 
+        # ============================================================
+        # 🧾 EXCEL PREVIEW – Warehouse Quick Summary
+        # ============================================================
+        warehouse_preview = []
+        for idx, w in enumerate(warehouse_summaries[:5], start=1):
+            total_units = w.get('units', 0)
+            delivered = w.get('delivered_units', 0)
+            delivery_days = w.get('avg_delivery_days', 0)
+            pod_days = w.get('avg_pod_days', 0)
+            cycle_days = w.get('avg_cycle_days', 0)
+
+            # Performance ratings based on gap/compliance
+            delivery_perf = w.get('delivery', {}).get('status', 'Average')
+            pod_perf = w.get('pod', {}).get('status', 'Average')
+
+            # Map status to Good/Bad (business rule: ≤1 day is Good, else Bad)
+            if delivery_perf in ('Excellent', 'Good'):
+                delivery_perf_label = 'Good'
+            else:
+                delivery_perf_label = 'Bad'
+
+            if pod_perf in ('Excellent', 'Good'):
+                pod_perf_label = 'Good'
+            else:
+                pod_perf_label = 'Bad'
+
+            warehouse_preview.append({
+                "sn": idx,
+                "warehouse": w.get('warehouse', ''),
+                "total_units": total_units,
+                "delivered": delivered,
+                "delivery_days": round(delivery_days, 1),
+                "pod_days": round(pod_days, 1),
+                "cycle_days": round(cycle_days, 1),
+                "delivery_performance": delivery_perf_label,
+                "pod_performance": pod_perf_label,
+            })
+
+        # --- Top delayed cities ---
         top_delayed_cities = []
         for city in sorted(city_delays, key=lambda x: x.get('avg_delivery_days', 0), reverse=True)[:10]:
             days = city.get('avg_delivery_days', 0)
@@ -1570,29 +1624,34 @@ class ResponseBuilder:
                 "status": risk,
             })
 
+        # --- Top pending warehouses ---
         sorted_by_pending = sorted(warehouse_summaries, key=lambda w: w.get('pending', {}).get('units', 0), reverse=True)[:5]
         top_pending_warehouses = [
             {"warehouse": w.get('warehouse', ''), "pending_dns": w.get('pending', {}).get('dn', 0), "pending_units": w.get('pending', {}).get('units', 0)}
             for w in sorted_by_pending
         ]
 
+        # --- Top dealers ---
         sorted_dealers = sorted(dealers, key=lambda d: d.get('total_revenue', 0), reverse=True)[:5]
         top_dealers = [
             {"dealer": d.get('dealer_name', ''), "dns": d.get('delivery_notes', 0), "units": d.get('units', 0), "revenue": d.get('total_revenue', 0)}
             for d in sorted_dealers
         ]
 
+        # --- Top products ---
         sorted_products = sorted(products, key=lambda p: p.get('units', 0), reverse=True)[:5]
         top_products = [
             {"product": p.get('product_name', ''), "units": p.get('units', 0), "revenue": p.get('total_revenue', 0), "delivery_notes": p.get('delivery_notes', 0)}
             for p in sorted_products
         ]
 
+        # --- Division performance ---
         division_performance = [
             {"division": d.get('division', ''), "dns": d.get('delivery_notes', 0), "units": d.get('units', 0), "revenue": d.get('total_revenue', 0)}
             for d in divisions
         ]
 
+        # --- Compliance data ---
         compliance = []
         for c in compliance_data[:6]:
             dist = c.get('avg_distance_km', 0)
@@ -1605,6 +1664,12 @@ class ResponseBuilder:
                 "status": c.get('status', ''),
             })
 
+        # --- Critical alerts ---
+        critical_alerts = alerts
+
+        # ============================================================
+        # FINAL RESPONSE
+        # ============================================================
         return {
             "executive_summary": summary,
             "cards": cards,
@@ -1622,7 +1687,7 @@ class ResponseBuilder:
             "divisions": divisions,
             "daily_trend": daily_trend,
             "monthly_trend": monthly_trend,
-            "alerts": alerts,
+            "alerts": critical_alerts,
             "recommendations": recommendations,
             "charts": charts,
             "metadata": metadata,
@@ -1631,6 +1696,7 @@ class ResponseBuilder:
             "pipeline_detailed": pipeline,
             "performance_trends": trends,
             "warehouse_ranking": warehouse_ranking,
+            "warehouse_preview": warehouse_preview,   # ✅ NEW KEY for preview table
             "top_delayed_cities": top_delayed_cities,
             "top_pending_warehouses": top_pending_warehouses,
             "top_dealers": top_dealers,
@@ -1638,7 +1704,7 @@ class ResponseBuilder:
             "division_performance": division_performance,
             "delivery_compliance": compliance,
             "pending_analysis": pending_analysis,
-            "critical_alerts": alerts,
+            "critical_alerts": critical_alerts,
             "director_recommendations": recommendations,
             "import_summary": import_summary,
             "insights": insights,
@@ -1654,7 +1720,7 @@ class ResponseBuilder:
 class DashboardService:
     def __init__(self):
         self._repo = DashboardRepository()
-        logger.info("DashboardService initialized (v20.1 - Full Error Handling)")
+        logger.info("DashboardService initialized (v20.2 - Fixed PostgreSQL date extraction)")
 
     @cached(ttl=300)
     async def get_full_dashboard(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
@@ -1795,7 +1861,7 @@ class DashboardService:
             }
 
             metadata = {
-                "version": "20.1",
+                "version": "20.2",
                 "timestamp": datetime.utcnow().isoformat(),
                 "record_count": record_count,
                 "warehouse_count": len(warehouse_summaries),
@@ -1889,7 +1955,7 @@ async def get_warehouses(service: DashboardService = Depends(get_dashboard_servi
 
 @router.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "20.1", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "healthy", "version": "20.2", "timestamp": datetime.utcnow().isoformat()}
 
 @router.post("/upload")
 async def upload_excel_report(
@@ -1912,4 +1978,4 @@ async def upload_excel_report(
         logger.error(f"Excel upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-logger.info("DashboardService router mounted (v20.1 - Full Error Handling) with /upload")
+logger.info("DashboardService router mounted (v20.2 - Fixed PostgreSQL date extraction) with /upload")
