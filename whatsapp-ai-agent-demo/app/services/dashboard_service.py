@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 16.0 - ENTERPRISE WAREHOUSE INTELLIGENCE PLATFORM
+# VERSION: 16.2 - PATCHED (500 Fix + Legacy Keys)
 # ============================================================
 # EXCEEDS SAP ANALYTICS CLOUD | MICROSOFT FABRIC | POWER BI PREMIUM
 # ============================================================
@@ -96,7 +96,14 @@ except ImportError:
 
 from app.database import engine, get_db
 from app.models import DeliveryReport
-from app.services.geo_service import GeoService
+# GeoService might not be available; we'll handle import error gracefully
+try:
+    from app.services.geo_service import GeoService
+    GEO_SERVICE_AVAILABLE = True
+except ImportError:
+    GEO_SERVICE_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("GeoService not available, distance features will be disabled.")
 
 # ============================================================
 # LOGGING CONFIGURATION
@@ -439,6 +446,7 @@ class DashboardRepository:
                 avg_cycle_days,
                 first_dn,
                 last_dn,
+                -- Unit-based percentages
                 CASE WHEN total_units > 0 THEN ROUND((pgi_units / total_units) * 100, 2) ELSE 0 END AS pgi_achievement_rate,
                 CASE WHEN total_units > 0 THEN ROUND((delivered_units / total_units) * 100, 2) ELSE 0 END AS delivery_achievement_rate,
                 CASE WHEN total_units > 0 THEN ROUND((pending_units / total_units) * 100, 2) ELSE 0 END AS pending_rate
@@ -449,25 +457,28 @@ class DashboardRepository:
         result = []
         for row in rows:
             result.append({
+                # Legacy keys (unchanged)
                 "warehouse_name": row.warehouse_name,
-                "total_units": SafeNumber.to_int(row.total_units),
+                "units": SafeNumber.to_int(row.total_units),                 # kept for backward compatibility
                 "delivery_notes": SafeNumber.to_int(row.delivery_notes),
-                "pgi_completed_dn": SafeNumber.to_int(row.pgi_completed_dn),
+                "pgi_completed": SafeNumber.to_int(row.pgi_completed_dn),    # DN count (old name)
                 "delivered_dns": SafeNumber.to_int(row.delivered_dns),
-                "pending_pgi_count": SafeNumber.to_int(row.pending_pgi_count),
-                "pending_delivery_count": SafeNumber.to_int(row.pending_delivery_count),
+                "pending_pgi": SafeNumber.to_int(row.pending_pgi_count),     # DN count
+                "pending_delivery": SafeNumber.to_int(row.pending_delivery_count),
+                "avg_pgi_days": SafeNumber.to_float(row.avg_pgi_days),
+                "avg_pod_days": SafeNumber.to_float(row.avg_pod_days),
+                "avg_cycle_days": SafeNumber.to_float(row.avg_cycle_days),
+                "first_dn": row.first_dn,
+                "last_dn": row.last_dn,
+                # New unit-based keys (added)
+                "total_units": SafeNumber.to_int(row.total_units),
                 "pgi_units": SafeNumber.to_int(row.pgi_units),
                 "delivered_units": SafeNumber.to_int(row.delivered_units),
                 "pending_units": SafeNumber.to_int(row.pending_units),
                 "pending_pgi_units": SafeNumber.to_int(row.pending_pgi_units),
-                "avg_pgi_days": SafeNumber.to_float(row.avg_pgi_days),
-                "avg_pod_days": SafeNumber.to_float(row.avg_pod_days),
-                "avg_cycle_days": SafeNumber.to_float(row.avg_cycle_days),
                 "pgi_achievement_rate": SafeNumber.to_float(row.pgi_achievement_rate),
                 "delivery_achievement_rate": SafeNumber.to_float(row.delivery_achievement_rate),
                 "pending_rate": SafeNumber.to_float(row.pending_rate),
-                "first_dn": row.first_dn,
-                "last_dn": row.last_dn,
             })
         return result
 
@@ -723,7 +734,7 @@ class DashboardRepository:
 
 
 # ============================================================
-# DISTANCE & BUSINESS RULE ENGINES
+# DISTANCE & BUSINESS RULE ENGINES (with fallbacks)
 # ============================================================
 
 class DistanceCalculationEngine:
@@ -740,9 +751,17 @@ class DistanceCalculationEngine:
     
     @classmethod
     def calculate_distance(cls, origin: str, destination: str) -> float:
-        coords1 = GeoService.get_city_coordinates(origin)
-        coords2 = GeoService.get_city_coordinates(destination)
-        return cls.haversine(coords1.get("lat", 0), coords1.get("lng", 0), coords2.get("lat", 0), coords2.get("lng", 0))
+        """Safely calculate distance; returns 0.0 if GeoService not available or any error."""
+        if not GEO_SERVICE_AVAILABLE:
+            logger.warning(f"GeoService not available, returning 0 distance for {origin}->{destination}")
+            return 0.0
+        try:
+            coords1 = GeoService.get_city_coordinates(origin)
+            coords2 = GeoService.get_city_coordinates(destination)
+            return cls.haversine(coords1.get("lat", 0), coords1.get("lng", 0), coords2.get("lat", 0), coords2.get("lng", 0))
+        except Exception as e:
+            logger.warning(f"Distance calculation failed for {origin}->{destination}: {e}")
+            return 0.0
     
     @classmethod
     def get_target_days(cls, distance_km: float) -> int:
@@ -769,11 +788,7 @@ class DistanceCalculationEngine:
             city = pair["city"]
             units = pair["total_units"] or 1  # avoid zero weight
             # Get coordinates for warehouse (assume warehouse name is a city)
-            try:
-                dist = cls.calculate_distance(warehouse, city)
-            except Exception as e:
-                logger.warning(f"Distance calculation failed for {warehouse}->{city}: {e}")
-                dist = 0.0
+            dist = cls.calculate_distance(warehouse, city)
             warehouse_data[warehouse]["weighted_dist"] += dist * units
             warehouse_data[warehouse]["total_units"] += units
         avg_dist = {}
@@ -847,7 +862,7 @@ class WarehouseIntelligenceEngine:
                 w.get('avg_cycle_days', 0),
                 w.get('avg_pgi_days', 0),
                 w.get('avg_pod_days', 0),
-                w.get('pending_units', 0) + w.get('pending_pgi_units', 0),
+                pending_units + pending_pgi_units,
                 total_units
             )
             classification = BusinessRuleEngine.classify_performance(perf_score)
@@ -860,8 +875,9 @@ class WarehouseIntelligenceEngine:
             gap_days = actual_days - target_days
             status = "Within Standard" if gap_days <= 0 else "Above Standard"
             
-            enriched.append({
-                **w,
+            # Build enriched record, preserving all original keys
+            enriched_record = w.copy()
+            enriched_record.update({
                 'rank': idx,
                 'ranking': idx,
                 'pgi_rate': pgi_rate,
@@ -881,6 +897,7 @@ class WarehouseIntelligenceEngine:
                 'gap_days': round(gap_days, 2),
                 'standard_status': status,
             })
+            enriched.append(enriched_record)
         # Sort by performance score descending for ranking
         enriched.sort(key=lambda x: x.get('performance_score', 0), reverse=True)
         for i, w in enumerate(enriched, 1):
@@ -1251,53 +1268,61 @@ class DashboardService:
     
     @cached(ttl=300)
     async def get_full_dashboard(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
-        summary = self._repo.fetch_summary()
-        warehouse_raw = self._repo.fetch_warehouse_data()
-        dealer_raw = self._repo.fetch_dealer_data()
-        city_raw = self._repo.fetch_city_data()
-        product_raw = self._repo.fetch_product_data()
-        division_raw = self._repo.fetch_division_data()
-        daily_trend = self._repo.fetch_daily_trend(90)
-        monthly_trend = self._repo.fetch_monthly_trend(12)
-        aging = self._repo.fetch_aging_distribution()
-        network = self._repo.fetch_network_data()
-        record_count = self._repo.fetch_record_count()
-        
-        # Compute average distances per warehouse
-        city_pairs = self._repo.fetch_warehouse_city_pairs()
-        avg_distances = DistanceCalculationEngine.compute_average_distance_per_warehouse(city_pairs)
-        
-        # Enrich warehouse data
-        warehouses = WarehouseIntelligenceEngine.compute_warehouse_metrics(warehouse_raw, avg_distances)
-        dealers = DealerIntelligenceEngine.compute_dealer_metrics(dealer_raw)
-        cities = CityIntelligenceEngine.compute_city_metrics(city_raw)
-        
-        kpis = ExecutiveKPIEngine.generate_kpis(summary, warehouses)
-        insights = AIAnalyticsEngine.generate_insights(warehouses)
-        
-        charts = {
-            "warehouse_ranking": GraphEngine.horizontal_bar_chart(warehouses, 'delivery_notes', 'warehouse_name', 'Warehouse Ranking', 'performance_color'),
-            "pgi_performance": GraphEngine.vertical_bar_chart(warehouses, 'warehouse_name', 'avg_pgi_days', 'PGI Days'),
-            "ontime_gauge": GraphEngine.gauge_chart(SafeNumber.pct(summary.get('delivered_dns', 0), summary.get('total_dn', 1)), "On-Time Delivery %"),
-            "aging_distribution": GraphEngine.donut_chart(aging, 'bucket', 'count', 'Aging Distribution'),
-            "performance_matrix": GraphEngine.scatter_chart(warehouses, 'avg_pgi_days', 'avg_cycle_days', 'performance_color', 'PGI vs Cycle'),
-            "monthly_trend": GraphEngine.timeline_chart(monthly_trend, 'month', 'dn_count', 'Monthly DNs'),
-            "daily_trend": GraphEngine.timeline_chart(daily_trend, 'date', 'dn_count', 'Daily DNs'),
-        }
-        
-        metadata = {
-            "version": "16.0",
-            "timestamp": datetime.utcnow().isoformat(),
-            "record_count": record_count,
-            "warehouse_count": len(warehouses),
-        }
-        
-        return ResponseBuilder.build(
-            summary, warehouses, dealers, cities, product_raw, division_raw,
-            daily_trend, monthly_trend, aging, network, kpis,
-            insights, charts, metadata
-        )
-
+        try:
+            summary = self._repo.fetch_summary()
+            warehouse_raw = self._repo.fetch_warehouse_data()
+            dealer_raw = self._repo.fetch_dealer_data()
+            city_raw = self._repo.fetch_city_data()
+            product_raw = self._repo.fetch_product_data()
+            division_raw = self._repo.fetch_division_data()
+            daily_trend = self._repo.fetch_daily_trend(90)
+            monthly_trend = self._repo.fetch_monthly_trend(12)
+            aging = self._repo.fetch_aging_distribution()
+            network = self._repo.fetch_network_data()
+            record_count = self._repo.fetch_record_count()
+            
+            # Compute average distances per warehouse (safe fallback if GeoService fails)
+            try:
+                city_pairs = self._repo.fetch_warehouse_city_pairs()
+                avg_distances = DistanceCalculationEngine.compute_average_distance_per_warehouse(city_pairs)
+            except Exception as e:
+                logger.warning(f"Distance calculation failed, using empty distances: {e}")
+                avg_distances = {}
+            
+            # Enrich warehouse data
+            warehouses = WarehouseIntelligenceEngine.compute_warehouse_metrics(warehouse_raw, avg_distances)
+            dealers = DealerIntelligenceEngine.compute_dealer_metrics(dealer_raw)
+            cities = CityIntelligenceEngine.compute_city_metrics(city_raw)
+            
+            kpis = ExecutiveKPIEngine.generate_kpis(summary, warehouses)
+            insights = AIAnalyticsEngine.generate_insights(warehouses)
+            
+            charts = {
+                "warehouse_ranking": GraphEngine.horizontal_bar_chart(warehouses, 'delivery_notes', 'warehouse_name', 'Warehouse Ranking', 'performance_color'),
+                "pgi_performance": GraphEngine.vertical_bar_chart(warehouses, 'warehouse_name', 'avg_pgi_days', 'PGI Days'),
+                "ontime_gauge": GraphEngine.gauge_chart(SafeNumber.pct(summary.get('delivered_dns', 0), summary.get('total_dn', 1)), "On-Time Delivery %"),
+                "aging_distribution": GraphEngine.donut_chart(aging, 'bucket', 'count', 'Aging Distribution'),
+                "performance_matrix": GraphEngine.scatter_chart(warehouses, 'avg_pgi_days', 'avg_cycle_days', 'performance_color', 'PGI vs Cycle'),
+                "monthly_trend": GraphEngine.timeline_chart(monthly_trend, 'month', 'dn_count', 'Monthly DNs'),
+                "daily_trend": GraphEngine.timeline_chart(daily_trend, 'date', 'dn_count', 'Daily DNs'),
+            }
+            
+            metadata = {
+                "version": "16.2",
+                "timestamp": datetime.utcnow().isoformat(),
+                "record_count": record_count,
+                "warehouse_count": len(warehouses),
+            }
+            
+            return ResponseBuilder.build(
+                summary, warehouses, dealers, cities, product_raw, division_raw,
+                daily_trend, monthly_trend, aging, network, kpis,
+                insights, charts, metadata
+            )
+        except Exception as e:
+            logger.error(f"Dashboard generation failed: {str(e)}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    
     async def get_dashboard_data(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
         """Alias/wrapper method to maintain backwards compatibility with external callers."""
         return await self.get_full_dashboard(filters)
@@ -1308,6 +1333,31 @@ class DashboardService:
         city_pairs = self._repo.fetch_warehouse_city_pairs()
         avg_distances = DistanceCalculationEngine.compute_average_distance_per_warehouse(city_pairs)
         return WarehouseIntelligenceEngine.compute_warehouse_metrics(warehouses, avg_distances)
+
+
+# ============================================================
+# AIAnalyticsEngine (used in ResponseBuilder)
+# ============================================================
+
+class AIAnalyticsEngine:
+    @staticmethod
+    def generate_insights(warehouses: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not warehouses: return {"insights": []}
+        best, worst = WarehouseIntelligenceEngine.get_best_and_worst(warehouses)
+        return {
+            "insights": [
+                {"type": "best_performing", "text": f"Best Performing: {best.get('warehouse_name', 'N/A')} (Score: {best.get('performance_score', 0)})"},
+                {"type": "worst_performing", "text": f"Worst Performing: {worst.get('warehouse_name', 'N/A')} (Score: {worst.get('performance_score', 0)})"}
+            ]
+        }
+    
+    @staticmethod
+    def generate_improvement_plan(warehouse: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "warehouse": warehouse.get('warehouse_name', 'Unknown'),
+            "priority": "Critical" if warehouse.get('performance_score', 100) < 60 else "High",
+            "recommendation": "Optimize warehouse dispatch speed and reduce staging time."
+        }
 
 
 # ============================================================
@@ -1330,17 +1380,23 @@ async def get_dashboard_data(
 ):
     try:
         return await service.get_dashboard_data({"theme": theme})
+    except HTTPException as he:
+        raise he
     except Exception as e:
-        logger.error(f"Dashboard error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unhandled exception in /data: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @router.get("/warehouses")
 async def get_warehouses(service: DashboardService = Depends(get_dashboard_service)):
-    return await service.get_warehouse_ranking()
+    try:
+        return await service.get_warehouse_ranking()
+    except Exception as e:
+        logger.error(f"Error in /warehouses: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "16.0", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "healthy", "version": "16.2", "timestamp": datetime.utcnow().isoformat()}
 
 # --- Added POST /upload Endpoint to Link Frontend Import Center ---
 @router.post("/upload")
