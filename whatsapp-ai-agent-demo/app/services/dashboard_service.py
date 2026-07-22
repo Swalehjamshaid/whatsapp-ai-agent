@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 19.1 - FULLY POPULATED FOR HTML (24 MODULES)
+# VERSION: 19.2 - FIXED MISSING dn_amount COLUMN
 # ============================================================
 # EXCEEDS SAP ANALYTICS CLOUD | MICROSOFT FABRIC | POWER BI PREMIUM
 # ============================================================
@@ -334,7 +334,7 @@ def cached(ttl: Optional[int] = None):
 
 
 # ============================================================
-# REPOSITORY LAYER (ENHANCED FOR ALL MODULES)
+# REPOSITORY LAYER (ENHANCED + COLUMN CHECK)
 # ============================================================
 
 class DashboardRepository:
@@ -342,6 +342,7 @@ class DashboardRepository:
     
     def __init__(self, db_session: Optional[Session] = None):
         self._db_session = db_session
+        self._has_dn_amount = None
         logger.info("DashboardRepository initialized")
     
     def _execute(self, sql: str, params: Optional[Dict[str, Any]] = None) -> Any:
@@ -353,10 +354,25 @@ class DashboardRepository:
             logger.error(f"SQL execution failed: {str(e)}")
             raise DatabaseError(f"Database query failed: {str(e)}")
     
+    def _check_column_exists(self, column: str, table: str = "delivery_reports") -> bool:
+        """Check if a column exists in the table."""
+        if self._has_dn_amount is not None:
+            return self._has_dn_amount
+        try:
+            # Try to select the column with LIMIT 1
+            self._execute(f"SELECT {column} FROM {table} LIMIT 1")
+            self._has_dn_amount = True
+            logger.info(f"Column '{column}' exists in table '{table}'.")
+        except Exception:
+            self._has_dn_amount = False
+            logger.warning(f"Column '{column}' does NOT exist in table '{table}'. Revenue will use avg_unit_price fallback.")
+        return self._has_dn_amount
+
     # ==================== Core Summary (with Revenue) ====================
     def fetch_summary(self) -> Dict[str, Any]:
-        # Try to include dn_amount if column exists, else fallback
-        sql = """
+        has_amount = self._check_column_exists("dn_amount")
+        revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
+        sql = f"""
             SELECT
                 COUNT(DISTINCT dn_no) AS total_dn,
                 COUNT(DISTINCT warehouse) AS warehouse_count,
@@ -378,7 +394,7 @@ class DashboardRepository:
                     THEN EXTRACT(EPOCH FROM (pod_date::timestamp - good_issue_date::timestamp))/86400 END), 0) AS avg_pod_days,
                 COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
                     THEN EXTRACT(EPOCH FROM (pod_date::timestamp - good_issue_date::timestamp))/86400 END), 0) AS avg_cycle_days,
-                COALESCE(SUM(dn_amount), 0) AS total_revenue
+                {revenue_sql}
             FROM delivery_reports
         """
         row = self._execute(sql).first()
@@ -412,7 +428,9 @@ class DashboardRepository:
 
     # ==================== Warehouse Data (with Revenue) ====================
     def fetch_warehouse_data(self) -> List[Dict[str, Any]]:
-        sql = """
+        has_amount = self._check_column_exists("dn_amount")
+        revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
+        sql = f"""
             WITH warehouse_metrics AS (
                 SELECT
                     warehouse AS warehouse_name,
@@ -427,7 +445,7 @@ class DashboardRepository:
                     COALESCE(SUM(CASE WHEN pod_date IS NOT NULL THEN dn_qty ELSE 0 END), 0) AS delivered_units,
                     COALESCE(SUM(CASE WHEN pod_date IS NULL THEN dn_qty ELSE 0 END), 0) AS pending_units,
                     COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN dn_qty ELSE 0 END), 0) AS pending_pgi_units,
-                    COALESCE(SUM(dn_amount), 0) AS total_revenue,
+                    {revenue_sql},
                     COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND good_issue_date IS NOT NULL 
                         THEN EXTRACT(EPOCH FROM (good_issue_date::timestamp - dn_create_date::timestamp))/86400 END), 0) AS avg_pgi_days,
                     COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
@@ -495,7 +513,9 @@ class DashboardRepository:
 
     # ==================== Dealer Data (with Revenue) ====================
     def fetch_dealer_data(self) -> List[Dict[str, Any]]:
-        sql = """
+        has_amount = self._check_column_exists("dn_amount")
+        revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
+        sql = f"""
             SELECT
                 dealer_code,
                 customer_name,
@@ -505,7 +525,7 @@ class DashboardRepository:
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
                 COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
                     THEN EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400 END), 0) AS avg_cycle_days,
-                COALESCE(SUM(dn_amount), 0) AS total_revenue
+                {revenue_sql}
             FROM delivery_reports
             WHERE dealer_code IS NOT NULL
             GROUP BY dealer_code, customer_name
@@ -528,7 +548,9 @@ class DashboardRepository:
 
     # ==================== Product Data (with Revenue) ====================
     def fetch_product_data(self) -> List[Dict[str, Any]]:
-        sql = """
+        has_amount = self._check_column_exists("dn_amount")
+        revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
+        sql = f"""
             SELECT
                 material_no AS sku,
                 customer_model AS product_name,
@@ -536,7 +558,7 @@ class DashboardRepository:
                 COUNT(DISTINCT dn_no) AS delivery_notes,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
-                COALESCE(SUM(dn_amount), 0) AS total_revenue
+                {revenue_sql}
             FROM delivery_reports
             WHERE material_no IS NOT NULL
             GROUP BY material_no, customer_model
@@ -559,14 +581,16 @@ class DashboardRepository:
 
     # ==================== Division Data (with Revenue) ====================
     def fetch_division_data(self) -> List[Dict[str, Any]]:
-        sql = """
+        has_amount = self._check_column_exists("dn_amount")
+        revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
+        sql = f"""
             SELECT
                 division,
                 COALESCE(SUM(dn_qty), 0) AS units,
                 COUNT(DISTINCT dn_no) AS delivery_notes,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_completed,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
-                COALESCE(SUM(dn_amount), 0) AS total_revenue
+                {revenue_sql}
             FROM delivery_reports
             WHERE division IS NOT NULL
             GROUP BY division
@@ -587,7 +611,9 @@ class DashboardRepository:
 
     # ==================== City Data (with Revenue) ====================
     def fetch_city_data(self) -> List[Dict[str, Any]]:
-        sql = """
+        has_amount = self._check_column_exists("dn_amount")
+        revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
+        sql = f"""
             SELECT
                 ship_to_city AS city,
                 COALESCE(SUM(dn_qty), 0) AS units,
@@ -596,7 +622,7 @@ class DashboardRepository:
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_dns,
                 COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
                     THEN EXTRACT(EPOCH FROM (pod_date::timestamp - dn_create_date::timestamp))/86400 END), 0) AS avg_cycle_days,
-                COALESCE(SUM(dn_amount), 0) AS total_revenue
+                {revenue_sql}
             FROM delivery_reports
             WHERE ship_to_city IS NOT NULL
             GROUP BY ship_to_city
@@ -618,6 +644,8 @@ class DashboardRepository:
 
     # ==================== Trends ====================
     def fetch_daily_trend(self, days: int = 90) -> List[Dict[str, Any]]:
+        has_amount = self._check_column_exists("dn_amount")
+        revenue_sql = "COALESCE(SUM(dn_amount), 0) AS revenue" if has_amount else "0 AS revenue"
         sql = f"""
             SELECT
                 dn_create_date AS date,
@@ -627,7 +655,7 @@ class DashboardRepository:
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_count,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NULL THEN dn_no END) AS pending_pgi,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN dn_no END) AS pending_delivery,
-                COALESCE(SUM(dn_amount), 0) AS revenue
+                {revenue_sql}
             FROM delivery_reports
             WHERE dn_create_date >= CURRENT_DATE - INTERVAL '{days} days'
             GROUP BY dn_create_date
@@ -649,6 +677,8 @@ class DashboardRepository:
         return result
 
     def fetch_monthly_trend(self, months: int = 12) -> List[Dict[str, Any]]:
+        has_amount = self._check_column_exists("dn_amount")
+        revenue_sql = "COALESCE(SUM(dn_amount), 0) AS revenue" if has_amount else "0 AS revenue"
         sql = f"""
             SELECT
                 DATE_TRUNC('month', dn_create_date) AS month,
@@ -656,7 +686,7 @@ class DashboardRepository:
                 COUNT(DISTINCT dn_no) AS dn_count,
                 COUNT(DISTINCT CASE WHEN good_issue_date IS NOT NULL THEN dn_no END) AS pgi_count,
                 COUNT(DISTINCT CASE WHEN pod_date IS NOT NULL THEN dn_no END) AS delivered_count,
-                COALESCE(SUM(dn_amount), 0) AS revenue
+                {revenue_sql}
             FROM delivery_reports
             WHERE dn_create_date >= CURRENT_DATE - INTERVAL '{months} months'
             GROUP BY DATE_TRUNC('month', dn_create_date)
@@ -677,7 +707,9 @@ class DashboardRepository:
 
     # ==================== Pending Analysis ====================
     def fetch_pending_analysis(self) -> List[Dict[str, Any]]:
-        sql = """
+        has_amount = self._check_column_exists("dn_amount")
+        revenue_sql = "SUM(dn_amount) AS revenue" if has_amount else "0 AS revenue"
+        sql = f"""
             WITH pending_dns AS (
                 SELECT
                     dn_no,
@@ -700,7 +732,7 @@ class DashboardRepository:
                 END AS bucket,
                 COUNT(DISTINCT dn_no) AS dn_count,
                 SUM(dn_qty) AS units,
-                SUM(dn_amount) AS revenue
+                {revenue_sql}
             FROM pending_dns
             GROUP BY bucket
             ORDER BY MIN(pending_days)
@@ -774,7 +806,6 @@ class DashboardRepository:
         return SafeNumber.to_int(self._execute(sql).scalar())
 
     # ==================== Import Summary ====================
-    # We'll store import stats in a global or file; for now return dummy
     def get_import_summary(self) -> Dict[str, Any]:
         # In production, you would query a separate import_logs table
         return {
@@ -1114,7 +1145,7 @@ class PerformanceTrendEngine:
 
 
 # ============================================================
-# RESPONSE BUILDER (19.1 - FULLY POPULATED FOR HTML)
+# RESPONSE BUILDER (19.2 - FIXED)
 # ============================================================
 
 class ResponseBuilder:
@@ -1318,13 +1349,13 @@ class ResponseBuilder:
 
 
 # ============================================================
-# DASHBOARD SERVICE (19.1)
+# DASHBOARD SERVICE (19.2)
 # ============================================================
 
 class DashboardService:
     def __init__(self):
         self._repo = DashboardRepository()
-        logger.info("DashboardService initialized (v19.1 - Full Population)")
+        logger.info("DashboardService initialized (v19.2 - Fixed dn_amount)")
 
     @cached(ttl=300)
     async def get_full_dashboard(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
@@ -1439,7 +1470,7 @@ class DashboardService:
 
             # ====== 11. Metadata ======
             metadata = {
-                "version": "19.1",
+                "version": "19.2",
                 "timestamp": datetime.utcnow().isoformat(),
                 "record_count": record_count,
                 "warehouse_count": len(warehouses),
@@ -1521,7 +1552,7 @@ async def get_warehouses(service: DashboardService = Depends(get_dashboard_servi
 
 @router.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "19.1", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "healthy", "version": "19.2", "timestamp": datetime.utcnow().isoformat()}
 
 @router.post("/upload")
 async def upload_excel_report(
@@ -1544,4 +1575,4 @@ async def upload_excel_report(
         logger.error(f"Excel upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-logger.info("DashboardService router mounted (v19.1 - Full Population) with /upload")
+logger.info("DashboardService router mounted (v19.2 - Fixed dn_amount) with /upload")
