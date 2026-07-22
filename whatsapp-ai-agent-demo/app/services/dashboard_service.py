@@ -376,6 +376,8 @@ def cached(ttl: Optional[int] = None):
 # ============================================================
 # BLOCK 7: Repository Layer (DashboardRepository)
 # ============================================================
+# BLOCK 7: Repository Layer (DashboardRepository) - ENHANCED
+# ============================================================
 
 class DashboardRepository:
     def __init__(self, db_session: Optional[Session] = None):
@@ -462,11 +464,11 @@ class DashboardRepository:
             "total_revenue": SafeNumber.to_float(row.total_revenue),
         }
 
-    # ---------- Warehouse Data (aggregated per warehouse) ----------
+    # ---------- Warehouse Data (aggregated per warehouse) - FIXED DATE EXTRACTION ----------
     def fetch_warehouse_data(self) -> List[Dict[str, Any]]:
         has_amount = self._check_column_exists("dn_amount")
         revenue_sql = "COALESCE(SUM(dn_amount), 0) AS total_revenue" if has_amount else "0 AS total_revenue"
-        # Use (date1 - date2) which returns integer days in PostgreSQL
+        # Use EXTRACT(DAY FROM timestamp - timestamp) for reliable day difference
         sql = f"""
             WITH warehouse_metrics AS (
                 SELECT
@@ -482,33 +484,33 @@ class DashboardRepository:
                     COALESCE(SUM(CASE WHEN pod_date IS NULL THEN dn_qty ELSE 0 END), 0) AS pending_units,
                     COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN dn_qty ELSE 0 END), 0) AS pending_pgi_units,
                     {revenue_sql},
-                    -- PGI Days = good_issue_date - dn_create_date
+                    -- PGI Days = good_issue_date - dn_create_date (as days)
                     COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND good_issue_date IS NOT NULL 
-                        THEN (good_issue_date - dn_create_date) END), 0) AS avg_pgi_days,
-                    -- Delivery Days (transit) = pod_date - good_issue_date (since no separate delivery date)
+                        THEN EXTRACT(DAY FROM (good_issue_date::timestamp - dn_create_date::timestamp)) END), 0) AS avg_pgi_days,
+                    -- Delivery Days (transit) = pod_date - good_issue_date
                     COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN (pod_date - good_issue_date) END), 0) AS avg_delivery_days,
-                    -- POD Days = same as delivery days (since POD is the final step)
+                        THEN EXTRACT(DAY FROM (pod_date::timestamp - good_issue_date::timestamp)) END), 0) AS avg_delivery_days,
+                    -- POD Days = same as delivery (since POD is the final step)
                     COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN (pod_date - good_issue_date) END), 0) AS avg_pod_days,
+                        THEN EXTRACT(DAY FROM (pod_date::timestamp - good_issue_date::timestamp)) END), 0) AS avg_pod_days,
                     -- Total Cycle = pod_date - dn_create_date
                     COALESCE(AVG(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN (pod_date - dn_create_date) END), 0) AS avg_cycle_days,
+                        THEN EXTRACT(DAY FROM (pod_date::timestamp - dn_create_date::timestamp)) END), 0) AS avg_cycle_days,
                     -- Min/Max for delivery (transit)
                     COALESCE(MIN(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN (pod_date - dn_create_date) END), 0) AS min_delivery_days,
+                        THEN EXTRACT(DAY FROM (pod_date::timestamp - dn_create_date::timestamp)) END), 0) AS min_delivery_days,
                     COALESCE(MAX(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN (pod_date - dn_create_date) END), 0) AS max_delivery_days,
+                        THEN EXTRACT(DAY FROM (pod_date::timestamp - dn_create_date::timestamp)) END), 0) AS max_delivery_days,
                     -- Min/Max for POD (transit)
                     COALESCE(MIN(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN (pod_date - good_issue_date) END), 0) AS min_pod_days,
+                        THEN EXTRACT(DAY FROM (pod_date::timestamp - good_issue_date::timestamp)) END), 0) AS min_pod_days,
                     COALESCE(MAX(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN (pod_date - good_issue_date) END), 0) AS max_pod_days,
+                        THEN EXTRACT(DAY FROM (pod_date::timestamp - good_issue_date::timestamp)) END), 0) AS max_pod_days,
                     -- Min/Max for Cycle
                     COALESCE(MIN(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN (pod_date - dn_create_date) END), 0) AS min_cycle_days,
+                        THEN EXTRACT(DAY FROM (pod_date::timestamp - dn_create_date::timestamp)) END), 0) AS min_cycle_days,
                     COALESCE(MAX(CASE WHEN dn_create_date IS NOT NULL AND pod_date IS NOT NULL 
-                        THEN (pod_date - dn_create_date) END), 0) AS max_cycle_days,
+                        THEN EXTRACT(DAY FROM (pod_date::timestamp - dn_create_date::timestamp)) END), 0) AS max_cycle_days,
                     MIN(dn_create_date) AS first_dn,
                     MAX(dn_create_date) AS last_dn
                 FROM delivery_reports
@@ -888,7 +890,6 @@ class DashboardRepository:
             "rows_skipped": 5000,
             "last_upload_date": datetime.utcnow().isoformat(),
         }
-
 # ============================================================
 # BLOCK 8: Distance Calculation Engine
 # ============================================================
