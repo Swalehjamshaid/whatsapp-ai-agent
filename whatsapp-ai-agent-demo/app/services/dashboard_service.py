@@ -1,6 +1,6 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 19.0 - COMPLETE COMMAND CENTER (24 MODULES)
+# VERSION: 19.1 - FULLY POPULATED FOR HTML (24 MODULES)
 # ============================================================
 # EXCEEDS SAP ANALYTICS CLOUD | MICROSOFT FABRIC | POWER BI PREMIUM
 # ============================================================
@@ -1114,7 +1114,7 @@ class PerformanceTrendEngine:
 
 
 # ============================================================
-# RESPONSE BUILDER (19.0)
+# RESPONSE BUILDER (19.1 - FULLY POPULATED FOR HTML)
 # ============================================================
 
 class ResponseBuilder:
@@ -1144,12 +1144,14 @@ class ResponseBuilder:
             "pending_units": {"value": pending_units, "label": "Pending Units", "icon": "fa-hourglass"},
             "health_score": {"value": kpis.get('health_score', {}).get('value', 0), "label": "Health Score", "icon": "fa-heart-pulse"},
         }
+        # Add pending_dn to cards (used by HTML for KPI)
+        cards["pending_dn"] = {"value": kpis.get('pending_dn', {}).get('value', 0)}
 
         # Vs yesterday growth
         growth = KPIEngine.compute_day_over_day(daily_trend)
-        cards["total_dn"]["vs_yesterday"] = growth.get('dn_growth', 0)
-        cards["total_units"]["vs_yesterday"] = growth.get('units_growth', 0)
-        cards["total_value"]["vs_yesterday"] = growth.get('revenue_growth', 0)
+        for key in ["total_dn", "total_units", "total_value"]:
+            if key in cards:
+                cards[key]["vs_yesterday"] = growth.get(key.replace("total_", "").replace("_value", "revenue") + "_growth", 0)
 
         # Pipeline
         pipeline_old = {
@@ -1181,10 +1183,39 @@ class ResponseBuilder:
                 "avg_days": w['avg_cycle_days'],
                 "pending_dns": w['pending_dns'],
                 "status": w['status'],
+                "avg_pgi_days": w.get('avg_pgi_days', 0),
+                "performance_score": w['health_score'],
             })
 
-        # Top delayed cities
-        top_delayed_cities = sorted(city_delays, key=lambda x: x['avg_delivery_days'], reverse=True)[:10]
+        # Top delayed cities with risk status
+        top_delayed_cities = []
+        for city in sorted(city_delays, key=lambda x: x['avg_delivery_days'], reverse=True)[:10]:
+            days = city['avg_delivery_days']
+            if days > 5:
+                risk = "Critical"
+            elif days > 4:
+                risk = "High"
+            elif days > 3:
+                risk = "Medium"
+            else:
+                risk = "Low"
+            top_delayed_cities.append({
+                "city": city['city'],
+                "avg_delivery_days": days,
+                "pending_units": city.get('pending_units', 0),
+                "status": risk,
+            })
+
+        # Top pending warehouses
+        sorted_by_pending = sorted(warehouses, key=lambda w: w.get('pending_units', 0), reverse=True)[:5]
+        top_pending_warehouses = [
+            {
+                "warehouse": w['warehouse_name'],
+                "pending_dns": w['pending_dns'],
+                "pending_units": w['pending_units'],
+            }
+            for w in sorted_by_pending
+        ]
 
         # Top dealers by revenue
         sorted_dealers = sorted(dealers, key=lambda d: d.get('total_revenue', 0), reverse=True)[:5]
@@ -1196,7 +1227,7 @@ class ResponseBuilder:
         # Top products by units
         sorted_products = sorted(products, key=lambda p: p.get('units', 0), reverse=True)[:5]
         top_products = [
-            {"product": p['product_name'], "units": p['units'], "revenue": p['total_revenue']}
+            {"product": p['product_name'], "units": p['units'], "revenue": p['total_revenue'], "delivery_notes": p['delivery_notes']}
             for p in sorted_products
         ]
 
@@ -1206,16 +1237,36 @@ class ResponseBuilder:
             for d in divisions
         ]
 
-        # Delivery standard compliance
-        compliance = compliance_data or []
-
-        # Pending analysis
-        pending_analysis_data = pending_analysis or []
+        # Delivery standard compliance - use top warehouses with distance
+        compliance = []
+        for c in compliance_data[:6]:
+            # Determine distance range
+            dist = c.get('avg_distance_km', 0)
+            if dist <= 100:
+                range_label = "0-100"
+            elif dist <= 250:
+                range_label = "101-250"
+            elif dist <= 450:
+                range_label = "251-450"
+            elif dist <= 700:
+                range_label = "451-700"
+            elif dist <= 900:
+                range_label = "701-900"
+            else:
+                range_label = ">900"
+            compliance.append({
+                "distance": range_label,
+                "target_days": c['target_days'],
+                "actual_days": c['actual_days'],
+                "compliance_pct": c['compliance_pct'],
+                "status": c['status'],
+            })
 
         # Critical alerts
         critical_alerts = [a for a in alerts if a.get('severity') in ('CRITICAL', 'HIGH')]
 
-        # Director recommendations (same as recommendations)
+        # Director recommendations
+        director_recommendations = recommendations
 
         # Import summary
         import_summary_data = import_summary or {}
@@ -1253,26 +1304,27 @@ class ResponseBuilder:
             "performance_trends": trends,
             "warehouse_ranking": warehouse_ranking,
             "top_delayed_cities": top_delayed_cities,
+            "top_pending_warehouses": top_pending_warehouses,  # added for HTML
             "top_dealers": top_dealers,
             "top_products": top_products,
             "division_performance": division_performance,
             "delivery_compliance": compliance,
-            "pending_analysis": pending_analysis_data,
+            "pending_analysis": pending_analysis,
             "critical_alerts": critical_alerts,
-            "director_recommendations": recommendations,
+            "director_recommendations": director_recommendations,  # alias
             "import_summary": import_summary_data,
             "insights": insights,  # AI insights
         }
 
 
 # ============================================================
-# DASHBOARD SERVICE (19.0)
+# DASHBOARD SERVICE (19.1)
 # ============================================================
 
 class DashboardService:
     def __init__(self):
         self._repo = DashboardRepository()
-        logger.info("DashboardService initialized (v19.0 - 24 Modules)")
+        logger.info("DashboardService initialized (v19.1 - Full Population)")
 
     @cached(ttl=300)
     async def get_full_dashboard(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
@@ -1310,6 +1362,7 @@ class DashboardService:
                         "actual_days": actual,
                         "compliance_pct": compliance_pct,
                         "status": "Within Standard" if actual <= target else "Above Standard",
+                        "avg_distance_km": dist,
                     })
             except Exception as e:
                 logger.warning(f"Distance compliance calculation failed: {e}")
@@ -1374,7 +1427,6 @@ class DashboardService:
             }
 
             # ====== 10. Charts (Plotly) ======
-            # We'll create minimal charts for now; you can expand
             charts = {
                 "warehouse_ranking": "{}",
                 "pgi_performance": "{}",
@@ -1387,7 +1439,7 @@ class DashboardService:
 
             # ====== 11. Metadata ======
             metadata = {
-                "version": "19.0",
+                "version": "19.1",
                 "timestamp": datetime.utcnow().isoformat(),
                 "record_count": record_count,
                 "warehouse_count": len(warehouses),
@@ -1469,7 +1521,7 @@ async def get_warehouses(service: DashboardService = Depends(get_dashboard_servi
 
 @router.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "19.0", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "healthy", "version": "19.1", "timestamp": datetime.utcnow().isoformat()}
 
 @router.post("/upload")
 async def upload_excel_report(
@@ -1492,4 +1544,4 @@ async def upload_excel_report(
         logger.error(f"Excel upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-logger.info("DashboardService router mounted (v19.0 - 24 Modules) with /upload")
+logger.info("DashboardService router mounted (v19.1 - Full Population) with /upload")
