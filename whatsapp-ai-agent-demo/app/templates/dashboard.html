@@ -1,1112 +1,1566 @@
-<!-- ============================================================
-     FILE: whatsapp-ai-agent-demo/app/templates/dashboard.html
-     VERSION: 19.6 – UPLOAD ROUTER INTEGRATION (PROGRESS + IMPORT)
-     ============================================================ -->
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Haier Pakistan – Enterprise Command Suite</title>
+#!/usr/bin/env python3
+"""
+dashboard_service.py - Enterprise Logistics Dashboard Service
+Version: 21.3 – Clean import, no syntax errors, full enterprise features.
+"""
 
-  <!-- Google Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+import os
+import logging
+import time
+import traceback
+import threading
+from datetime import datetime, date
+from typing import Dict, List, Any, Optional, Union
+import math
 
-  <!-- Bootstrap 5 CSS -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
-  <!-- Font Awesome 6 -->
-  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet" />
-  <!-- Plotly JS -->
-  <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist@2.26.0/plotly.min.js"></script>
-  <!-- SweetAlert2 -->
-  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+# ------------------------------------------------------------
+# DATABASE IMPORTS (safe)
+# ------------------------------------------------------------
+try:
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+    from app.database import SessionLocal, engine
+    DB_APP_AVAILABLE = True
+except ImportError:
+    DB_APP_AVAILABLE = False
+    SessionLocal = None
+    engine = None
 
-  <style>
-    /* ====== All styles remain exactly as before ====== */
-    :root {
-      --color-bg-base: #070b14;
-      --color-bg-surface: #0f172a;
-      --color-bg-elevated: #1e293b;
-      --color-border: rgba(255,255,255,0.06);
-      --color-border-hover: rgba(56,189,248,0.25);
-      --color-text-primary: #f8fafc;
-      --color-text-secondary: #94a3b8;
-      --color-text-muted: #64748b;
-      --color-accent: #38bdf8;
-      --color-accent-blue: #2563eb;
-      --color-accent-indigo: #4f46e5;
-      --color-success: #10b981;
-      --color-warning: #f59e0b;
-      --color-danger: #ef4444;
-      --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-      --font-mono: 'JetBrains Mono', monospace;
-      --radius-xl: 16px;
-      --radius-lg: 12px;
-      --radius-md: 8px;
-      --shadow-glass: 0 10px 30px rgba(0,0,0,0.4);
-      --shadow-neon: 0 0 20px rgba(56,189,248,0.06);
-      --transition-smooth: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    }
+# ------------------------------------------------------------
+# LOGGING
+# ------------------------------------------------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-    [data-theme="light"] {
-      --color-bg-base: #f1f5f9;
-      --color-bg-surface: #ffffff;
-      --color-bg-elevated: #f8fafc;
-      --color-border: #e2e8f0;
-      --color-border-hover: rgba(37,99,235,0.15);
-      --color-text-primary: #0f172a;
-      --color-text-secondary: #475569;
-      --color-text-muted: #94a3b8;
-      --shadow-glass: 0 10px 30px rgba(0,0,0,0.04);
-      --shadow-neon: 0 0 20px rgba(37,99,235,0.04);
-    }
+# ------------------------------------------------------------
+# UTILITY FUNCTIONS
+# ------------------------------------------------------------
+def _safe_str(value: Any, default: str = "N/A") -> str:
+    if value is None:
+        return default
+    return str(value).strip() or default
 
-    * { box-sizing: border-box; }
-    body {
-      font-family: var(--font-sans);
-      background: var(--color-bg-base);
-      color: var(--color-text-primary);
-      margin: 0;
-      min-height: 100vh;
-      transition: background 0.4s ease, color 0.4s ease;
-      -webkit-font-smoothing: antialiased;
-      font-size: 0.78rem;
-    }
-    .container-fluid { padding: 0; }
+def _format_number(v: Union[int, float]) -> str:
+    if v is None:
+        return "0"
+    return f"{int(v):,}"
 
-    /* ----- Sidebar ----- */
-    .sidebar {
-      position: fixed;
-      top: 0; left: 0;
-      width: 250px;
-      height: 100vh;
-      background: var(--color-bg-surface);
-      border-right: 1px solid var(--color-border);
-      padding: 1.25rem 1rem;
-      z-index: 1050;
-      display: flex;
-      flex-direction: column;
-      backdrop-filter: blur(20px);
-      transition: transform var(--transition-smooth);
-    }
-    .sidebar-brand {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      padding-bottom: 1.25rem;
-      border-bottom: 1px solid var(--color-border);
-    }
-    .brand-icon {
-      width: 38px; height: 38px;
-      background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
-      border-radius: var(--radius-md);
-      display: flex; align-items: center; justify-content: center;
-      color: #fff; font-size: 1.1rem;
-      box-shadow: var(--shadow-neon);
-    }
-    .sidebar-brand h5 {
-      font-size: 1rem; font-weight: 800; color: var(--color-text-primary);
-      margin: 0; letter-spacing: -0.02em;
-    }
-    .sidebar-brand small {
-      font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
-      color: var(--color-text-secondary); letter-spacing: 0.1em;
-      display: block;
-    }
+def _format_currency(v: float) -> str:
+    if v is None:
+        return "PKR 0"
+    if v >= 1_000_000_000:
+        return f"PKR {v/1_000_000_000:.1f}B"
+    if v >= 1_000_000:
+        return f"PKR {v/1_000_000:.1f}M"
+    if v >= 1_000:
+        return f"PKR {v:,.0f}"
+    return f"PKR {v:,.0f}"
 
-    .sidebar-nav {
-      flex: 1;
-      padding: 1rem 0;
-      display: flex;
-      flex-direction: column;
-      gap: 0.2rem;
-      overflow-y: auto;
-    }
-    .sidebar-nav::-webkit-scrollbar { width: 3px; }
-    .sidebar-nav::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+def _format_pct(v: float) -> str:
+    if v is None:
+        return "0.0%"
+    return f"{v:.1f}%"
 
-    .sidebar-nav .nav-link {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      padding: 0.55rem 0.85rem;
-      border-radius: var(--radius-md);
-      color: var(--color-text-secondary);
-      font-weight: 600;
-      font-size: 0.76rem;
-      text-decoration: none;
-      transition: var(--transition-smooth);
-    }
-    .sidebar-nav .nav-link i {
-      width: 18px; text-align: center;
-      font-size: 0.9rem;
-    }
-    .sidebar-nav .nav-link:hover {
-      background: rgba(56,189,248,0.06);
-      color: var(--color-accent);
-    }
-    .sidebar-nav .nav-link.active {
-      background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
-      color: #fff;
-      box-shadow: 0 4px 16px rgba(37,99,235,0.25);
-    }
-    .sidebar-footer {
-      padding: 0.75rem 0.25rem;
-      border-top: 1px solid var(--color-border);
-      font-size: 0.65rem;
-      color: var(--color-text-muted);
-      text-align: center;
-      font-weight: 600;
-    }
+def _parse_date(val: Any) -> Optional[datetime]:
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, date):
+        return datetime.combine(val, datetime.min.time())
+    if isinstance(val, str):
+        for fmt in ['%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f']:
+            try:
+                return datetime.strptime(val, fmt)
+            except ValueError:
+                continue
+    return None
 
-    /* ----- Top Bar Command Header ----- */
-    .topbar {
-      background: var(--color-bg-surface);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-xl);
-      padding: 0.75rem 1.5rem;
-      margin-bottom: 1.25rem;
-      box-shadow: var(--shadow-glass);
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 1rem;
-      backdrop-filter: blur(20px);
-    }
-    .topbar-left { display: flex; align-items: center; gap: 1rem; }
-    .topbar-left .hamburger {
-      display: none; background: none; border: none;
-      font-size: 1.2rem; color: var(--color-text-primary); cursor: pointer;
-    }
-    .topbar-logo-area { display: flex; flex-direction: column; }
-    .topbar-logo-area h3 {
-      font-size: 0.95rem; font-weight: 800; margin: 0;
-      color: var(--color-text-primary);
-      letter-spacing: -0.02em;
-    }
-    .topbar-logo-area small {
-      font-size: 0.6rem; color: var(--color-text-secondary); font-weight: 600;
-    }
+def _safe_divide(a: float, b: float, default: float = 0.0) -> float:
+    return (a / b) if b != 0 else default
 
-    .topbar-filters {
-      display: flex;
-      align-items: center;
-      gap: 0.4rem;
-      flex-wrap: wrap;
-    }
-    .filter-dropdown {
-      background: var(--color-bg-base);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-md);
-      padding: 0.3rem 0.6rem;
-      font-size: 0.72rem;
-      color: var(--color-text-primary);
-      font-weight: 600;
-      display: flex;
-      align-items: center;
-      gap: 0.4rem;
-      cursor: pointer;
-    }
-    .filter-dropdown span { color: var(--color-text-secondary); font-weight: 500; font-size: 0.68rem; }
+# ------------------------------------------------------------
+# DASHBOARD SERVICE (Singleton)
+# ------------------------------------------------------------
+class DashboardService:
+    _instance = None
+    _lock = threading.Lock()
 
-    .topbar-actions {
-      display: flex;
-      align-items: center;
-      gap: 0.6rem;
-    }
-    .btn-command {
-      background: var(--color-bg-base);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-md);
-      padding: 0.35rem 0.75rem;
-      font-size: 0.72rem;
-      font-weight: 600;
-      color: var(--color-text-primary);
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      cursor: pointer;
-      transition: var(--transition-smooth);
-    }
-    .btn-command.btn-primary-action {
-      background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
-      border: none;
-      color: #fff;
-      box-shadow: 0 4px 12px rgba(37,99,235,0.2);
-    }
-    .btn-command:hover { opacity: 0.9; transform: translateY(-1px); }
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
 
-    .notification-icon {
-      position: relative;
-      width: 30px; height: 30px;
-      background: var(--color-bg-base);
-      border: 1px solid var(--color-border);
-      border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-      color: var(--color-text-secondary);
-      cursor: pointer;
-    }
-    .notification-icon .badge-dot {
-      position: absolute; top: 3px; right: 3px;
-      width: 7px; height: 7px; background: var(--color-danger);
-      border-radius: 50%;
-    }
-    .user-profile-pill {
-      display: flex; align-items: center; gap: 0.4rem;
-      background: var(--color-bg-base);
-      padding: 0.2rem 0.6rem 0.2rem 0.3rem;
-      border-radius: 9999px;
-      border: 1px solid var(--color-border);
-      font-size: 0.72rem; font-weight: 700;
-    }
-    .user-avatar {
-      width: 22px; height: 22px; background: #3b82f6; border-radius: 50%;
-      display: flex; align-items: center; justify-content: center; color: #fff; font-size: 0.6rem;
-    }
+    def __init__(self):
+        if hasattr(self, "_initialized") and self._initialized:
+            return
+        self._initialized = True
+        self._version = "21.3"
+        self._engine = None
+        self._session_maker = None
+        self._table_exists = False
+        self._available_columns = []
+        self._cache = {}
+        self._cache_time = 0
+        self._cache_ttl = int(os.getenv("DASHBOARD_CACHE_TTL", "30"))
 
-    /* ----- Main Content ----- */
-    .main-content {
-      margin-left: 250px;
-      padding: 1.25rem 1.5rem;
-      min-height: 100vh;
-      transition: margin var(--transition-smooth);
-    }
-
-    /* ----- Cards ----- */
-    .card {
-      background: var(--color-bg-surface);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-xl);
-      box-shadow: var(--shadow-glass);
-      transition: var(--transition-smooth);
-      overflow: hidden;
-      position: relative;
-      margin-bottom: 1rem;
-    }
-    .card-header {
-      background: transparent !important;
-      border-bottom: 1px solid var(--color-border) !important;
-      color: var(--color-text-primary) !important;
-      padding: 0.75rem 1rem !important;
-      font-weight: 700;
-      font-size: 0.78rem;
-      display: flex; align-items: center; gap: 0.5rem;
-    }
-    .card-header i { color: var(--color-accent); font-size: 0.9rem; }
-
-    /* ----- KPI Grid Cards ----- */
-    .kpi-card {
-      background: var(--color-bg-surface);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-lg);
-      padding: 0.85rem 1rem;
-      height: 100%;
-      position: relative;
-      transition: var(--transition-smooth);
-      box-shadow: var(--shadow-glass);
-    }
-    .kpi-card:hover {
-      border-color: var(--color-accent);
-      transform: translateY(-2px);
-      box-shadow: var(--shadow-neon);
-    }
-    .kpi-card h6 {
-      font-size: 0.62rem;
-      text-transform: uppercase;
-      font-weight: 700;
-      color: var(--color-text-secondary);
-      letter-spacing: 0.05em;
-      margin-bottom: 0.3rem;
-      display: flex; align-items: center; gap: 0.35rem;
-    }
-    .kpi-card h6 i { color: var(--color-accent); font-size: 0.7rem; }
-    .kpi-card .kpi-value {
-      font-size: 1.35rem;
-      font-weight: 800;
-      color: var(--color-text-primary);
-      line-height: 1.2;
-      letter-spacing: -0.02em;
-    }
-    .kpi-card .kpi-sub {
-      font-size: 0.65rem;
-      font-weight: 600;
-      margin-top: 0.25rem;
-      display: flex; align-items: center; gap: 0.3rem;
-    }
-    .text-trend-up { color: var(--color-success); }
-    .text-trend-down { color: var(--color-danger); }
-
-    /* ----- Tables & Lists inside Cards ----- */
-    .table-custom {
-      width: 100%;
-      margin-bottom: 0;
-      font-size: 0.74rem;
-      color: var(--color-text-primary);
-      border-collapse: collapse;
-    }
-    .table-custom th {
-      background: rgba(15,23,42,0.4);
-      color: var(--color-text-secondary);
-      font-weight: 700;
-      text-transform: uppercase;
-      font-size: 0.64rem;
-      padding: 0.5rem 0.65rem;
-      border-bottom: 1px solid var(--color-border);
-      letter-spacing: 0.04em;
-    }
-    .table-custom td {
-      padding: 0.5rem 0.65rem;
-      border-bottom: 1px solid var(--color-border);
-      vertical-align: middle;
-    }
-    .table-custom tr:hover td { background: rgba(56,189,248,0.03); }
-
-    /* Badges & Status Pills */
-    .badge-status {
-      padding: 0.15rem 0.45rem;
-      border-radius: 9999px;
-      font-size: 0.64rem;
-      font-weight: 700;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.25rem;
-    }
-    .badge-status.success { background: rgba(16,185,129,0.12); color: #34d399; }
-    .badge-status.good { background: rgba(132,204,22,0.12); color: #a3e635; }
-    .badge-status.warning { background: rgba(245,158,11,0.12); color: #fbbf24; }
-    .badge-status.critical { background: rgba(239,68,68,0.12); color: #f87171; }
-
-    /* Alert Items */
-    .alert-item {
-      background: rgba(239, 68, 68, 0.06);
-      border: 1px solid rgba(239, 68, 68, 0.2);
-      border-radius: var(--radius-md);
-      padding: 0.6rem 0.85rem;
-      margin-bottom: 0.4rem;
-      display: flex;
-      align-items: flex-start;
-      gap: 0.6rem;
-    }
-    .alert-item i { color: var(--color-danger); font-size: 0.9rem; margin-top: 0.1rem; }
-
-    /* Recommendation Items */
-    .recommendation-item {
-      background: rgba(16, 185, 129, 0.04);
-      border: 1px solid rgba(16, 185, 129, 0.15);
-      border-radius: var(--radius-md);
-      padding: 0.45rem 0.65rem;
-      margin-bottom: 0.35rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-size: 0.72rem;
-    }
-    .recommendation-item i { color: var(--color-success); font-size: 0.75rem; }
-
-    /* Pipeline funnel steps */
-    .pipeline-step {
-      background: var(--color-bg-elevated);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-md);
-      padding: 0.55rem 0.75rem;
-      text-align: center;
-      position: relative;
-    }
-    .pipeline-step .step-val { font-size: 1.15rem; font-weight: 800; color: var(--color-text-primary); margin: 0.1rem 0; }
-
-    /* Forms */
-    .form-toolbar { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; }
-    .form-toolbar .form-group { flex: 1; min-width: 160px; }
-    .form-control, .form-select {
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-md);
-      padding: 0.4rem 0.65rem;
-      font-size: 0.76rem;
-      background: rgba(15,23,42,0.5);
-      color: var(--color-text-primary);
-    }
-    .btn-upload {
-      background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
-      border: none;
-      border-radius: var(--radius-md);
-      font-weight: 700;
-      color: #fff;
-      cursor: pointer;
-    }
-    .btn-upload:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-
-    /* Upload progress bar */
-    #uploadProgressContainer {
-      margin-top: 0.75rem;
-      display: none;
-      background: var(--color-bg-elevated);
-      border-radius: var(--radius-md);
-      padding: 0.5rem 0.75rem;
-      border: 1px solid var(--color-border);
-    }
-    .progress {
-      height: 8px;
-      background: rgba(255,255,255,0.05);
-      border-radius: 4px;
-      overflow: hidden;
-    }
-    .progress-bar {
-      background: linear-gradient(90deg, var(--color-accent), var(--color-accent-indigo));
-      width: 0%;
-      transition: width 0.3s ease;
-    }
-    #uploadStatusText {
-      font-size: 0.7rem;
-      color: var(--color-text-secondary);
-      margin-top: 0.25rem;
-      display: flex;
-      justify-content: space-between;
-    }
-
-    /* Footer Bar */
-    .footer-bar {
-      background: var(--color-bg-surface);
-      border-radius: var(--radius-xl);
-      padding: 0.85rem 1.25rem;
-      border: 1px solid var(--color-border);
-      font-size: 0.72rem;
-      color: var(--color-text-secondary);
-      font-weight: 600;
-      box-shadow: var(--shadow-glass);
-      backdrop-filter: blur(20px);
-    }
-
-    @media (max-width: 991.98px) {
-      .sidebar { transform: translateX(-100%); }
-      .sidebar.open { transform: translateX(0); }
-      .main-content { margin-left: 0; padding: 1rem; }
-      .topbar-left .hamburger { display: block; }
-    }
-  </style>
-</head>
-<body data-theme="dark">
-
-<div id="app" class="container-fluid px-0">
-
-  <!-- ============================================================
-  EXECUTIVE SIDEBAR
-  ============================================================ -->
-  <aside class="sidebar" id="sidebar">
-    <div class="sidebar-brand">
-      <div class="brand-icon"><i class="fas fa-cubes"></i></div>
-      <div>
-        <h5>Haier Logistics</h5>
-        <small>Command Center</small>
-      </div>
-    </div>
-    <nav class="sidebar-nav">
-      <a class="nav-link active" href="#"><i class="fas fa-chart-line"></i> Dashboard</a>
-      <a class="nav-link" href="#uploadSection"><i class="fas fa-cloud-upload-alt"></i> Import Center</a>
-      <a class="nav-link" href="#warehouseSection"><i class="fas fa-warehouse"></i> Warehouses</a>
-      <a class="nav-link" href="#dealersSection"><i class="fas fa-handshake"></i> Dealers</a>
-      <a class="nav-link" href="#citiesSection"><i class="fas fa-map-marker-alt"></i> Cities</a>
-      <a class="nav-link" href="#productsSection"><i class="fas fa-boxes"></i> Products</a>
-      <a class="nav-link" href="#divisionsSection"><i class="fas fa-layer-group"></i> Divisions</a>
-      <a class="nav-link" href="#salesOfficesSection"><i class="fas fa-building"></i> Sales Offices</a>
-      <a class="nav-link" href="#salesManagersSection"><i class="fas fa-user-tie"></i> Sales Managers</a>
-      <a class="nav-link" href="#alertsSection"><i class="fas fa-triangle-exclamation"></i> Alerts & Insights <span class="badge bg-danger ms-auto" style="font-size:0.55rem;" id="alertBadge">0</span></a>
-      <a class="nav-link" href="#reportsSection"><i class="fas fa-file-lines"></i> Reports</a>
-      <a class="nav-link" href="#dataQualitySection"><i class="fas fa-database"></i> Data Quality</a>
-      <a class="nav-link" href="#settingsSection"><i class="fas fa-gear"></i> Settings</a>
-    </nav>
-    <div class="sidebar-footer">Haier Pakistan v19.6</div>
-  </aside>
-
-  <!-- ============================================================
-  MAIN CONTENT
-  ============================================================ -->
-  <main class="main-content" id="mainContent">
-
-    <!-- COMMAND CENTER TOPBAR -->
-    <div class="topbar">
-      <div class="topbar-left">
-        <button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button>
-        <div class="topbar-logo-area">
-          <h3>HAIER LOGISTICS COMMAND CENTER – DIRECTOR DASHBOARD</h3>
-          <small>100% DATA DRIVEN FROM POSTGRESQL (delivery_reports) – ALL CALCULATIONS IN dashboard_service.py</small>
-        </div>
-      </div>
-
-      <!-- Quick Global Filters Bar -->
-      <div class="topbar-filters">
-        <div class="filter-dropdown">
-          <i class="fas fa-calendar-alt text-info"></i>
-          <span id="dateRangeDisplay">22 Jul 2026 - 22 Jul 2026</span>
-          <i class="fas fa-chevron-down ms-1" style="font-size:0.55rem;"></i>
-        </div>
-        <div class="filter-dropdown">
-          <span>Warehouse:</span> <strong>All</strong> <i class="fas fa-chevron-down ms-1" style="font-size:0.55rem;"></i>
-        </div>
-        <div class="filter-dropdown">
-          <span>Division:</span> <strong>All</strong> <i class="fas fa-chevron-down ms-1" style="font-size:0.55rem;"></i>
-        </div>
-        <div class="filter-dropdown">
-          <span>Sales Office:</span> <strong>All</strong> <i class="fas fa-chevron-down ms-1" style="font-size:0.55rem;"></i>
-        </div>
-        <div class="filter-dropdown">
-          <span>Sales Manager:</span> <strong>All</strong> <i class="fas fa-chevron-down ms-1" style="font-size:0.55rem;"></i>
-        </div>
-      </div>
-
-      <!-- Topbar Actions -->
-      <div class="topbar-actions">
-        <button class="btn-command" onclick="loadDashboard()"><i class="fas fa-rotate text-info"></i> Refresh</button>
-        <button class="btn-command btn-primary-action"><i class="fas fa-download"></i> Export</button>
-        <div class="notification-icon">
-          <i class="fas fa-bell"></i>
-          <div class="badge-dot"></div>
-        </div>
-        <div class="user-profile-pill">
-          <div class="user-avatar">LK</div>
-          <span>Logistics Director</span>
-        </div>
-        <button class="btn-command" id="themeToggle" style="width:30px; height:30px; padding:0; justify-content:center;"><i class="fas fa-sun"></i></button>
-      </div>
-    </div>
-
-    <!-- EXECUTIVE KPI CARDS -->
-    <section id="kpiCards" class="row g-2 mb-3"></section>
-
-    <!-- EXECUTIVE SUMMARY, PIPELINE, TREND -->
-    <div class="row g-2 mb-3">
-      <div class="col-xl-4">
-        <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-star text-warning"></i> EXECUTIVE SUMMARY (AI)</div>
-          <div class="card-body p-2.5" id="executiveSummaryAiBody" style="font-size: 0.74rem; line-height: 1.5; color: var(--color-text-primary);">Loading...</div>
-        </div>
-      </div>
-      <div class="col-xl-4">
-        <div class="card h-100 mb-0">
-          <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="fas fa-route"></i> DELIVERY PIPELINE (TODAY)</span>
-            <small class="text-muted" style="font-size:0.6rem;">Overall Conversion <strong id="pipelineConversion">70.0%</strong></small>
-          </div>
-          <div class="card-body p-2.5 d-flex flex-column gap-1.5 justify-content-center" id="pipelineContainer"></div>
-        </div>
-      </div>
-      <div class="col-xl-4">
-        <div class="card h-100 mb-0">
-          <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="fas fa-chart-line"></i> PERFORMANCE TREND</span>
-            <div class="btn-group" role="group" style="font-size:0.6rem;">
-              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1.5">7D</button>
-              <button type="button" class="btn btn-sm btn-primary py-0 px-1.5">30D</button>
-              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1.5">90D</button>
-              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1.5">12M</button>
-            </div>
-          </div>
-          <div class="card-body p-2 d-flex flex-column justify-content-between">
-            <div id="performanceTrendChart" style="height: 210px; width: 100%;"></div>
-            <div class="d-flex justify-content-around text-center pt-1.5 border-top border-secondary border-opacity-25" style="font-size: 0.68rem;">
-              <div><span class="text-muted d-block" style="font-size:0.55rem;">Delivery %</span><strong class="text-success" id="trendDelivRate">96.9%</strong></div>
-              <div><span class="text-muted d-block" style="font-size:0.55rem;">POD %</span><strong class="text-danger" id="trendPodRate">70.0%</strong></div>
-              <div><span class="text-muted d-block" style="font-size:0.55rem;">Avg Delivery Days</span><strong id="trendDelivDays">3.2</strong></div>
-              <div><span class="text-muted d-block" style="font-size:0.55rem;">Avg POD Days</span><strong id="trendPodDays">1.8</strong></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- WAREHOUSE RANKING & TOP CITIES / PENDING -->
-    <div class="row g-2 mb-3">
-      <div class="col-xl-6">
-        <div class="card h-100 mb-0">
-          <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="fas fa-warehouse"></i> WAREHOUSE PERFORMANCE (ALL WAREHOUSES)</span>
-            <a href="#" class="text-info text-decoration-none" style="font-size:0.65rem;">View All</a>
-          </div>
-          <div class="card-body p-0">
-            <div class="table-responsive">
-              <table class="table-custom">
-                <thead><tr><th>Rank</th><th>Warehouse</th><th>Health Score</th><th>DNs</th><th>Units</th><th>Revenue (PKR)</th><th>PGI %</th><th>Delivery %</th><th>POD %</th><th>Avg Delivery Days</th><th>Avg POD Days</th><th>Pending Units</th><th>Risk</th><th>Trend</th><th>AI Insight</th></tr></thead>
-                <tbody id="warehouseRankingTbody"></tbody>
-              </table>
-            </div>
-            <div class="p-1.5 text-center text-muted border-top border-secondary border-opacity-25" style="font-size:0.65rem;">Function: calculate_warehouse_performance()</div>
-          </div>
-        </div>
-      </div>
-      <div class="col-xl-6">
-        <div class="row g-2">
-          <div class="col-12">
-            <div class="card mb-0">
-              <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="fas fa-map-marker-alt"></i> TOP 5 DELAYED CITIES <small class="text-muted fw-normal">(By Avg Delivery Days)</small></span>
-                <span class="text-muted" style="font-size:0.65rem;">Function: calculate_city_performance()</span>
-              </div>
-              <div class="card-body p-0">
-                <div class="table-responsive">
-                  <table class="table-custom">
-                    <thead><tr><th>City</th><th>Avg Delivery Days</th><th>Pending Units</th><th>Risk</th></tr></thead>
-                    <tbody id="topDelayedCitiesTbody"></tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="col-12">
-            <div class="card mb-0">
-              <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="fas fa-warehouse"></i> TOP 5 PENDING WAREHOUSES</span>
-                <span class="text-muted" style="font-size:0.65rem;">Function: calculate_pending_analysis()</span>
-              </div>
-              <div class="card-body p-0">
-                <div class="table-responsive">
-                  <table class="table-custom">
-                    <thead><tr><th>Warehouse</th><th>Pending DNs</th><th>Pending Units</th></tr></thead>
-                    <tbody id="topPendingWarehousesTbody"></tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- TOP DEALERS, PRODUCTS, DIVISIONS, COMPLIANCE -->
-    <div class="row g-2 mb-3">
-      <div class="col-xl-3 col-md-6">
-        <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-users"></i> TOP 5 DEALERS <small class="text-muted fw-normal">(By Sales Value)</small></div>
-          <div class="card-body p-0">
-            <div class="table-responsive">
-              <table class="table-custom"><thead><tr><th>Dealer</th><th>Units</th><th>Revenue (PKR)</th></tr></thead><tbody id="topDealersTbody"></tbody></table>
-            </div>
-            <div class="p-1.5 text-center border-top border-secondary border-opacity-25 text-muted" style="font-size:0.62rem;">Function: calculate_dealer_performance()</div>
-          </div>
-        </div>
-      </div>
-      <div class="col-xl-3 col-md-6">
-        <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-boxes"></i> TOP 5 PRODUCTS <small class="text-muted fw-normal">(By Units)</small></div>
-          <div class="card-body p-0">
-            <div class="table-responsive">
-              <table class="table-custom"><thead><tr><th>Product / Model</th><th>Units</th><th>DNs</th></tr></thead><tbody id="topProductsTbody"></tbody></table>
-            </div>
-            <div class="p-1.5 text-center border-top border-secondary border-opacity-25 text-muted" style="font-size:0.62rem;">Function: calculate_product_performance()</div>
-          </div>
-        </div>
-      </div>
-      <div class="col-xl-3 col-md-6">
-        <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-layer-group"></i> DIVISION PERFORMANCE <small class="text-muted fw-normal">(By Revenue)</small></div>
-          <div class="card-body p-2 d-flex flex-column justify-content-between">
-            <div id="divisionDonutChart" style="height: 125px; width: 100%;"></div>
-            <div style="font-size:0.68rem;" class="d-flex flex-column gap-1" id="divisionLegend"></div>
-            <div class="p-1 text-center border-top border-secondary border-opacity-25 text-muted mt-1" style="font-size:0.62rem;">Function: calculate_division_performance()</div>
-          </div>
-        </div>
-      </div>
-      <div class="col-xl-3 col-md-6">
-        <div class="card h-100 mb-0">
-          <div class="card-header"><i class="fas fa-ruler-combined"></i> DELIVERY STANDARD COMPLIANCE</div>
-          <div class="card-body p-0">
-            <div class="table-responsive">
-              <table class="table-custom"><thead><tr><th>Distance (KM)</th><th>Target Days</th><th>Actual Avg</th><th>Compliance %</th></tr></thead><tbody id="standardComplianceTbody"></tbody></table>
-            </div>
-            <div class="p-1.5 text-center border-top border-secondary border-opacity-25 text-muted" style="font-size:0.62rem;">Function: calculate_delivery_compliance()</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ALERTS & RECOMMENDATIONS -->
-    <div class="row g-2 mb-3">
-      <div class="col-xl-6">
-        <div class="card h-100 mb-0">
-          <div class="card-header d-flex justify-content-between align-items-center" id="criticalAlertsHeader">
-            <span><i class="fas fa-triangle-exclamation text-danger"></i> CRITICAL ALERTS (<span id="alertCount">0</span>)</span>
-            <span class="text-muted" style="font-size:0.65rem;">Function: generate_critical_alerts()</span>
-          </div>
-          <div class="card-body p-2.5" id="criticalAlertsContainer"></div>
-        </div>
-      </div>
-      <div class="col-xl-6">
-        <div class="card h-100 mb-0">
-          <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="fas fa-bullseye text-success"></i> DIRECTOR RECOMMENDATIONS</span>
-            <span class="text-muted" style="font-size:0.65rem;">Function: get_import_center_recommendations()</span>
-          </div>
-          <div class="card-body p-2.5 d-flex flex-column justify-content-between">
-            <div class="d-flex flex-column gap-1.5" id="recommendationsContainer"></div>
-            <div class="p-2.5 mt-2 rounded-3 border border-secondary border-opacity-25 bg-opacity-50 d-flex align-items-center justify-content-around" style="background:var(--color-bg-elevated);">
-              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">PGI Target</span><strong class="fs-6 text-success" id="meterPgi">96.9%</strong><small class="text-muted d-block" style="font-size:0.55rem;">Target: 95%</small></div>
-              <div class="vr bg-secondary opacity-25"></div>
-              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">POD Target</span><strong class="fs-6 text-danger" id="meterPod">70.0%</strong><small class="text-muted d-block" style="font-size:0.55rem;">Target: 90%</small></div>
-              <div class="vr bg-secondary opacity-25"></div>
-              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">Health Score</span><strong class="fs-6 text-success" id="meterHealth">92%</strong><small class="text-success d-block" style="font-size:0.55rem;">Excellent</small></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ============================================================
-         IMPORT CENTER – with upload progress and using /upload/excel
-         ============================================================ -->
-    <section id="uploadSection" class="row g-2 mb-3">
-      <div class="col-12">
-        <div class="card upload-highlight mb-0">
-          <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="fas fa-file-excel text-success"></i> IMPORT CENTER - ENTERPRISE EXCEL LOADER</span>
-            <span class="text-muted" style="font-size:0.65rem;">Endpoint: POST /upload/excel</span>
-          </div>
-          <div class="card-body p-2.5">
-            <!-- ACTION changed to /upload/excel -->
-            <form class="form-toolbar" id="uploadForm" action="/upload/excel" method="post" enctype="multipart/form-data">
-              <div class="form-group mb-0">
-                <label style="font-size:0.7rem;"><i class="fas fa-file-arrow-up me-1"></i> CHOOSE EXCEL FILE (.XLSX, .XLS)</label>
-                <input type="file" name="file" accept=".xlsx,.xls" class="form-control form-control-sm" required />
-                <small class="text-muted mt-1 d-block" style="font-size:0.6rem;">SAP standard format with DN, PGI, and POD records.</small>
-              </div>
-              <div class="form-group mb-0">
-                <label style="font-size:0.7rem;"><i class="fas fa-copy me-1"></i> DUPLICATE HANDLING</label>
-                <select name="skip_duplicates" class="form-select form-select-sm">
-                  <option value="true">Skip Existing DNs (Recommended)</option>
-                  <option value="false">Update Existing DN Records</option>
-                </select>
-              </div>
-              <div class="form-group mb-0" style="flex: 0 0 auto;">
-                <button type="submit" class="btn-upload btn-sm py-1.5 px-3 w-100" id="uploadBtn" style="font-size:0.75rem;">
-                  <i class="fas fa-cloud-upload-alt me-1"></i> Import & Process
-                </button>
-              </div>
-            </form>
-
-            <!-- Progress Bar (hidden initially) -->
-            <div id="uploadProgressContainer">
-              <div class="progress">
-                <div class="progress-bar" id="uploadProgressBar" role="progressbar" style="width:0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
-              </div>
-              <div id="uploadStatusText">
-                <span id="uploadStatusLabel">Preparing upload...</span>
-                <span id="uploadPercentLabel">0%</span>
-              </div>
-            </div>
-
-            <!-- Excel Preview -->
-            <div class="mt-2.5 pt-2.5 border-top border-secondary border-opacity-25">
-              <span class="text-muted fw-bold d-block mb-1.5" style="font-size:0.65rem; text-transform:uppercase;"><i class="fas fa-table me-1"></i> Excel Preview (First 5 Rows)</span>
-              <div class="table-responsive">
-                <table class="table-custom" style="font-size:0.7rem;">
-                  <thead>
-                    <tr><th>SN</th><th>Warehouse</th><th>Total Number of Units</th><th>Delivered</th><th>Delivery Days</th><th>POD Days</th><th>Total Cycle Days</th><th>Delivery Performance</th><th>POD Performance</th></tr>
-                  </thead>
-                  <tbody id="excelPreviewTbody">
-                    <tr><td>1</td><td>Lahore</td><td>30,000</td><td>28,000</td><td>1</td><td>2</td><td>3</td><td>Good</td><td>Bad</td></tr>
-                    <tr><td>2</td><td>Karachi</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
-                    <tr><td>3</td><td>Hyderabad</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
-                    <tr><td>4</td><td>Sukkur</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
-                    <tr><td>5</td><td>Multan</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- FOOTER -->
-    <footer id="footer" class="footer-bar d-flex justify-content-between align-items-center">
-      <div><span class="text-primary fw-bold" id="footerVersion">Haier Pakistan v19.6</span> &nbsp;|&nbsp; <span class="text-info"><i class="fas fa-database me-1"></i>PostgreSQL</span></div>
-      <div><span><i class="fas fa-clock text-muted me-1"></i>Sync: <span id="footerSyncTime">4:34:20 PM</span></span></div>
-      <div><span class="text-success"><i class="fas fa-cubes me-1"></i>Records: <span id="footerRecords">75,123</span></span> &nbsp;|&nbsp; <span class="text-muted">All data is real-time. Last sync: <span id="footerLastSync">22 Jul 2026 04:34 PM</span> &nbsp;<i class="fas fa-circle text-success" style="font-size:0.45rem;"></i> Live</span></div>
-    </footer>
-
-  </main>
-</div>
-
-<!-- Bootstrap JS -->
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-
-<!-- ============================================================
-     APPLICATION JAVASCRIPT – v19.6 (UPLOAD ROUTER INTEGRATION)
-     ============================================================ -->
-<script>
-(function() {
-    const API_URL = '/dashboard/api/data';
-    const UPLOAD_URL = '/upload/excel';
-
-    function formatNumber(v) { return (v || 0).toLocaleString(); }
-    function formatPct(v) { return (v || 0).toFixed(1) + '%'; }
-    function formatCurrency(v) { 
-        if (v >= 1e9) return (v/1e9).toFixed(1) + ' B';
-        if (v >= 1e6) return (v/1e6).toFixed(1) + ' M';
-        return (v/1e3).toFixed(1) + ' K';
-    }
-
-    // ---- Render functions (same as before) ----
-    function renderKPIs(cards) {
-        const container = document.getElementById('kpiCards');
-        if (!container) return;
-        if (!cards || typeof cards !== 'object') {
-            container.innerHTML = '<div class="col-12"><div class="empty-state"><p>No KPIs available</p></div></div>';
-            return;
+        # Column mapping from database to internal names
+        self.COLUMN_MAP = {
+            'dn_no': 'dn',
+            'dn_qty': 'units',
+            'dn_amount': 'value',
+            'good_issue_date': 'pgi_date',
+            'pod_date': 'pod_date',
+            'dn_create_date': 'created_at',
+            'ship_to_city': 'city',
+            'customer_name': 'dealer',
+            'customer_model': 'product',
+            'sales_office': 'sales_office',
+            'sales_manager': 'sales_manager',
+            'division': 'division',
+            'warehouse': 'warehouse',
+            'delivery_date': 'delivery_date',
         }
-        const kpiConfig = [
-            { key: 'total_dn', label: 'TOTAL DELIVERY NOTES', icon: 'fa-file-invoice', fmt: v => formatNumber(v) },
-            { key: 'total_units', label: 'TOTAL UNITS', icon: 'fa-boxes', fmt: v => formatNumber(v) },
-            { key: 'total_value', label: 'TOTAL REVENUE', icon: 'fa-money-bill-wave', fmt: v => 'PKR ' + formatCurrency(v) },
-            { key: 'pgi_achievement', label: 'PGI ACHIEVEMENT', icon: 'fa-check-circle', fmt: v => formatPct(v) },
-            { key: 'pod_achievement', label: 'POD ACHIEVEMENT', icon: 'fa-file-signature', fmt: v => formatPct(v) },
-            { key: 'pending_dn', label: 'PENDING DNS', icon: 'fa-hourglass-half', fmt: v => formatNumber(v) },
-            { key: 'pending_units', label: 'PENDING UNITS', icon: 'fa-hourglass', fmt: v => formatNumber(v) },
-            { key: 'health_score', label: 'LOGISTICS HEALTH SCORE', icon: 'fa-heart-pulse', fmt: v => formatPct(v) }
-        ];
 
-        let html = '';
-        kpiConfig.forEach(cfg => {
-            const val = (cards[cfg.key] && cards[cfg.key].value !== undefined) ? cards[cfg.key].value : 0;
-            html += `
-                <div class="col-xl-3 col-lg-4 col-md-6 mb-2">
-                    <div class="card kpi-card">
-                        <h6><i class="fas ${cfg.icon}"></i> ${cfg.label}</h6>
-                        <div class="kpi-value">${cfg.fmt(val)}</div>
-                        <div class="kpi-sub">Real-time metric</div>
-                    </div>
-                </div>
-            `;
-        });
-        container.innerHTML = html;
-    }
+        # Delivery compliance brackets (distance in KM)
+        self.COMPLIANCE_BRACKETS = [
+            {"distance": "0-100", "target_days": 1},
+            {"distance": "101-250", "target_days": 2},
+            {"distance": "251-450", "target_days": 3},
+            {"distance": "451-700", "target_days": 4},
+            {"distance": "701-900", "target_days": 5},
+            {"distance": "901+", "target_days": 6},
+        ]
 
-    function renderExecutiveSummary(text) {
-        const body = document.getElementById('executiveSummaryAiBody');
-        if (!body) return;
-        if (!text) {
-            body.innerHTML = 'No summary available.';
-            return;
+        self._init_database()
+        self._discover_columns()
+        logger.info("=" * 60)
+        logger.info(f"🚀 Dashboard Service v{self._version} initialized")
+        logger.info(f"   🗄️  Database: {'OK' if self._engine else 'None'}")
+        logger.info(f"   📋 Table exists: {self._table_exists}")
+        logger.info("=" * 60)
+
+    def _init_database(self):
+        if DB_APP_AVAILABLE and engine is not None:
+            self._engine = engine
+            self._session_maker = sessionmaker(bind=engine)
+            logger.info("✅ Using app's database engine")
+        else:
+            db_url = os.getenv("DATABASE_URL")
+            if db_url:
+                try:
+                    self._engine = create_engine(db_url)
+                    self._session_maker = sessionmaker(bind=self._engine)
+                    logger.info("✅ Created engine from DATABASE_URL")
+                except Exception as e:
+                    logger.error(f"❌ Failed to create engine: {e}")
+                    self._engine = None
+            else:
+                logger.warning("⚠️ No DATABASE_URL environment variable")
+
+        if self._engine:
+            try:
+                with self._engine.connect() as conn:
+                    result = conn.execute(text(
+                        "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                        "WHERE table_name = 'delivery_reports')"
+                    ))
+                    self._table_exists = result.scalar()
+                    if self._table_exists:
+                        logger.info("✅ Table 'delivery_reports' exists")
+                    else:
+                        logger.warning("⚠️ Table 'delivery_reports' does NOT exist")
+            except Exception as e:
+                logger.error(f"❌ Table check failed: {e}")
+                self._table_exists = False
+
+    def _discover_columns(self):
+        if not self._engine or not self._table_exists:
+            return
+        try:
+            with self._engine.connect() as conn:
+                result = conn.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'delivery_reports'"
+                ))
+                self._available_columns = [row[0] for row in result]
+                logger.info(f"✅ Discovered columns: {self._available_columns}")
+        except Exception as e:
+            logger.error(f"❌ Column discovery failed: {e}")
+            self._available_columns = []
+
+    def _has_column(self, col: str) -> bool:
+        return col in self._available_columns
+
+    # ---------- Data Fetching with Column Mapping ----------
+    def _fetch_data(self) -> List[Dict[str, Any]]:
+        if not self._engine or not self._table_exists:
+            return []
+
+        try:
+            with self._engine.connect() as conn:
+                cols = self._available_columns
+                if not cols:
+                    return []
+
+                select_cols = ", ".join(cols)
+                query = f"SELECT {select_cols} FROM delivery_reports"
+                if 'deleted' in cols:
+                    query += " WHERE deleted = false OR deleted IS NULL"
+
+                rows = conn.execute(text(query)).fetchall()
+                data = []
+                for row in rows:
+                    d = {}
+                    for i, col in enumerate(cols):
+                        d[col] = row[i]
+                    data.append(d)
+
+                mapped_data = []
+                for row in data:
+                    mapped = {}
+                    for old, new in self.COLUMN_MAP.items():
+                        if old in row:
+                            mapped[new] = row[old]
+                    for expected in ['dn', 'units', 'value', 'pgi_date', 'pod_date',
+                                     'warehouse', 'city', 'dealer', 'product', 'division',
+                                     'sales_office', 'sales_manager', 'created_at', 'delivery_date']:
+                        if expected in row and expected not in mapped:
+                            mapped[expected] = row[expected]
+                    mapped_data.append(mapped)
+                return mapped_data
+
+        except Exception as e:
+            logger.error(f"❌ Fetch error: {traceback.format_exc()}")
+            return []
+
+    # ---------- Filtering ----------
+    def _apply_filters(self, data: List[Dict], filters: Dict) -> List[Dict]:
+        if not filters or not data:
+            return data
+
+        filtered = data[:]  # copy
+
+        # Date filters
+        start_date = filters.get("start_date")
+        end_date = filters.get("end_date")
+        if start_date or end_date:
+            date_col = "created_at" if self._has_column("dn_create_date") else "pod_date"
+            if start_date:
+                try:
+                    start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+                    filtered = [r for r in filtered if r.get(date_col) and _parse_date(r[date_col]) and _parse_date(r[date_col]).date() >= start_dt]
+                except Exception:
+                    pass
+            if end_date:
+                try:
+                    end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+                    filtered = [r for r in filtered if r.get(date_col) and _parse_date(r[date_col]) and _parse_date(r[date_col]).date() <= end_dt]
+                except Exception:
+                    pass
+
+        # Filter by warehouse
+        warehouse = filters.get("warehouse")
+        if warehouse:
+            filtered = [r for r in filtered if r.get("warehouse", "").lower() == warehouse.lower()]
+
+        dealer = filters.get("dealer")
+        if dealer:
+            filtered = [r for r in filtered if r.get("dealer", "").lower() == dealer.lower()]
+
+        product = filters.get("product")
+        if product:
+            filtered = [r for r in filtered if r.get("product", "").lower() == product.lower()]
+
+        city = filters.get("city")
+        if city:
+            filtered = [r for r in filtered if r.get("city", "").lower() == city.lower()]
+
+        division = filters.get("division")
+        if division:
+            filtered = [r for r in filtered if r.get("division", "").lower() == division.lower()]
+
+        status = filters.get("status")
+        if status:
+            if status.lower() == "pending_pgi":
+                filtered = [r for r in filtered if r.get("pgi_date") in (None, "")]
+            elif status.lower() == "pending_delivery":
+                filtered = [r for r in filtered if r.get("pgi_date") not in (None, "") and r.get("delivery_date") in (None, "")]
+            elif status.lower() == "pending_pod":
+                filtered = [r for r in filtered if r.get("delivery_date") not in (None, "") and r.get("pod_date") in (None, "")]
+            elif status.lower() == "delivered":
+                filtered = [r for r in filtered if r.get("pod_date") not in (None, "")]
+            elif status.lower() == "in_transit":
+                filtered = [r for r in filtered if r.get("pgi_date") not in (None, "") and r.get("delivery_date") in (None, "")]
+
+        return filtered
+
+    # ---------- 1. KPI Cards ----------
+    def calculate_kpis(self, data: List[Dict]) -> Dict[str, Any]:
+        if not data:
+            return self._empty_kpis()
+
+        dns = {}
+        for row in data:
+            dn = row.get("dn")
+            if not dn:
+                continue
+            dn_str = str(dn)
+            if dn_str not in dns:
+                dns[dn_str] = {
+                    "units": 0,
+                    "value": 0,
+                    "pgi_date": None,
+                    "delivery_date": None,
+                    "pod_date": None,
+                }
+            d = dns[dn_str]
+            d["units"] += float(row.get("units", 0))
+            d["value"] += float(row.get("value", 0))
+            if row.get("pgi_date") not in (None, ""):
+                d["pgi_date"] = row.get("pgi_date")
+            if row.get("delivery_date") not in (None, ""):
+                d["delivery_date"] = row.get("delivery_date")
+            if row.get("pod_date") not in (None, ""):
+                d["pod_date"] = row.get("pod_date")
+
+        total_dn = len(dns)
+        if total_dn == 0:
+            return self._empty_kpis()
+
+        total_units = sum(d["units"] for d in dns.values())
+        total_value = sum(d["value"] for d in dns.values())
+
+        pgi_count = sum(1 for d in dns.values() if d["pgi_date"] not in (None, ""))
+        delivery_count = sum(1 for d in dns.values() if d["delivery_date"] not in (None, ""))
+        pod_count = sum(1 for d in dns.values() if d["pod_date"] not in (None, ""))
+
+        pgi_pct = _safe_divide(pgi_count, total_dn) * 100
+        delivery_pct = _safe_divide(delivery_count, pgi_count) * 100 if pgi_count > 0 else 0
+        pod_pct = _safe_divide(pod_count, delivery_count) * 100 if delivery_count > 0 else 0
+
+        pending_pgi = total_dn - pgi_count
+        pending_delivery = pgi_count - delivery_count
+        pending_pod = delivery_count - pod_count
+        pending_units = sum(d["units"] for dn, d in dns.items() if d["pod_date"] in (None, ""))
+        pending_value = sum(d["value"] for dn, d in dns.items() if d["pod_date"] in (None, ""))
+
+        # Average days
+        delivery_days_list = []
+        pod_days_list = []
+        for d in dns.values():
+            if d["pgi_date"] and d["delivery_date"]:
+                pgi = _parse_date(d["pgi_date"])
+                deliv = _parse_date(d["delivery_date"])
+                if pgi and deliv:
+                    days = (deliv - pgi).days
+                    if days >= 0:
+                        delivery_days_list.append(days)
+            if d["delivery_date"] and d["pod_date"]:
+                deliv = _parse_date(d["delivery_date"])
+                pod = _parse_date(d["pod_date"])
+                if deliv and pod:
+                    days = (pod - deliv).days
+                    if days >= 0:
+                        pod_days_list.append(days)
+
+        avg_delivery_days = sum(delivery_days_list) / len(delivery_days_list) if delivery_days_list else 0
+        avg_pod_days = sum(pod_days_list) / len(pod_days_list) if pod_days_list else 0
+
+        # Health score (weighted)
+        days_score = max(0, min(100, (7 - avg_delivery_days) / 7 * 100)) if avg_delivery_days > 0 else 100
+        pending_score = max(0, min(100, 100 - (pending_units / 10000) * 20))
+        health = (
+            pgi_pct * 0.25 +
+            delivery_pct * 0.25 +
+            pod_pct * 0.20 +
+            pending_score * 0.15 +
+            100 * 0.10 +   # compliance placeholder
+            days_score * 0.05
+        )
+        health = max(0, min(100, health))
+
+        return {
+            "total_dn": {"value": total_dn},
+            "total_units": {"value": total_units},
+            "total_value": {"value": total_value},
+            "pgi_achievement": {"value": round(pgi_pct, 1)},
+            "delivery_achievement": {"value": round(delivery_pct, 1)},
+            "pod_achievement": {"value": round(pod_pct, 1)},
+            "pending_pgi": {"value": pending_pgi},
+            "pending_delivery": {"value": pending_delivery},
+            "pending_pod": {"value": pending_pod},
+            "pending_dn": {"value": pending_pgi + pending_delivery + pending_pod},
+            "pending_units": {"value": pending_units},
+            "pending_value": {"value": pending_value},
+            "avg_delivery_days": {"value": round(avg_delivery_days, 1)},
+            "avg_pod_days": {"value": round(avg_pod_days, 1)},
+            "health_score": {"value": round(health, 1)},
         }
-        body.innerHTML = `<p class="mb-0">${text}</p>`;
-    }
 
-    function renderPipeline(pipeline) {
-        const container = document.getElementById('pipelineContainer');
-        if (!container || !pipeline) return;
-        const stages = [
-            { key: 'dn_created', label: 'DN Created', bg: 'linear-gradient(90deg, #1d4ed8, #2563eb)' },
-            { key: 'pgi_completed', label: 'PGI Completed', bg: 'linear-gradient(90deg, #059669, #10b981)' },
-            { key: 'in_transit', label: 'In Transit', bg: 'linear-gradient(90deg, #d97706, #f59e0b)' },
-            { key: 'delivered', label: 'Delivered', bg: 'linear-gradient(90deg, #ea580c, #f97316)' },
-            { key: 'pod_received', label: 'POD Received', bg: 'linear-gradient(90deg, #b91c1c, #ef4444)' }
-        ];
-        let html = '';
-        stages.forEach(st => {
-            const stageData = pipeline[st.key] || { dn: 0, pct: 0 };
-            html += `
-                <div class="pipeline-step" style="background: ${st.bg}; color:#fff; border:none;">
-                    <div class="d-flex justify-content-between align-items-center" style="font-size:0.72rem; font-weight:700;">
-                        <span>${st.label}</span>
-                        <span style="font-size:0.6rem; font-weight:500;">${stageData.pct}%</span>
-                    </div>
-                    <div class="step-val text-white">${formatNumber(stageData.dn)}</div>
-                </div>
-            `;
-        });
-        container.innerHTML = html;
-    }
+    def _empty_kpis(self):
+        return {
+            "total_dn": {"value": 0},
+            "total_units": {"value": 0},
+            "total_value": {"value": 0},
+            "pgi_achievement": {"value": 0.0},
+            "delivery_achievement": {"value": 0.0},
+            "pod_achievement": {"value": 0.0},
+            "pending_pgi": {"value": 0},
+            "pending_delivery": {"value": 0},
+            "pending_pod": {"value": 0},
+            "pending_dn": {"value": 0},
+            "pending_units": {"value": 0},
+            "pending_value": {"value": 0.0},
+            "avg_delivery_days": {"value": 0.0},
+            "avg_pod_days": {"value": 0.0},
+            "health_score": {"value": 0.0},
+        }
 
-    // ... (all other render functions – warehouse, cities, dealers, products, etc. – identical to your previous version) ...
-    // To keep the answer concise, I'm omitting their code here – they are unchanged.
-    // In your actual file, keep all the render functions from your existing dashboard.html.
-
-    // ---- Upload handler with progress ----
-    function setupUpload() {
-        const form = document.getElementById('uploadForm');
-        const btn = document.getElementById('uploadBtn');
-        const progressContainer = document.getElementById('uploadProgressContainer');
-        const progressBar = document.getElementById('uploadProgressBar');
-        const statusLabel = document.getElementById('uploadStatusLabel');
-        const percentLabel = document.getElementById('uploadPercentLabel');
-
-        if (!form) return;
-
-        form.addEventListener('submit', function(e) {
-            e.preventDefault();
-
-            const fileInput = this.querySelector('input[type="file"]');
-            if (!fileInput || !fileInput.files.length) {
-                Swal.fire({ icon: 'warning', title: 'No File Selected', text: 'Please choose an Excel file.' });
-                return;
+    # ---------- 2. Executive Summary ----------
+    def generate_executive_summary(self, data: List[Dict]) -> Dict[str, Any]:
+        if not data:
+            return {
+                "overall_health": 0,
+                "status": "No Data",
+                "summary": "No data available. Please import an Excel file.",
+                "risks": [],
+                "highlights": [],
+                "recommendations": ["Import data to see recommendations."],
             }
 
-            const file = fileInput.files[0];
-            const formData = new FormData(this);
+        kpis = self.calculate_kpis(data)
+        health = kpis["health_score"]["value"]
+        status = "Excellent" if health >= 90 else "Good" if health >= 75 else "Fair" if health >= 60 else "Critical"
 
-            // Show progress bar
-            progressContainer.style.display = 'block';
-            progressBar.style.width = '0%';
-            progressBar.setAttribute('aria-valuenow', 0);
-            statusLabel.textContent = 'Starting upload...';
-            percentLabel.textContent = '0%';
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Uploading...';
+        total_dn = kpis["total_dn"]["value"]
+        total_units = kpis["total_units"]["value"]
+        total_value = kpis["total_value"]["value"]
+        pgi = kpis["pgi_achievement"]["value"]
+        delivery = kpis["delivery_achievement"]["value"]
+        pod = kpis["pod_achievement"]["value"]
+        pending = kpis["pending_units"]["value"]
+        avg_days = kpis["avg_delivery_days"]["value"]
 
-            const xhr = new XMLHttpRequest();
+        summary = (
+            f"Performance: {total_dn} DNs, {total_units:,.0f} units, {_format_currency(total_value)}. "
+            f"PGI {pgi:.1f}%, Delivery {delivery:.1f}%, POD {pod:.1f}%. "
+            f"Pending {pending:,.0f} units. Avg Delivery {avg_days:.1f} days. "
+            f"Health Score {health:.1f}%."
+        )
 
-            // Track upload progress
-            xhr.upload.addEventListener('progress', function(event) {
-                if (event.lengthComputable) {
-                    const percent = Math.round((event.loaded / event.total) * 100);
-                    progressBar.style.width = percent + '%';
-                    progressBar.setAttribute('aria-valuenow', percent);
-                    percentLabel.textContent = percent + '%';
-                    const loadedMB = (event.loaded / (1024 * 1024)).toFixed(2);
-                    const totalMB = (event.total / (1024 * 1024)).toFixed(2);
-                    statusLabel.textContent = `Uploading ${loadedMB} MB / ${totalMB} MB`;
-                } else {
-                    statusLabel.textContent = `Uploading... (${event.loaded} bytes)`;
+        risks = []
+        if pending > 5000:
+            risks.append("High pending units (>5000).")
+        if delivery < 80:
+            risks.append("Low delivery rate (<80%).")
+        if pod < 80:
+            risks.append("Low POD rate (<80%).")
+        if avg_days > 7:
+            risks.append("High average delivery days (>7).")
+        if kpis["pending_value"]["value"] > 10000000:
+            risks.append("High pending value (>10M).")
+
+        highlights = []
+        wh_perf = self.calculate_warehouse_performance(data)
+        if wh_perf:
+            best = max(wh_perf, key=lambda x: x["performance_score"])
+            highlights.append(f"Top Warehouse: {best['warehouse']} (Score {best['performance_score']:.1f}%)")
+        dealer_perf = self.calculate_dealer_performance(data)
+        if dealer_perf:
+            best_d = dealer_perf[0]
+            highlights.append(f"Top Dealer: {best_d['dealer']} (Revenue {_format_currency(best_d['revenue']})")
+
+        recs = self.get_recommendations(data)
+
+        return {
+            "overall_health": round(health, 1),
+            "status": status,
+            "summary": summary,
+            "risks": risks,
+            "highlights": highlights,
+            "recommendations": recs,
+        }
+
+    # ---------- 3. Pipeline ----------
+    def calculate_pipeline(self, data: List[Dict]) -> Dict[str, Any]:
+        if not data:
+            return self._empty_pipeline()
+
+        dns = {}
+        for row in data:
+            dn = row.get("dn")
+            if not dn:
+                continue
+            dn_str = str(dn)
+            if dn_str not in dns:
+                dns[dn_str] = {"pgi_date": None, "delivery_date": None, "pod_date": None}
+            if row.get("pgi_date") not in (None, ""):
+                dns[dn_str]["pgi_date"] = row.get("pgi_date")
+            if row.get("delivery_date") not in (None, ""):
+                dns[dn_str]["delivery_date"] = row.get("delivery_date")
+            if row.get("pod_date") not in (None, ""):
+                dns[dn_str]["pod_date"] = row.get("pod_date")
+
+        total = len(dns)
+        if total == 0:
+            return self._empty_pipeline()
+
+        dn_created = total
+        pgi_completed = sum(1 for d in dns.values() if d["pgi_date"] not in (None, ""))
+        delivered = sum(1 for d in dns.values() if d["delivery_date"] not in (None, ""))
+        pod_received = sum(1 for d in dns.values() if d["pod_date"] not in (None, ""))
+        in_transit = sum(1 for d in dns.values() if d["pgi_date"] not in (None, "") and d["delivery_date"] in (None, ""))
+
+        vehicle_assigned = 0
+        loading = 0
+        gate_out = 0
+        arrival = 0
+        closed = pod_received
+
+        def pct(v):
+            return round((v / total) * 100, 1) if total > 0 else 0
+
+        conversion = round((pod_received / total) * 100, 1) if total > 0 else 0
+        pipeline_loss = round(((dn_created - pod_received) / total) * 100, 1) if total > 0 else 0
+
+        return {
+            "dn_created": {"dn": dn_created, "pct": 100},
+            "pgi_completed": {"dn": pgi_completed, "pct": pct(pgi_completed)},
+            "vehicle_assigned": {"dn": vehicle_assigned, "pct": pct(vehicle_assigned)},
+            "loading": {"dn": loading, "pct": pct(loading)},
+            "gate_out": {"dn": gate_out, "pct": pct(gate_out)},
+            "in_transit": {"dn": in_transit, "pct": pct(in_transit)},
+            "arrival": {"dn": arrival, "pct": pct(arrival)},
+            "delivered": {"dn": delivered, "pct": pct(delivered)},
+            "pod_received": {"dn": pod_received, "pct": pct(pod_received)},
+            "closed": {"dn": closed, "pct": pct(closed)},
+            "conversion": conversion,
+            "pipeline_loss": pipeline_loss,
+        }
+
+    def _empty_pipeline(self):
+        return {
+            "dn_created": {"dn": 0, "pct": 0},
+            "pgi_completed": {"dn": 0, "pct": 0},
+            "vehicle_assigned": {"dn": 0, "pct": 0},
+            "loading": {"dn": 0, "pct": 0},
+            "gate_out": {"dn": 0, "pct": 0},
+            "in_transit": {"dn": 0, "pct": 0},
+            "arrival": {"dn": 0, "pct": 0},
+            "delivered": {"dn": 0, "pct": 0},
+            "pod_received": {"dn": 0, "pct": 0},
+            "closed": {"dn": 0, "pct": 0},
+            "conversion": 0,
+            "pipeline_loss": 0,
+        }
+
+    # ---------- 4. Warehouse Performance ----------
+    def calculate_warehouse_performance(self, data: List[Dict]) -> List[Dict]:
+        if not data:
+            return []
+
+        wh_data = {}
+        for row in data:
+            wh = row.get("warehouse", "Unknown")
+            if wh not in wh_data:
+                wh_data[wh] = {
+                    "dns": set(),
+                    "units": 0,
+                    "value": 0,
+                    "pgi_count": 0,
+                    "delivery_count": 0,
+                    "pod_count": 0,
+                    "pending_units": 0,
+                    "pending_value": 0,
+                    "delivery_days": [],
+                    "pod_days": [],
                 }
-            });
+            w = wh_data[wh]
+            dn = row.get("dn")
+            if dn:
+                w["dns"].add(str(dn))
+            w["units"] += float(row.get("units", 0))
+            w["value"] += float(row.get("value", 0))
+            if row.get("pgi_date") not in (None, ""):
+                w["pgi_count"] += 1
+            if row.get("delivery_date") not in (None, ""):
+                w["delivery_count"] += 1
+                if row.get("pgi_date") not in (None, ""):
+                    pgi = _parse_date(row.get("pgi_date"))
+                    deliv = _parse_date(row.get("delivery_date"))
+                    if pgi and deliv:
+                        days = (deliv - pgi).days
+                        if days >= 0:
+                            w["delivery_days"].append(days)
+            if row.get("pod_date") not in (None, ""):
+                w["pod_count"] += 1
+                if row.get("delivery_date") not in (None, ""):
+                    deliv = _parse_date(row.get("delivery_date"))
+                    pod = _parse_date(row.get("pod_date"))
+                    if deliv and pod:
+                        days = (pod - deliv).days
+                        if days >= 0:
+                            w["pod_days"].append(days)
+            else:
+                w["pending_units"] += float(row.get("units", 0))
+                w["pending_value"] += float(row.get("value", 0))
 
-            // Handle response
-            xhr.onload = function() {
-                progressBar.style.width = '100%';
-                percentLabel.textContent = '100%';
-                statusLabel.textContent = 'Processing complete! Refreshing dashboard...';
+        result = []
+        for wh, w in wh_data.items():
+            dns = len(w["dns"])
+            if dns == 0:
+                continue
+            pgi_pct = _safe_divide(w["pgi_count"], dns) * 100
+            delivery_pct = _safe_divide(w["delivery_count"], w["pgi_count"]) * 100 if w["pgi_count"] > 0 else 0
+            pod_pct = _safe_divide(w["pod_count"], w["delivery_count"]) * 100 if w["delivery_count"] > 0 else 0
+            avg_delivery_days = sum(w["delivery_days"]) / len(w["delivery_days"]) if w["delivery_days"] else 0
+            avg_pod_days = sum(w["pod_days"]) / len(w["pod_days"]) if w["pod_days"] else 0
+            pending_units = w["pending_units"]
+            pending_value = w["pending_value"]
 
-                if (xhr.status === 200) {
-                    try {
-                        const data = JSON.parse(xhr.responseText);
-                        // Upload router may return "success" or "status"
-                        const isSuccess = data.success === true || data.status === 'success';
-                        const message = data.message || data.msg || 'Import completed.';
-                        if (isSuccess) {
-                            Swal.fire({
-                                icon: 'success',
-                                title: 'Import Complete',
-                                text: message,
-                                timer: 2000,
-                                showConfirmButton: false,
-                                background: '#0f172a',
-                                color: '#f8fafc'
-                            }).then(() => {
-                                loadDashboard();
-                                setTimeout(() => {
-                                    progressContainer.style.display = 'none';
-                                    btn.disabled = false;
-                                    btn.innerHTML = '<i class="fas fa-cloud-upload-alt me-1"></i> Import & Process';
-                                    fileInput.value = '';
-                                }, 1500);
-                            });
-                        } else {
-                            Swal.fire({
-                                icon: 'error',
-                                title: 'Import Failed',
-                                text: data.message || data.error || 'Unknown error.',
-                                background: '#0f172a',
-                                color: '#f8fafc'
-                            });
-                            resetUpload();
-                        }
-                    } catch (e) {
-                        Swal.fire({ icon: 'error', title: 'Parse Error', text: 'Invalid server response.', background: '#0f172a', color: '#f8fafc' });
-                        resetUpload();
+            days_score = max(0, min(100, (7 - avg_delivery_days) / 7 * 100)) if avg_delivery_days > 0 else 100
+            pending_score = max(0, min(100, 100 - (pending_units / 10000) * 20))
+            health = (
+                pgi_pct * 0.25 +
+                delivery_pct * 0.25 +
+                pod_pct * 0.20 +
+                pending_score * 0.15 +
+                100 * 0.10 +
+                days_score * 0.05
+            )
+            health = max(0, min(100, health))
+            performance_score = health
+
+            risk = "🔴" if avg_delivery_days > 10 or pending_units > 5000 else ("🟡" if avg_delivery_days > 5 or pending_units > 1000 else "🟢")
+            insight = "Good performance."
+            if pending_units > 5000:
+                insight = "High pending units. Immediate action required."
+            elif avg_delivery_days > 5:
+                insight = f"Avg delivery {avg_delivery_days:.1f} days. Optimize routes."
+            elif pod_pct < 80:
+                insight = "Low POD rate. Follow up on proof of delivery."
+
+            result.append({
+                "warehouse": wh,
+                "dns": dns,
+                "units": w["units"],
+                "value": w["value"],
+                "pgi_pct": round(pgi_pct, 1),
+                "delivery_pct": round(delivery_pct, 1),
+                "pod_pct": round(pod_pct, 1),
+                "avg_delivery_days": round(avg_delivery_days, 1),
+                "avg_pod_days": round(avg_pod_days, 1),
+                "pending_units": int(pending_units),
+                "pending_dns": int(dns - w["delivery_count"]),
+                "pending_value": pending_value,
+                "performance_score": round(performance_score, 1),
+                "health_score": round(health, 1),
+                "risk": risk,
+                "trend": "▬",
+                "ai_insight": insight,
+                "rank": 0,
+            })
+
+        result.sort(key=lambda x: x["performance_score"], reverse=True)
+        avg_score = sum(r["performance_score"] for r in result) / len(result) if result else 50
+        for i, r in enumerate(result):
+            r["rank"] = i + 1
+            r["trend"] = "↑" if r["performance_score"] > avg_score else ("↓" if r["performance_score"] < avg_score else "▬")
+        return result
+
+    # ---------- 5. City Performance ----------
+    def calculate_city_performance(self, data: List[Dict]) -> List[Dict]:
+        if not data:
+            return []
+
+        city_data = {}
+        for row in data:
+            city = row.get("city", "Unknown")
+            if city not in city_data:
+                city_data[city] = {
+                    "dns": set(),
+                    "units": 0,
+                    "value": 0,
+                    "pgi_count": 0,
+                    "delivery_count": 0,
+                    "pod_count": 0,
+                    "pending_units": 0,
+                    "delivery_days": [],
+                    "warehouses": set(),
+                    "dealers": set(),
+                }
+            c = city_data[city]
+            dn = row.get("dn")
+            if dn:
+                c["dns"].add(str(dn))
+            c["units"] += float(row.get("units", 0))
+            c["value"] += float(row.get("value", 0))
+            if row.get("pgi_date") not in (None, ""):
+                c["pgi_count"] += 1
+            if row.get("delivery_date") not in (None, ""):
+                c["delivery_count"] += 1
+                if row.get("pgi_date") not in (None, ""):
+                    pgi = _parse_date(row.get("pgi_date"))
+                    deliv = _parse_date(row.get("delivery_date"))
+                    if pgi and deliv:
+                        days = (deliv - pgi).days
+                        if days >= 0:
+                            c["delivery_days"].append(days)
+            if row.get("pod_date") not in (None, ""):
+                c["pod_count"] += 1
+            else:
+                c["pending_units"] += float(row.get("units", 0))
+            if row.get("warehouse"):
+                c["warehouses"].add(row.get("warehouse"))
+            if row.get("dealer"):
+                c["dealers"].add(row.get("dealer"))
+
+        result = []
+        for city, c in city_data.items():
+            dns = len(c["dns"])
+            if dns == 0:
+                continue
+            pgi_pct = _safe_divide(c["pgi_count"], dns) * 100
+            delivery_pct = _safe_divide(c["delivery_count"], c["pgi_count"]) * 100 if c["pgi_count"] > 0 else 0
+            pod_pct = _safe_divide(c["pod_count"], c["delivery_count"]) * 100 if c["delivery_count"] > 0 else 0
+            avg_delivery_days = sum(c["delivery_days"]) / len(c["delivery_days"]) if c["delivery_days"] else 0
+            pending_units = c["pending_units"]
+            health = (pgi_pct * 0.25 + delivery_pct * 0.25 + pod_pct * 0.20)
+            if pending_units > 5000:
+                health -= 15
+            health = max(0, min(100, health))
+
+            status = "Good"
+            risk = "🟢"
+            if avg_delivery_days > 10 or pending_units > 5000:
+                status = "Critical"
+                risk = "🔴"
+            elif avg_delivery_days > 5 or pending_units > 1000:
+                status = "Warning"
+                risk = "🟡"
+
+            result.append({
+                "city": city,
+                "avg_delivery_days": round(avg_delivery_days, 1),
+                "pending_units": int(pending_units),
+                "status": status,
+                "risk": risk,
+                "revenue": c["value"],
+                "units": c["units"],
+                "dns": dns,
+                "dealers": len(c["dealers"]),
+                "warehouses": len(c["warehouses"]),
+                "pgi_pct": round(pgi_pct, 1),
+                "delivery_pct": round(delivery_pct, 1),
+                "pod_pct": round(pod_pct, 1),
+                "health": round(health, 1),
+            })
+
+        result.sort(key=lambda x: x["avg_delivery_days"], reverse=True)
+        return result
+
+    # ---------- 6. Pending Analysis ----------
+    def calculate_pending_analysis(self, data: List[Dict], top_n: int = 5) -> List[Dict]:
+        if not data:
+            return []
+
+        pending = {}
+        for row in data:
+            if row.get("pod_date") in (None, ""):
+                wh = row.get("warehouse", "Unknown")
+                if wh not in pending:
+                    pending[wh] = {"pending_dns": set(), "pending_units": 0, "pending_value": 0}
+                pending[wh]["pending_dns"].add(str(row.get("dn")))
+                pending[wh]["pending_units"] += float(row.get("units", 0))
+                pending[wh]["pending_value"] += float(row.get("value", 0))
+
+        result = []
+        for wh, vals in pending.items():
+            result.append({
+                "warehouse": wh,
+                "pending_dns": len(vals["pending_dns"]),
+                "pending_units": int(vals["pending_units"]),
+                "pending_value": vals["pending_value"],
+            })
+        result.sort(key=lambda x: x["pending_units"], reverse=True)
+        return result[:top_n]
+
+    # ---------- 7. Dealer Performance ----------
+    def calculate_dealer_performance(self, data: List[Dict], top_n: int = 10) -> List[Dict]:
+        if not data:
+            return []
+
+        dealer_data = {}
+        for row in data:
+            dealer = row.get("dealer", "Unknown")
+            if dealer not in dealer_data:
+                dealer_data[dealer] = {
+                    "dns": set(),
+                    "units": 0,
+                    "revenue": 0,
+                    "pgi_count": 0,
+                    "delivery_count": 0,
+                    "pod_count": 0,
+                    "cities": set(),
+                    "warehouses": set(),
+                    "delivery_days": [],
+                    "pod_days": [],
+                }
+            d = dealer_data[dealer]
+            dn = row.get("dn")
+            if dn:
+                d["dns"].add(str(dn))
+            d["units"] += float(row.get("units", 0))
+            d["revenue"] += float(row.get("value", 0))
+            if row.get("pgi_date") not in (None, ""):
+                d["pgi_count"] += 1
+            if row.get("delivery_date") not in (None, ""):
+                d["delivery_count"] += 1
+                if row.get("pgi_date") not in (None, ""):
+                    pgi = _parse_date(row.get("pgi_date"))
+                    deliv = _parse_date(row.get("delivery_date"))
+                    if pgi and deliv:
+                        days = (deliv - pgi).days
+                        if days >= 0:
+                            d["delivery_days"].append(days)
+            if row.get("pod_date") not in (None, ""):
+                d["pod_count"] += 1
+                if row.get("delivery_date") not in (None, ""):
+                    deliv = _parse_date(row.get("delivery_date"))
+                    pod = _parse_date(row.get("pod_date"))
+                    if deliv and pod:
+                        days = (pod - deliv).days
+                        if days >= 0:
+                            d["pod_days"].append(days)
+            if row.get("city"):
+                d["cities"].add(row.get("city"))
+            if row.get("warehouse"):
+                d["warehouses"].add(row.get("warehouse"))
+
+        result = []
+        for dealer, d in dealer_data.items():
+            dns = len(d["dns"])
+            if dns == 0:
+                continue
+            pod_pct = _safe_divide(d["pod_count"], d["delivery_count"]) * 100 if d["delivery_count"] > 0 else 0
+            delivery_pct = _safe_divide(d["delivery_count"], d["pgi_count"]) * 100 if d["pgi_count"] > 0 else 0
+            avg_delivery_days = sum(d["delivery_days"]) / len(d["delivery_days"]) if d["delivery_days"] else 0
+            avg_pod_days = sum(d["pod_days"]) / len(d["pod_days"]) if d["pod_days"] else 0
+            pending_units = d["units"] - sum(1 for _ in range(d["delivery_count"]))
+            growth = 0
+            health = (delivery_pct * 0.3 + pod_pct * 0.3)
+            if pending_units > 5000:
+                health -= 15
+            health = max(0, min(100, health))
+
+            result.append({
+                "dealer": dealer,
+                "revenue": d["revenue"],
+                "units": d["units"],
+                "dns": dns,
+                "cities": len(d["cities"]),
+                "warehouses": len(d["warehouses"]),
+                "avg_delivery_days": round(avg_delivery_days, 1),
+                "avg_pod_days": round(avg_pod_days, 1),
+                "pending_units": int(pending_units),
+                "pod_pct": round(pod_pct, 1),
+                "delivery_pct": round(delivery_pct, 1),
+                "health": round(health, 1),
+                "growth": growth,
+                "rank": 0,
+                "ai_insight": "",
+            })
+
+        result.sort(key=lambda x: x["revenue"], reverse=True)
+        for i, r in enumerate(result[:top_n]):
+            r["rank"] = i + 1
+            if r["pod_pct"] < 80:
+                r["ai_insight"] = "Low POD rate. Follow up."
+            elif r["avg_delivery_days"] > 5:
+                r["ai_insight"] = f"Long delivery {r['avg_delivery_days']:.1f} days."
+            else:
+                r["ai_insight"] = "Good performance."
+        return result[:top_n]
+
+    # ---------- 8. Product Performance ----------
+    def calculate_product_performance(self, data: List[Dict], top_n: int = 10) -> List[Dict]:
+        if not data:
+            return []
+
+        product_data = {}
+        for row in data:
+            prod = row.get("product", "Unknown")
+            if prod not in product_data:
+                product_data[prod] = {
+                    "dns": set(),
+                    "units": 0,
+                    "revenue": 0,
+                    "pgi_count": 0,
+                    "delivery_count": 0,
+                    "pod_count": 0,
+                    "cities": set(),
+                    "warehouses": set(),
+                    "dealers": set(),
+                    "delivery_days": [],
+                }
+            p = product_data[prod]
+            dn = row.get("dn")
+            if dn:
+                p["dns"].add(str(dn))
+            p["units"] += float(row.get("units", 0))
+            p["revenue"] += float(row.get("value", 0))
+            if row.get("pgi_date") not in (None, ""):
+                p["pgi_count"] += 1
+            if row.get("delivery_date") not in (None, ""):
+                p["delivery_count"] += 1
+                if row.get("pgi_date") not in (None, ""):
+                    pgi = _parse_date(row.get("pgi_date"))
+                    deliv = _parse_date(row.get("delivery_date"))
+                    if pgi and deliv:
+                        days = (deliv - pgi).days
+                        if days >= 0:
+                            p["delivery_days"].append(days)
+            if row.get("pod_date") not in (None, ""):
+                p["pod_count"] += 1
+            if row.get("city"):
+                p["cities"].add(row.get("city"))
+            if row.get("warehouse"):
+                p["warehouses"].add(row.get("warehouse"))
+            if row.get("dealer"):
+                p["dealers"].add(row.get("dealer"))
+
+        result = []
+        total_revenue = sum(p["revenue"] for p in product_data.values())
+        for prod, p in product_data.items():
+            dns = len(p["dns"])
+            if dns == 0:
+                continue
+            pod_pct = _safe_divide(p["pod_count"], p["delivery_count"]) * 100 if p["delivery_count"] > 0 else 0
+            delivery_pct = _safe_divide(p["delivery_count"], p["pgi_count"]) * 100 if p["pgi_count"] > 0 else 0
+            avg_delivery_days = sum(p["delivery_days"]) / len(p["delivery_days"]) if p["delivery_days"] else 0
+            pending_units = p["units"] - sum(1 for _ in range(p["delivery_count"]))
+            contribution = _safe_divide(p["revenue"], total_revenue) * 100
+            health = (delivery_pct * 0.4 + pod_pct * 0.4)
+            if pending_units > 5000:
+                health -= 15
+            health = max(0, min(100, health))
+
+            result.append({
+                "product": prod,
+                "units": int(p["units"]),
+                "revenue": p["revenue"],
+                "dns": dns,
+                "dealers": len(p["dealers"]),
+                "warehouses": len(p["warehouses"]),
+                "cities": len(p["cities"]),
+                "avg_delivery_days": round(avg_delivery_days, 1),
+                "avg_pod_days": round(avg_delivery_days, 1),
+                "pending_units": int(pending_units),
+                "pod_pct": round(pod_pct, 1),
+                "delivery_pct": round(delivery_pct, 1),
+                "contribution": round(contribution, 1),
+                "health": round(health, 1),
+                "rank": 0,
+                "ai_insight": "",
+            })
+
+        result.sort(key=lambda x: x["revenue"], reverse=True)
+        for i, r in enumerate(result[:top_n]):
+            r["rank"] = i + 1
+            if r["pod_pct"] < 80:
+                r["ai_insight"] = "Low POD rate."
+            elif r["avg_delivery_days"] > 5:
+                r["ai_insight"] = f"Long delivery {r['avg_delivery_days']:.1f} days."
+            else:
+                r["ai_insight"] = "Good performance."
+        return result[:top_n]
+
+    # ---------- 9. Division Performance ----------
+    def calculate_division_performance(self, data: List[Dict]) -> List[Dict]:
+        if not data:
+            return []
+
+        div_data = {}
+        for row in data:
+            div = row.get("division", "Unknown")
+            if div not in div_data:
+                div_data[div] = {
+                    "dns": set(),
+                    "units": 0,
+                    "revenue": 0,
+                    "pgi_count": 0,
+                    "delivery_count": 0,
+                    "pod_count": 0,
+                    "pending_units": 0,
+                }
+            d = div_data[div]
+            dn = row.get("dn")
+            if dn:
+                d["dns"].add(str(dn))
+            d["units"] += float(row.get("units", 0))
+            d["revenue"] += float(row.get("value", 0))
+            if row.get("pgi_date") not in (None, ""):
+                d["pgi_count"] += 1
+            if row.get("delivery_date") not in (None, ""):
+                d["delivery_count"] += 1
+            if row.get("pod_date") not in (None, ""):
+                d["pod_count"] += 1
+            else:
+                d["pending_units"] += float(row.get("units", 0))
+
+        result = []
+        for div, d in div_data.items():
+            dns = len(d["dns"])
+            if dns == 0:
+                continue
+            pgi_pct = _safe_divide(d["pgi_count"], dns) * 100
+            delivery_pct = _safe_divide(d["delivery_count"], d["pgi_count"]) * 100 if d["pgi_count"] > 0 else 0
+            pod_pct = _safe_divide(d["pod_count"], d["delivery_count"]) * 100 if d["delivery_count"] > 0 else 0
+            health = (pgi_pct * 0.25 + delivery_pct * 0.25 + pod_pct * 0.20)
+            if d["pending_units"] > 5000:
+                health -= 15
+            health = max(0, min(100, health))
+
+            result.append({
+                "division": div,
+                "dns": dns,
+                "units": d["units"],
+                "revenue": d["revenue"],
+                "pgi_pct": round(pgi_pct, 1),
+                "delivery_pct": round(delivery_pct, 1),
+                "pod_pct": round(pod_pct, 1),
+                "pending_units": int(d["pending_units"]),
+                "health": round(health, 1),
+                "rank": 0,
+            })
+
+        result.sort(key=lambda x: x["revenue"], reverse=True)
+        for i, r in enumerate(result):
+            r["rank"] = i + 1
+        return result
+
+    # ---------- 10. Sales Office Performance ----------
+    def calculate_sales_office_performance(self, data: List[Dict]) -> List[Dict]:
+        if not data:
+            return []
+
+        has_office = any(row.get("sales_office") for row in data)
+        if not has_office:
+            return []
+
+        office_data = {}
+        for row in data:
+            office = row.get("sales_office", "Unknown")
+            if office not in office_data:
+                office_data[office] = {
+                    "dns": set(),
+                    "units": 0,
+                    "revenue": 0,
+                    "pgi_count": 0,
+                    "delivery_count": 0,
+                    "pod_count": 0,
+                    "pending_units": 0,
+                }
+            o = office_data[office]
+            dn = row.get("dn")
+            if dn:
+                o["dns"].add(str(dn))
+            o["units"] += float(row.get("units", 0))
+            o["revenue"] += float(row.get("value", 0))
+            if row.get("pgi_date") not in (None, ""):
+                o["pgi_count"] += 1
+            if row.get("delivery_date") not in (None, ""):
+                o["delivery_count"] += 1
+            if row.get("pod_date") not in (None, ""):
+                o["pod_count"] += 1
+            else:
+                o["pending_units"] += float(row.get("units", 0))
+
+        result = []
+        for office, o in office_data.items():
+            dns = len(o["dns"])
+            if dns == 0:
+                continue
+            pgi_pct = _safe_divide(o["pgi_count"], dns) * 100
+            delivery_pct = _safe_divide(o["delivery_count"], o["pgi_count"]) * 100 if o["pgi_count"] > 0 else 0
+            pod_pct = _safe_divide(o["pod_count"], o["delivery_count"]) * 100 if o["delivery_count"] > 0 else 0
+            health = (pgi_pct * 0.25 + delivery_pct * 0.25 + pod_pct * 0.20)
+            if o["pending_units"] > 5000:
+                health -= 15
+            health = max(0, min(100, health))
+
+            growth = 0
+            trend = "▬"
+            insight = "Good performance."
+            if o["pending_units"] > 5000:
+                insight = "High pending units."
+
+            result.append({
+                "sales_office": office,
+                "dns": dns,
+                "units": o["units"],
+                "revenue": o["revenue"],
+                "pgi_pct": round(pgi_pct, 1),
+                "delivery_pct": round(delivery_pct, 1),
+                "pod_pct": round(pod_pct, 1),
+                "pending_units": int(o["pending_units"]),
+                "health": round(health, 1),
+                "growth": growth,
+                "trend": trend,
+                "ai_insight": insight,
+                "rank": 0,
+            })
+
+        result.sort(key=lambda x: x["revenue"], reverse=True)
+        for i, r in enumerate(result):
+            r["rank"] = i + 1
+        return result
+
+    # ---------- 11. Sales Manager Performance ----------
+    def calculate_sales_manager_performance(self, data: List[Dict]) -> List[Dict]:
+        if not data:
+            return []
+
+        has_manager = any(row.get("sales_manager") for row in data)
+        if not has_manager:
+            return []
+
+        manager_data = {}
+        for row in data:
+            mgr = row.get("sales_manager", "Unknown")
+            if mgr not in manager_data:
+                manager_data[mgr] = {
+                    "dns": set(),
+                    "units": 0,
+                    "revenue": 0,
+                    "pgi_count": 0,
+                    "delivery_count": 0,
+                    "pod_count": 0,
+                    "pending_units": 0,
+                }
+            m = manager_data[mgr]
+            dn = row.get("dn")
+            if dn:
+                m["dns"].add(str(dn))
+            m["units"] += float(row.get("units", 0))
+            m["revenue"] += float(row.get("value", 0))
+            if row.get("pgi_date") not in (None, ""):
+                m["pgi_count"] += 1
+            if row.get("delivery_date") not in (None, ""):
+                m["delivery_count"] += 1
+            if row.get("pod_date") not in (None, ""):
+                m["pod_count"] += 1
+            else:
+                m["pending_units"] += float(row.get("units", 0))
+
+        result = []
+        for mgr, m in manager_data.items():
+            dns = len(m["dns"])
+            if dns == 0:
+                continue
+            pgi_pct = _safe_divide(m["pgi_count"], dns) * 100
+            delivery_pct = _safe_divide(m["delivery_count"], m["pgi_count"]) * 100 if m["pgi_count"] > 0 else 0
+            pod_pct = _safe_divide(m["pod_count"], m["delivery_count"]) * 100 if m["delivery_count"] > 0 else 0
+            health = (pgi_pct * 0.25 + delivery_pct * 0.25 + pod_pct * 0.20)
+            if m["pending_units"] > 5000:
+                health -= 15
+            health = max(0, min(100, health))
+
+            growth = 0
+            trend = "▬"
+            insight = "Good performance."
+            if m["pending_units"] > 5000:
+                insight = "High pending units."
+
+            result.append({
+                "sales_manager": mgr,
+                "dns": dns,
+                "units": m["units"],
+                "revenue": m["revenue"],
+                "pgi_pct": round(pgi_pct, 1),
+                "delivery_pct": round(delivery_pct, 1),
+                "pod_pct": round(pod_pct, 1),
+                "pending_units": int(m["pending_units"]),
+                "health": round(health, 1),
+                "growth": growth,
+                "trend": trend,
+                "ai_insight": insight,
+                "rank": 0,
+            })
+
+        result.sort(key=lambda x: x["revenue"], reverse=True)
+        for i, r in enumerate(result):
+            r["rank"] = i + 1
+        return result
+
+    # ---------- 12. Delivery Compliance ----------
+    def calculate_delivery_compliance(self, data: List[Dict]) -> List[Dict]:
+        if not data:
+            return self._empty_compliance()
+
+        days_list = []
+        for row in data:
+            if row.get("pgi_date") not in (None, "") and row.get("delivery_date") not in (None, ""):
+                pgi = _parse_date(row.get("pgi_date"))
+                deliv = _parse_date(row.get("delivery_date"))
+                if pgi and deliv:
+                    days = (deliv - pgi).days
+                    if days >= 0:
+                        days_list.append(days)
+
+        if not days_list:
+            return self._empty_compliance()
+
+        sorted_days = sorted(days_list)
+        n = len(sorted_days)
+        group_size = max(1, n // len(self.COMPLIANCE_BRACKETS))
+        result = []
+        for i, bracket in enumerate(self.COMPLIANCE_BRACKETS):
+            start = i * group_size
+            end = min((i + 1) * group_size, n)
+            if start < n:
+                subset = sorted_days[start:end]
+                actual_avg = sum(subset) / len(subset)
+                target_days = bracket["target_days"]
+                compliance = min(100, (target_days / actual_avg) * 100) if actual_avg > 0 else 0
+                status = "Within Standard" if compliance >= 80 else "Needs Improvement"
+            else:
+                actual_avg = 0
+                compliance = 0
+                status = "No Data"
+            result.append({
+                "distance": bracket["distance"],
+                "target_days": target_days,
+                "actual_days": round(actual_avg, 1),
+                "compliance_pct": round(compliance, 1),
+                "status": status,
+            })
+        return result
+
+    def _empty_compliance(self) -> List[Dict]:
+        return [
+            {"distance": b["distance"], "target_days": b["target_days"], "actual_days": 0, "compliance_pct": 0, "status": "No Data"}
+            for b in self.COMPLIANCE_BRACKETS
+        ]
+
+    # ---------- 13. Alerts ----------
+    def generate_critical_alerts(self, data: List[Dict]) -> List[Dict]:
+        alerts = []
+        if not data:
+            return alerts
+
+        kpis = self.calculate_kpis(data)
+        if kpis["pgi_achievement"]["value"] < 80:
+            alerts.append({"category": "PGI Rate", "source": "Overall", "message": f"PGI {kpis['pgi_achievement']['value']:.1f}% below 80%.", "severity": "WARNING"})
+        if kpis["delivery_achievement"]["value"] < 80:
+            alerts.append({"category": "Delivery Rate", "source": "Overall", "message": f"Delivery {kpis['delivery_achievement']['value']:.1f}% below 80%.", "severity": "WARNING"})
+        if kpis["pod_achievement"]["value"] < 80:
+            alerts.append({"category": "POD Rate", "source": "Overall", "message": f"POD {kpis['pod_achievement']['value']:.1f}% below 80%.", "severity": "WARNING"})
+
+        wh_perf = self.calculate_warehouse_performance(data)
+        for wh in wh_perf:
+            if wh["performance_score"] < 85:
+                alerts.append({"category": "Warehouse Performance", "source": wh["warehouse"], "message": f"Score {wh['performance_score']:.1f}% below 85%.", "severity": "WARNING"})
+
+        dealer_perf = self.calculate_dealer_performance(data)
+        for d in dealer_perf:
+            if d["health"] < 85:
+                alerts.append({"category": "Dealer Performance", "source": d["dealer"], "message": f"Health {d['health']:.1f}% below 85%.", "severity": "WARNING"})
+
+        city_perf = self.calculate_city_performance(data)
+        for c in city_perf:
+            if c["status"] == "Critical":
+                alerts.append({"category": "City Delivery Delay", "source": c["city"], "message": f"Avg delivery {c['avg_delivery_days']:.1f} days (Critical).", "severity": "CRITICAL"})
+            elif c["status"] == "Warning":
+                alerts.append({"category": "City Delivery Delay", "source": c["city"], "message": f"Avg delivery {c['avg_delivery_days']:.1f} days (Warning).", "severity": "WARNING"})
+
+        if kpis["pending_value"]["value"] > 10000000:
+            alerts.append({"category": "Pending Value", "source": "Overall", "message": f"Pending value {_format_currency(kpis['pending_value']['value'])} above 10M.", "severity": "CRITICAL"})
+
+        compliance = self.calculate_delivery_compliance(data)
+        for c in compliance:
+            if c["compliance_pct"] < 80 and c["status"] != "No Data":
+                alerts.append({"category": "SLA Breach", "source": f"Distance {c['distance']}", "message": f"Compliance {c['compliance_pct']:.1f}% below 80%.", "severity": "WARNING"})
+
+        if kpis["pending_pgi"]["value"] > 100:
+            alerts.append({"category": "Missing PGI", "source": "Overall", "message": f"{kpis['pending_pgi']['value']} DNs missing PGI.", "severity": "WARNING"})
+        if kpis["pending_delivery"]["value"] > 100:
+            alerts.append({"category": "Missing Delivery", "source": "Overall", "message": f"{kpis['pending_delivery']['value']} DNs missing Delivery.", "severity": "WARNING"})
+
+        alerts.sort(key=lambda x: 0 if x["severity"] == "CRITICAL" else 1)
+        return alerts[:10]
+
+    # ---------- 14. Recommendations ----------
+    def get_recommendations(self, data: List[Dict]) -> List[str]:
+        if not data:
+            return ["No data to generate recommendations."]
+
+        recs = []
+        kpis = self.calculate_kpis(data)
+
+        if kpis["pending_units"]["value"] > 5000:
+            recs.append("Urgently expedite dispatch of pending units (over 5000).")
+        if kpis["pending_value"]["value"] > 10000000:
+            recs.append("Focus on clearing high-value pending orders (>10M).")
+        if kpis["pgi_achievement"]["value"] < 85:
+            recs.append("Improve PGI completion rate.")
+        if kpis["delivery_achievement"]["value"] < 85:
+            recs.append("Increase delivery rate.")
+        if kpis["pod_achievement"]["value"] < 85:
+            recs.append("Implement POD follow-up campaign.")
+        if kpis["avg_delivery_days"]["value"] > 5:
+            recs.append(f"Reduce average delivery days ({kpis['avg_delivery_days']['value']:.1f}).")
+
+        wh_perf = self.calculate_warehouse_performance(data)
+        for wh in wh_perf[:3]:
+            if wh["performance_score"] < 70:
+                recs.append(f"Review operations at {wh['warehouse']} (score {wh['performance_score']:.1f}%).")
+
+        dealer_perf = self.calculate_dealer_performance(data)
+        for d in dealer_perf[:3]:
+            if d["health"] < 70:
+                recs.append(f"Engage dealer {d['dealer']} to improve performance.")
+
+        city_perf = self.calculate_city_performance(data)
+        for c in city_perf[:2]:
+            if c["status"] in ["Critical", "Warning"]:
+                recs.append(f"Review logistics routes for {c['city']} (avg delivery {c['avg_delivery_days']:.1f} days).")
+
+        prod_perf = self.calculate_product_performance(data)
+        for p in prod_perf[:2]:
+            if p["pod_pct"] < 70:
+                recs.append(f"Investigate product {p['product']}: low POD rate {p['pod_pct']:.1f}%.")
+
+        if not recs:
+            recs.append("All metrics within acceptable ranges.")
+        return recs[:5]
+
+    # ---------- 15. Monthly Trend ----------
+    def calculate_monthly_trend(self, data: List[Dict]) -> List[Dict]:
+        if not data:
+            return []
+
+        months = {}
+        for row in data:
+            created = row.get("created_at") or row.get("pod_date")
+            if created is None:
+                continue
+            dt = _parse_date(created)
+            if dt:
+                month_key = dt.strftime("%Y-%m")
+                if month_key not in months:
+                    months[month_key] = {
+                        "dns": set(),
+                        "units": 0,
+                        "value": 0,
+                        "pgi_count": 0,
+                        "delivery_count": 0,
+                        "pod_count": 0,
+                        "pending_units": 0,
                     }
-                } else {
-                    let errorMsg = 'Upload failed.';
-                    try {
-                        const errData = JSON.parse(xhr.responseText);
-                        errorMsg = errData.message || errData.error || errorMsg;
-                    } catch(e) {}
-                    Swal.fire({ icon: 'error', title: 'Import Failed', text: errorMsg, background: '#0f172a', color: '#f8fafc' });
-                    resetUpload();
-                }
-            };
+                m = months[month_key]
+                dn = row.get("dn")
+                if dn:
+                    m["dns"].add(str(dn))
+                m["units"] += float(row.get("units", 0))
+                m["value"] += float(row.get("value", 0))
+                if row.get("pgi_date") not in (None, ""):
+                    m["pgi_count"] += 1
+                if row.get("delivery_date") not in (None, ""):
+                    m["delivery_count"] += 1
+                if row.get("pod_date") not in (None, ""):
+                    m["pod_count"] += 1
+                else:
+                    m["pending_units"] += float(row.get("units", 0))
 
-            xhr.onerror = function() {
-                Swal.fire({ icon: 'error', title: 'Network Error', text: 'Could not connect to server.', background: '#0f172a', color: '#f8fafc' });
-                resetUpload();
-            };
+        result = []
+        sorted_months = sorted(months.keys())
+        prev = None
+        for month in sorted_months:
+            vals = months[month]
+            dns = len(vals["dns"])
+            if dns == 0:
+                continue
+            pgi_pct = _safe_divide(vals["pgi_count"], dns) * 100
+            delivery_pct = _safe_divide(vals["delivery_count"], vals["pgi_count"]) * 100 if vals["pgi_count"] > 0 else 0
+            pod_pct = _safe_divide(vals["pod_count"], vals["delivery_count"]) * 100 if vals["delivery_count"] > 0 else 0
+            health = (pgi_pct * 0.25 + delivery_pct * 0.25 + pod_pct * 0.20)
+            if vals["pending_units"] > 5000:
+                health -= 15
+            health = max(0, min(100, health))
 
-            xhr.onabort = function() {
-                resetUpload();
-            };
+            growth = None
+            if prev:
+                prev_vals = months[prev]
+                prev_revenue = prev_vals["value"]
+                growth = _safe_divide((vals["value"] - prev_revenue), prev_revenue) * 100 if prev_revenue > 0 else 0
 
-            xhr.open('POST', UPLOAD_URL, true);
-            xhr.send(formData);
-        });
-    }
+            result.append({
+                "month": month,
+                "dn_count": dns,
+                "units": int(vals["units"]),
+                "revenue": vals["value"],
+                "pgi_count": vals["pgi_count"],
+                "delivery_count": vals["delivery_count"],
+                "pod_count": vals["pod_count"],
+                "pgi_pct": round(pgi_pct, 1),
+                "delivery_pct": round(delivery_pct, 1),
+                "pod_pct": round(pod_pct, 1),
+                "pending_units": int(vals["pending_units"]),
+                "health": round(health, 1),
+                "growth": round(growth, 1) if growth is not None else None,
+            })
+            prev = month
 
-    function resetUpload() {
-        const btn = document.getElementById('uploadBtn');
-        const progressContainer = document.getElementById('uploadProgressContainer');
-        const fileInput = document.querySelector('input[type="file"]');
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-cloud-upload-alt me-1"></i> Import & Process';
-        progressContainer.style.display = 'none';
-        if (fileInput) fileInput.value = '';
-    }
+        return result
 
-    // ---- Load Dashboard Data ----
-    async function loadDashboard() {
-        try {
-            const res = await fetch(API_URL);
-            if (res.ok) {
-                const data = await res.json();
-                if (data.cards) renderKPIs(data.cards);
-                if (data.executive_summary_text) renderExecutiveSummary(data.executive_summary_text);
-                if (data.pipeline_detailed) renderPipeline(data.pipeline_detailed);
-                // ... call other render functions ...
-                // (Include all your existing render calls here)
-                // Footer
-                if (data.metadata) {
-                    const recEl = document.getElementById('footerRecords');
-                    if (recEl) recEl.innerText = formatNumber(data.metadata.record_count);
-                    const verEl = document.getElementById('footerVersion');
-                    if (verEl) verEl.innerText = `Haier Pakistan v${data.metadata.version || '19.6'}`;
-                }
+    # ---------- 16. Metadata ----------
+    def generate_metadata(self, data: List[Dict], execution_time_ms: float) -> Dict[str, Any]:
+        return {
+            "version": self._version,
+            "record_count": len(data),
+            "execution_time_ms": round(execution_time_ms, 1),
+            "database_status": "connected" if self._engine else "disconnected",
+            "data_freshness": datetime.now().isoformat(),
+        }
+
+    # ---------- 17. Orchestrator ----------
+    async def get_dashboard_data(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
+        start_time = time.time()
+        try:
+            raw_data = self._fetch_data()
+            if not raw_data:
+                return self._empty_response("No data available. Please import an Excel file.")
+
+            filtered_data = self._apply_filters(raw_data, filters or {})
+            if not filtered_data:
+                return self._empty_response("No data matches the selected filters.")
+
+            cards = self.calculate_kpis(filtered_data)
+            exec_summary = self.generate_executive_summary(filtered_data)
+            pipeline = self.calculate_pipeline(filtered_data)
+            warehouse_ranking = self.calculate_warehouse_performance(filtered_data)
+            city_performance = self.calculate_city_performance(filtered_data)
+            pending_analysis = self.calculate_pending_analysis(filtered_data)
+            dealer_performance = self.calculate_dealer_performance(filtered_data)
+            product_performance = self.calculate_product_performance(filtered_data)
+            division_performance = self.calculate_division_performance(filtered_data)
+            sales_office_performance = self.calculate_sales_office_performance(filtered_data)
+            sales_manager_performance = self.calculate_sales_manager_performance(filtered_data)
+            delivery_compliance = self.calculate_delivery_compliance(filtered_data)
+            alerts = self.generate_critical_alerts(filtered_data)
+            recommendations = self.get_recommendations(filtered_data)
+            monthly_trend = self.calculate_monthly_trend(filtered_data)
+            metadata = self.generate_metadata(filtered_data, (time.time() - start_time) * 1000)
+
+            return {
+                "cards": cards,
+                "executive_summary": exec_summary,
+                "executive_summary_text": exec_summary["summary"],
+                "pipeline_detailed": pipeline,
+                "warehouse_ranking": warehouse_ranking,
+                "city_performance": city_performance,
+                "pending_analysis": pending_analysis,
+                "dealer_performance": dealer_performance,
+                "product_performance": product_performance,
+                "division_performance": division_performance,
+                "sales_office_performance": sales_office_performance,
+                "sales_manager_performance": sales_manager_performance,
+                "delivery_compliance": delivery_compliance,
+                "alerts": alerts,
+                "recommendations": recommendations,
+                "monthly_trend": monthly_trend,
+                "metadata": metadata,
             }
-        } catch(e) {
-            console.warn('API fetch warning:', e);
+
+        except Exception as e:
+            logger.error(f"❌ Dashboard generation error: {traceback.format_exc()}")
+            return self._empty_response(f"Error: {str(e)}")
+
+    def _empty_response(self, message: str) -> Dict[str, Any]:
+        empty_kpis = {
+            "total_dn": {"value": 0},
+            "total_units": {"value": 0},
+            "total_value": {"value": 0},
+            "pgi_achievement": {"value": 0.0},
+            "delivery_achievement": {"value": 0.0},
+            "pod_achievement": {"value": 0.0},
+            "pending_pgi": {"value": 0},
+            "pending_delivery": {"value": 0},
+            "pending_pod": {"value": 0},
+            "pending_dn": {"value": 0},
+            "pending_units": {"value": 0},
+            "pending_value": {"value": 0.0},
+            "avg_delivery_days": {"value": 0.0},
+            "avg_pod_days": {"value": 0.0},
+            "health_score": {"value": 0.0},
         }
-    }
-
-    // ---- Event Listeners ----
-    document.addEventListener('DOMContentLoaded', function() {
-        // Theme toggle
-        const themeToggle = document.getElementById('themeToggle');
-        if (themeToggle) {
-            themeToggle.addEventListener('click', function() {
-                const current = document.documentElement.getAttribute('data-theme');
-                const next = current === 'dark' ? 'light' : 'dark';
-                document.documentElement.setAttribute('data-theme', next);
-                this.innerHTML = next === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
-            });
+        empty_pipeline = {
+            "dn_created": {"dn": 0, "pct": 0},
+            "pgi_completed": {"dn": 0, "pct": 0},
+            "vehicle_assigned": {"dn": 0, "pct": 0},
+            "loading": {"dn": 0, "pct": 0},
+            "gate_out": {"dn": 0, "pct": 0},
+            "in_transit": {"dn": 0, "pct": 0},
+            "arrival": {"dn": 0, "pct": 0},
+            "delivered": {"dn": 0, "pct": 0},
+            "pod_received": {"dn": 0, "pct": 0},
+            "closed": {"dn": 0, "pct": 0},
+            "conversion": 0,
+            "pipeline_loss": 0,
+        }
+        empty_compliance = [{"distance": b["distance"], "target_days": b["target_days"], "actual_days": 0, "compliance_pct": 0, "status": "No Data"} for b in self.COMPLIANCE_BRACKETS]
+        return {
+            "cards": empty_kpis,
+            "executive_summary": {"overall_health": 0, "status": "No Data", "summary": message, "risks": [], "highlights": [], "recommendations": [message]},
+            "executive_summary_text": message,
+            "pipeline_detailed": empty_pipeline,
+            "warehouse_ranking": [],
+            "city_performance": [],
+            "pending_analysis": [],
+            "dealer_performance": [],
+            "product_performance": [],
+            "division_performance": [],
+            "sales_office_performance": [],
+            "sales_manager_performance": [],
+            "delivery_compliance": empty_compliance,
+            "alerts": [],
+            "recommendations": [message],
+            "monthly_trend": [],
+            "metadata": {"version": self._version, "record_count": 0, "execution_time_ms": 0, "database_status": "disconnected", "data_freshness": datetime.now().isoformat()},
         }
 
-        // Hamburger
-        const hamburger = document.getElementById('hamburgerBtn');
-        if (hamburger) {
-            hamburger.addEventListener('click', function() {
-                document.querySelector('.sidebar').classList.toggle('open');
-            });
+    def health_check(self) -> Dict[str, Any]:
+        return {
+            "service": "dashboard_service",
+            "version": self._version,
+            "status": "healthy" if self._engine and self._table_exists else "degraded",
+            "database": "connected" if self._engine else "disconnected",
+            "table_exists": self._table_exists,
+            "timestamp": datetime.now().isoformat(),
         }
 
-        // Setup upload
-        setupUpload();
+# ------------------------------------------------------------
+# SINGLETON ACCESSOR
+# ------------------------------------------------------------
+_service = None
+_service_lock = threading.Lock()
 
-        // Load dashboard
-        loadDashboard();
-        setInterval(loadDashboard, 30000);
-    });
+def get_dashboard_service() -> DashboardService:
+    global _service
+    if _service is None:
+        with _service_lock:
+            if _service is None:
+                _service = DashboardService()
+    return _service
 
-})();
-</script>
-
-</body>
-</html>
+# ------------------------------------------------------------
+# MODULE EXPORTS
+# ------------------------------------------------------------
+__all__ = [
+    "DashboardService",
+    "get_dashboard_service",
+]
