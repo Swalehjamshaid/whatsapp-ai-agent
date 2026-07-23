@@ -297,26 +297,19 @@ class DashboardRepository:
 
     @staticmethod
     def _quantity(alias: str = "dr") -> str:
-        """
-        Safely read dn_qty using to_jsonb to avoid errors if the column is missing.
-        Returns a numeric expression; negative values are clamped later in application code.
-        """
+        """Safely read dn_qty using to_jsonb to avoid errors if the column is missing."""
         raw = f"COALESCE(to_jsonb({alias})->>'dn_qty', '')"
         return f"COALESCE(NULLIF({raw}, '')::numeric, 0)"
 
     @staticmethod
     def _amount(alias: str = "dr") -> str:
-        """
-        Safely read dn_amount using to_jsonb.
-        """
+        """Safely read dn_amount using to_jsonb."""
         raw = f"COALESCE(to_jsonb({alias})->>'dn_amount', '')"
         return f"COALESCE(NULLIF({raw}, '')::numeric, 0)"
 
     @staticmethod
     def _distance(alias: str = "dr") -> str:
-        """
-        Safely read distance_km (or alias) using to_jsonb.
-        """
+        """Safely read distance_km (or alias) using to_jsonb."""
         raw = (
             f"COALESCE(to_jsonb({alias})->>'distance_km', "
             f"to_jsonb({alias})->>'distance', "
@@ -355,17 +348,18 @@ class DashboardRepository:
             params["filter_date_to"] = filters["date_to"]
         return (" AND ".join(clauses) if clauses else "TRUE"), params
 
-    def _metrics_select(self, alias: str = "dr") -> str:
-        quantity = self._quantity(alias)
-        amount = self._amount(alias)
+    @staticmethod
+    def _metrics_select(alias: str = "dr") -> str:
+        quantity = DashboardRepository._quantity(alias)
+        amount = DashboardRepository._amount(alias)
         return f"""
             COUNT(DISTINCT {alias}.dn_no) AS total_dn,
             COALESCE(SUM({quantity}), 0) AS total_units,
             COALESCE(SUM({amount}), 0) AS total_revenue,
             COUNT(DISTINCT {alias}.dn_no) FILTER (WHERE {alias}.good_issue_date IS NOT NULL) AS pgi_dn,
             COALESCE(SUM(CASE WHEN {alias}.good_issue_date IS NOT NULL THEN {quantity} ELSE 0 END), 0) AS pgi_units,
-            COUNT(DISTINCT {alias}.dn_no) FILTER (WHERE {alias}.delivery_date IS NOT NULL) AS delivered_dn,
-            COALESCE(SUM(CASE WHEN {alias}.delivery_date IS NOT NULL THEN {quantity} ELSE 0 END), 0) AS delivered_units,
+            COUNT(DISTINCT {alias}.dn_no) FILTER (WHERE {alias}.delivery_status ILIKE 'Delivered' OR {alias}.pod_date IS NOT NULL) AS delivered_dn,
+            COALESCE(SUM(CASE WHEN {alias}.delivery_status ILIKE 'Delivered' OR {alias}.pod_date IS NOT NULL THEN {quantity} ELSE 0 END), 0) AS delivered_units,
             COUNT(DISTINCT {alias}.dn_no) FILTER (WHERE {alias}.pod_date IS NOT NULL) AS pod_dn,
             COALESCE(SUM(CASE WHEN {alias}.pod_date IS NOT NULL THEN {quantity} ELSE 0 END), 0) AS pod_units,
             COALESCE(AVG(CASE
@@ -375,13 +369,13 @@ class DashboardRepository:
             END), 0) AS avg_pgi_days,
             COALESCE(AVG(CASE
                 WHEN {alias}.good_issue_date IS NOT NULL
-                 AND {alias}.delivery_date >= {alias}.good_issue_date
-                THEN EXTRACT(EPOCH FROM ({alias}.delivery_date::timestamp - {alias}.good_issue_date::timestamp)) / 86400.0
+                 AND {alias}.pod_date >= {alias}.good_issue_date
+                THEN EXTRACT(EPOCH FROM ({alias}.pod_date::timestamp - {alias}.good_issue_date::timestamp)) / 86400.0
             END), 0) AS avg_transit_days,
             COALESCE(AVG(CASE
-                WHEN {alias}.delivery_date IS NOT NULL
-                 AND {alias}.pod_date >= {alias}.delivery_date
-                THEN EXTRACT(EPOCH FROM ({alias}.pod_date::timestamp - {alias}.delivery_date::timestamp)) / 86400.0
+                WHEN {alias}.pod_date IS NOT NULL
+                 AND {alias}.pod_date >= {alias}.pod_date
+                THEN EXTRACT(EPOCH FROM ({alias}.pod_date::timestamp - {alias}.pod_date::timestamp)) / 86400.0
             END), 0) AS avg_pod_days,
             COALESCE(AVG(CASE
                 WHEN {alias}.dn_create_date IS NOT NULL
@@ -555,7 +549,7 @@ class DashboardRepository:
                        CASE WHEN dr.dn_create_date IS NULL THEN NULL
                             ELSE GREATEST(CURRENT_DATE - dr.dn_create_date::date, 0) END AS pending_days
                 FROM delivery_reports dr
-                WHERE {where} AND dr.delivery_date IS NULL
+                WHERE {where} AND (dr.delivery_status NOT ILIKE 'Delivered' AND dr.pod_date IS NULL)
             )
             SELECT CASE
                     WHEN pending_days IS NULL THEN 'Undated'
@@ -585,8 +579,8 @@ class DashboardRepository:
                 SELECT {quantity} AS units,
                        {distance} AS distance_km,
                        CASE WHEN dr.good_issue_date IS NOT NULL
-                            AND dr.delivery_date >= dr.good_issue_date
-                            THEN EXTRACT(EPOCH FROM (dr.delivery_date::timestamp - dr.good_issue_date::timestamp)) / 86400.0
+                            AND dr.pod_date >= dr.good_issue_date
+                            THEN EXTRACT(EPOCH FROM (dr.pod_date::timestamp - dr.good_issue_date::timestamp)) / 86400.0
                        END AS delivery_days
                 FROM delivery_reports dr
                 WHERE {where}
@@ -667,17 +661,11 @@ class DashboardRepository:
 
 
 class BusinessRuleEngine:
-    """
-    Contains all business logic for health scoring, risk classification,
-    and performance status.
-    """
+    """Contains all business logic for health scoring, risk classification, and performance status."""
 
     @staticmethod
     def health_score(metrics: DashboardMetrics) -> float:
-        """
-        Enterprise Health Score = 30% PGI + 35% Delivery + 20% POD + 15% Pending Efficiency.
-        All components are percentages (0–100).
-        """
+        """Enterprise Health Score = 30% PGI + 35% Delivery + 20% POD + 15% Pending Efficiency."""
         if metrics.total_dn <= 0 or metrics.total_units <= 0:
             return 0.0
         pending_efficiency = 100.0 - metrics.pending_pct
@@ -697,7 +685,6 @@ class BusinessRuleEngine:
         pending_pct: float = 0.0,
         pod_pct: float = 0.0,
     ) -> float:
-        """Compatibility method for older code; cycle_days is not used."""
         del cycle_days
         pending_efficiency = 100.0 - SafeNumber.clamp(pending_pct)
         value = (
@@ -710,7 +697,6 @@ class BusinessRuleEngine:
 
     @staticmethod
     def risk(score: float) -> Tuple[str, str, str]:
-        """Returns (status_label, emoji, risk_level)."""
         score = SafeNumber.clamp(score)
         if score >= 90:
             return "Excellent", "🟢", "low"
@@ -734,7 +720,6 @@ class BusinessRuleEngine:
     def pod_status(days: float) -> str:
         return "Within Standard" if days <= config.pod_target_days else "Above Standard"
 
-    # Aliases for compatibility
     classify_delivery_status = delivery_status
     classify_pod_status = pod_status
 
@@ -745,17 +730,8 @@ class BusinessRuleEngine:
 
 
 class TrendEngine:
-    """
-    Computes whether a warehouse (or the national average) is improving,
-    declining, or stable over the most recent period.
-    """
-
     @staticmethod
     def trend_label(points: Sequence[Mapping[str, Any]]) -> str:
-        """
-        points: sequence of daily rows (each with 'delivery_pct' or similar).
-        Split into two halves and compare average delivery %.
-        """
         if len(points) < 2:
             return "— Insufficient data"
         midpoint = len(points) // 2
@@ -779,7 +755,6 @@ class TrendEngine:
 
     @staticmethod
     def point(row: Mapping[str, Any], date_key: str) -> Dict[str, Any]:
-        """Convert a raw row (from daily/monthly trend) into a standard trend point."""
         metrics = DashboardMetrics.from_row(row)
         return {
             "date": _iso_date(row.get(date_key)),
@@ -806,7 +781,6 @@ class TrendEngine:
             "30D": daily[-30:],
             "90D": daily[-90:],
             "12M": monthly[-12:],
-            # Legacy keys for backward compatibility
             "daily": daily,
             "weekly": daily[-7:],
             "monthly": daily[-30:],
@@ -815,7 +789,7 @@ class TrendEngine:
 
 
 # ---------------------------------------------------------------------------
-# BLOCK 7: Warehouse Intelligence – Enrich Warehouse Rows with KPIs, Trend, Insight
+# BLOCK 7: Warehouse Intelligence
 # ---------------------------------------------------------------------------
 
 
@@ -873,7 +847,6 @@ class WarehouseIntelligenceEngine:
                 "trend": "— Insufficient data",
                 "ai_insight": "",
             }
-            # Compute trend using the daily trend data
             ranking["trend"] = TrendEngine.calculate_warehouse_trend(warehouse, warehouse_daily_trends)
             ranking["ai_insight"] = RecommendationEngine.generate_short_insight(ranking)
             rankings.append(ranking)
@@ -890,14 +863,13 @@ class WarehouseIntelligenceEngine:
 
 
 # ---------------------------------------------------------------------------
-# BLOCK 8: Recommendation Engine – Prioritised Actions with Expected Impact
+# BLOCK 8: Recommendation Engine
 # ---------------------------------------------------------------------------
 
 
 class RecommendationEngine:
     @staticmethod
     def generate_short_insight(warehouse: Mapping[str, Any]) -> str:
-        """A one‑line AI insight for each warehouse."""
         if SafeNumber.to_float(warehouse.get("pod_pct")) < config.pod_alert_threshold:
             return "Low POD compliance requires transporter follow-up."
         if SafeNumber.to_float(warehouse.get("delivery_pct")) < config.delivery_alert_threshold:
@@ -912,10 +884,6 @@ class RecommendationEngine:
 
     @staticmethod
     def generate_recommendations(warehouses: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Generates a list of actionable recommendations, ordered by priority.
-        Each recommendation includes the expected KPI impact.
-        """
         recommendations: List[Dict[str, Any]] = []
         for warehouse in warehouses:
             name = str(warehouse.get("warehouse") or "Unassigned")
@@ -924,7 +892,6 @@ class RecommendationEngine:
             delivery = SafeNumber.to_float(warehouse.get("delivery_pct"))
             pod = SafeNumber.to_float(warehouse.get("pod_pct"))
 
-            # Priority 1: High pending units
             if pending > config.pending_units_alert_threshold:
                 recommendations.append({
                     "warehouse": name,
@@ -934,7 +901,6 @@ class RecommendationEngine:
                     "expected_improvement": "Improves pending efficiency and logistics health score.",
                     "target_kpi": "Pending Units",
                 })
-            # Priority 2: Low delivery
             elif delivery < config.delivery_alert_threshold:
                 recommendations.append({
                     "warehouse": name,
@@ -944,7 +910,6 @@ class RecommendationEngine:
                     "expected_improvement": "Improves Delivery % toward the 70% recovery threshold.",
                     "target_kpi": "Delivery Achievement",
                 })
-            # Priority 3: Low POD
             elif pod < config.pod_alert_threshold:
                 recommendations.append({
                     "warehouse": name,
@@ -954,7 +919,6 @@ class RecommendationEngine:
                     "expected_improvement": "Improves POD % and reduces completed-delivery documentation gaps.",
                     "target_kpi": "POD Achievement",
                 })
-            # Priority 4: Low health (if not already covered)
             elif health < config.health_alert_threshold and not any(item["warehouse"] == name for item in recommendations):
                 recommendations.append({
                     "warehouse": name,
@@ -974,7 +938,7 @@ class RecommendationEngine:
 
 
 # ---------------------------------------------------------------------------
-# BLOCK 9: Alert Engine – Threshold‑Based Alerts
+# BLOCK 9: Alert Engine
 # ---------------------------------------------------------------------------
 
 
@@ -994,7 +958,6 @@ class AlertEngine:
                 "urgency": round(priority, 2),
             })
 
-        # National alerts
         if national.pending_units > config.pending_units_alert_threshold:
             add("National", "CRITICAL", "Pending Units",
                 f"{national.pending_units:,.0f} pending units exceed the {config.pending_units_alert_threshold:,} escalation threshold.",
@@ -1016,7 +979,6 @@ class AlertEngine:
                 f"Logistics health is {health:.1f}%, below {config.health_alert_threshold:.0f}%.",
                 75 + (config.health_alert_threshold - health))
 
-        # Warehouse-level alerts
         for warehouse in warehouses:
             source = str(warehouse.get("warehouse") or "Unassigned")
             transit_days = SafeNumber.to_float(warehouse.get("avg_delivery_days"))
@@ -1043,7 +1005,7 @@ class AlertEngine:
 
 
 # ---------------------------------------------------------------------------
-# BLOCK 10: Executive Summary Engine – Human‑Readable Overview
+# BLOCK 10: Executive Summary Engine
 # ---------------------------------------------------------------------------
 
 
@@ -1079,7 +1041,7 @@ class ExecutiveSummaryEngine:
 
 
 # ---------------------------------------------------------------------------
-# BLOCK 11: Response Builder – Compose Final JSON for Frontend
+# BLOCK 11: Response Builder
 # ---------------------------------------------------------------------------
 
 
@@ -1468,7 +1430,6 @@ async def upload_excel_report(
     skip_duplicates: bool = Form(True),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Retain the existing endpoint and invalidate dashboard aggregates after its caller's import flow."""
     del db, skip_duplicates
     content = await file.read()
     if not content:
