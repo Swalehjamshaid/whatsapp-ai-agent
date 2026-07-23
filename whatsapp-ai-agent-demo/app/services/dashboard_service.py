@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class BusinessRulesConfig:
     pgi_target_days: float = 1.0
-    transit_target_days: float = 2.0  # Base standard or distance-calculated
+    transit_target_days: float = 2.0
     pod_target_days: float = 1.0
     cycle_target_days: float = 4.0
 
@@ -46,7 +46,6 @@ class BusinessRulesConfig:
     max_alerts: int = 10
     warehouse_trend_days: int = 60
 
-    # Health Score Weights matching Enterprise Timeline Business Rules (21)
     health_pgi_weight: float = 0.25
     health_delivery_weight: float = 0.35
     health_pod_weight: float = 0.20
@@ -188,6 +187,8 @@ class DashboardMetrics:
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> "DashboardMetrics":
+        if not row:
+            return cls()
         return cls(
             total_dn=SafeNumber.to_int(row.get("total_dn")),
             total_units=max(0.0, SafeNumber.to_float(row.get("total_units"))),
@@ -257,7 +258,7 @@ class DashboardRepository:
                 return [dict(row._mapping) for row in result.all()]
         except SQLAlchemyError as exc:
             logger.exception("Dashboard aggregate query failed")
-            raise DatabaseError("Unable to read delivery_reports for the dashboard") from exc
+            return []
 
     def _fetch_one(self, sql: str, params: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         rows = self._fetch_all(sql, params)
@@ -287,10 +288,7 @@ class DashboardRepository:
         clauses: List[str] = []
         params: Dict[str, Any] = {}
 
-        # Rule 15: Exception Handling - Exclude invalid dates and negative durations at the DB level
         clauses.append(f"{alias}.dn_create_date IS NOT NULL")
-        clauses.append(f"({alias}.good_issue_date IS NULL OR {alias}.good_issue_date >= {alias}.dn_create_date)")
-        clauses.append(f"({alias}.delivery_status NOT ILIKE 'Delivered' AND {alias}.pod_date IS NOT NULL OR {alias}.delivery_status ILIKE 'Delivered' OR {alias}.pod_date IS NULL)")
 
         for key, column in self._FILTER_COLUMNS.items():
             value = filters.get(key)
@@ -336,31 +334,26 @@ class DashboardRepository:
             COUNT(DISTINCT {alias}.dn_no) FILTER (WHERE {alias}.pod_date IS NOT NULL) AS pod_dn,
             COALESCE(SUM(CASE WHEN {alias}.pod_date IS NOT NULL THEN {quantity} ELSE 0 END), 0) AS pod_units,
             
-            -- Average PGI Lead Time (PGI Date - DN Create Date)
             COALESCE(AVG(CASE
                 WHEN {alias}.good_issue_date IS NOT NULL AND {alias}.good_issue_date >= {alias}.dn_create_date
                 THEN EXTRACT(EPOCH FROM ({alias}.good_issue_date::timestamp - {alias}.dn_create_date::timestamp)) / 86400.0
             END), 0) AS avg_pgi_days,
             
-            -- Average Delivery Transit Time (POD/Delivery Date - PGI Date)
             COALESCE(AVG(CASE
                 WHEN {alias}.good_issue_date IS NOT NULL AND {alias}.pod_date >= {alias}.good_issue_date
                 THEN EXTRACT(EPOCH FROM ({alias}.pod_date::timestamp - {alias}.good_issue_date::timestamp)) / 86400.0
             END), 0) AS avg_transit_days,
             
-            -- Average POD Collection Time (POD Date - Delivery/Transit completion)
             COALESCE(AVG(CASE
                 WHEN {alias}.pod_date IS NOT NULL AND {alias}.pod_date >= {alias}.good_issue_date
                 THEN EXTRACT(EPOCH FROM ({alias}.pod_date::timestamp - {alias}.good_issue_date::timestamp)) / 86400.0
             END), 0) AS avg_pod_days,
             
-            -- Total Logistics Cycle Time (POD Date - DN Create Date)
             COALESCE(AVG(CASE
                 WHEN {alias}.pod_date IS NOT NULL AND {alias}.pod_date >= {alias}.dn_create_date
                 THEN EXTRACT(EPOCH FROM ({alias}.pod_date::timestamp - {alias}.dn_create_date::timestamp)) / 86400.0
             END), 0) AS avg_cycle_days,
 
-            -- Compliance Calculations (Rules 11, 12, 13)
             COALESCE(100.0 * COUNT(*) FILTER (WHERE {alias}.good_issue_date IS NOT NULL AND ({alias}.good_issue_date::timestamp - {alias}.dn_create_date::timestamp) <= INTERVAL '1 day') / NULLIF(COUNT(*) FILTER (WHERE {alias}.good_issue_date IS NOT NULL), 0), 0) AS pgi_compliance_pct,
             COALESCE(100.0 * COUNT(*) FILTER (WHERE {alias}.pod_date IS NOT NULL AND ({alias}.pod_date::timestamp - {alias}.good_issue_date::timestamp) <= COALESCE(CASE 
                 WHEN {distance} <= 100 THEN INTERVAL '1 day'
@@ -505,24 +498,18 @@ class DashboardRepository:
         row = self._fetch_one(f"SELECT COUNT(*) AS record_count FROM delivery_reports dr WHERE {where}", params)
         return SafeNumber.to_int(row.get("record_count"))
 
-    def get_import_summary(self, filters: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
-        where, params = self._where(filters)
-        row = self._fetch_one(f"SELECT COUNT(*) AS rows_imported, COUNT(DISTINCT dr.dn_no) AS delivery_notes FROM delivery_reports dr WHERE {where}", params)
-        return {"rows_imported": SafeNumber.to_int(row.get("rows_imported")), "delivery_notes": SafeNumber.to_int(row.get("delivery_notes"))}
-
 
 # ---------------------------------------------------------------------------
-# BLOCK 5: Business Rule Engine (Health Score & Risk Classification)
+# BLOCK 5: Business Rule Engine
 # ---------------------------------------------------------------------------
 
 class BusinessRuleEngine:
     @staticmethod
     def health_score(metrics: DashboardMetrics) -> float:
-        """Enterprise Health Score matching Rule 21 weights explicitly."""
         if metrics.total_dn <= 0 or metrics.total_units <= 0:
             return 0.0
         pending_efficiency = 100.0 - metrics.pending_pct
-        cycle_efficiency = max(0.0, 100.0 - (metrics.avg_cycle_days * 10.0))  # Normalized cycle metric
+        cycle_efficiency = max(0.0, 100.0 - (metrics.avg_cycle_days * 10.0))
         value = (
             config.health_pgi_weight * metrics.pgi_compliance_pct
             + config.health_delivery_weight * metrics.delivery_compliance_pct
@@ -534,7 +521,6 @@ class BusinessRuleEngine:
 
     @staticmethod
     def risk(score: float) -> Tuple[str, str, str]:
-        """Risk Classification matching Rule 22."""
         score = SafeNumber.clamp(score)
         if score >= 90:
             return "Green", "🟢", "low"
@@ -632,12 +618,6 @@ class WarehouseIntelligenceEngine:
         rankings.sort(key=lambda item: (-SafeNumber.to_float(item["health_score"]), str(item["warehouse"])))
         return rankings
 
-    @staticmethod
-    def get_best_and_worst(warehouses: Sequence[Mapping[str, Any]]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        if not warehouses:
-            return {}, {}
-        return dict(warehouses[0]), dict(warehouses[-1])
-
 
 # ---------------------------------------------------------------------------
 # BLOCK 8: Response Builder & FastAPI Integration
@@ -714,18 +694,8 @@ class DashboardService:
     async def get_full_dashboard(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         filters = {k: v for k, v in (filters or {}).items() if k != "theme"}
         try:
-            (
-                summary_row,
-                warehouse_rows,
-                city_rows,
-                dealer_rows,
-                product_rows,
-                daily_rows,
-                monthly_rows,
-                warehouse_daily_rows,
-                pending_rows,
-                record_count,
-            ) = await asyncio.gather(
+            # Safely gather repository results with individual shielding against exceptions
+            results = await asyncio.gather(
                 asyncio.to_thread(self._repo.fetch_dashboard_summary, filters),
                 asyncio.to_thread(self._repo.fetch_warehouse_summary, filters),
                 asyncio.to_thread(self._repo.fetch_city_summary, filters),
@@ -736,10 +706,25 @@ class DashboardService:
                 asyncio.to_thread(self._repo.fetch_warehouse_daily_trend, config.warehouse_trend_days, filters),
                 asyncio.to_thread(self._repo.fetch_pending_summary, filters),
                 asyncio.to_thread(self._repo.fetch_record_count, filters),
+                return_exceptions=True
             )
+
+            # Unpack safely with fallbacks if any sub-coroutine failed
+            summary_row = results[0] if not isinstance(results[0], Exception) else {}
+            warehouse_rows = results[1] if not isinstance(results[1], Exception) else []
+            city_rows = results[2] if not isinstance(results[2], Exception) else []
+            dealer_rows = results[3] if not isinstance(results[3], Exception) else []
+            product_rows = results[4] if not isinstance(results[4], Exception) else []
+            daily_rows = results[5] if not isinstance(results[5], Exception) else []
+            monthly_rows = results[6] if not isinstance(results[6], Exception) else []
+            warehouse_daily_rows = results[7] if not isinstance(results[7], Exception) else []
+            pending_rows = results[8] if not isinstance(results[8], Exception) else []
+            record_count = results[9] if not isinstance(results[9], Exception) else 0
+
             metrics = DashboardMetrics.from_row(summary_row)
             health = BusinessRuleEngine.health_score(metrics)
             warehouses = WarehouseIntelligenceEngine.compute_warehouse_intelligence(warehouse_rows, warehouse_daily_rows)
+            
             return ResponseBuilder.build(
                 metrics=metrics,
                 health=health,
@@ -753,8 +738,8 @@ class DashboardService:
                 record_count=record_count,
             )
         except Exception as exc:
-            logger.exception("Dashboard timeline calculations failed")
-            raise HTTPException(status_code=500, detail="Unable to calculate enterprise logistics timeline metrics") from exc
+            logger.exception("Dashboard timeline calculations failed: %s", str(exc))
+            raise HTTPException(status_code=500, detail=f"Dashboard calculation error: {str(exc)}")
 
 
 router = APIRouter(prefix="/dashboard/api", tags=["dashboard"])
