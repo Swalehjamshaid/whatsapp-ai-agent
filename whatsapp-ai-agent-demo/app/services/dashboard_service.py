@@ -1,5 +1,6 @@
 """PostgreSQL-backed logistics dashboard calculations adhering strictly to 
-Enterprise Delivery Timeline Business Rules (PGI, Transit, POD, and Cycle Times).
+Enterprise Delivery Timeline Business Rules (PGI, Transit, POD, and Cycle Times)
+and fully populating all dashboard UI fields and widgets.
 """
 
 from __future__ import annotations
@@ -428,6 +429,20 @@ class DashboardRepository:
             params,
         )
 
+    def fetch_division_summary(self, filters: Optional[Mapping[str, Any]] = None) -> List[Dict[str, Any]]:
+        where, params = self._where(filters)
+        return self._fetch_all(
+            f"""
+            SELECT COALESCE(NULLIF(BTRIM(dr.division), ''), 'Unassigned') AS division,
+                   {self._metrics_select()}
+            FROM delivery_reports dr
+            WHERE {where}
+            GROUP BY COALESCE(NULLIF(BTRIM(dr.division), ''), 'Unassigned')
+            ORDER BY total_revenue DESC, division
+            """,
+            params,
+        )
+
     def fetch_daily_trend(self, days: int = 90, filters: Optional[Mapping[str, Any]] = None) -> List[Dict[str, Any]]:
         where, params = self._where(filters)
         params = {**params, "trend_days": max(1, int(days))}
@@ -455,7 +470,7 @@ class DashboardRepository:
             SELECT DATE_TRUNC('month', dr.dn_create_date)::date AS month, {self._metrics_select()}
             FROM delivery_reports dr CROSS JOIN latest
             WHERE {where} AND dr.dn_create_date::date >= latest.max_date - (:trend_months * INTERVAL '1 month')
-            GROUP BY DATE_TRUNC('month', dr.dn_create_date)::date ORDER BY month
+            GROUP BY DATE_TRUNC('month', dr.dn_create_date::date) ORDER BY month
             """,
             params,
         )
@@ -489,6 +504,31 @@ class DashboardRepository:
             SELECT CASE WHEN pending_days <= 2 THEN '0-2 Days' WHEN pending_days <= 5 THEN '3-5 Days' ELSE '>5 Days' END AS bucket,
                    COUNT(DISTINCT dn_no) AS dn_count, COALESCE(SUM(units), 0) AS units, MIN(pending_days) AS sort_days
             FROM pending GROUP BY 1 ORDER BY sort_days NULLS LAST
+            """,
+            params,
+        )
+
+    def fetch_delivery_compliance(self, filters: Optional[Mapping[str, Any]] = None) -> List[Dict[str, Any]]:
+        where, params = self._where(filters)
+        quantity = self._quantity("dr")
+        distance = self._distance("dr")
+        return self._fetch_all(
+            f"""
+            WITH source AS (
+                SELECT {quantity} AS units, {distance} AS distance_km,
+                       CASE WHEN dr.good_issue_date IS NOT NULL AND dr.pod_date >= dr.good_issue_date
+                            THEN EXTRACT(EPOCH FROM (dr.pod_date::timestamp - dr.good_issue_date::timestamp)) / 86400.0 END AS delivery_days
+                FROM delivery_reports dr WHERE {where}
+            ), targeted AS (
+                SELECT *,
+                    CASE WHEN distance_km <= 100 THEN 1 WHEN distance_km <= 250 THEN 2 WHEN distance_km <= 450 THEN 3 WHEN distance_km <= 700 THEN 4 WHEN distance_km <= 900 THEN 5 ELSE 6 END AS target_days,
+                    CASE WHEN distance_km <= 100 THEN '0-100' WHEN distance_km <= 250 THEN '101-250' WHEN distance_km <= 450 THEN '251-450' WHEN distance_km <= 700 THEN '451-700' WHEN distance_km <= 900 THEN '701-900' ELSE '900+' END AS distance
+                FROM source
+            )
+            SELECT distance, target_days, COALESCE(AVG(delivery_days), 0) AS actual_days,
+                   CASE WHEN COALESCE(SUM(CASE WHEN delivery_days IS NOT NULL THEN units ELSE 0 END), 0) > 0
+                     THEN ROUND(100.0 * SUM(CASE WHEN delivery_days <= target_days THEN units ELSE 0 END) / NULLIF(SUM(CASE WHEN delivery_days IS NOT NULL THEN units ELSE 0 END), 0), 2) ELSE 0 END AS compliance_pct
+            FROM targeted WHERE target_days IS NOT NULL GROUP BY distance, target_days ORDER BY target_days
             """,
             params,
         )
@@ -580,7 +620,7 @@ class TrendEngine:
 
 
 # ---------------------------------------------------------------------------
-# BLOCK 7: Warehouse Intelligence Engine
+# BLOCK 7: Warehouse & Entity Intelligence Engines
 # ---------------------------------------------------------------------------
 
 class WarehouseIntelligenceEngine:
@@ -596,31 +636,33 @@ class WarehouseIntelligenceEngine:
             status, emoji, risk_level = BusinessRuleEngine.risk(score)
             warehouse = str(row.get("warehouse") or "Unassigned")
             ranking = {
+                "rank": 0,
                 "warehouse": warehouse,
+                "performance_score": score,
                 "dns": metrics.total_dn,
                 "units": _round(metrics.total_units),
+                "revenue": _round(metrics.total_revenue),
                 "pgi_pct": metrics.pgi_pct,
                 "delivery_pct": metrics.delivery_pct,
                 "pod_pct": metrics.pod_pct,
-                "avg_pgi_days": _round(metrics.avg_pgi_days),
-                "avg_transit_days": _round(metrics.avg_transit_days),
+                "avg_delivery_days": _round(metrics.avg_transit_days),
                 "avg_pod_days": _round(metrics.avg_pod_days),
-                "avg_cycle_days": _round(metrics.avg_cycle_days),
                 "pending_units": _round(metrics.pending_units),
-                "health_score": score,
-                "status": status,
+                "pending_dns": metrics.pending_dn,
                 "risk": emoji,
                 "risk_level": risk_level,
                 "trend": TrendEngine.calculate_warehouse_trend(warehouse, warehouse_daily_trends),
-                "ai_insight": "Warehouse processing efficiency monitored against logistics targets.",
+                "ai_insight": "Warehouse performance monitored against enterprise timeline targets.",
             }
             rankings.append(ranking)
-        rankings.sort(key=lambda item: (-SafeNumber.to_float(item["health_score"]), str(item["warehouse"])))
+        rankings.sort(key=lambda item: (-SafeNumber.to_float(item["performance_score"]), str(item["warehouse"])))
+        for index, ranking in enumerate(rankings, start=1):
+            ranking["rank"] = index
         return rankings
 
 
 # ---------------------------------------------------------------------------
-# BLOCK 8: Response Builder & FastAPI Integration
+# BLOCK 8: Response Builder (Fully Populated UI Payload)
 # ---------------------------------------------------------------------------
 
 class ResponseBuilder:
@@ -630,61 +672,126 @@ class ResponseBuilder:
         health: float,
         warehouses: Sequence[Mapping[str, Any]],
         city_rows: Sequence[Mapping[str, Any]],
-        dealers: Sequence[Mapping[str, Any]],
-        products: Sequence[Mapping[str, Any]],
+        dealer_rows: Sequence[Mapping[str, Any]],
+        product_rows: Sequence[Mapping[str, Any]],
+        division_rows: Sequence[Mapping[str, Any]],
         daily_rows: Sequence[Mapping[str, Any]],
         monthly_rows: Sequence[Mapping[str, Any]],
-        pending_analysis: Sequence[Mapping[str, Any]],
+        pending_rows: Sequence[Mapping[str, Any]],
+        compliance_rows: Sequence[Mapping[str, Any]],
         record_count: int,
     ) -> Dict[str, Any]:
+        # Fully matches the expected UI card keys
         cards = {
-            "total_dn": {"value": metrics.total_dn, "label": "Total DNs"},
-            "total_units": {"value": _round(metrics.total_units), "label": "Total Units"},
-            "avg_pgi_days": {"value": _round(metrics.avg_pgi_days), "label": "Avg PGI Days"},
-            "avg_transit_days": {"value": _round(metrics.avg_transit_days), "label": "Avg Delivery Days"},
-            "avg_pod_days": {"value": _round(metrics.avg_pod_days), "label": "Avg POD Days"},
-            "avg_cycle_days": {"value": _round(metrics.avg_cycle_days), "label": "Avg Cycle Days"},
-            "health_score": {"value": health, "label": "Health Score"},
-            "pending_units": {"value": _round(metrics.pending_units), "label": "Pending Units"},
+            "total_dn": {"value": metrics.total_dn, "label": "TOTAL DELIVERY NOTES"},
+            "total_units": {"value": _round(metrics.total_units), "label": "TOTAL UNITS"},
+            "total_value": {"value": _round(metrics.total_revenue), "label": "TOTAL REVENUE"},
+            "pgi_achievement": {"value": metrics.pgi_pct, "label": "PGI ACHIEVEMENT"},
+            "pod_achievement": {"value": metrics.pod_pct, "label": "POD ACHIEVEMENT"},
+            "pending_dn": {"value": metrics.pending_dn, "label": "PENDING DNS"},
+            "pending_units": {"value": _round(metrics.pending_units), "label": "PENDING UNITS"},
+            "health_score": {"value": health, "label": "LOGISTICS HEALTH SCORE"},
         }
+
+        # Pipeline detailed breakdown matching frontend expectations
+        pipeline_detailed = {
+            "dn_created": {"dn": metrics.total_dn, "pct": 100.0},
+            "pgi_completed": {"dn": metrics.pgi_dn, "pct": metrics.pgi_pct},
+            "in_transit": {"dn": metrics.delivered_dn, "pct": metrics.delivery_pct},
+            "delivered": {"dn": metrics.delivered_dn, "pct": metrics.delivery_pct},
+            "pod_received": {"dn": metrics.pod_dn, "pct": metrics.pod_pct},
+        }
+
+        executive_summary_text = (
+            f"Overall enterprise logistics health score stands at {health}%. "
+            f"PGI compliance is recorded at {metrics.pgi_compliance_pct:.1f}% with an average PGI lead time of {_round(metrics.avg_pgi_days)} days. "
+            f"Delivery transit conversion is operating at {metrics.delivery_pct}% while POD collection efficiency is at {metrics.pod_pct}%."
+        )
+
+        top_delayed_cities = [
+            {
+                "city": row.get("city") or "Unassigned",
+                "avg_delivery_days": DashboardMetrics.from_row(row).avg_transit_days,
+                "pending_units": DashboardMetrics.from_row(row).pending_units,
+                "status": "Critical" if DashboardMetrics.from_row(row).avg_transit_days > 3.0 else "Warning"
+            }
+            for row in city_rows[:5]
+        ]
+
+        top_pending_warehouses = [
+            {
+                "warehouse": w["warehouse"],
+                "pending_dns": w["pending_dns"],
+                "pending_units": w["pending_units"]
+            }
+            for w in sorted(warehouses, key=lambda x: -x["pending_units"])[:5]
+        ]
+
+        top_dealers = [
+            {
+                "dealer": row.get("dealer_name") or row.get("dealer_code") or "Unassigned",
+                "units": DashboardMetrics.from_row(row).total_units,
+                "revenue": DashboardMetrics.from_row(row).total_revenue,
+            }
+            for row in dealer_rows[:5]
+        ]
+
+        top_products = [
+            {
+                "product": row.get("product_name") or row.get("sku") or "Unassigned",
+                "units": DashboardMetrics.from_row(row).total_units,
+                "delivery_notes": DashboardMetrics.from_row(row).total_dn,
+            }
+            for row in product_rows[:5]
+        ]
+
+        division_performance = [
+            {
+                "division": row.get("division") or "Unassigned",
+                "revenue": DashboardMetrics.from_row(row).total_revenue,
+                "units": DashboardMetrics.from_row(row).total_units,
+            }
+            for row in division_rows
+        ]
+
+        alerts = [
+            {
+                "category": "POD Delay",
+                "source": w["warehouse"],
+                "message": f"POD collection rate at {w['warehouse']} is below target ({w['pod_pct']}%).",
+                "severity": "CRITICAL" if w["pod_pct"] < 80 else "WARNING"
+            }
+            for w in warehouses if w["pod_pct"] < config.pod_alert_threshold
+        ][:10]
+
+        recommendations = [
+            f"Optimize warehouse processing at {w['warehouse']} where pending inventory stands at {w['pending_units']} units."
+            for w in warehouses if w["pending_units"] > 1000
+        ]
+        if not recommendations:
+            recommendations = ["All warehouse operations and logistics milestones are currently performing within expected standard thresholds."]
 
         return {
             "cards": cards,
-            "warehouses": list(warehouses),
-            "cities": [
-                {
-                    "city": row.get("city") or "Unassigned",
-                    "avg_transit_days": _round(DashboardMetrics.from_row(row).avg_transit_days),
-                    "avg_pod_days": _round(DashboardMetrics.from_row(row).avg_pod_days),
-                    "avg_cycle_days": _round(DashboardMetrics.from_row(row).avg_cycle_days),
-                    "pending_units": _round(DashboardMetrics.from_row(row).pending_units),
-                }
-                for row in city_rows
-            ],
-            "dealers": [
-                {
-                    "dealer_code": row.get("dealer_code"),
-                    "dealer_name": row.get("dealer_name"),
-                    "avg_transit_days": _round(DashboardMetrics.from_row(row).avg_transit_days),
-                    "avg_pod_days": _round(DashboardMetrics.from_row(row).avg_pod_days),
-                    "avg_cycle_days": _round(DashboardMetrics.from_row(row).avg_cycle_days),
-                }
-                for row in dealers
-            ],
-            "products": [
-                {
-                    "sku": row.get("sku"),
-                    "product_name": row.get("product_name"),
-                    "avg_transit_days": _round(DashboardMetrics.from_row(row).avg_transit_days),
-                    "avg_cycle_days": _round(DashboardMetrics.from_row(row).avg_cycle_days),
-                }
-                for row in products
-            ],
-            "trends": TrendEngine.compute_trends(daily_rows, monthly_rows),
-            "pending_analysis": list(pending_analysis),
-            "metadata": {"record_count": record_count},
+            "executive_summary_text": executive_summary_text,
+            "pipeline_detailed": pipeline_detailed,
+            "warehouse_ranking": warehouses,
+            "top_delayed_cities": top_delayed_cities,
+            "top_pending_warehouses": top_pending_warehouses,
+            "top_dealers": top_dealers,
+            "top_products": top_products,
+            "division_performance": division_performance,
+            "delivery_compliance": compliance_rows,
+            "alerts": alerts,
+            "recommendations": recommendations,
+            "monthly_trend": [TrendEngine.point(row, "month") for row in monthly_rows],
+            "metadata": {"record_count": record_count, "version": "19.4"},
         }
 
+
+# ---------------------------------------------------------------------------
+# BLOCK 9: FastAPI Service Router
+# ---------------------------------------------------------------------------
 
 class DashboardService:
     def __init__(self, repository: Optional[DashboardRepository] = None) -> None:
@@ -694,32 +801,34 @@ class DashboardService:
     async def get_full_dashboard(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         filters = {k: v for k, v in (filters or {}).items() if k != "theme"}
         try:
-            # Safely gather repository results with individual shielding against exceptions
             results = await asyncio.gather(
                 asyncio.to_thread(self._repo.fetch_dashboard_summary, filters),
                 asyncio.to_thread(self._repo.fetch_warehouse_summary, filters),
                 asyncio.to_thread(self._repo.fetch_city_summary, filters),
                 asyncio.to_thread(self._repo.fetch_dealer_summary, filters),
                 asyncio.to_thread(self._repo.fetch_product_summary, filters),
+                asyncio.to_thread(self._repo.fetch_division_summary, filters),
                 asyncio.to_thread(self._repo.fetch_daily_trend, 90, filters),
                 asyncio.to_thread(self._repo.fetch_monthly_trend, 12, filters),
                 asyncio.to_thread(self._repo.fetch_warehouse_daily_trend, config.warehouse_trend_days, filters),
                 asyncio.to_thread(self._repo.fetch_pending_summary, filters),
+                asyncio.to_thread(self._repo.fetch_delivery_compliance, filters),
                 asyncio.to_thread(self._repo.fetch_record_count, filters),
                 return_exceptions=True
             )
 
-            # Unpack safely with fallbacks if any sub-coroutine failed
             summary_row = results[0] if not isinstance(results[0], Exception) else {}
             warehouse_rows = results[1] if not isinstance(results[1], Exception) else []
             city_rows = results[2] if not isinstance(results[2], Exception) else []
             dealer_rows = results[3] if not isinstance(results[3], Exception) else []
             product_rows = results[4] if not isinstance(results[4], Exception) else []
-            daily_rows = results[5] if not isinstance(results[5], Exception) else []
-            monthly_rows = results[6] if not isinstance(results[6], Exception) else []
-            warehouse_daily_rows = results[7] if not isinstance(results[7], Exception) else []
-            pending_rows = results[8] if not isinstance(results[8], Exception) else []
-            record_count = results[9] if not isinstance(results[9], Exception) else 0
+            division_rows = results[5] if not isinstance(results[5], Exception) else []
+            daily_rows = results[6] if not isinstance(results[6], Exception) else []
+            monthly_rows = results[7] if not isinstance(results[7], Exception) else []
+            warehouse_daily_rows = results[8] if not isinstance(results[8], Exception) else []
+            pending_rows = results[9] if not isinstance(results[9], Exception) else []
+            compliance_rows = results[10] if not isinstance(results[10], Exception) else []
+            record_count = results[11] if not isinstance(results[11], Exception) else 0
 
             metrics = DashboardMetrics.from_row(summary_row)
             health = BusinessRuleEngine.health_score(metrics)
@@ -730,11 +839,13 @@ class DashboardService:
                 health=health,
                 warehouses=warehouses,
                 city_rows=city_rows,
-                dealers=dealer_rows,
-                products=product_rows,
+                dealer_rows=dealer_rows,
+                product_rows=product_rows,
+                division_rows=division_rows,
                 daily_rows=daily_rows,
                 monthly_rows=monthly_rows,
-                pending_analysis=pending_rows,
+                pending_rows=pending_rows,
+                compliance_rows=compliance_rows,
                 record_count=record_count,
             )
         except Exception as exc:
