@@ -130,8 +130,8 @@ class DashboardService:
         self._discover_columns()
         logger.info("=" * 60)
         logger.info(f"🚀 Dashboard Service v{self._version} initialized")
-        logger.info(f"   🗄️  Database: {'OK' if self._engine else 'None'}")
-        logger.info(f"   📋 Table exists: {self._table_exists}")
+        logger.info(f"    🗄️  Database: {'OK' if self._engine else 'None'}")
+        logger.info(f"    📋 Table exists: {self._table_exists}")
         logger.info("=" * 60)
 
     def _init_database(self):
@@ -441,7 +441,7 @@ class DashboardService:
         dealer_perf = self.calculate_dealer_performance(data)
         if dealer_perf:
             best_d = dealer_perf[0]
-            highlights.append(f"Top Dealer: {best_d['dealer']} (Revenue {_format_currency(best_d['revenue']})")
+            highlights.append(f"Top Dealer: {best_d['dealer']} (Revenue {_format_currency(best_d['revenue'])})")
 
         recs = self.get_recommendations(data)
 
@@ -775,6 +775,7 @@ class DashboardService:
                     "pgi_count": 0,
                     "delivery_count": 0,
                     "pod_count": 0,
+                    "pending_units": 0,
                     "cities": set(),
                     "warehouses": set(),
                     "delivery_days": [],
@@ -806,6 +807,8 @@ class DashboardService:
                         days = (pod - deliv).days
                         if days >= 0:
                             d["pod_days"].append(days)
+            else:
+                d["pending_units"] += float(row.get("units", 0))
             if row.get("city"):
                 d["cities"].add(row.get("city"))
             if row.get("warehouse"):
@@ -820,7 +823,7 @@ class DashboardService:
             delivery_pct = _safe_divide(d["delivery_count"], d["pgi_count"]) * 100 if d["pgi_count"] > 0 else 0
             avg_delivery_days = sum(d["delivery_days"]) / len(d["delivery_days"]) if d["delivery_days"] else 0
             avg_pod_days = sum(d["pod_days"]) / len(d["pod_days"]) if d["pod_days"] else 0
-            pending_units = d["units"] - sum(1 for _ in range(d["delivery_count"]))
+            pending_units = d["pending_units"]
             growth = 0
             health = (delivery_pct * 0.3 + pod_pct * 0.3)
             if pending_units > 5000:
@@ -872,6 +875,7 @@ class DashboardService:
                     "pgi_count": 0,
                     "delivery_count": 0,
                     "pod_count": 0,
+                    "pending_units": 0,
                     "cities": set(),
                     "warehouses": set(),
                     "dealers": set(),
@@ -896,6 +900,8 @@ class DashboardService:
                             p["delivery_days"].append(days)
             if row.get("pod_date") not in (None, ""):
                 p["pod_count"] += 1
+            else:
+                p["pending_units"] += float(row.get("units", 0))
             if row.get("city"):
                 p["cities"].add(row.get("city"))
             if row.get("warehouse"):
@@ -912,7 +918,7 @@ class DashboardService:
             pod_pct = _safe_divide(p["pod_count"], p["delivery_count"]) * 100 if p["delivery_count"] > 0 else 0
             delivery_pct = _safe_divide(p["delivery_count"], p["pgi_count"]) * 100 if p["pgi_count"] > 0 else 0
             avg_delivery_days = sum(p["delivery_days"]) / len(p["delivery_days"]) if p["delivery_days"] else 0
-            pending_units = p["units"] - sum(1 for _ in range(p["delivery_count"]))
+            pending_units = p["pending_units"]
             contribution = _safe_divide(p["revenue"], total_revenue) * 100
             health = (delivery_pct * 0.4 + pod_pct * 0.4)
             if pending_units > 5000:
