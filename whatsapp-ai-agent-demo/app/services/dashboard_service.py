@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 dashboard_service.py - Enterprise Logistics Dashboard Service
-Version 19.4.4 – Always returns valid JSON; includes test harness.
+Version 19.4.5 – Fixed argument mismatch with FastAPI route.
 """
 
 import os
@@ -32,7 +32,6 @@ except ImportError:
     create_engine = None
     sessionmaker = None
 
-# Try to import the app's models and database session (if available)
 try:
     from app.database import SessionLocal, engine
     from app.models import DeliveryReport
@@ -104,7 +103,7 @@ class DashboardService:
         if hasattr(self, "_initialized") and self._initialized:
             return
         self._initialized = True
-        self._version = "19.4.4"
+        self._version = "19.4.5"
         self._engine = None
         self._session_maker = None
         self._table_exists = False
@@ -121,7 +120,6 @@ class DashboardService:
 
     def _init_database(self):
         """Try to set up database connection."""
-        # First, try the app's existing engine
         if DB_APP_AVAILABLE and engine is not None:
             self._engine = engine
             self._session_maker = sessionmaker(bind=engine)
@@ -723,13 +721,16 @@ class DashboardService:
         return result
 
     # ------------------------------------------------------------
-    # MAIN PUBLIC METHOD
+    # MAIN PUBLIC METHOD – FIXED to accept filters argument
     # ------------------------------------------------------------
-    def get_dashboard_data(self) -> Dict[str, Any]:
-        """Return full dashboard JSON; never raises an exception."""
+    async def get_dashboard_data(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
+        """
+        Return full dashboard JSON; accepts optional filters (currently ignored).
+        This method is async to match FastAPI's await pattern.
+        """
         start_time = time.time()
         try:
-            # Cache check
+            # Cache check (ignore filters for caching simplicity)
             if time.time() - self._cache_time < self._cache_ttl and self._cache:
                 logger.debug("Returning cached data")
                 return self._cache
@@ -857,7 +858,11 @@ try:
         @bp.route('/data', methods=['GET'])
         def get_data():
             try:
-                data = service.get_dashboard_data()
+                # For Flask, we call sync method – we can define a sync wrapper
+                # but since we made it async, we need to call it properly.
+                # Best: keep it sync for Flask, or use asyncio.run.
+                import asyncio
+                data = asyncio.run(service.get_dashboard_data())
                 return jsonify(data)
             except Exception as e:
                 current_app.logger.error(f"Route error: {traceback.format_exc()}")
@@ -869,7 +874,6 @@ try:
 
         return bp
 except ImportError:
-    # Flask not installed – skip
     pass
 
 # ------------------------------------------------------------
@@ -884,7 +888,9 @@ if __name__ == "__main__":
 
     print("\n📊 Fetching dashboard data...")
     try:
-        data = service.get_dashboard_data()
+        # For test, call the async method via asyncio
+        import asyncio
+        data = asyncio.run(service.get_dashboard_data())
         print("✅ Dashboard data retrieved successfully.")
         print(f"   Record count: {data['metadata']['record_count']}")
         print(f"   Summary: {data['executive_summary_text'][:100]}...")
