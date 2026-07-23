@@ -1,32 +1,22 @@
 # ============================================================
 # FILE: app/services/dashboard_service.py
-# VERSION: 30.0 – ENTERPRISE MODULAR ORCHESTRATOR
-# ============================================================
-# RESPONSIBILITIES:
-#   - Receive dashboard request
-#   - Call sub‑modules concurrently
-#   - Merge JSON responses
-#   - Handle partial failures
-#   - Log everything
-#   - Return final merged JSON
+# VERSION: 31.0 – ENTERPRISE MODULAR ORCHESTRATOR (FIXED)
 # ============================================================
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-
-# Import the four sub‑modules
-from . import dashboard_kpi, warehouse, timeline, dashboard_ai
+from app.services import dashboard_kpi, warehouse, timeline, dashboard_ai
 
 logger = logging.getLogger(__name__)
-
 
 router = APIRouter(prefix="/dashboard/api", tags=["dashboard"])
 
@@ -39,7 +29,6 @@ async def get_dashboard_data(
     Orchestrate the entire dashboard by calling all sub‑modules in parallel.
     Return a merged JSON that matches the frontend expectations.
     """
-    # Extract filter parameters (if any) from request; we pass them through
     filters: Dict[str, Any] = {"theme": theme}  # theme is not used in data modules
 
     try:
@@ -127,7 +116,7 @@ async def warehouse_ranking(
 @router.get("/health")
 async def health_check() -> Dict[str, str]:
     """Health check for the dashboard service."""
-    return {"status": "healthy", "version": "30.0", "timestamp": str(datetime.utcnow())}
+    return {"status": "healthy", "version": "31.0", "timestamp": datetime.utcnow().isoformat()}
 
 
 @router.post("/upload")
