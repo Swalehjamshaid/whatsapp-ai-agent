@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 dashboard_service.py - Enterprise Logistics Dashboard Service
-Version: 19.7 – Fully integrated with dashboard.html v19.6
-Provides all KPIs, pipeline, warehouse ranking, alerts, recommendations,
-and async endpoint for /dashboard/api/data.
+Version: 19.8 – Fixed column mapping and pending logic
+Full integration with dashboard.html v19.6
 """
 
 import os
@@ -86,6 +85,20 @@ class DashboardService:
     _instance = None
     _lock = threading.Lock()
 
+    # Column mapping from database to expected names
+    COLUMN_MAP = {
+        'dn_no': 'dn',
+        'dn_qty': 'units',
+        'dn_amount': 'value',
+        'good_issue_date': 'pgi_date',
+        'pod_date': 'pod_date',  # keep as is
+        'dn_create_date': 'created_at',
+        'ship_to_city': 'city',
+        'customer_name': 'dealer',   # if dealer is actually customer name
+        'customer_model': 'product', # if product is model
+        # Add others as needed
+    }
+
     def __new__(cls):
         if cls._instance is None:
             with cls._lock:
@@ -97,7 +110,7 @@ class DashboardService:
         if hasattr(self, "_initialized") and self._initialized:
             return
         self._initialized = True
-        self._version = "19.7"
+        self._version = "19.8"
         self._engine = None
         self._session_maker = None
         self._table_exists = False
@@ -149,13 +162,14 @@ class DashboardService:
                 logger.error(f"❌ Table check failed: {e}")
                 self._table_exists = False
 
-    # ---------- Data Fetching ----------
+    # ---------- Data Fetching with Column Mapping ----------
     def _fetch_data(self) -> List[Dict[str, Any]]:
         if not self._engine or not self._table_exists:
             return []
 
         try:
             with self._engine.connect() as conn:
+                # Get actual column names
                 col_result = conn.execute(text(
                     "SELECT column_name FROM information_schema.columns "
                     "WHERE table_name = 'delivery_reports'"
@@ -176,7 +190,24 @@ class DashboardService:
                     for i, col in enumerate(cols):
                         d[col] = row[i]
                     data.append(d)
-                return data
+
+                # Map column names
+                mapped_data = []
+                for row in data:
+                    mapped = {}
+                    # Apply mapping
+                    for old, new in self.COLUMN_MAP.items():
+                        if old in row:
+                            mapped[new] = row[old]
+                    # Keep any column that already matches expected names
+                    for expected in ['dn', 'units', 'value', 'pgi_date', 'pod_date',
+                                     'warehouse', 'city', 'dealer', 'product', 'division',
+                                     'sales_office', 'sales_manager', 'created_at']:
+                        if expected in row and expected not in mapped:
+                            mapped[expected] = row[expected]
+                    mapped_data.append(mapped)
+                return mapped_data
+
         except Exception as e:
             logger.error(f"❌ Fetch error: {traceback.format_exc()}")
             return []
@@ -205,8 +236,9 @@ class DashboardService:
         pgi_achievement = pgi_count / total_dn if total_dn > 0 else 0.0
         pod_achievement = pod_count / total_dn if total_dn > 0 else 0.0
 
-        pending_dn = sum(1 for row in data if row.get("delivery_date") in (None, ""))
-        pending_units = sum(float(row.get("units", 0)) for row in data if row.get("delivery_date") in (None, ""))
+        # Pending: pod_date is null (or empty string)
+        pending_dn = sum(1 for row in data if row.get("pod_date") in (None, ""))
+        pending_units = sum(float(row.get("units", 0)) for row in data if row.get("pod_date") in (None, ""))
 
         health = (pgi_achievement * 0.4 + pod_achievement * 0.4) * 100
         if pending_units > 5000:
@@ -280,9 +312,10 @@ class DashboardService:
             total_dn = 1
 
         pgi_count = sum(1 for row in today_data if row.get("pgi_date") not in (None, ""))
-        in_transit = sum(1 for row in today_data if row.get("pgi_date") not in (None, "") and row.get("delivery_date") in (None, ""))
-        delivered = sum(1 for row in today_data if row.get("delivery_date") not in (None, ""))
-        pod_received = sum(1 for row in today_data if row.get("pod_date") not in (None, ""))
+        # In transit: pgi done, pod not done
+        in_transit = sum(1 for row in today_data if row.get("pgi_date") not in (None, "") and row.get("pod_date") in (None, ""))
+        delivered = sum(1 for row in today_data if row.get("pod_date") not in (None, ""))
+        pod_received = delivered  # same as delivered
 
         def pct(v):
             return round((v / total_dn) * 100, 1) if total_dn > 0 else 0
@@ -310,7 +343,6 @@ class DashboardService:
                     "value": 0,
                     "pgi_count": 0,
                     "pod_count": 0,
-                    "delivery_count": 0,
                     "pending_units": 0,
                     "pending_dns": set(),
                     "delivery_days": [],
@@ -326,22 +358,12 @@ class DashboardService:
                 w["pgi_count"] += 1
             if row.get("pod_date") not in (None, ""):
                 w["pod_count"] += 1
-            if row.get("delivery_date") not in (None, ""):
-                w["delivery_count"] += 1
-                # delivery days
+                # pod_days: pod_date - pgi_date
                 if row.get("pgi_date") not in (None, ""):
                     pgi = _parse_date(row.get("pgi_date"))
-                    delv = _parse_date(row.get("delivery_date"))
-                    if pgi and delv:
-                        days = (delv - pgi).days
-                        if days >= 0:
-                            w["delivery_days"].append(days)
-                # pod days
-                if row.get("pod_date") not in (None, ""):
                     pod = _parse_date(row.get("pod_date"))
-                    delv = _parse_date(row.get("delivery_date"))
-                    if pod and delv:
-                        days = (delv - pod).days
+                    if pgi and pod:
+                        days = (pod - pgi).days
                         if days >= 0:
                             w["pod_days"].append(days)
             else:
@@ -353,12 +375,13 @@ class DashboardService:
         for wh, w in wh_data.items():
             dns = len(w["dns"])
             pgi_pct = (w["pgi_count"] / dns * 100) if dns > 0 else 0
-            delivery_pct = (w["delivery_count"] / dns * 100) if dns > 0 else 0
             pod_pct = (w["pod_count"] / dns * 100) if dns > 0 else 0
-            avg_delivery = sum(w["delivery_days"]) / len(w["delivery_days"]) if w["delivery_days"] else 0
-            avg_pod = sum(w["pod_days"]) / len(w["pod_days"]) if w["pod_days"] else 0
+            avg_pod_days = sum(w["pod_days"]) / len(w["pod_days"]) if w["pod_days"] else 0
             pending_units = w["pending_units"]
             pending_dns = len(w["pending_dns"])
+
+            # Delivery % = pod_count / dns (since pod = delivered)
+            delivery_pct = pod_pct
 
             perf = (pgi_pct * 0.3 + delivery_pct * 0.3 + pod_pct * 0.3)
             if pending_units > 5000:
@@ -367,7 +390,7 @@ class DashboardService:
                 perf -= 10
             perf = max(0, min(100, perf))
 
-            risk = "🔴" if avg_delivery > 10 else ("🟡" if avg_delivery > 5 else "🟢")
+            risk = "🔴" if avg_pod_days > 10 else ("🟡" if avg_pod_days > 5 else "🟢")
             result.append({
                 "warehouse": wh,
                 "dns": dns,
@@ -376,8 +399,8 @@ class DashboardService:
                 "pgi_pct": round(pgi_pct, 1),
                 "delivery_pct": round(delivery_pct, 1),
                 "pod_pct": round(pod_pct, 1),
-                "avg_delivery_days": round(avg_delivery, 1),
-                "avg_pod_days": round(avg_pod, 1),
+                "avg_delivery_days": round(avg_pod_days, 1),  # using pod_days as delivery days
+                "avg_pod_days": round(avg_pod_days, 1),
                 "pending_units": int(pending_units),
                 "pending_dns": int(pending_dns),
                 "performance_score": round(perf, 1),
@@ -410,20 +433,20 @@ class DashboardService:
         for row in data:
             city = row.get("city", "Unknown")
             if city not in city_data:
-                city_data[city] = {"delivery_days": [], "pending_units": 0}
-            if row.get("delivery_date") not in (None, "") and row.get("pgi_date") not in (None, ""):
+                city_data[city] = {"pod_days": [], "pending_units": 0}
+            if row.get("pod_date") not in (None, "") and row.get("pgi_date") not in (None, ""):
                 pgi = _parse_date(row.get("pgi_date"))
-                delv = _parse_date(row.get("delivery_date"))
-                if pgi and delv:
-                    days = (delv - pgi).days
+                pod = _parse_date(row.get("pod_date"))
+                if pgi and pod:
+                    days = (pod - pgi).days
                     if days >= 0:
-                        city_data[city]["delivery_days"].append(days)
+                        city_data[city]["pod_days"].append(days)
             else:
                 city_data[city]["pending_units"] += float(row.get("units", 0))
 
         result = []
         for city, cd in city_data.items():
-            avg = sum(cd["delivery_days"]) / len(cd["delivery_days"]) if cd["delivery_days"] else 0
+            avg = sum(cd["pod_days"]) / len(cd["pod_days"]) if cd["pod_days"] else 0
             status = "Good"
             if avg > 10:
                 status = "Critical"
@@ -444,7 +467,7 @@ class DashboardService:
 
         pending = {}
         for row in data:
-            if row.get("delivery_date") in (None, ""):
+            if row.get("pod_date") in (None, ""):
                 wh = row.get("warehouse", "Unknown")
                 if wh not in pending:
                     pending[wh] = {"pending_dns": set(), "pending_units": 0}
@@ -526,11 +549,11 @@ class DashboardService:
 
         delivery_days = []
         for row in data:
-            if row.get("delivery_date") not in (None, "") and row.get("pgi_date") not in (None, ""):
+            if row.get("pod_date") not in (None, "") and row.get("pgi_date") not in (None, ""):
                 pgi = _parse_date(row.get("pgi_date"))
-                delv = _parse_date(row.get("delivery_date"))
-                if pgi and delv:
-                    days = (delv - pgi).days
+                pod = _parse_date(row.get("pod_date"))
+                if pgi and pod:
+                    days = (pod - pgi).days
                     if days >= 0:
                         delivery_days.append(days)
 
@@ -589,7 +612,7 @@ class DashboardService:
         # Pending units per warehouse
         pending_wh = {}
         for row in data:
-            if row.get("delivery_date") in (None, ""):
+            if row.get("pod_date") in (None, ""):
                 wh = row.get("warehouse", "Unknown")
                 pending_wh[wh] = pending_wh.get(wh, 0) + float(row.get("units", 0))
         for wh, units in pending_wh.items():
@@ -683,7 +706,7 @@ class DashboardService:
 
         months = {}
         for row in data:
-            created = row.get("created_at") or row.get("delivery_date")
+            created = row.get("created_at") or row.get("pod_date")
             if created is None:
                 continue
             dt = _parse_date(created)
@@ -708,12 +731,10 @@ class DashboardService:
     # ------------------------------------------------------------
     async def get_dashboard_data(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
         """
-        Return full dashboard JSON; accepts optional filters (currently ignored).
-        This method is async to match FastAPI's await pattern.
+        Return full dashboard JSON; accepts optional filters (ignored).
         """
         start_time = time.time()
         try:
-            # Cache check (ignore filters for caching simplicity)
             if time.time() - self._cache_time < self._cache_ttl and self._cache:
                 logger.debug("Returning cached data")
                 return self._cache
@@ -757,7 +778,6 @@ class DashboardService:
                     }
                 }
 
-            # Update cache
             self._cache = result
             self._cache_time = time.time()
             return result
@@ -829,11 +849,10 @@ def get_dashboard_service() -> DashboardService:
     return _service
 
 # ------------------------------------------------------------
-# FLASK / FASTAPI INTEGRATION (Optional)
+# FASTAPI ROUTER (Optional)
 # ------------------------------------------------------------
-# This is already done in main.py; we keep this for completeness.
 try:
-    from fastapi import APIRouter, Query, Depends
+    from fastapi import APIRouter, Query
     router = APIRouter(prefix="/dashboard/api", tags=["dashboard"])
 
     @router.get("/data")
@@ -852,7 +871,6 @@ try:
         filters = {k: v for k, v in locals().items() if v is not None and k != "service"}
         return await service.get_dashboard_data(filters)
 except ImportError:
-    # FastAPI not available
     pass
 
 # ------------------------------------------------------------
