@@ -1,38 +1,26 @@
 #!/usr/bin/env python3
 """
 dashboard_service.py - Enterprise Logistics Dashboard Service
-Version 19.4.5 – Fixed argument mismatch with FastAPI route.
+Version: 19.7 – Fully integrated with dashboard.html v19.6
+Provides all KPIs, pipeline, warehouse ranking, alerts, recommendations,
+and async endpoint for /dashboard/api/data.
 """
 
 import os
-import sys
 import logging
 import time
 import traceback
+import threading
 from datetime import datetime, date
 from typing import Dict, List, Any, Optional, Union
-import threading
 import json
-
-# ------------------------------------------------------------
-# LOGGING
-# ------------------------------------------------------------
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------
 # DATABASE IMPORTS (safe)
 # ------------------------------------------------------------
 try:
-    from sqlalchemy import create_engine, text
-    from sqlalchemy.orm import sessionmaker
-    SQLALCHEMY_AVAILABLE = True
-except ImportError:
-    SQLALCHEMY_AVAILABLE = False
-    create_engine = None
-    sessionmaker = None
-
-try:
+    from sqlalchemy import create_engine, text, MetaData, Table
+    from sqlalchemy.orm import sessionmaker, Session
     from app.database import SessionLocal, engine
     from app.models import DeliveryReport
     DB_APP_AVAILABLE = True
@@ -40,6 +28,12 @@ except ImportError:
     DB_APP_AVAILABLE = False
     SessionLocal = None
     engine = None
+
+# ------------------------------------------------------------
+# LOGGING
+# ------------------------------------------------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------
 # UTILITY FUNCTIONS
@@ -86,7 +80,7 @@ def _parse_date(val: Any) -> Optional[datetime]:
     return None
 
 # ------------------------------------------------------------
-# DASHBOARD SERVICE (Singleton, fail‑safe)
+# DASHBOARD SERVICE (Singleton)
 # ------------------------------------------------------------
 class DashboardService:
     _instance = None
@@ -103,7 +97,7 @@ class DashboardService:
         if hasattr(self, "_initialized") and self._initialized:
             return
         self._initialized = True
-        self._version = "19.4.5"
+        self._version = "19.7"
         self._engine = None
         self._session_maker = None
         self._table_exists = False
@@ -124,21 +118,19 @@ class DashboardService:
             self._engine = engine
             self._session_maker = sessionmaker(bind=engine)
             logger.info("✅ Using app's database engine")
-        elif SQLALCHEMY_AVAILABLE:
+        else:
             db_url = os.getenv("DATABASE_URL")
             if db_url:
                 try:
+                    from sqlalchemy import create_engine
                     self._engine = create_engine(db_url)
                     self._session_maker = sessionmaker(bind=self._engine)
                     logger.info("✅ Created engine from DATABASE_URL")
                 except Exception as e:
                     logger.error(f"❌ Failed to create engine: {e}")
                     self._engine = None
-                    self._session_maker = None
             else:
                 logger.warning("⚠️ No DATABASE_URL environment variable")
-        else:
-            logger.warning("⚠️ SQLAlchemy not installed")
 
         # Check table existence
         if self._engine:
@@ -156,28 +148,22 @@ class DashboardService:
             except Exception as e:
                 logger.error(f"❌ Table check failed: {e}")
                 self._table_exists = False
-        else:
-            self._table_exists = False
 
+    # ---------- Data Fetching ----------
     def _fetch_data(self) -> List[Dict[str, Any]]:
-        """Fetch all rows from delivery_reports as list of dicts."""
         if not self._engine or not self._table_exists:
-            logger.warning("DB not available – returning empty list")
             return []
 
         try:
             with self._engine.connect() as conn:
-                # Get column names
                 col_result = conn.execute(text(
                     "SELECT column_name FROM information_schema.columns "
                     "WHERE table_name = 'delivery_reports'"
                 ))
                 cols = [row[0] for row in col_result]
                 if not cols:
-                    logger.warning("No columns found in delivery_reports")
                     return []
 
-                # Build query
                 select_cols = ", ".join(cols)
                 query = f"SELECT {select_cols} FROM delivery_reports"
                 if 'deleted' in cols:
@@ -190,15 +176,12 @@ class DashboardService:
                     for i, col in enumerate(cols):
                         d[col] = row[i]
                     data.append(d)
-                logger.info(f"✅ Fetched {len(data)} rows")
                 return data
         except Exception as e:
             logger.error(f"❌ Fetch error: {traceback.format_exc()}")
             return []
 
-    # ------------------------------------------------------------
-    # BUSINESS LOGIC (all methods handle empty data gracefully)
-    # ------------------------------------------------------------
+    # ---------- Business Logic (all methods handle empty data) ----------
     def calculate_kpis(self, data: List[Dict]) -> Dict[str, Any]:
         if not data:
             return {
@@ -721,7 +704,7 @@ class DashboardService:
         return result
 
     # ------------------------------------------------------------
-    # MAIN PUBLIC METHOD – FIXED to accept filters argument
+    # MAIN PUBLIC METHOD – async for FastAPI
     # ------------------------------------------------------------
     async def get_dashboard_data(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
         """
@@ -846,55 +829,37 @@ def get_dashboard_service() -> DashboardService:
     return _service
 
 # ------------------------------------------------------------
-# FLASK BLUEPRINT (if Flask is used)
+# FLASK / FASTAPI INTEGRATION (Optional)
 # ------------------------------------------------------------
+# This is already done in main.py; we keep this for completeness.
 try:
-    from flask import Blueprint, jsonify, request, current_app
+    from fastapi import APIRouter, Query, Depends
+    router = APIRouter(prefix="/dashboard/api", tags=["dashboard"])
 
-    def create_dashboard_blueprint():
-        bp = Blueprint('dashboard', __name__, url_prefix='/dashboard/api')
+    @router.get("/data")
+    async def dashboard_data(
+        start_date: Optional[str] = Query(None),
+        end_date: Optional[str] = Query(None),
+        warehouse: Optional[str] = Query(None),
+        dealer: Optional[str] = Query(None),
+        product: Optional[str] = Query(None),
+        city: Optional[str] = Query(None),
+        division: Optional[str] = Query(None),
+        transporter: Optional[str] = Query(None),
+        status: Optional[str] = Query(None),
+    ):
         service = get_dashboard_service()
-
-        @bp.route('/data', methods=['GET'])
-        def get_data():
-            try:
-                # For Flask, we call sync method – we can define a sync wrapper
-                # but since we made it async, we need to call it properly.
-                # Best: keep it sync for Flask, or use asyncio.run.
-                import asyncio
-                data = asyncio.run(service.get_dashboard_data())
-                return jsonify(data)
-            except Exception as e:
-                current_app.logger.error(f"Route error: {traceback.format_exc()}")
-                return jsonify({"error": str(e)}), 500
-
-        @bp.route('/health', methods=['GET'])
-        def health():
-            return jsonify(service.health_check())
-
-        return bp
+        filters = {k: v for k, v in locals().items() if v is not None and k != "service"}
+        return await service.get_dashboard_data(filters)
 except ImportError:
+    # FastAPI not available
     pass
 
 # ------------------------------------------------------------
-# TEST HARNESS
+# MODULE EXPORTS
 # ------------------------------------------------------------
-if __name__ == "__main__":
-    print("🧪 Testing DashboardService...")
-    service = get_dashboard_service()
-    print("✅ Service instance created.")
-    print(f"   Engine: {service._engine}")
-    print(f"   Table exists: {service._table_exists}")
-
-    print("\n📊 Fetching dashboard data...")
-    try:
-        # For test, call the async method via asyncio
-        import asyncio
-        data = asyncio.run(service.get_dashboard_data())
-        print("✅ Dashboard data retrieved successfully.")
-        print(f"   Record count: {data['metadata']['record_count']}")
-        print(f"   Summary: {data['executive_summary_text'][:100]}...")
-        print("\n✅ Test complete.")
-    except Exception as e:
-        print(f"❌ Test failed: {traceback.format_exc()}")
-        sys.exit(1)
+__all__ = [
+    "DashboardService",
+    "get_dashboard_service",
+    "router",
+]
