@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 dashboard_service.py - Enterprise Logistics Dashboard Service
-Version: 21.3 – Clean import, no syntax errors, full enterprise features.
+Version: 22.0 – Fully functional, import‑safe, enterprise calculations.
 """
 
 import os
@@ -11,24 +11,20 @@ import traceback
 import threading
 from datetime import datetime, date
 from typing import Dict, List, Any, Optional, Union
-import math
+from collections import defaultdict
 
 # ------------------------------------------------------------
-# DATABASE IMPORTS (safe)
+# DATABASE – raw SQL (no models, no circular imports)
 # ------------------------------------------------------------
 try:
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import sessionmaker
-    from app.database import SessionLocal, engine
-    DB_APP_AVAILABLE = True
+    SQLALCHEMY_AVAILABLE = True
 except ImportError:
-    DB_APP_AVAILABLE = False
-    SessionLocal = None
-    engine = None
+    SQLALCHEMY_AVAILABLE = False
+    create_engine = None
+    text = None
 
-# ------------------------------------------------------------
-# LOGGING
-# ------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -36,9 +32,7 @@ logger = logging.getLogger(__name__)
 # UTILITY FUNCTIONS
 # ------------------------------------------------------------
 def _safe_str(value: Any, default: str = "N/A") -> str:
-    if value is None:
-        return default
-    return str(value).strip() or default
+    return default if value is None else str(value).strip() or default
 
 def _format_number(v: Union[int, float]) -> str:
     if v is None:
@@ -97,16 +91,15 @@ class DashboardService:
         if hasattr(self, "_initialized") and self._initialized:
             return
         self._initialized = True
-        self._version = "21.3"
+        self._version = "22.0"
         self._engine = None
-        self._session_maker = None
         self._table_exists = False
         self._available_columns = []
         self._cache = {}
         self._cache_time = 0
-        self._cache_ttl = int(os.getenv("DASHBOARD_CACHE_TTL", "30"))
+        self._cache_ttl = 30
 
-        # Column mapping from database to internal names
+        # Column mapping (database → internal)
         self.COLUMN_MAP = {
             'dn_no': 'dn',
             'dn_qty': 'units',
@@ -124,7 +117,6 @@ class DashboardService:
             'delivery_date': 'delivery_date',
         }
 
-        # Delivery compliance brackets (distance in KM)
         self.COMPLIANCE_BRACKETS = [
             {"distance": "0-100", "target_days": 1},
             {"distance": "101-250", "target_days": 2},
@@ -143,38 +135,25 @@ class DashboardService:
         logger.info("=" * 60)
 
     def _init_database(self):
-        if DB_APP_AVAILABLE and engine is not None:
-            self._engine = engine
-            self._session_maker = sessionmaker(bind=engine)
-            logger.info("✅ Using app's database engine")
-        else:
-            db_url = os.getenv("DATABASE_URL")
-            if db_url:
-                try:
-                    self._engine = create_engine(db_url)
-                    self._session_maker = sessionmaker(bind=self._engine)
-                    logger.info("✅ Created engine from DATABASE_URL")
-                except Exception as e:
-                    logger.error(f"❌ Failed to create engine: {e}")
-                    self._engine = None
-            else:
-                logger.warning("⚠️ No DATABASE_URL environment variable")
-
-        if self._engine:
-            try:
-                with self._engine.connect() as conn:
-                    result = conn.execute(text(
-                        "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
-                        "WHERE table_name = 'delivery_reports')"
-                    ))
-                    self._table_exists = result.scalar()
-                    if self._table_exists:
-                        logger.info("✅ Table 'delivery_reports' exists")
-                    else:
-                        logger.warning("⚠️ Table 'delivery_reports' does NOT exist")
-            except Exception as e:
-                logger.error(f"❌ Table check failed: {e}")
-                self._table_exists = False
+        db_url = os.getenv("DATABASE_URL")
+        if not db_url:
+            logger.warning("⚠️ DATABASE_URL not set")
+            return
+        if not SQLALCHEMY_AVAILABLE:
+            logger.warning("⚠️ SQLAlchemy not installed")
+            return
+        try:
+            self._engine = create_engine(db_url)
+            with self._engine.connect() as conn:
+                result = conn.execute(text(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                    "WHERE table_name = 'delivery_reports')"
+                ))
+                self._table_exists = result.scalar()
+            logger.info(f"✅ DB connected, table exists: {self._table_exists}")
+        except Exception as e:
+            logger.error(f"❌ DB init failed: {e}")
+            self._engine = None
 
     def _discover_columns(self):
         if not self._engine or not self._table_exists:
@@ -186,7 +165,6 @@ class DashboardService:
                     "WHERE table_name = 'delivery_reports'"
                 ))
                 self._available_columns = [row[0] for row in result]
-                logger.info(f"✅ Discovered columns: {self._available_columns}")
         except Exception as e:
             logger.error(f"❌ Column discovery failed: {e}")
             self._available_columns = []
@@ -194,22 +172,17 @@ class DashboardService:
     def _has_column(self, col: str) -> bool:
         return col in self._available_columns
 
-    # ---------- Data Fetching with Column Mapping ----------
     def _fetch_data(self) -> List[Dict[str, Any]]:
         if not self._engine or not self._table_exists:
             return []
-
         try:
             with self._engine.connect() as conn:
                 cols = self._available_columns
                 if not cols:
                     return []
-
-                select_cols = ", ".join(cols)
-                query = f"SELECT {select_cols} FROM delivery_reports"
+                query = f"SELECT {', '.join(cols)} FROM delivery_reports"
                 if 'deleted' in cols:
                     query += " WHERE deleted = false OR deleted IS NULL"
-
                 rows = conn.execute(text(query)).fetchall()
                 data = []
                 for row in rows:
@@ -218,20 +191,21 @@ class DashboardService:
                         d[col] = row[i]
                     data.append(d)
 
-                mapped_data = []
+                # Apply column mapping
+                mapped = []
                 for row in data:
-                    mapped = {}
+                    m = {}
                     for old, new in self.COLUMN_MAP.items():
                         if old in row:
-                            mapped[new] = row[old]
-                    for expected in ['dn', 'units', 'value', 'pgi_date', 'pod_date',
-                                     'warehouse', 'city', 'dealer', 'product', 'division',
-                                     'sales_office', 'sales_manager', 'created_at', 'delivery_date']:
-                        if expected in row and expected not in mapped:
-                            mapped[expected] = row[expected]
-                    mapped_data.append(mapped)
-                return mapped_data
-
+                            m[new] = row[old]
+                    # Keep any column that already matches expected names
+                    for exp in ['dn', 'units', 'value', 'pgi_date', 'pod_date',
+                                'warehouse', 'city', 'dealer', 'product', 'division',
+                                'sales_office', 'sales_manager', 'created_at', 'delivery_date']:
+                        if exp in row and exp not in m:
+                            m[exp] = row[exp]
+                    mapped.append(m)
+                return mapped
         except Exception as e:
             logger.error(f"❌ Fetch error: {traceback.format_exc()}")
             return []
@@ -240,9 +214,7 @@ class DashboardService:
     def _apply_filters(self, data: List[Dict], filters: Dict) -> List[Dict]:
         if not filters or not data:
             return data
-
-        filtered = data[:]  # copy
-
+        filtered = data[:]
         # Date filters
         start_date = filters.get("start_date")
         end_date = filters.get("end_date")
@@ -260,41 +232,39 @@ class DashboardService:
                     filtered = [r for r in filtered if r.get(date_col) and _parse_date(r[date_col]) and _parse_date(r[date_col]).date() <= end_dt]
                 except Exception:
                     pass
-
-        # Filter by warehouse
-        warehouse = filters.get("warehouse")
-        if warehouse:
-            filtered = [r for r in filtered if r.get("warehouse", "").lower() == warehouse.lower()]
-
-        dealer = filters.get("dealer")
-        if dealer:
-            filtered = [r for r in filtered if r.get("dealer", "").lower() == dealer.lower()]
-
-        product = filters.get("product")
-        if product:
-            filtered = [r for r in filtered if r.get("product", "").lower() == product.lower()]
-
-        city = filters.get("city")
-        if city:
-            filtered = [r for r in filtered if r.get("city", "").lower() == city.lower()]
-
-        division = filters.get("division")
-        if division:
-            filtered = [r for r in filtered if r.get("division", "").lower() == division.lower()]
-
-        status = filters.get("status")
-        if status:
-            if status.lower() == "pending_pgi":
+        # Warehouse
+        if filters.get("warehouse"):
+            wh = filters["warehouse"]
+            filtered = [r for r in filtered if r.get("warehouse", "").lower() == wh.lower()]
+        # Dealer
+        if filters.get("dealer"):
+            d = filters["dealer"]
+            filtered = [r for r in filtered if r.get("dealer", "").lower() == d.lower()]
+        # Product
+        if filters.get("product"):
+            p = filters["product"]
+            filtered = [r for r in filtered if r.get("product", "").lower() == p.lower()]
+        # City
+        if filters.get("city"):
+            c = filters["city"]
+            filtered = [r for r in filtered if r.get("city", "").lower() == c.lower()]
+        # Division
+        if filters.get("division"):
+            div = filters["division"]
+            filtered = [r for r in filtered if r.get("division", "").lower() == div.lower()]
+        # Status
+        if filters.get("status"):
+            status = filters["status"].lower()
+            if status == "pending_pgi":
                 filtered = [r for r in filtered if r.get("pgi_date") in (None, "")]
-            elif status.lower() == "pending_delivery":
+            elif status == "pending_delivery":
                 filtered = [r for r in filtered if r.get("pgi_date") not in (None, "") and r.get("delivery_date") in (None, "")]
-            elif status.lower() == "pending_pod":
+            elif status == "pending_pod":
                 filtered = [r for r in filtered if r.get("delivery_date") not in (None, "") and r.get("pod_date") in (None, "")]
-            elif status.lower() == "delivered":
+            elif status == "delivered":
                 filtered = [r for r in filtered if r.get("pod_date") not in (None, "")]
-            elif status.lower() == "in_transit":
+            elif status == "in_transit":
                 filtered = [r for r in filtered if r.get("pgi_date") not in (None, "") and r.get("delivery_date") in (None, "")]
-
         return filtered
 
     # ---------- 1. KPI Cards ----------
@@ -514,6 +484,7 @@ class DashboardService:
         pod_received = sum(1 for d in dns.values() if d["pod_date"] not in (None, ""))
         in_transit = sum(1 for d in dns.values() if d["pgi_date"] not in (None, "") and d["delivery_date"] in (None, ""))
 
+        # Additional stages – placeholders
         vehicle_assigned = 0
         loading = 0
         gate_out = 0
@@ -1481,43 +1452,11 @@ class DashboardService:
             return self._empty_response(f"Error: {str(e)}")
 
     def _empty_response(self, message: str) -> Dict[str, Any]:
-        empty_kpis = {
-            "total_dn": {"value": 0},
-            "total_units": {"value": 0},
-            "total_value": {"value": 0},
-            "pgi_achievement": {"value": 0.0},
-            "delivery_achievement": {"value": 0.0},
-            "pod_achievement": {"value": 0.0},
-            "pending_pgi": {"value": 0},
-            "pending_delivery": {"value": 0},
-            "pending_pod": {"value": 0},
-            "pending_dn": {"value": 0},
-            "pending_units": {"value": 0},
-            "pending_value": {"value": 0.0},
-            "avg_delivery_days": {"value": 0.0},
-            "avg_pod_days": {"value": 0.0},
-            "health_score": {"value": 0.0},
-        }
-        empty_pipeline = {
-            "dn_created": {"dn": 0, "pct": 0},
-            "pgi_completed": {"dn": 0, "pct": 0},
-            "vehicle_assigned": {"dn": 0, "pct": 0},
-            "loading": {"dn": 0, "pct": 0},
-            "gate_out": {"dn": 0, "pct": 0},
-            "in_transit": {"dn": 0, "pct": 0},
-            "arrival": {"dn": 0, "pct": 0},
-            "delivered": {"dn": 0, "pct": 0},
-            "pod_received": {"dn": 0, "pct": 0},
-            "closed": {"dn": 0, "pct": 0},
-            "conversion": 0,
-            "pipeline_loss": 0,
-        }
-        empty_compliance = [{"distance": b["distance"], "target_days": b["target_days"], "actual_days": 0, "compliance_pct": 0, "status": "No Data"} for b in self.COMPLIANCE_BRACKETS]
         return {
-            "cards": empty_kpis,
+            "cards": self._empty_kpis(),
             "executive_summary": {"overall_health": 0, "status": "No Data", "summary": message, "risks": [], "highlights": [], "recommendations": [message]},
             "executive_summary_text": message,
-            "pipeline_detailed": empty_pipeline,
+            "pipeline_detailed": self._empty_pipeline(),
             "warehouse_ranking": [],
             "city_performance": [],
             "pending_analysis": [],
@@ -1526,7 +1465,7 @@ class DashboardService:
             "division_performance": [],
             "sales_office_performance": [],
             "sales_manager_performance": [],
-            "delivery_compliance": empty_compliance,
+            "delivery_compliance": self._empty_compliance(),
             "alerts": [],
             "recommendations": [message],
             "monthly_trend": [],
@@ -1549,7 +1488,7 @@ class DashboardService:
 _service = None
 _service_lock = threading.Lock()
 
-def get_dashboard_service() -> DashboardService:
+def get_dashboard_service():
     global _service
     if _service is None:
         with _service_lock:
@@ -1560,7 +1499,4 @@ def get_dashboard_service() -> DashboardService:
 # ------------------------------------------------------------
 # MODULE EXPORTS
 # ------------------------------------------------------------
-__all__ = [
-    "DashboardService",
-    "get_dashboard_service",
-]
+__all__ = ["DashboardService", "get_dashboard_service"]
