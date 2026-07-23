@@ -281,10 +281,10 @@ class DashboardRepository:
         try:
             if self._session is not None:
                 result = self._session.execute(text(sql), dict(params or {}))
-                return [dict(row) for row in result.mappings().all()]
+                return [dict(row._mapping) for row in result.all()]
             with engine.connect() as connection:
                 result = connection.execute(text(sql), dict(params or {}))
-                return [dict(row) for row in result.mappings().all()]
+                return [dict(row._mapping) for row in result.all()]
         except SQLAlchemyError as exc:
             logger.exception("Dashboard aggregate query failed")
             raise DatabaseError("Unable to read delivery_reports for the dashboard") from exc
@@ -558,11 +558,11 @@ class DashboardRepository:
                 WHERE {where} AND dr.delivery_date IS NULL
             )
             SELECT CASE
-                     WHEN pending_days IS NULL THEN 'Undated'
-                     WHEN pending_days <= 2 THEN '0-2 Days'
-                     WHEN pending_days <= 5 THEN '3-5 Days'
-                     WHEN pending_days <= 10 THEN '6-10 Days'
-                     ELSE '>10 Days'
+                    WHEN pending_days IS NULL THEN 'Undated'
+                    WHEN pending_days <= 2 THEN '0-2 Days'
+                    WHEN pending_days <= 5 THEN '3-5 Days'
+                    WHEN pending_days <= 10 THEN '6-10 Days'
+                    ELSE '>10 Days'
                    END AS bucket,
                    COUNT(DISTINCT dn_no) AS dn_count,
                    COALESCE(SUM(units), 0) AS units,
@@ -585,7 +585,7 @@ class DashboardRepository:
                 SELECT {quantity} AS units,
                        {distance} AS distance_km,
                        CASE WHEN dr.good_issue_date IS NOT NULL
-                              AND dr.delivery_date >= dr.good_issue_date
+                            AND dr.delivery_date >= dr.good_issue_date
                             THEN EXTRACT(EPOCH FROM (dr.delivery_date::timestamp - dr.good_issue_date::timestamp)) / 86400.0
                        END AS delivery_days
                 FROM delivery_reports dr
@@ -615,7 +615,7 @@ class DashboardRepository:
                    COALESCE(AVG(delivery_days), 0) AS actual_days,
                    CASE WHEN COALESCE(SUM(CASE WHEN delivery_days IS NOT NULL THEN units ELSE 0 END), 0) > 0
                      THEN ROUND(100.0 * SUM(CASE WHEN delivery_days <= target_days THEN units ELSE 0 END)
-                           / NULLIF(SUM(CASE WHEN delivery_days IS NOT NULL THEN units ELSE 0 END), 0), 2)
+                            / NULLIF(SUM(CASE WHEN delivery_days IS NOT NULL THEN units ELSE 0 END), 0), 2)
                      ELSE 0 END AS compliance_pct,
                    COUNT(*) FILTER (WHERE delivery_days IS NOT NULL) AS delivery_records
             FROM targeted
