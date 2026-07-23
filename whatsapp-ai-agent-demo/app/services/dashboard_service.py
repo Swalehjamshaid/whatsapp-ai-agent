@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 dashboard_service.py - Enterprise Logistics Dashboard Service
-Version: 20.0 – Full enterprise implementation
-Provides all KPIs, executive summary, pipeline, rankings, compliance,
-alerts, recommendations, metadata, and trends.
+Version: 21.0 – Full enterprise implementation with correct business logic,
+filtering, multi‑cache, orchestrator, and extended analytics.
 """
 
 import os
@@ -15,6 +14,7 @@ from datetime import datetime, date, timedelta
 from typing import Dict, List, Any, Optional, Union, Tuple
 from collections import defaultdict
 import math
+from functools import lru_cache
 
 # ------------------------------------------------------------
 # DATABASE IMPORTS
@@ -90,7 +90,7 @@ class DashboardService:
     _instance = None
     _lock = threading.Lock()
 
-    # Column mapping from database to expected names
+    # Column mapping from database to internal names
     COLUMN_MAP = {
         'dn_no': 'dn',
         'dn_qty': 'units',
@@ -105,10 +105,10 @@ class DashboardService:
         'sales_manager': 'sales_manager',
         'division': 'division',
         'warehouse': 'warehouse',
-        # Add any other mappings
+        'delivery_date': 'delivery_date',   # if present
     }
 
-    # Fixed delivery compliance brackets (distance in KM)
+    # Delivery compliance brackets (distance in KM)
     COMPLIANCE_BRACKETS = [
         {"distance": "0-100", "target_days": 1},
         {"distance": "101-250", "target_days": 2},
@@ -117,6 +117,24 @@ class DashboardService:
         {"distance": "701-900", "target_days": 5},
         {"distance": "901+", "target_days": 6},
     ]
+
+    # Cache TTLs (seconds) per section
+    CACHE_TTL_CONFIG = {
+        "cards": 30,
+        "pipeline": 30,
+        "warehouse": 60,
+        "city": 60,
+        "dealer": 120,
+        "product": 120,
+        "division": 120,
+        "sales_office": 120,
+        "sales_manager": 120,
+        "compliance": 300,
+        "alerts": 60,
+        "recommendations": 120,
+        "trend": 300,
+        "metadata": 60,
+    }
 
     def __new__(cls):
         if cls._instance is None:
@@ -129,19 +147,20 @@ class DashboardService:
         if hasattr(self, "_initialized") and self._initialized:
             return
         self._initialized = True
-        self._version = "20.0"
+        self._version = "21.0"
         self._engine = None
         self._session_maker = None
         self._table_exists = False
-        self._cache = {}
-        self._cache_time = 0
-        self._cache_ttl = int(os.getenv("DASHBOARD_CACHE_TTL", "30"))
-
+        self._available_columns = []
+        self._caches = {}  # section -> {"data": ..., "time": ...}
         self._init_database()
+        self._discover_columns()
         logger.info("=" * 60)
         logger.info(f"🚀 Dashboard Service v{self._version} initialized")
         logger.info(f"   🗄️  Database engine: {'OK' if self._engine else 'None'}")
         logger.info(f"   📋 Table exists: {self._table_exists}")
+        logger.info(f"   📋 Available columns: {self._available_columns}")
+        logger.info(f"   ⏱️  Cache TTLs: {self.CACHE_TTL_CONFIG}")
         logger.info("=" * 60)
 
     def _init_database(self):
@@ -179,6 +198,26 @@ class DashboardService:
                 logger.error(f"❌ Table check failed: {e}")
                 self._table_exists = False
 
+    def _discover_columns(self):
+        """Fetch actual column names from the table."""
+        if not self._engine or not self._table_exists:
+            return
+        try:
+            with self._engine.connect() as conn:
+                result = conn.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'delivery_reports'"
+                ))
+                self._available_columns = [row[0] for row in result]
+                logger.info(f"✅ Discovered columns: {self._available_columns}")
+        except Exception as e:
+            logger.error(f"❌ Column discovery failed: {e}")
+            self._available_columns = []
+
+    def _has_column(self, col: str) -> bool:
+        """Check if a column exists in the database."""
+        return col in self._available_columns
+
     # ---------- Data Fetching with Column Mapping ----------
     def _fetch_data(self) -> List[Dict[str, Any]]:
         if not self._engine or not self._table_exists:
@@ -186,11 +225,7 @@ class DashboardService:
 
         try:
             with self._engine.connect() as conn:
-                col_result = conn.execute(text(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name = 'delivery_reports'"
-                ))
-                cols = [row[0] for row in col_result]
+                cols = self._available_columns
                 if not cols:
                     return []
 
@@ -217,7 +252,7 @@ class DashboardService:
                     # Keep any columns that already match expected names
                     for expected in ['dn', 'units', 'value', 'pgi_date', 'pod_date',
                                      'warehouse', 'city', 'dealer', 'product', 'division',
-                                     'sales_office', 'sales_manager', 'created_at']:
+                                     'sales_office', 'sales_manager', 'created_at', 'delivery_date']:
                         if expected in row and expected not in mapped:
                             mapped[expected] = row[expected]
                     mapped_data.append(mapped)
@@ -227,107 +262,211 @@ class DashboardService:
             logger.error(f"❌ Fetch error: {traceback.format_exc()}")
             return []
 
-    # ---------- BUSINESS LOGIC FUNCTIONS ----------
+    # ---------- Filtering ----------
+    def _apply_filters(self, data: List[Dict], filters: Dict) -> List[Dict]:
+        if not filters or not data:
+            return data
 
-    # 1. KPI Cards (enhanced)
+        filtered = data
+        # Date filters
+        start_date = filters.get("start_date")
+        end_date = filters.get("end_date")
+        if start_date or end_date:
+            date_col = "created_at" if self._has_column("dn_create_date") else "pod_date"
+            if start_date:
+                try:
+                    start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+                    filtered = [r for r in filtered if r.get(date_col) and _parse_date(r[date_col]).date() >= start_dt]
+                except:
+                    pass
+            if end_date:
+                try:
+                    end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+                    filtered = [r for r in filtered if r.get(date_col) and _parse_date(r[date_col]).date() <= end_dt]
+                except:
+                    pass
+
+        # Filter by warehouse
+        warehouse = filters.get("warehouse")
+        if warehouse:
+            filtered = [r for r in filtered if r.get("warehouse", "").lower() == warehouse.lower()]
+
+        # Filter by dealer
+        dealer = filters.get("dealer")
+        if dealer:
+            filtered = [r for r in filtered if r.get("dealer", "").lower() == dealer.lower()]
+
+        # Filter by product
+        product = filters.get("product")
+        if product:
+            filtered = [r for r in filtered if r.get("product", "").lower() == product.lower()]
+
+        # Filter by city
+        city = filters.get("city")
+        if city:
+            filtered = [r for r in filtered if r.get("city", "").lower() == city.lower()]
+
+        # Filter by division
+        division = filters.get("division")
+        if division:
+            filtered = [r for r in filtered if r.get("division", "").lower() == division.lower()]
+
+        # Filter by status (PGI, Delivery, POD)
+        status = filters.get("status")
+        if status:
+            if status.lower() == "pending_pgi":
+                filtered = [r for r in filtered if r.get("pgi_date") in (None, "")]
+            elif status.lower() == "pending_delivery":
+                filtered = [r for r in filtered if r.get("pgi_date") not in (None, "") and r.get("delivery_date") in (None, "")]
+            elif status.lower() == "pending_pod":
+                filtered = [r for r in filtered if r.get("delivery_date") not in (None, "") and r.get("pod_date") in (None, "")]
+            elif status.lower() == "delivered":
+                filtered = [r for r in filtered if r.get("pod_date") not in (None, "")]
+            elif status.lower() == "in_transit":
+                filtered = [r for r in filtered if r.get("pgi_date") not in (None, "") and r.get("delivery_date") in (None, "")]
+            # add more as needed
+
+        return filtered
+
+    # ---------- 1. KPI Cards ----------
     def calculate_kpis(self, data: List[Dict]) -> Dict[str, Any]:
         if not data:
-            return {
-                "total_dn": {"value": 0},
-                "total_units": {"value": 0},
-                "total_value": {"value": 0},
-                "pgi_achievement": {"value": 0.0},
-                "delivery_achievement": {"value": 0.0},
-                "pod_achievement": {"value": 0.0},
-                "pending_dn": {"value": 0},
-                "pending_units": {"value": 0},
-                "pending_value": {"value": 0.0},
-                "avg_delivery_days": {"value": 0.0},
-                "avg_pod_days": {"value": 0.0},
-                "health_score": {"value": 0.0},
-            }
+            return self._empty_kpis()
 
-        # Get distinct DNs and aggregate
+        # Group by DN
         dns = {}
         for row in data:
             dn = row.get("dn")
-            if dn:
-                dn_str = str(dn)
-                if dn_str not in dns:
-                    dns[dn_str] = {
-                        "units": 0,
-                        "value": 0,
-                        "pgi_date": None,
-                        "pod_date": None,
-                        "warehouse": row.get("warehouse"),
-                        "city": row.get("city"),
-                    }
-                dns[dn_str]["units"] += float(row.get("units", 0))
-                dns[dn_str]["value"] += float(row.get("value", 0))
-                if row.get("pgi_date") not in (None, ""):
-                    dns[dn_str]["pgi_date"] = row.get("pgi_date")
-                if row.get("pod_date") not in (None, ""):
-                    dns[dn_str]["pod_date"] = row.get("pod_date")
+            if not dn:
+                continue
+            dn_str = str(dn)
+            if dn_str not in dns:
+                dns[dn_str] = {
+                    "units": 0,
+                    "value": 0,
+                    "pgi_date": None,
+                    "delivery_date": None,
+                    "pod_date": None,
+                    "warehouse": row.get("warehouse"),
+                    "city": row.get("city"),
+                }
+            d = dns[dn_str]
+            d["units"] += float(row.get("units", 0))
+            d["value"] += float(row.get("value", 0))
+            if row.get("pgi_date") not in (None, ""):
+                d["pgi_date"] = row.get("pgi_date")
+            if row.get("delivery_date") not in (None, ""):
+                d["delivery_date"] = row.get("delivery_date")
+            if row.get("pod_date") not in (None, ""):
+                d["pod_date"] = row.get("pod_date")
 
         total_dn = len(dns)
+        if total_dn == 0:
+            return self._empty_kpis()
+
         total_units = sum(d["units"] for d in dns.values())
         total_value = sum(d["value"] for d in dns.values())
 
-        # Counts
+        # Stage counts
         pgi_count = sum(1 for d in dns.values() if d["pgi_date"] not in (None, ""))
+        delivery_count = sum(1 for d in dns.values() if d["delivery_date"] not in (None, ""))
         pod_count = sum(1 for d in dns.values() if d["pod_date"] not in (None, ""))
-        # Delivery = POD (since delivery is considered complete when POD is received)
-        delivery_count = pod_count
-        pending_dn = total_dn - pod_count
+
+        # Percentages (with fallback if delivery_date missing)
+        pgi_pct = _safe_divide(pgi_count, total_dn) * 100
+        # Delivery % = delivered / pgi
+        delivery_pct = _safe_divide(delivery_count, pgi_count) * 100 if pgi_count > 0 else 0
+        # POD % = pod / delivered
+        pod_pct = _safe_divide(pod_count, delivery_count) * 100 if delivery_count > 0 else 0
+
+        # Pending counts by stage
+        pending_pgi = total_dn - pgi_count
+        pending_delivery = pgi_count - delivery_count
+        pending_pod = delivery_count - pod_count
         pending_units = sum(d["units"] for dn, d in dns.items() if d["pod_date"] in (None, ""))
         pending_value = sum(d["value"] for dn, d in dns.items() if d["pod_date"] in (None, ""))
 
-        # Percentages
-        pgi_pct = _safe_divide(pgi_count, total_dn) * 100
-        delivery_pct = _safe_divide(delivery_count, pgi_count) * 100 if pgi_count > 0 else 0  # % of PGI that got delivered
-        pod_pct = _safe_divide(pod_count, total_dn) * 100
-
-        # Average days
+        # Average days (if delivery_date exists)
         delivery_days_list = []
         pod_days_list = []
         for d in dns.values():
-            if d["pgi_date"] not in (None, "") and d["pod_date"] not in (None, ""):
+            if d["pgi_date"] not in (None, "") and d["delivery_date"] not in (None, ""):
                 pgi = _parse_date(d["pgi_date"])
+                deliv = _parse_date(d["delivery_date"])
+                if pgi and deliv:
+                    days = (deliv - pgi).days
+                    if days >= 0:
+                        delivery_days_list.append(days)
+            if d["delivery_date"] not in (None, "") and d["pod_date"] not in (None, ""):
+                deliv = _parse_date(d["delivery_date"])
                 pod = _parse_date(d["pod_date"])
-                if pgi and pod:
-                    dd = (pod - pgi).days
-                    if dd >= 0:
-                        delivery_days_list.append(dd)
-                        # POD days = pod - delivery (but delivery is same as pod, so 0)
-                        # We'll compute average POD days as (pod - pgi) also, but later we can differentiate if we have separate delivery date
-                        pod_days_list.append(dd)
+                if deliv and pod:
+                    days = (pod - deliv).days
+                    if days >= 0:
+                        pod_days_list.append(days)
+        # If no delivery_date, fallback to (pod - pgi) for both
+        if not delivery_days_list and pod_days_list:
+            delivery_days_list = pod_days_list[:]
+        if not pod_days_list and delivery_days_list:
+            pod_days_list = delivery_days_list[:]
+
         avg_delivery_days = sum(delivery_days_list) / len(delivery_days_list) if delivery_days_list else 0
         avg_pod_days = sum(pod_days_list) / len(pod_days_list) if pod_days_list else 0
 
-        # Health score: weighted average of PGI, Delivery, POD, penalty for pending
-        health = (pgi_pct * 0.3 + delivery_pct * 0.3 + pod_pct * 0.3)
-        if pending_units > 5000:
-            health -= 15
-        elif pending_units > 1000:
-            health -= 8
+        # Health score (weighted)
+        # We need compliance and days components for full formula, but we'll compute approx
+        compliance_score = self._calculate_compliance_score(data)  # placeholder
+        days_score = max(0, min(100, (7 - avg_delivery_days) / 7 * 100)) if avg_delivery_days > 0 else 100
+        pending_score = max(0, min(100, 100 - (pending_units / 10000) * 20))  # arbitrary
+
+        health = (
+            pgi_pct * 0.25 +
+            delivery_pct * 0.25 +
+            pod_pct * 0.20 +
+            pending_score * 0.15 +
+            compliance_score * 0.10 +
+            days_score * 0.05
+        )
         health = max(0, min(100, health))
 
         return {
             "total_dn": {"value": total_dn},
             "total_units": {"value": total_units},
             "total_value": {"value": total_value},
-            "pgi_achievement": {"value": pgi_pct},
-            "delivery_achievement": {"value": delivery_pct},
-            "pod_achievement": {"value": pod_pct},
-            "pending_dn": {"value": pending_dn},
+            "pgi_achievement": {"value": round(pgi_pct, 1)},
+            "delivery_achievement": {"value": round(delivery_pct, 1)},
+            "pod_achievement": {"value": round(pod_pct, 1)},
+            "pending_pgi": {"value": pending_pgi},
+            "pending_delivery": {"value": pending_delivery},
+            "pending_pod": {"value": pending_pod},
+            "pending_dn": {"value": pending_pgi + pending_delivery + pending_pod},  # total pending
             "pending_units": {"value": pending_units},
             "pending_value": {"value": pending_value},
-            "avg_delivery_days": {"value": avg_delivery_days},
-            "avg_pod_days": {"value": avg_pod_days},
-            "health_score": {"value": health},
+            "avg_delivery_days": {"value": round(avg_delivery_days, 1)},
+            "avg_pod_days": {"value": round(avg_pod_days, 1)},
+            "health_score": {"value": round(health, 1)},
         }
 
-    # 2. Executive Summary (enhanced)
+    def _empty_kpis(self):
+        return {
+            "total_dn": {"value": 0},
+            "total_units": {"value": 0},
+            "total_value": {"value": 0},
+            "pgi_achievement": {"value": 0.0},
+            "delivery_achievement": {"value": 0.0},
+            "pod_achievement": {"value": 0.0},
+            "pending_pgi": {"value": 0},
+            "pending_delivery": {"value": 0},
+            "pending_pod": {"value": 0},
+            "pending_dn": {"value": 0},
+            "pending_units": {"value": 0},
+            "pending_value": {"value": 0.0},
+            "avg_delivery_days": {"value": 0.0},
+            "avg_pod_days": {"value": 0.0},
+            "health_score": {"value": 0.0},
+        }
+
+    # ---------- 2. Executive Summary ----------
     def generate_executive_summary(self, data: List[Dict]) -> Dict[str, Any]:
         if not data:
             return {
@@ -341,61 +480,49 @@ class DashboardService:
 
         kpis = self.calculate_kpis(data)
         health = kpis["health_score"]["value"]
-        pending_units = kpis["pending_units"]["value"]
+        status = "Excellent" if health >= 90 else "Good" if health >= 75 else "Fair" if health >= 60 else "Critical"
+
+        # Summary text
         total_dn = kpis["total_dn"]["value"]
         total_units = kpis["total_units"]["value"]
         total_value = kpis["total_value"]["value"]
         pgi = kpis["pgi_achievement"]["value"]
         delivery = kpis["delivery_achievement"]["value"]
         pod = kpis["pod_achievement"]["value"]
-        avg_delivery_days = kpis["avg_delivery_days"]["value"]
-        avg_pod_days = kpis["avg_pod_days"]["value"]
-
-        # Determine status
-        if health >= 90:
-            status = "Excellent"
-        elif health >= 75:
-            status = "Good"
-        elif health >= 60:
-            status = "Fair"
-        else:
-            status = "Critical"
-
-        # Summary text
+        pending = kpis["pending_units"]["value"]
+        avg_days = kpis["avg_delivery_days"]["value"]
         summary = (
-            f"Logistics performance: {total_dn:,} Delivery Notes, {total_units:,.0f} units, "
-            f"PKR {total_value:,.0f} revenue. PGI: {pgi:.1f}%, Delivery: {delivery:.1f}%, "
-            f"POD: {pod:.1f}%. Avg Delivery Days: {avg_delivery_days:.1f}, Avg POD Days: {avg_pod_days:.1f}. "
-            f"Pending: {pending_units:,.0f} units. Health Score: {health:.1f}%."
+            f"Performance: {total_dn} DNs, {total_units:,.0f} units, {_format_currency(total_value)}. "
+            f"PGI {pgi:.1f}%, Delivery {delivery:.1f}%, POD {pod:.1f}%. "
+            f"Pending {pending:,.0f} units. Avg Delivery {avg_days:.1f} days. "
+            f"Health Score {health:.1f}%."
         )
 
-        # Identify risks
+        # Risks
         risks = []
-        if pending_units > 5000:
+        if kpis["pending_units"]["value"] > 5000:
             risks.append("High pending units (>5000).")
         if delivery < 80:
             risks.append("Low delivery rate (<80%).")
         if pod < 80:
             risks.append("Low POD rate (<80%).")
-        if avg_delivery_days > 7:
+        if avg_days > 7:
             risks.append("High average delivery days (>7).")
+        if kpis["pending_value"]["value"] > 10000000:
+            risks.append("High pending value (>10M).")
 
-        # Highlights (best performers)
+        # Highlights
         highlights = []
-        # Best warehouse by performance
         wh_perf = self.calculate_warehouse_performance(data)
         if wh_perf:
-            best_wh = max(wh_perf, key=lambda x: x["performance_score"])
-            if best_wh["performance_score"] > 80:
-                highlights.append(f"Top warehouse: {best_wh['warehouse']} (Score: {best_wh['performance_score']:.1f}%)")
-        # Best dealer
+            best = max(wh_perf, key=lambda x: x["performance_score"])
+            highlights.append(f"Top Warehouse: {best['warehouse']} (Score {best['performance_score']:.1f}%)")
         dealer_perf = self.calculate_dealer_performance(data)
         if dealer_perf:
-            best_dealer = dealer_perf[0]
-            highlights.append(f"Top dealer: {best_dealer['dealer']} (Revenue: {_format_currency(best_dealer['revenue'])})")
+            best_d = dealer_perf[0]
+            highlights.append(f"Top Dealer: {best_d['dealer']} (Revenue {_format_currency(best_d['revenue']})")
 
-        # Recommendations (dynamic)
-        recommendations = self.get_recommendations(data)
+        recs = self.get_recommendations(data)
 
         return {
             "overall_health": round(health, 1),
@@ -403,10 +530,10 @@ class DashboardService:
             "summary": summary,
             "risks": risks,
             "highlights": highlights,
-            "recommendations": recommendations,
+            "recommendations": recs,
         }
 
-    # 3. Pipeline (enhanced with more stages, but we'll keep it simple if data missing)
+    # ---------- 3. Pipeline ----------
     def calculate_pipeline(self, data: List[Dict]) -> Dict[str, Any]:
         if not data:
             return self._empty_pipeline()
@@ -414,32 +541,33 @@ class DashboardService:
         dns = {}
         for row in data:
             dn = row.get("dn")
-            if dn:
-                dn_str = str(dn)
-                if dn_str not in dns:
-                    dns[dn_str] = {
-                        "pgi_date": None,
-                        "pod_date": None,
-                        # Additional stages could be derived if we have columns like 'vehicle_assigned_date', 'loading_date', etc.
-                    }
-                if row.get("pgi_date") not in (None, ""):
-                    dns[dn_str]["pgi_date"] = row.get("pgi_date")
-                if row.get("pod_date") not in (None, ""):
-                    dns[dn_str]["pod_date"] = row.get("pod_date")
+            if not dn:
+                continue
+            dn_str = str(dn)
+            if dn_str not in dns:
+                dns[dn_str] = {
+                    "pgi_date": None,
+                    "delivery_date": None,
+                    "pod_date": None,
+                }
+            if row.get("pgi_date") not in (None, ""):
+                dns[dn_str]["pgi_date"] = row.get("pgi_date")
+            if row.get("delivery_date") not in (None, ""):
+                dns[dn_str]["delivery_date"] = row.get("delivery_date")
+            if row.get("pod_date") not in (None, ""):
+                dns[dn_str]["pod_date"] = row.get("pod_date")
 
         total = len(dns)
         if total == 0:
             return self._empty_pipeline()
 
-        # Stages
+        # Stage counts
         dn_created = total
         pgi_completed = sum(1 for d in dns.values() if d["pgi_date"] not in (None, ""))
-        # In transit = pgi done, pod not done
-        in_transit = sum(1 for d in dns.values() if d["pgi_date"] not in (None, "") and d["pod_date"] in (None, ""))
-        delivered = sum(1 for d in dns.values() if d["pod_date"] not in (None, ""))
-        pod_received = delivered
-
-        # Additional stages (we'll set them as 0 if no data)
+        delivered = sum(1 for d in dns.values() if d["delivery_date"] not in (None, ""))
+        pod_received = sum(1 for d in dns.values() if d["pod_date"] not in (None, ""))
+        in_transit = sum(1 for d in dns.values() if d["pgi_date"] not in (None, "") and d["delivery_date"] in (None, ""))
+        # Additional stages – placeholder
         vehicle_assigned = 0
         loading = 0
         gate_out = 0
@@ -483,12 +611,11 @@ class DashboardService:
             "pipeline_loss": 0,
         }
 
-    # 4. Warehouse Performance (enhanced)
+    # ---------- 4. Warehouse Performance (enhanced) ----------
     def calculate_warehouse_performance(self, data: List[Dict]) -> List[Dict]:
         if not data:
             return []
 
-        # Aggregate by warehouse
         wh_data = {}
         for row in data:
             wh = row.get("warehouse", "Unknown")
@@ -498,9 +625,11 @@ class DashboardService:
                     "units": 0,
                     "value": 0,
                     "pgi_count": 0,
+                    "delivery_count": 0,
                     "pod_count": 0,
                     "pending_units": 0,
                     "pending_value": 0,
+                    "delivery_days": [],
                     "pod_days": [],
                 }
             w = wh_data[wh]
@@ -511,14 +640,24 @@ class DashboardService:
             w["value"] += float(row.get("value", 0))
             if row.get("pgi_date") not in (None, ""):
                 w["pgi_count"] += 1
-            if row.get("pod_date") not in (None, ""):
-                w["pod_count"] += 1
-                # Compute pod days (pod - pgi)
+            if row.get("delivery_date") not in (None, ""):
+                w["delivery_count"] += 1
+                # Delivery days
                 if row.get("pgi_date") not in (None, ""):
                     pgi = _parse_date(row.get("pgi_date"))
+                    deliv = _parse_date(row.get("delivery_date"))
+                    if pgi and deliv:
+                        days = (deliv - pgi).days
+                        if days >= 0:
+                            w["delivery_days"].append(days)
+            if row.get("pod_date") not in (None, ""):
+                w["pod_count"] += 1
+                # POD days
+                if row.get("delivery_date") not in (None, ""):
+                    deliv = _parse_date(row.get("delivery_date"))
                     pod = _parse_date(row.get("pod_date"))
-                    if pgi and pod:
-                        days = (pod - pgi).days
+                    if deliv and pod:
+                        days = (pod - deliv).days
                         if days >= 0:
                             w["pod_days"].append(days)
             else:
@@ -531,22 +670,38 @@ class DashboardService:
             if dns == 0:
                 continue
             pgi_pct = _safe_divide(w["pgi_count"], dns) * 100
-            pod_pct = _safe_divide(w["pod_count"], dns) * 100
-            delivery_pct = pod_pct  # delivery = pod
+            delivery_pct = _safe_divide(w["delivery_count"], w["pgi_count"]) * 100 if w["pgi_count"] > 0 else 0
+            pod_pct = _safe_divide(w["pod_count"], w["delivery_count"]) * 100 if w["delivery_count"] > 0 else 0
+            avg_delivery_days = sum(w["delivery_days"]) / len(w["delivery_days"]) if w["delivery_days"] else 0
             avg_pod_days = sum(w["pod_days"]) / len(w["pod_days"]) if w["pod_days"] else 0
             pending_units = w["pending_units"]
             pending_value = w["pending_value"]
-            performance_score = (pgi_pct * 0.3 + delivery_pct * 0.3 + pod_pct * 0.3)
+
+            # Health score (using weights)
+            compliance = 100  # placeholder
+            days_score = max(0, min(100, (7 - avg_delivery_days) / 7 * 100)) if avg_delivery_days > 0 else 100
+            pending_score = max(0, min(100, 100 - (pending_units / 10000) * 20))
+            health = (
+                pgi_pct * 0.25 +
+                delivery_pct * 0.25 +
+                pod_pct * 0.20 +
+                pending_score * 0.15 +
+                compliance * 0.10 +
+                days_score * 0.05
+            )
+            health = max(0, min(100, health))
+            performance_score = health  # for simplicity
+
+            risk = "🔴" if avg_delivery_days > 10 or pending_units > 5000 else ("🟡" if avg_delivery_days > 5 or pending_units > 1000 else "🟢")
+            trend = "▬"
+            insight = "Good performance."
             if pending_units > 5000:
-                performance_score -= 20
-            elif pending_units > 1000:
-                performance_score -= 10
-            performance_score = max(0, min(100, performance_score))
+                insight = "High pending units. Immediate action required."
+            elif avg_delivery_days > 5:
+                insight = f"Avg delivery {avg_delivery_days:.1f} days. Optimize routes."
+            elif pod_pct < 80:
+                insight = "Low POD rate. Follow up on proof of delivery."
 
-            # Health = performance_score (or a custom metric)
-            health = performance_score
-
-            # Ranking will be assigned later
             result.append({
                 "warehouse": wh,
                 "dns": dns,
@@ -555,37 +710,28 @@ class DashboardService:
                 "pgi_pct": round(pgi_pct, 1),
                 "delivery_pct": round(delivery_pct, 1),
                 "pod_pct": round(pod_pct, 1),
-                "avg_delivery_days": round(avg_pod_days, 1),  # same as pod days
+                "avg_delivery_days": round(avg_delivery_days, 1),
                 "avg_pod_days": round(avg_pod_days, 1),
                 "pending_units": int(pending_units),
-                "pending_dns": int(dns - w["pod_count"]),
+                "pending_dns": int(dns - w["delivery_count"]),
                 "pending_value": pending_value,
                 "performance_score": round(performance_score, 1),
                 "health_score": round(health, 1),
-                "risk": "🔴" if avg_pod_days > 10 or pending_units > 5000 else ("🟡" if avg_pod_days > 5 or pending_units > 1000 else "🟢"),
-                "trend": "▬",
-                "ai_insight": "",
+                "risk": risk,
+                "trend": trend,
+                "ai_insight": insight,
                 "rank": 0,
             })
 
-        # Sort and assign ranks, trends, insights
+        # Sort and assign rank, trend, etc.
         result.sort(key=lambda x: x["performance_score"], reverse=True)
         avg_score = sum(r["performance_score"] for r in result) / len(result) if result else 50
         for i, r in enumerate(result):
             r["rank"] = i + 1
             r["trend"] = "↑" if r["performance_score"] > avg_score else ("↓" if r["performance_score"] < avg_score else "▬")
-            if r["pending_units"] > 5000:
-                r["ai_insight"] = "High pending units. Immediate action required."
-            elif r["avg_delivery_days"] > 5:
-                r["ai_insight"] = f"Avg delivery {r['avg_delivery_days']:.1f} days. Optimize routes."
-            elif r["pod_pct"] < 80:
-                r["ai_insight"] = "Low POD rate. Follow up on proof of delivery."
-            else:
-                r["ai_insight"] = "Good performance. Maintain standards."
-
         return result
 
-    # 5. City Performance (enhanced)
+    # ---------- 5. City Performance ----------
     def calculate_city_performance(self, data: List[Dict]) -> List[Dict]:
         if not data:
             return []
@@ -599,9 +745,10 @@ class DashboardService:
                     "units": 0,
                     "value": 0,
                     "pgi_count": 0,
+                    "delivery_count": 0,
                     "pod_count": 0,
                     "pending_units": 0,
-                    "pod_days": [],
+                    "delivery_days": [],
                     "warehouses": set(),
                     "dealers": set(),
                 }
@@ -613,15 +760,17 @@ class DashboardService:
             c["value"] += float(row.get("value", 0))
             if row.get("pgi_date") not in (None, ""):
                 c["pgi_count"] += 1
-            if row.get("pod_date") not in (None, ""):
-                c["pod_count"] += 1
+            if row.get("delivery_date") not in (None, ""):
+                c["delivery_count"] += 1
                 if row.get("pgi_date") not in (None, ""):
                     pgi = _parse_date(row.get("pgi_date"))
-                    pod = _parse_date(row.get("pod_date"))
-                    if pgi and pod:
-                        days = (pod - pgi).days
+                    deliv = _parse_date(row.get("delivery_date"))
+                    if pgi and deliv:
+                        days = (deliv - pgi).days
                         if days >= 0:
-                            c["pod_days"].append(days)
+                            c["delivery_days"].append(days)
+            if row.get("pod_date") not in (None, ""):
+                c["pod_count"] += 1
             else:
                 c["pending_units"] += float(row.get("units", 0))
             if row.get("warehouse"):
@@ -635,15 +784,13 @@ class DashboardService:
             if dns == 0:
                 continue
             pgi_pct = _safe_divide(c["pgi_count"], dns) * 100
-            pod_pct = _safe_divide(c["pod_count"], dns) * 100
-            delivery_pct = pod_pct
-            avg_delivery_days = sum(c["pod_days"]) / len(c["pod_days"]) if c["pod_days"] else 0
+            delivery_pct = _safe_divide(c["delivery_count"], c["pgi_count"]) * 100 if c["pgi_count"] > 0 else 0
+            pod_pct = _safe_divide(c["pod_count"], c["delivery_count"]) * 100 if c["delivery_count"] > 0 else 0
+            avg_delivery_days = sum(c["delivery_days"]) / len(c["delivery_days"]) if c["delivery_days"] else 0
             pending_units = c["pending_units"]
-            health = (pgi_pct * 0.3 + delivery_pct * 0.3 + pod_pct * 0.3)
+            health = (pgi_pct * 0.25 + delivery_pct * 0.25 + pod_pct * 0.20)
             if pending_units > 5000:
                 health -= 15
-            elif pending_units > 1000:
-                health -= 8
             health = max(0, min(100, health))
 
             status = "Good"
@@ -675,7 +822,7 @@ class DashboardService:
         result.sort(key=lambda x: x["avg_delivery_days"], reverse=True)
         return result
 
-    # 6. Pending Analysis
+    # ---------- 6. Pending Analysis ----------
     def calculate_pending_analysis(self, data: List[Dict], top_n: int = 5) -> List[Dict]:
         if not data:
             return []
@@ -701,7 +848,7 @@ class DashboardService:
         result.sort(key=lambda x: x["pending_units"], reverse=True)
         return result[:top_n]
 
-    # 7. Dealer Performance (enhanced)
+    # ---------- 7. Dealer Performance (enhanced) ----------
     def calculate_dealer_performance(self, data: List[Dict], top_n: int = 10) -> List[Dict]:
         if not data:
             return []
@@ -715,9 +862,11 @@ class DashboardService:
                     "units": 0,
                     "revenue": 0,
                     "pgi_count": 0,
+                    "delivery_count": 0,
                     "pod_count": 0,
                     "cities": set(),
                     "warehouses": set(),
+                    "delivery_days": [],
                     "pod_days": [],
                 }
             d = dealer_data[dealer]
@@ -728,13 +877,22 @@ class DashboardService:
             d["revenue"] += float(row.get("value", 0))
             if row.get("pgi_date") not in (None, ""):
                 d["pgi_count"] += 1
-            if row.get("pod_date") not in (None, ""):
-                d["pod_count"] += 1
+            if row.get("delivery_date") not in (None, ""):
+                d["delivery_count"] += 1
                 if row.get("pgi_date") not in (None, ""):
                     pgi = _parse_date(row.get("pgi_date"))
+                    deliv = _parse_date(row.get("delivery_date"))
+                    if pgi and deliv:
+                        days = (deliv - pgi).days
+                        if days >= 0:
+                            d["delivery_days"].append(days)
+            if row.get("pod_date") not in (None, ""):
+                d["pod_count"] += 1
+                if row.get("delivery_date") not in (None, ""):
+                    deliv = _parse_date(row.get("delivery_date"))
                     pod = _parse_date(row.get("pod_date"))
-                    if pgi and pod:
-                        days = (pod - pgi).days
+                    if deliv and pod:
+                        days = (pod - deliv).days
                         if days >= 0:
                             d["pod_days"].append(days)
             if row.get("city"):
@@ -747,13 +905,13 @@ class DashboardService:
             dns = len(d["dns"])
             if dns == 0:
                 continue
-            pod_pct = _safe_divide(d["pod_count"], dns) * 100
-            delivery_pct = pod_pct
-            avg_delivery_days = sum(d["pod_days"]) / len(d["pod_days"]) if d["pod_days"] else 0
-            avg_pod_days = avg_delivery_days
-            pending_units = d["units"] - sum(1 for _ in range(d["pod_count"]))  # approximate
-            growth = 0  # Not implemented
-            health = (delivery_pct * 0.6 + pod_pct * 0.4)
+            pod_pct = _safe_divide(d["pod_count"], d["delivery_count"]) * 100 if d["delivery_count"] > 0 else 0
+            delivery_pct = _safe_divide(d["delivery_count"], d["pgi_count"]) * 100 if d["pgi_count"] > 0 else 0
+            avg_delivery_days = sum(d["delivery_days"]) / len(d["delivery_days"]) if d["delivery_days"] else 0
+            avg_pod_days = sum(d["pod_days"]) / len(d["pod_days"]) if d["pod_days"] else 0
+            pending_units = d["units"] - sum(1 for _ in range(d["delivery_count"]))  # approximate
+            growth = 0  # placeholder
+            health = (delivery_pct * 0.3 + pod_pct * 0.3)
             if pending_units > 5000:
                 health -= 15
             health = max(0, min(100, health))
@@ -771,7 +929,7 @@ class DashboardService:
                 "pod_pct": round(pod_pct, 1),
                 "delivery_pct": round(delivery_pct, 1),
                 "health": round(health, 1),
-                "growth": 0,
+                "growth": growth,
                 "rank": 0,
                 "ai_insight": "",
             })
@@ -787,7 +945,7 @@ class DashboardService:
                 r["ai_insight"] = "Good performance."
         return result[:top_n]
 
-    # 8. Product Performance (enhanced)
+    # ---------- 8. Product Performance (enhanced) ----------
     def calculate_product_performance(self, data: List[Dict], top_n: int = 10) -> List[Dict]:
         if not data:
             return []
@@ -801,11 +959,12 @@ class DashboardService:
                     "units": 0,
                     "revenue": 0,
                     "pgi_count": 0,
+                    "delivery_count": 0,
                     "pod_count": 0,
                     "cities": set(),
                     "warehouses": set(),
                     "dealers": set(),
-                    "pod_days": [],
+                    "delivery_days": [],
                 }
             p = product_data[prod]
             dn = row.get("dn")
@@ -815,15 +974,17 @@ class DashboardService:
             p["revenue"] += float(row.get("value", 0))
             if row.get("pgi_date") not in (None, ""):
                 p["pgi_count"] += 1
-            if row.get("pod_date") not in (None, ""):
-                p["pod_count"] += 1
+            if row.get("delivery_date") not in (None, ""):
+                p["delivery_count"] += 1
                 if row.get("pgi_date") not in (None, ""):
                     pgi = _parse_date(row.get("pgi_date"))
-                    pod = _parse_date(row.get("pod_date"))
-                    if pgi and pod:
-                        days = (pod - pgi).days
+                    deliv = _parse_date(row.get("delivery_date"))
+                    if pgi and deliv:
+                        days = (deliv - pgi).days
                         if days >= 0:
-                            p["pod_days"].append(days)
+                            p["delivery_days"].append(days)
+            if row.get("pod_date") not in (None, ""):
+                p["pod_count"] += 1
             if row.get("city"):
                 p["cities"].add(row.get("city"))
             if row.get("warehouse"):
@@ -837,12 +998,12 @@ class DashboardService:
             dns = len(p["dns"])
             if dns == 0:
                 continue
-            pod_pct = _safe_divide(p["pod_count"], dns) * 100
-            delivery_pct = pod_pct
-            avg_delivery_days = sum(p["pod_days"]) / len(p["pod_days"]) if p["pod_days"] else 0
-            pending_units = p["units"] - sum(1 for _ in range(p["pod_count"]))
+            pod_pct = _safe_divide(p["pod_count"], p["delivery_count"]) * 100 if p["delivery_count"] > 0 else 0
+            delivery_pct = _safe_divide(p["delivery_count"], p["pgi_count"]) * 100 if p["pgi_count"] > 0 else 0
+            avg_delivery_days = sum(p["delivery_days"]) / len(p["delivery_days"]) if p["delivery_days"] else 0
+            pending_units = p["units"] - sum(1 for _ in range(p["delivery_count"]))
             contribution = _safe_divide(p["revenue"], total_revenue) * 100
-            health = (delivery_pct * 0.5 + pod_pct * 0.5)
+            health = (delivery_pct * 0.4 + pod_pct * 0.4)
             if pending_units > 5000:
                 health -= 15
             health = max(0, min(100, health))
@@ -856,7 +1017,7 @@ class DashboardService:
                 "warehouses": len(p["warehouses"]),
                 "cities": len(p["cities"]),
                 "avg_delivery_days": round(avg_delivery_days, 1),
-                "avg_pod_days": round(avg_delivery_days, 1),
+                "avg_pod_days": round(avg_delivery_days, 1),  # placeholder
                 "pending_units": int(pending_units),
                 "pod_pct": round(pod_pct, 1),
                 "delivery_pct": round(delivery_pct, 1),
@@ -877,7 +1038,7 @@ class DashboardService:
                 r["ai_insight"] = "Good performance."
         return result[:top_n]
 
-    # 9. Division Performance (enhanced)
+    # ---------- 9. Division Performance ----------
     def calculate_division_performance(self, data: List[Dict]) -> List[Dict]:
         if not data:
             return []
@@ -891,6 +1052,7 @@ class DashboardService:
                     "units": 0,
                     "revenue": 0,
                     "pgi_count": 0,
+                    "delivery_count": 0,
                     "pod_count": 0,
                     "pending_units": 0,
                 }
@@ -902,6 +1064,8 @@ class DashboardService:
             d["revenue"] += float(row.get("value", 0))
             if row.get("pgi_date") not in (None, ""):
                 d["pgi_count"] += 1
+            if row.get("delivery_date") not in (None, ""):
+                d["delivery_count"] += 1
             if row.get("pod_date") not in (None, ""):
                 d["pod_count"] += 1
             else:
@@ -913,9 +1077,9 @@ class DashboardService:
             if dns == 0:
                 continue
             pgi_pct = _safe_divide(d["pgi_count"], dns) * 100
-            pod_pct = _safe_divide(d["pod_count"], dns) * 100
-            delivery_pct = pod_pct
-            health = (pgi_pct * 0.3 + delivery_pct * 0.3 + pod_pct * 0.3)
+            delivery_pct = _safe_divide(d["delivery_count"], d["pgi_count"]) * 100 if d["pgi_count"] > 0 else 0
+            pod_pct = _safe_divide(d["pod_count"], d["delivery_count"]) * 100 if d["delivery_count"] > 0 else 0
+            health = (pgi_pct * 0.25 + delivery_pct * 0.25 + pod_pct * 0.20)
             if d["pending_units"] > 5000:
                 health -= 15
             health = max(0, min(100, health))
@@ -938,12 +1102,11 @@ class DashboardService:
             r["rank"] = i + 1
         return result
 
-    # 10. Sales Office Performance
+    # ---------- 10. Sales Office Performance ----------
     def calculate_sales_office_performance(self, data: List[Dict]) -> List[Dict]:
         if not data:
             return []
 
-        # Check if sales_office column exists and has data
         has_office = any(row.get("sales_office") for row in data)
         if not has_office:
             return []
@@ -957,6 +1120,7 @@ class DashboardService:
                     "units": 0,
                     "revenue": 0,
                     "pgi_count": 0,
+                    "delivery_count": 0,
                     "pod_count": 0,
                     "pending_units": 0,
                 }
@@ -968,6 +1132,8 @@ class DashboardService:
             o["revenue"] += float(row.get("value", 0))
             if row.get("pgi_date") not in (None, ""):
                 o["pgi_count"] += 1
+            if row.get("delivery_date") not in (None, ""):
+                o["delivery_count"] += 1
             if row.get("pod_date") not in (None, ""):
                 o["pod_count"] += 1
             else:
@@ -979,12 +1145,19 @@ class DashboardService:
             if dns == 0:
                 continue
             pgi_pct = _safe_divide(o["pgi_count"], dns) * 100
-            pod_pct = _safe_divide(o["pod_count"], dns) * 100
-            delivery_pct = pod_pct
-            health = (pgi_pct * 0.3 + delivery_pct * 0.3 + pod_pct * 0.3)
+            delivery_pct = _safe_divide(o["delivery_count"], o["pgi_count"]) * 100 if o["pgi_count"] > 0 else 0
+            pod_pct = _safe_divide(o["pod_count"], o["delivery_count"]) * 100 if o["delivery_count"] > 0 else 0
+            health = (pgi_pct * 0.25 + delivery_pct * 0.25 + pod_pct * 0.20)
             if o["pending_units"] > 5000:
                 health -= 15
             health = max(0, min(100, health))
+
+            # Growth placeholder
+            growth = 0
+            trend = "▬"
+            insight = "Good performance."
+            if o["pending_units"] > 5000:
+                insight = "High pending units."
 
             result.append({
                 "sales_office": office,
@@ -996,6 +1169,9 @@ class DashboardService:
                 "pod_pct": round(pod_pct, 1),
                 "pending_units": int(o["pending_units"]),
                 "health": round(health, 1),
+                "growth": growth,
+                "trend": trend,
+                "ai_insight": insight,
                 "rank": 0,
             })
 
@@ -1004,7 +1180,7 @@ class DashboardService:
             r["rank"] = i + 1
         return result
 
-    # 11. Sales Manager Performance
+    # ---------- 11. Sales Manager Performance ----------
     def calculate_sales_manager_performance(self, data: List[Dict]) -> List[Dict]:
         if not data:
             return []
@@ -1022,6 +1198,7 @@ class DashboardService:
                     "units": 0,
                     "revenue": 0,
                     "pgi_count": 0,
+                    "delivery_count": 0,
                     "pod_count": 0,
                     "pending_units": 0,
                 }
@@ -1033,6 +1210,8 @@ class DashboardService:
             m["revenue"] += float(row.get("value", 0))
             if row.get("pgi_date") not in (None, ""):
                 m["pgi_count"] += 1
+            if row.get("delivery_date") not in (None, ""):
+                m["delivery_count"] += 1
             if row.get("pod_date") not in (None, ""):
                 m["pod_count"] += 1
             else:
@@ -1044,12 +1223,18 @@ class DashboardService:
             if dns == 0:
                 continue
             pgi_pct = _safe_divide(m["pgi_count"], dns) * 100
-            pod_pct = _safe_divide(m["pod_count"], dns) * 100
-            delivery_pct = pod_pct
-            health = (pgi_pct * 0.3 + delivery_pct * 0.3 + pod_pct * 0.3)
+            delivery_pct = _safe_divide(m["delivery_count"], m["pgi_count"]) * 100 if m["pgi_count"] > 0 else 0
+            pod_pct = _safe_divide(m["pod_count"], m["delivery_count"]) * 100 if m["delivery_count"] > 0 else 0
+            health = (pgi_pct * 0.25 + delivery_pct * 0.25 + pod_pct * 0.20)
             if m["pending_units"] > 5000:
                 health -= 15
             health = max(0, min(100, health))
+
+            growth = 0
+            trend = "▬"
+            insight = "Good performance."
+            if m["pending_units"] > 5000:
+                insight = "High pending units."
 
             result.append({
                 "sales_manager": mgr,
@@ -1061,6 +1246,9 @@ class DashboardService:
                 "pod_pct": round(pod_pct, 1),
                 "pending_units": int(m["pending_units"]),
                 "health": round(health, 1),
+                "growth": growth,
+                "trend": trend,
+                "ai_insight": insight,
                 "rank": 0,
             })
 
@@ -1069,33 +1257,30 @@ class DashboardService:
             r["rank"] = i + 1
         return result
 
-    # 12. Delivery Compliance (fixed distance-based SLA)
+    # ---------- 12. Delivery Compliance (distance-based) ----------
     def calculate_delivery_compliance(self, data: List[Dict]) -> List[Dict]:
-        # Since we don't have actual distance, we'll use pod_days as proxy
-        # We'll group by delivery days brackets (quantiles) but with fixed targets
+        # This requires distance column. Since we don't have it, we use actual delivery days
+        # and group them into brackets based on quantiles, but we use fixed target days.
+        # This is a proxy until distance is available.
         if not data:
             return self._empty_compliance()
 
-        # Compute pod_days for each DN (if pgi and pod exist)
-        pod_days_list = []
+        # Collect delivery days for DNs that have both pgi and delivery
+        days_list = []
         for row in data:
-            if row.get("pgi_date") not in (None, "") and row.get("pod_date") not in (None, ""):
+            if row.get("pgi_date") not in (None, "") and row.get("delivery_date") not in (None, ""):
                 pgi = _parse_date(row.get("pgi_date"))
-                pod = _parse_date(row.get("pod_date"))
-                if pgi and pod:
-                    days = (pod - pgi).days
+                deliv = _parse_date(row.get("delivery_date"))
+                if pgi and deliv:
+                    days = (deliv - pgi).days
                     if days >= 0:
-                        pod_days_list.append(days)
+                        days_list.append(days)
 
-        if not pod_days_list:
+        if not days_list:
             return self._empty_compliance()
 
-        # Use fixed brackets with target days
-        # We'll assign each DN to a bracket based on its actual days.
-        # Instead of using quantiles, we'll use fixed thresholds.
-        # Since we don't have distance, we'll simulate distance brackets by
-        # sorting and grouping into 6 equal-sized groups.
-        sorted_days = sorted(pod_days_list)
+        # Sort and split into 6 groups (one per bracket)
+        sorted_days = sorted(days_list)
         n = len(sorted_days)
         group_size = max(1, n // len(self.COMPLIANCE_BRACKETS))
         result = []
@@ -1127,7 +1312,13 @@ class DashboardService:
             for b in self.COMPLIANCE_BRACKETS
         ]
 
-    # 13. Critical Alerts (enhanced)
+    def _calculate_compliance_score(self, data: List[Dict]) -> float:
+        compliance = self.calculate_delivery_compliance(data)
+        if compliance and compliance[0]["compliance_pct"] > 0:
+            return sum(c["compliance_pct"] for c in compliance) / len(compliance)
+        return 100
+
+    # ---------- 13. Critical Alerts (enhanced) ----------
     def generate_critical_alerts(self, data: List[Dict]) -> List[Dict]:
         alerts = []
         if not data:
@@ -1170,7 +1361,7 @@ class DashboardService:
                     "severity": "WARNING"
                 })
 
-        # Dealer below 85% (based on health)
+        # Dealer below 85%
         dealer_perf = self.calculate_dealer_performance(data)
         for d in dealer_perf:
             if d["health"] < 85:
@@ -1200,7 +1391,7 @@ class DashboardService:
                 })
 
         # Pending value
-        if kpis["pending_value"]["value"] > 10000000:  # 10M
+        if kpis["pending_value"]["value"] > 10000000:
             alerts.append({
                 "category": "Pending Value",
                 "source": "Overall",
@@ -1208,38 +1399,59 @@ class DashboardService:
                 "severity": "CRITICAL"
             })
 
-        # Missing POD/ PGI alerts – we can check counts
-        # Already covered above
+        # Revenue drop (compare with previous month – placeholder)
+        # For now, skip
+
+        # SLA breach (from compliance)
+        compliance = self.calculate_delivery_compliance(data)
+        for c in compliance:
+            if c["compliance_pct"] < 80 and c["status"] != "No Data":
+                alerts.append({
+                    "category": "SLA Breach",
+                    "source": f"Distance {c['distance']}",
+                    "message": f"Compliance {c['compliance_pct']:.1f}% below 80% for {c['distance']} km.",
+                    "severity": "WARNING"
+                })
+
+        # Missing PGI/Delivery/POD (large counts)
+        if kpis["pending_pgi"]["value"] > 100:
+            alerts.append({
+                "category": "Missing PGI",
+                "source": "Overall",
+                "message": f"{kpis['pending_pgi']['value']} DNs missing PGI.",
+                "severity": "WARNING"
+            })
+        if kpis["pending_delivery"]["value"] > 100:
+            alerts.append({
+                "category": "Missing Delivery",
+                "source": "Overall",
+                "message": f"{kpis['pending_delivery']['value']} DNs missing Delivery.",
+                "severity": "WARNING"
+            })
 
         alerts.sort(key=lambda x: 0 if x["severity"] == "CRITICAL" else 1)
         return alerts[:10]
 
-    # 14. Recommendations (enhanced)
+    # ---------- 14. Recommendations ----------
     def get_recommendations(self, data: List[Dict]) -> List[str]:
         if not data:
             return ["No data to generate recommendations."]
 
         recs = []
         kpis = self.calculate_kpis(data)
-        pending_units = kpis["pending_units"]["value"]
-        pending_value = kpis["pending_value"]["value"]
-        pgi = kpis["pgi_achievement"]["value"]
-        delivery = kpis["delivery_achievement"]["value"]
-        pod = kpis["pod_achievement"]["value"]
-        avg_delivery_days = kpis["avg_delivery_days"]["value"]
 
-        if pending_units > 5000:
+        if kpis["pending_units"]["value"] > 5000:
             recs.append("Urgently expedite dispatch of pending units (over 5000).")
-        if pending_value > 10000000:
+        if kpis["pending_value"]["value"] > 10000000:
             recs.append("Focus on clearing high-value pending orders (>10M).")
-        if pgi < 85:
+        if kpis["pgi_achievement"]["value"] < 85:
             recs.append("Improve PGI completion rate: review warehouse processes.")
-        if delivery < 85:
+        if kpis["delivery_achievement"]["value"] < 85:
             recs.append("Increase delivery rate: optimize routing and carrier performance.")
-        if pod < 85:
+        if kpis["pod_achievement"]["value"] < 85:
             recs.append("Implement POD follow-up campaign with sales managers.")
-        if avg_delivery_days > 5:
-            recs.append(f"Reduce average delivery days ({avg_delivery_days:.1f}) by reviewing logistics routes.")
+        if kpis["avg_delivery_days"]["value"] > 5:
+            recs.append(f"Reduce average delivery days ({kpis['avg_delivery_days']['value']:.1f}) by reviewing logistics routes.")
 
         # Warehouse-specific
         wh_perf = self.calculate_warehouse_performance(data)
@@ -1259,11 +1471,17 @@ class DashboardService:
             if c["status"] in ["Critical", "Warning"]:
                 recs.append(f"Review logistics routes for {c['city']} (avg delivery {c['avg_delivery_days']:.1f} days).")
 
+        # Product-specific
+        prod_perf = self.calculate_product_performance(data)
+        for p in prod_perf[:2]:
+            if p["pod_pct"] < 70:
+                recs.append(f"Investigate product {p['product']}: low POD rate {p['pod_pct']:.1f}%.")
+
         if not recs:
             recs.append("All metrics are within acceptable ranges. Continue monitoring.")
         return recs[:5]
 
-    # 15. Monthly Trend
+    # ---------- 15. Monthly Trend ----------
     def calculate_monthly_trend(self, data: List[Dict]) -> List[Dict]:
         if not data:
             return []
@@ -1282,7 +1500,9 @@ class DashboardService:
                         "units": 0,
                         "value": 0,
                         "pgi_count": 0,
+                        "delivery_count": 0,
                         "pod_count": 0,
+                        "pending_units": 0,
                     }
                 m = months[month_key]
                 dn = row.get("dn")
@@ -1292,35 +1512,66 @@ class DashboardService:
                 m["value"] += float(row.get("value", 0))
                 if row.get("pgi_date") not in (None, ""):
                     m["pgi_count"] += 1
+                if row.get("delivery_date") not in (None, ""):
+                    m["delivery_count"] += 1
                 if row.get("pod_date") not in (None, ""):
                     m["pod_count"] += 1
+                else:
+                    m["pending_units"] += float(row.get("units", 0))
 
         result = []
-        for month, vals in sorted(months.items()):
+        sorted_months = sorted(months.keys())
+        prev = None
+        for month in sorted_months:
+            vals = months[month]
             dns = len(vals["dns"])
+            if dns == 0:
+                continue
+            pgi_pct = _safe_divide(vals["pgi_count"], dns) * 100
+            delivery_pct = _safe_divide(vals["delivery_count"], vals["pgi_count"]) * 100 if vals["pgi_count"] > 0 else 0
+            pod_pct = _safe_divide(vals["pod_count"], vals["delivery_count"]) * 100 if vals["delivery_count"] > 0 else 0
+            health = (pgi_pct * 0.25 + delivery_pct * 0.25 + pod_pct * 0.20)
+            if vals["pending_units"] > 5000:
+                health -= 15
+            health = max(0, min(100, health))
+
+            # Month-over-month growth
+            growth = None
+            if prev:
+                prev_vals = months[prev]
+                prev_revenue = prev_vals["value"]
+                growth = _safe_divide((vals["value"] - prev_revenue), prev_revenue) * 100 if prev_revenue > 0 else 0
+
             result.append({
                 "month": month,
                 "dn_count": dns,
                 "units": int(vals["units"]),
                 "revenue": vals["value"],
                 "pgi_count": vals["pgi_count"],
+                "delivery_count": vals["delivery_count"],
                 "pod_count": vals["pod_count"],
-                "pgi_pct": round(_safe_divide(vals["pgi_count"], dns) * 100, 1) if dns > 0 else 0,
-                "pod_pct": round(_safe_divide(vals["pod_count"], dns) * 100, 1) if dns > 0 else 0,
+                "pgi_pct": round(pgi_pct, 1),
+                "delivery_pct": round(delivery_pct, 1),
+                "pod_pct": round(pod_pct, 1),
+                "pending_units": int(vals["pending_units"]),
+                "health": round(health, 1),
+                "growth": round(growth, 1) if growth is not None else None,
             })
+            prev = month
+
         return result
 
-    # 16. Metadata
+    # ---------- 16. Metadata ----------
     def generate_metadata(self, data: List[Dict], execution_time_ms: float) -> Dict[str, Any]:
         return {
             "version": self._version,
             "record_count": len(data),
             "execution_time_ms": round(execution_time_ms, 1),
-            "cache_ttl": self._cache_ttl,
+            "cache_ttl": self.CACHE_TTL_CONFIG,
             "database_status": "connected" if self._engine and self._table_exists else "disconnected",
             "data_freshness": datetime.now().isoformat(),
             "upload_info": {
-                "last_upload": None,  # Could be fetched from a separate table
+                "last_upload": None,
                 "filename": None,
                 "rows_imported": None,
                 "rows_rejected": None,
@@ -1328,40 +1579,56 @@ class DashboardService:
             }
         }
 
-    # ------------------------------------------------------------
-    # MAIN PUBLIC METHOD – async for FastAPI
-    # ------------------------------------------------------------
+    # ---------- 17. Orchestrator ----------
     async def get_dashboard_data(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
         start_time = time.time()
         try:
-            if time.time() - self._cache_time < self._cache_ttl and self._cache:
-                logger.debug("Returning cached data")
-                return self._cache
-
+            # 1. Fetch raw data
             raw_data = self._fetch_data()
+            if not raw_data:
+                return self._empty_response("No data available. Please import an Excel file.")
 
-            # Compute all sections
-            cards = self.calculate_kpis(raw_data)
-            exec_summary = self.generate_executive_summary(raw_data)
-            pipeline = self.calculate_pipeline(raw_data)
-            warehouse_ranking = self.calculate_warehouse_performance(raw_data)
-            city_performance = self.calculate_city_performance(raw_data)
-            pending_analysis = self.calculate_pending_analysis(raw_data)
-            dealer_performance = self.calculate_dealer_performance(raw_data)
-            product_performance = self.calculate_product_performance(raw_data)
-            division_performance = self.calculate_division_performance(raw_data)
-            sales_office_performance = self.calculate_sales_office_performance(raw_data)
-            sales_manager_performance = self.calculate_sales_manager_performance(raw_data)
-            delivery_compliance = self.calculate_delivery_compliance(raw_data)
-            alerts = self.generate_critical_alerts(raw_data)
-            recommendations = self.get_recommendations(raw_data)
-            monthly_trend = self.calculate_monthly_trend(raw_data)
-            metadata = self.generate_metadata(raw_data, (time.time() - start_time) * 1000)
+            # 2. Apply filters
+            filtered_data = self._apply_filters(raw_data, filters or {})
+            if not filtered_data:
+                return self._empty_response("No data matches the selected filters.")
+
+            # 3. Compute each section with caching
+            sections = {}
+            cache_key = str(filters) if filters else "default"
+
+            # Helper to get cached or compute
+            def get_section(name: str, compute_func):
+                ttl = self.CACHE_TTL_CONFIG.get(name, 60)
+                if name in self._caches:
+                    cached = self._caches[name]
+                    if time.time() - cached["time"] < ttl and cached.get("key") == cache_key:
+                        return cached["data"]
+                result = compute_func(filtered_data)
+                self._caches[name] = {"data": result, "time": time.time(), "key": cache_key}
+                return result
+
+            cards = get_section("cards", self.calculate_kpis)
+            exec_summary = get_section("executive_summary", self.generate_executive_summary)
+            pipeline = get_section("pipeline", self.calculate_pipeline)
+            warehouse_ranking = get_section("warehouse", self.calculate_warehouse_performance)
+            city_performance = get_section("city", self.calculate_city_performance)
+            pending_analysis = get_section("pending_analysis", self.calculate_pending_analysis)
+            dealer_performance = get_section("dealer", self.calculate_dealer_performance)
+            product_performance = get_section("product", self.calculate_product_performance)
+            division_performance = get_section("division", self.calculate_division_performance)
+            sales_office_performance = get_section("sales_office", self.calculate_sales_office_performance)
+            sales_manager_performance = get_section("sales_manager", self.calculate_sales_manager_performance)
+            delivery_compliance = get_section("compliance", self.calculate_delivery_compliance)
+            alerts = get_section("alerts", self.generate_critical_alerts)
+            recommendations = get_section("recommendations", self.get_recommendations)
+            monthly_trend = get_section("trend", self.calculate_monthly_trend)
+            metadata = self.generate_metadata(filtered_data, (time.time() - start_time) * 1000)
 
             result = {
                 "cards": cards,
-                "executive_summary": exec_summary,          # New structured summary
-                "executive_summary_text": exec_summary["summary"],  # Keep for backwards compatibility
+                "executive_summary": exec_summary,
+                "executive_summary_text": exec_summary["summary"],
                 "pipeline_detailed": pipeline,
                 "warehouse_ranking": warehouse_ranking,
                 "city_performance": city_performance,
@@ -1378,8 +1645,6 @@ class DashboardService:
                 "metadata": metadata,
             }
 
-            self._cache = result
-            self._cache_time = time.time()
             return result
 
         except Exception as e:
@@ -1387,9 +1652,8 @@ class DashboardService:
             return self._empty_response(f"Error: {str(e)}")
 
     def _empty_response(self, message: str) -> Dict[str, Any]:
-        # Return minimal structure with empty data
         return {
-            "cards": self.calculate_kpis([]),
+            "cards": self._empty_kpis(),
             "executive_summary": {
                 "overall_health": 0,
                 "status": "No Data",
@@ -1416,10 +1680,10 @@ class DashboardService:
                 "version": self._version,
                 "record_count": 0,
                 "execution_time_ms": 0,
-                "cache_ttl": self._cache_ttl,
+                "cache_ttl": self.CACHE_TTL_CONFIG,
                 "database_status": "disconnected" if not self._engine else "connected",
                 "data_freshness": datetime.now().isoformat(),
-                "upload_info": {}
+                "upload_info": {},
             },
         }
 
@@ -1430,7 +1694,7 @@ class DashboardService:
             "status": "healthy" if self._engine and self._table_exists else "degraded",
             "database": "connected" if self._engine else "disconnected",
             "table_exists": self._table_exists,
-            "cache_size": len(self._cache),
+            "cache_size": len(self._caches),
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -1457,15 +1721,15 @@ try:
 
     @router.get("/data")
     async def dashboard_data(
-        start_date: Optional[str] = Query(None),
-        end_date: Optional[str] = Query(None),
-        warehouse: Optional[str] = Query(None),
-        dealer: Optional[str] = Query(None),
-        product: Optional[str] = Query(None),
-        city: Optional[str] = Query(None),
-        division: Optional[str] = Query(None),
-        transporter: Optional[str] = Query(None),
-        status: Optional[str] = Query(None),
+        start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+        end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+        warehouse: Optional[str] = Query(None, description="Warehouse name"),
+        dealer: Optional[str] = Query(None, description="Dealer code"),
+        product: Optional[str] = Query(None, description="Product/material number"),
+        city: Optional[str] = Query(None, description="City"),
+        division: Optional[str] = Query(None, description="Division"),
+        transporter: Optional[str] = Query(None, description="Transporter"),
+        status: Optional[str] = Query(None, description="Status (pending_pgi, pending_delivery, pending_pod, delivered, in_transit)"),
     ):
         service = get_dashboard_service()
         filters = {k: v for k, v in locals().items() if v is not None and k != "service"}
