@@ -1,3 +1,4 @@
+
 """PostgreSQL-backed logistics dashboard – fully resilient to missing columns."""
 
 from __future__ import annotations
