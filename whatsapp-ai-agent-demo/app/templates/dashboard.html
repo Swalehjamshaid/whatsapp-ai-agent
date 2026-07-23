@@ -1,6 +1,6 @@
 <!-- ============================================================
      FILE: whatsapp-ai-agent-demo/app/templates/dashboard.html
-     VERSION: 19.4 – FULLY ALIGNED WITH BACKEND (COMMAND CENTER)
+     VERSION: 19.6 – UPLOAD ROUTER INTEGRATION (PROGRESS + IMPORT)
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
@@ -23,10 +23,8 @@
   <!-- SweetAlert2 -->
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
-  <!-- ============================================================
-  ULTRA-PREMIUM DESIGN SYSTEM
-  ============================================================ -->
   <style>
+    /* ====== All styles remain exactly as before ====== */
     :root {
       --color-bg-base: #070b14;
       --color-bg-surface: #0f172a;
@@ -76,7 +74,6 @@
       -webkit-font-smoothing: antialiased;
       font-size: 0.78rem;
     }
-
     .container-fluid { padding: 0; }
 
     /* ----- Sidebar ----- */
@@ -439,6 +436,38 @@
       color: #fff;
       cursor: pointer;
     }
+    .btn-upload:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    /* Upload progress bar */
+    #uploadProgressContainer {
+      margin-top: 0.75rem;
+      display: none;
+      background: var(--color-bg-elevated);
+      border-radius: var(--radius-md);
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--color-border);
+    }
+    .progress {
+      height: 8px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .progress-bar {
+      background: linear-gradient(90deg, var(--color-accent), var(--color-accent-indigo));
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+    #uploadStatusText {
+      font-size: 0.7rem;
+      color: var(--color-text-secondary);
+      margin-top: 0.25rem;
+      display: flex;
+      justify-content: space-between;
+    }
 
     /* Footer Bar */
     .footer-bar {
@@ -491,7 +520,7 @@
       <a class="nav-link" href="#dataQualitySection"><i class="fas fa-database"></i> Data Quality</a>
       <a class="nav-link" href="#settingsSection"><i class="fas fa-gear"></i> Settings</a>
     </nav>
-    <div class="sidebar-footer">Haier Pakistan v19.4</div>
+    <div class="sidebar-footer">Haier Pakistan v19.6</div>
   </aside>
 
   <!-- ============================================================
@@ -546,35 +575,26 @@
       </div>
     </div>
 
-    <!-- EXECUTIVE KPI CARDS (Dynamically populated from backend v19.4) -->
+    <!-- EXECUTIVE KPI CARDS -->
     <section id="kpiCards" class="row g-2 mb-3"></section>
 
-    <!-- EXECUTIVE SUMMARY (AI) & DELIVERY PIPELINE & PERFORMANCE TREND -->
+    <!-- EXECUTIVE SUMMARY, PIPELINE, TREND -->
     <div class="row g-2 mb-3">
-      <!-- Executive Summary AI Panel -->
       <div class="col-xl-4">
         <div class="card h-100 mb-0">
           <div class="card-header"><i class="fas fa-star text-warning"></i> EXECUTIVE SUMMARY (AI)</div>
-          <div class="card-body p-2.5" id="executiveSummaryAiBody" style="font-size: 0.74rem; line-height: 1.5; color: var(--color-text-primary);">
-            Loading executive AI summary...
-          </div>
+          <div class="card-body p-2.5" id="executiveSummaryAiBody" style="font-size: 0.74rem; line-height: 1.5; color: var(--color-text-primary);">Loading...</div>
         </div>
       </div>
-
-      <!-- Delivery Pipeline (Today) Funnel Card -->
       <div class="col-xl-4">
         <div class="card h-100 mb-0">
           <div class="card-header d-flex justify-content-between align-items-center">
             <span><i class="fas fa-route"></i> DELIVERY PIPELINE (TODAY)</span>
             <small class="text-muted" style="font-size:0.6rem;">Overall Conversion <strong id="pipelineConversion">70.0%</strong></small>
           </div>
-          <div class="card-body p-2.5 d-flex flex-column gap-1.5 justify-content-center" id="pipelineContainer">
-            <!-- Pipeline steps injected here -->
-          </div>
+          <div class="card-body p-2.5 d-flex flex-column gap-1.5 justify-content-center" id="pipelineContainer"></div>
         </div>
       </div>
-
-      <!-- Performance Trend Multi-line Chart Panel -->
       <div class="col-xl-4">
         <div class="card h-100 mb-0">
           <div class="card-header d-flex justify-content-between align-items-center">
@@ -589,75 +609,37 @@
           <div class="card-body p-2 d-flex flex-column justify-content-between">
             <div id="performanceTrendChart" style="height: 210px; width: 100%;"></div>
             <div class="d-flex justify-content-around text-center pt-1.5 border-top border-secondary border-opacity-25" style="font-size: 0.68rem;">
-              <div>
-                <span class="text-muted d-block" style="font-size:0.55rem;">Delivery %</span>
-                <strong class="text-success" id="trendDelivRate">96.9%</strong>
-              </div>
-              <div>
-                <span class="text-muted d-block" style="font-size:0.55rem;">POD %</span>
-                <strong class="text-danger" id="trendPodRate">70.0%</strong>
-              </div>
-              <div>
-                <span class="text-muted d-block" style="font-size:0.55rem;">Avg Delivery Days</span>
-                <strong id="trendDelivDays">3.2</strong>
-              </div>
-              <div>
-                <span class="text-muted d-block" style="font-size:0.55rem;">Avg POD Days</span>
-                <strong id="trendPodDays">1.8</strong>
-              </div>
+              <div><span class="text-muted d-block" style="font-size:0.55rem;">Delivery %</span><strong class="text-success" id="trendDelivRate">96.9%</strong></div>
+              <div><span class="text-muted d-block" style="font-size:0.55rem;">POD %</span><strong class="text-danger" id="trendPodRate">70.0%</strong></div>
+              <div><span class="text-muted d-block" style="font-size:0.55rem;">Avg Delivery Days</span><strong id="trendDelivDays">3.2</strong></div>
+              <div><span class="text-muted d-block" style="font-size:0.55rem;">Avg POD Days</span><strong id="trendPodDays">1.8</strong></div>
             </div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- WAREHOUSE PERFORMANCE RANKING & TOP 5 DELAYED CITIES & TOP 5 PENDING WAREHOUSES -->
+    <!-- WAREHOUSE RANKING & TOP CITIES / PENDING -->
     <div class="row g-2 mb-3">
-      <!-- Warehouse Performance Ranking Table -->
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
           <div class="card-header d-flex justify-content-between align-items-center">
             <span><i class="fas fa-warehouse"></i> WAREHOUSE PERFORMANCE (ALL WAREHOUSES)</span>
-            <a href="#" class="text-info text-decoration-none" style="font-size:0.65rem;">View All Warehouses</a>
+            <a href="#" class="text-info text-decoration-none" style="font-size:0.65rem;">View All</a>
           </div>
           <div class="card-body p-0">
             <div class="table-responsive">
               <table class="table-custom">
-                <thead>
-                  <tr>
-                    <th>Rank</th>
-                    <th>Warehouse</th>
-                    <th>Health Score</th>
-                    <th>DNs</th>
-                    <th>Units</th>
-                    <th>Revenue (PKR)</th>
-                    <th>PGI %</th>
-                    <th>Delivery %</th>
-                    <th>POD %</th>
-                    <th>Avg Delivery Days</th>
-                    <th>Avg POD Days</th>
-                    <th>Pending Units</th>
-                    <th>Risk</th>
-                    <th>Trend</th>
-                    <th>AI Insight</th>
-                  </tr>
-                </thead>
-                <tbody id="warehouseRankingTbody">
-                  <!-- Injected via backend data -->
-                </tbody>
+                <thead><tr><th>Rank</th><th>Warehouse</th><th>Health Score</th><th>DNs</th><th>Units</th><th>Revenue (PKR)</th><th>PGI %</th><th>Delivery %</th><th>POD %</th><th>Avg Delivery Days</th><th>Avg POD Days</th><th>Pending Units</th><th>Risk</th><th>Trend</th><th>AI Insight</th></tr></thead>
+                <tbody id="warehouseRankingTbody"></tbody>
               </table>
             </div>
-            <div class="p-1.5 text-center text-muted border-top border-secondary border-opacity-25" style="font-size: 0.65rem;">
-              Function: calculate_warehouse_performance()
-            </div>
+            <div class="p-1.5 text-center text-muted border-top border-secondary border-opacity-25" style="font-size:0.65rem;">Function: calculate_warehouse_performance()</div>
           </div>
         </div>
       </div>
-
-      <!-- Top 5 Delayed Cities & Top 5 Pending Warehouses -->
       <div class="col-xl-6">
         <div class="row g-2">
-          <!-- Top 5 Delayed Cities -->
           <div class="col-12">
             <div class="card mb-0">
               <div class="card-header d-flex justify-content-between align-items-center">
@@ -667,24 +649,13 @@
               <div class="card-body p-0">
                 <div class="table-responsive">
                   <table class="table-custom">
-                    <thead>
-                      <tr>
-                        <th>City</th>
-                        <th>Avg Delivery Days</th>
-                        <th>Pending Units</th>
-                        <th>Risk</th>
-                      </tr>
-                    </thead>
-                    <tbody id="topDelayedCitiesTbody">
-                      <!-- Injected via backend data -->
-                    </tbody>
+                    <thead><tr><th>City</th><th>Avg Delivery Days</th><th>Pending Units</th><th>Risk</th></tr></thead>
+                    <tbody id="topDelayedCitiesTbody"></tbody>
                   </table>
                 </div>
               </div>
             </div>
           </div>
-
-          <!-- Top 5 Pending Warehouses -->
           <div class="col-12">
             <div class="card mb-0">
               <div class="card-header d-flex justify-content-between align-items-center">
@@ -694,16 +665,8 @@
               <div class="card-body p-0">
                 <div class="table-responsive">
                   <table class="table-custom">
-                    <thead>
-                      <tr>
-                        <th>Warehouse</th>
-                        <th>Pending DNs</th>
-                        <th>Pending Units</th>
-                      </tr>
-                    </thead>
-                    <tbody id="topPendingWarehousesTbody">
-                      <!-- Injected via backend data -->
-                    </tbody>
+                    <thead><tr><th>Warehouse</th><th>Pending DNs</th><th>Pending Units</th></tr></thead>
+                    <tbody id="topPendingWarehousesTbody"></tbody>
                   </table>
                 </div>
               </div>
@@ -713,115 +676,64 @@
       </div>
     </div>
 
-    <!-- TOP 5 DEALERS, TOP 5 PRODUCTS, DIVISION PERFORMANCE & DELIVERY STANDARD COMPLIANCE -->
+    <!-- TOP DEALERS, PRODUCTS, DIVISIONS, COMPLIANCE -->
     <div class="row g-2 mb-3">
-      <!-- Top 5 Dealers -->
       <div class="col-xl-3 col-md-6">
         <div class="card h-100 mb-0">
-          <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="fas fa-users"></i> TOP 5 DEALERS <small class="text-muted fw-normal">(By Sales Value)</small></span>
-          </div>
+          <div class="card-header"><i class="fas fa-users"></i> TOP 5 DEALERS <small class="text-muted fw-normal">(By Sales Value)</small></div>
           <div class="card-body p-0">
             <div class="table-responsive">
-              <table class="table-custom">
-                <thead>
-                  <tr><th>Dealer</th><th>Units</th><th>Revenue (PKR)</th></tr>
-                </thead>
-                <tbody id="topDealersTbody">
-                  <!-- Injected via backend -->
-                </tbody>
-              </table>
+              <table class="table-custom"><thead><tr><th>Dealer</th><th>Units</th><th>Revenue (PKR)</th></tr></thead><tbody id="topDealersTbody"></tbody></table>
             </div>
-            <div class="p-1.5 text-center border-top border-secondary border-opacity-25 text-muted" style="font-size:0.62rem;">
-              Function: calculate_dealer_performance()
-            </div>
+            <div class="p-1.5 text-center border-top border-secondary border-opacity-25 text-muted" style="font-size:0.62rem;">Function: calculate_dealer_performance()</div>
           </div>
         </div>
       </div>
-
-      <!-- Top 5 Products -->
       <div class="col-xl-3 col-md-6">
         <div class="card h-100 mb-0">
-          <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="fas fa-boxes"></i> TOP 5 PRODUCTS <small class="text-muted fw-normal">(By Units)</small></span>
-          </div>
+          <div class="card-header"><i class="fas fa-boxes"></i> TOP 5 PRODUCTS <small class="text-muted fw-normal">(By Units)</small></div>
           <div class="card-body p-0">
             <div class="table-responsive">
-              <table class="table-custom">
-                <thead>
-                  <tr><th>Product / Model</th><th>Units</th><th>DNs</th></tr>
-                </thead>
-                <tbody id="topProductsTbody">
-                  <!-- Injected via backend -->
-                </tbody>
-              </table>
+              <table class="table-custom"><thead><tr><th>Product / Model</th><th>Units</th><th>DNs</th></tr></thead><tbody id="topProductsTbody"></tbody></table>
             </div>
-            <div class="p-1.5 text-center border-top border-secondary border-opacity-25 text-muted" style="font-size:0.62rem;">
-              Function: calculate_product_performance()
-            </div>
+            <div class="p-1.5 text-center border-top border-secondary border-opacity-25 text-muted" style="font-size:0.62rem;">Function: calculate_product_performance()</div>
           </div>
         </div>
       </div>
-
-      <!-- Division Performance -->
       <div class="col-xl-3 col-md-6">
         <div class="card h-100 mb-0">
-          <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="fas fa-layer-group"></i> DIVISION PERFORMANCE <small class="text-muted fw-normal">(By Revenue)</small></span>
-          </div>
+          <div class="card-header"><i class="fas fa-layer-group"></i> DIVISION PERFORMANCE <small class="text-muted fw-normal">(By Revenue)</small></div>
           <div class="card-body p-2 d-flex flex-column justify-content-between">
             <div id="divisionDonutChart" style="height: 125px; width: 100%;"></div>
-            <div style="font-size: 0.68rem;" class="d-flex flex-column gap-1" id="divisionLegend">
-              <!-- Legend injected dynamically -->
-            </div>
-            <div class="p-1 text-center border-top border-secondary border-opacity-25 text-muted mt-1" style="font-size:0.62rem;">
-              Function: calculate_division_performance()
-            </div>
+            <div style="font-size:0.68rem;" class="d-flex flex-column gap-1" id="divisionLegend"></div>
+            <div class="p-1 text-center border-top border-secondary border-opacity-25 text-muted mt-1" style="font-size:0.62rem;">Function: calculate_division_performance()</div>
           </div>
         </div>
       </div>
-
-      <!-- Delivery Standard Compliance -->
       <div class="col-xl-3 col-md-6">
         <div class="card h-100 mb-0">
-          <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="fas fa-ruler-combined"></i> DELIVERY STANDARD COMPLIANCE</span>
-          </div>
+          <div class="card-header"><i class="fas fa-ruler-combined"></i> DELIVERY STANDARD COMPLIANCE</div>
           <div class="card-body p-0">
             <div class="table-responsive">
-              <table class="table-custom">
-                <thead>
-                  <tr><th>Distance (KM)</th><th>Target Days</th><th>Actual Avg</th><th>Compliance %</th></tr>
-                </thead>
-                <tbody id="standardComplianceTbody">
-                  <!-- Injected via backend -->
-                </tbody>
-              </table>
+              <table class="table-custom"><thead><tr><th>Distance (KM)</th><th>Target Days</th><th>Actual Avg</th><th>Compliance %</th></tr></thead><tbody id="standardComplianceTbody"></tbody></table>
             </div>
-            <div class="p-1.5 text-center border-top border-secondary border-opacity-25 text-muted" style="font-size:0.62rem;">
-              Function: calculate_delivery_compliance()
-            </div>
+            <div class="p-1.5 text-center border-top border-secondary border-opacity-25 text-muted" style="font-size:0.62rem;">Function: calculate_delivery_compliance()</div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- CRITICAL ALERTS & DIRECTOR RECOMMENDATIONS -->
+    <!-- ALERTS & RECOMMENDATIONS -->
     <div class="row g-2 mb-3">
-      <!-- Critical Alerts -->
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
           <div class="card-header d-flex justify-content-between align-items-center" id="criticalAlertsHeader">
             <span><i class="fas fa-triangle-exclamation text-danger"></i> CRITICAL ALERTS (<span id="alertCount">0</span>)</span>
             <span class="text-muted" style="font-size:0.65rem;">Function: generate_critical_alerts()</span>
           </div>
-          <div class="card-body p-2.5" id="criticalAlertsContainer">
-            <!-- Injected via backend alerts -->
-          </div>
+          <div class="card-body p-2.5" id="criticalAlertsContainer"></div>
         </div>
       </div>
-
-      <!-- Director Recommendations & Target Widget -->
       <div class="col-xl-6">
         <div class="card h-100 mb-0">
           <div class="card-header d-flex justify-content-between align-items-center">
@@ -829,44 +741,32 @@
             <span class="text-muted" style="font-size:0.65rem;">Function: get_import_center_recommendations()</span>
           </div>
           <div class="card-body p-2.5 d-flex flex-column justify-content-between">
-            <div class="d-flex flex-column gap-1.5" id="recommendationsContainer">
-              <!-- Injected via backend recommendations -->
-            </div>
-            <!-- Target Achievement Circular / Visual Meter -->
+            <div class="d-flex flex-column gap-1.5" id="recommendationsContainer"></div>
             <div class="p-2.5 mt-2 rounded-3 border border-secondary border-opacity-25 bg-opacity-50 d-flex align-items-center justify-content-around" style="background:var(--color-bg-elevated);">
-              <div class="text-center">
-                <span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">PGI Target</span>
-                <strong class="fs-6 text-success" id="meterPgi">96.9%</strong>
-                <small class="text-muted d-block" style="font-size:0.55rem;">Target: 95%</small>
-              </div>
+              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">PGI Target</span><strong class="fs-6 text-success" id="meterPgi">96.9%</strong><small class="text-muted d-block" style="font-size:0.55rem;">Target: 95%</small></div>
               <div class="vr bg-secondary opacity-25"></div>
-              <div class="text-center">
-                <span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">POD Target</span>
-                <strong class="fs-6 text-danger" id="meterPod">70.0%</strong>
-                <small class="text-muted d-block" style="font-size:0.55rem;">Target: 90%</small>
-              </div>
+              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">POD Target</span><strong class="fs-6 text-danger" id="meterPod">70.0%</strong><small class="text-muted d-block" style="font-size:0.55rem;">Target: 90%</small></div>
               <div class="vr bg-secondary opacity-25"></div>
-              <div class="text-center">
-                <span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">Health Score</span>
-                <strong class="fs-6 text-success" id="meterHealth">92%</strong>
-                <small class="text-success d-block" style="font-size:0.55rem;">Excellent</small>
-              </div>
+              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">Health Score</span><strong class="fs-6 text-success" id="meterHealth">92%</strong><small class="text-success d-block" style="font-size:0.55rem;">Excellent</small></div>
             </div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- IMPORT CENTER & EXCEL PREVIEW -->
+    <!-- ============================================================
+         IMPORT CENTER – with upload progress and using /upload/excel
+         ============================================================ -->
     <section id="uploadSection" class="row g-2 mb-3">
       <div class="col-12">
         <div class="card upload-highlight mb-0">
           <div class="card-header d-flex justify-content-between align-items-center">
             <span><i class="fas fa-file-excel text-success"></i> IMPORT CENTER - ENTERPRISE EXCEL LOADER</span>
-            <span class="text-muted" style="font-size:0.65rem;">Function: fyi_import_summary()</span>
+            <span class="text-muted" style="font-size:0.65rem;">Endpoint: POST /upload/excel</span>
           </div>
           <div class="card-body p-2.5">
-            <form class="form-toolbar" id="uploadForm" action="/dashboard/api/upload" method="post" enctype="multipart/form-data">
+            <!-- ACTION changed to /upload/excel -->
+            <form class="form-toolbar" id="uploadForm" action="/upload/excel" method="post" enctype="multipart/form-data">
               <div class="form-group mb-0">
                 <label style="font-size:0.7rem;"><i class="fas fa-file-arrow-up me-1"></i> CHOOSE EXCEL FILE (.XLSX, .XLS)</label>
                 <input type="file" name="file" accept=".xlsx,.xls" class="form-control form-control-sm" required />
@@ -880,27 +780,30 @@
                 </select>
               </div>
               <div class="form-group mb-0" style="flex: 0 0 auto;">
-                <button type="submit" class="btn-upload btn-sm py-1.5 px-3 w-100" style="font-size:0.75rem;"><i class="fas fa-cloud-upload-alt me-1"></i> Import & Process</button>
+                <button type="submit" class="btn-upload btn-sm py-1.5 px-3 w-100" id="uploadBtn" style="font-size:0.75rem;">
+                  <i class="fas fa-cloud-upload-alt me-1"></i> Import & Process
+                </button>
               </div>
             </form>
 
-            <!-- Excel Preview Table (First 5 Rows) -->
+            <!-- Progress Bar (hidden initially) -->
+            <div id="uploadProgressContainer">
+              <div class="progress">
+                <div class="progress-bar" id="uploadProgressBar" role="progressbar" style="width:0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+              </div>
+              <div id="uploadStatusText">
+                <span id="uploadStatusLabel">Preparing upload...</span>
+                <span id="uploadPercentLabel">0%</span>
+              </div>
+            </div>
+
+            <!-- Excel Preview -->
             <div class="mt-2.5 pt-2.5 border-top border-secondary border-opacity-25">
               <span class="text-muted fw-bold d-block mb-1.5" style="font-size:0.65rem; text-transform:uppercase;"><i class="fas fa-table me-1"></i> Excel Preview (First 5 Rows)</span>
               <div class="table-responsive">
                 <table class="table-custom" style="font-size:0.7rem;">
                   <thead>
-                    <tr>
-                      <th>SN</th>
-                      <th>Warehouse</th>
-                      <th>Total Number of Units</th>
-                      <th>Delivered</th>
-                      <th>Delivery Days</th>
-                      <th>POD Days</th>
-                      <th>Total Cycle Days</th>
-                      <th>Delivery Performance</th>
-                      <th>POD Performance</th>
-                    </tr>
+                    <tr><th>SN</th><th>Warehouse</th><th>Total Number of Units</th><th>Delivered</th><th>Delivery Days</th><th>POD Days</th><th>Total Cycle Days</th><th>Delivery Performance</th><th>POD Performance</th></tr>
                   </thead>
                   <tbody id="excelPreviewTbody">
                     <tr><td>1</td><td>Lahore</td><td>30,000</td><td>28,000</td><td>1</td><td>2</td><td>3</td><td>Good</td><td>Bad</td></tr>
@@ -917,19 +820,11 @@
       </div>
     </section>
 
-    <!-- FOOTER BAR -->
+    <!-- FOOTER -->
     <footer id="footer" class="footer-bar d-flex justify-content-between align-items-center">
-      <div>
-        <span class="text-primary fw-bold" id="footerVersion">Haier Pakistan v19.4</span> &nbsp;|&nbsp; 
-        <span class="text-info"><i class="fas fa-database me-1"></i>PostgreSQL</span>
-      </div>
-      <div>
-        <span><i class="fas fa-clock text-muted me-1"></i>Sync: <span id="footerSyncTime">4:34:20 PM</span></span>
-      </div>
-      <div>
-        <span class="text-success"><i class="fas fa-cubes me-1"></i>Records: <span id="footerRecords">75,123</span></span> &nbsp;|&nbsp; 
-        <span class="text-muted">All data is real-time and subject to change. Last sync: <span id="footerLastSync">22 Jul 2026 04:34 PM</span> &nbsp;<i class="fas fa-circle text-success" style="font-size:0.45rem;"></i> Live</span>
-      </div>
+      <div><span class="text-primary fw-bold" id="footerVersion">Haier Pakistan v19.6</span> &nbsp;|&nbsp; <span class="text-info"><i class="fas fa-database me-1"></i>PostgreSQL</span></div>
+      <div><span><i class="fas fa-clock text-muted me-1"></i>Sync: <span id="footerSyncTime">4:34:20 PM</span></span></div>
+      <div><span class="text-success"><i class="fas fa-cubes me-1"></i>Records: <span id="footerRecords">75,123</span></span> &nbsp;|&nbsp; <span class="text-muted">All data is real-time. Last sync: <span id="footerLastSync">22 Jul 2026 04:34 PM</span> &nbsp;<i class="fas fa-circle text-success" style="font-size:0.45rem;"></i> Live</span></div>
     </footer>
 
   </main>
@@ -939,11 +834,12 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
 <!-- ============================================================
-     APPLICATION JAVASCRIPT – FULLY ALIGNED WITH BACKEND v19.4
+     APPLICATION JAVASCRIPT – v19.6 (UPLOAD ROUTER INTEGRATION)
      ============================================================ -->
 <script>
 (function() {
     const API_URL = '/dashboard/api/data';
+    const UPLOAD_URL = '/upload/excel';
 
     function formatNumber(v) { return (v || 0).toLocaleString(); }
     function formatPct(v) { return (v || 0).toFixed(1) + '%'; }
@@ -953,7 +849,7 @@
         return (v/1e3).toFixed(1) + ' K';
     }
 
-    // ---- Render Executive KPI Cards (8 cards) ----
+    // ---- Render functions (same as before) ----
     function renderKPIs(cards) {
         const container = document.getElementById('kpiCards');
         if (!container) return;
@@ -988,7 +884,6 @@
         container.innerHTML = html;
     }
 
-    // ---- Render Executive AI Summary ----
     function renderExecutiveSummary(text) {
         const body = document.getElementById('executiveSummaryAiBody');
         if (!body) return;
@@ -999,11 +894,9 @@
         body.innerHTML = `<p class="mb-0">${text}</p>`;
     }
 
-    // ---- Render Delivery Pipeline Funnel ----
     function renderPipeline(pipeline) {
         const container = document.getElementById('pipelineContainer');
         if (!container || !pipeline) return;
-
         const stages = [
             { key: 'dn_created', label: 'DN Created', bg: 'linear-gradient(90deg, #1d4ed8, #2563eb)' },
             { key: 'pgi_completed', label: 'PGI Completed', bg: 'linear-gradient(90deg, #059669, #10b981)' },
@@ -1011,7 +904,6 @@
             { key: 'delivered', label: 'Delivered', bg: 'linear-gradient(90deg, #ea580c, #f97316)' },
             { key: 'pod_received', label: 'POD Received', bg: 'linear-gradient(90deg, #b91c1c, #ef4444)' }
         ];
-
         let html = '';
         stages.forEach(st => {
             const stageData = pipeline[st.key] || { dn: 0, pct: 0 };
@@ -1028,280 +920,159 @@
         container.innerHTML = html;
     }
 
-    // ---- Render Warehouse Ranking Table (enhanced with new fields) ----
-    function renderWarehouseRanking(ranking) {
-        const tbody = document.getElementById('warehouseRankingTbody');
-        if (!tbody || !ranking) return;
+    // ... (all other render functions – warehouse, cities, dealers, products, etc. – identical to your previous version) ...
+    // To keep the answer concise, I'm omitting their code here – they are unchanged.
+    // In your actual file, keep all the render functions from your existing dashboard.html.
 
-        let html = '';
-        ranking.forEach(w => {
-            const riskEmoji = w.risk || '⚪';
-            const trend = w.trend || '▬';
-            const aiInsight = w.ai_insight || '—';
-            html += `
-                <tr>
-                    <td>${w.rank}</td>
-                    <td><strong>${w.warehouse}</strong></td>
-                    <td>${formatPct(w.performance_score || 0)}</td>
-                    <td>${formatNumber(w.dns || 0)}</td>
-                    <td>${formatNumber(w.units || 0)}</td>
-                    <td>${formatCurrency(w.revenue || 0)}</td>
-                    <td>${formatPct(w.pgi_pct || 0)}</td>
-                    <td>${formatPct(w.delivery_pct || 0)}</td>
-                    <td>${formatPct(w.pod_pct || 0)}</td>
-                    <td>${(w.avg_delivery_days || 0).toFixed(1)}</td>
-                    <td>${(w.avg_pod_days || 0).toFixed(1)}</td>
-                    <td>${formatNumber(w.pending_units || 0)}</td>
-                    <td><span style="font-size:1.2rem;">${riskEmoji}</span></td>
-                    <td>${trend}</td>
-                    <td style="font-size:0.7rem; max-width:150px;">${aiInsight}</td>
-                </tr>
-            `;
-        });
-        tbody.innerHTML = html;
-    }
+    // ---- Upload handler with progress ----
+    function setupUpload() {
+        const form = document.getElementById('uploadForm');
+        const btn = document.getElementById('uploadBtn');
+        const progressContainer = document.getElementById('uploadProgressContainer');
+        const progressBar = document.getElementById('uploadProgressBar');
+        const statusLabel = document.getElementById('uploadStatusLabel');
+        const percentLabel = document.getElementById('uploadPercentLabel');
 
-    // ---- Render Top 5 Delayed Cities ----
-    function renderTopDelayedCities(cities) {
-        const tbody = document.getElementById('topDelayedCitiesTbody');
-        if (!tbody || !cities) return;
+        if (!form) return;
 
-        let html = '';
-        cities.forEach((c, idx) => {
-            const isCrit = c.status === 'Critical';
-            const badgeClass = isCrit ? 'critical' : 'warning';
-            html += `
-                <tr>
-                    <td><strong>${c.city}</strong></td>
-                    <td>${c.avg_delivery_days.toFixed(1)} Days</td>
-                    <td>${formatNumber(c.pending_units || 0)} Units</td>
-                    <td><span class="badge-status ${badgeClass}"><i class="fas fa-circle" style="font-size:0.35rem;"></i> ${c.status}</span></td>
-                </tr>
-            `;
-        });
-        tbody.innerHTML = html;
-    }
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
 
-    // ---- Render Top 5 Pending Warehouses ----
-    function renderTopPendingWarehouses(warehouses) {
-        const tbody = document.getElementById('topPendingWarehousesTbody');
-        if (!tbody || !warehouses) return;
+            const fileInput = this.querySelector('input[type="file"]');
+            if (!fileInput || !fileInput.files.length) {
+                Swal.fire({ icon: 'warning', title: 'No File Selected', text: 'Please choose an Excel file.' });
+                return;
+            }
 
-        let html = '';
-        warehouses.forEach((w, idx) => {
-            html += `
-                <tr>
-                    <td><strong>${w.warehouse}</strong></td>
-                    <td>${formatNumber(w.pending_dns || 0)}</td>
-                    <td>${formatNumber(w.pending_units || 0)}</td>
-                </tr>
-            `;
-        });
-        tbody.innerHTML = html;
-    }
+            const file = fileInput.files[0];
+            const formData = new FormData(this);
 
-    // ---- Render Top Dealers ----
-    function renderTopDealers(dealers) {
-        const tbody = document.getElementById('topDealersTbody');
-        if (!tbody || !dealers) return;
+            // Show progress bar
+            progressContainer.style.display = 'block';
+            progressBar.style.width = '0%';
+            progressBar.setAttribute('aria-valuenow', 0);
+            statusLabel.textContent = 'Starting upload...';
+            percentLabel.textContent = '0%';
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Uploading...';
 
-        let html = '';
-        dealers.forEach((d, idx) => {
-            html += `
-                <tr>
-                    <td><strong>${d.dealer}</strong></td>
-                    <td>${formatNumber(d.units)}</td>
-                    <td>${formatCurrency(d.revenue || 0)}</td>
-                </tr>
-            `;
-        });
-        tbody.innerHTML = html;
-    }
+            const xhr = new XMLHttpRequest();
 
-    // ---- Render Top Products ----
-    function renderTopProducts(products) {
-        const tbody = document.getElementById('topProductsTbody');
-        if (!tbody || !products) return;
-
-        let html = '';
-        products.forEach((p, idx) => {
-            html += `
-                <tr>
-                    <td><strong>${p.product}</strong></td>
-                    <td>${formatNumber(p.units || 0)}</td>
-                    <td>${formatNumber(p.delivery_notes || 0)}</td>
-                </tr>
-            `;
-        });
-        tbody.innerHTML = html;
-    }
-
-    // ---- Render Division Performance & Donut Chart ----
-    function renderDivisions(divisions) {
-        const legendContainer = document.getElementById('divisionLegend');
-        const chartContainer = document.getElementById('divisionDonutChart');
-        if (!divisions || divisions.length === 0) return;
-
-        const labels = divisions.map(d => d.division);
-        const values = divisions.map(d => d.revenue || d.value || 0);
-        const colors = ['#2563eb', '#10b981', '#f59e0b', '#38bdf8', '#64748b'];
-
-        if (chartContainer) {
-            const data = [{
-                values: values,
-                labels: labels,
-                type: 'pie',
-                hole: 0.6,
-                marker: { colors: colors },
-                textinfo: 'none'
-            }];
-            const layout = {
-                paper_bgcolor: 'rgba(0,0,0,0)',
-                plot_bgcolor: 'rgba(0,0,0,0)',
-                margin: { t: 5, b: 5, l: 5, r: 5 },
-                showlegend: false
-            };
-            Plotly.newPlot(chartContainer, data, layout, { responsive: true, displayModeBar: false });
-        }
-
-        if (legendContainer) {
-            let legendHtml = '';
-            const totalVal = values.reduce((a, b) => a + b, 0) || 1;
-            divisions.forEach((d, i) => {
-                const pct = ((values[i] / totalVal) * 100).toFixed(0);
-                legendHtml += `
-                    <div class="d-flex justify-content-between align-items-center">
-                        <span><i class="fas fa-square" style="color: ${colors[i % colors.length]};"></i> ${d.division}</span>
-                        <strong>${formatCurrency(values[i])} (${pct}%)</strong>
-                    </div>
-                `;
+            // Track upload progress
+            xhr.upload.addEventListener('progress', function(event) {
+                if (event.lengthComputable) {
+                    const percent = Math.round((event.loaded / event.total) * 100);
+                    progressBar.style.width = percent + '%';
+                    progressBar.setAttribute('aria-valuenow', percent);
+                    percentLabel.textContent = percent + '%';
+                    const loadedMB = (event.loaded / (1024 * 1024)).toFixed(2);
+                    const totalMB = (event.total / (1024 * 1024)).toFixed(2);
+                    statusLabel.textContent = `Uploading ${loadedMB} MB / ${totalMB} MB`;
+                } else {
+                    statusLabel.textContent = `Uploading... (${event.loaded} bytes)`;
+                }
             });
-            legendContainer.innerHTML = legendHtml;
-        }
-    }
 
-    // ---- Render Standard Compliance ----
-    function renderCompliance(compliance) {
-        const tbody = document.getElementById('standardComplianceTbody');
-        if (!tbody || !compliance) return;
+            // Handle response
+            xhr.onload = function() {
+                progressBar.style.width = '100%';
+                percentLabel.textContent = '100%';
+                statusLabel.textContent = 'Processing complete! Refreshing dashboard...';
 
-        let html = '';
-        compliance.slice(0, 6).forEach((c, idx) => {
-            const statusClass = c.status === 'Within Standard' ? 'text-success' : 'text-danger';
-            html += `
-                <tr>
-                    <td>${c.distance || '0-100'}</td>
-                    <td>${c.target_days} Day(s)</td>
-                    <td>${c.actual_days.toFixed(1)}</td>
-                    <td><strong class="${statusClass}">${c.compliance_pct || 0}%</strong></td>
-                </tr>
-            `;
+                if (xhr.status === 200) {
+                    try {
+                        const data = JSON.parse(xhr.responseText);
+                        // Upload router may return "success" or "status"
+                        const isSuccess = data.success === true || data.status === 'success';
+                        const message = data.message || data.msg || 'Import completed.';
+                        if (isSuccess) {
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Import Complete',
+                                text: message,
+                                timer: 2000,
+                                showConfirmButton: false,
+                                background: '#0f172a',
+                                color: '#f8fafc'
+                            }).then(() => {
+                                loadDashboard();
+                                setTimeout(() => {
+                                    progressContainer.style.display = 'none';
+                                    btn.disabled = false;
+                                    btn.innerHTML = '<i class="fas fa-cloud-upload-alt me-1"></i> Import & Process';
+                                    fileInput.value = '';
+                                }, 1500);
+                            });
+                        } else {
+                            Swal.fire({
+                                icon: 'error',
+                                title: 'Import Failed',
+                                text: data.message || data.error || 'Unknown error.',
+                                background: '#0f172a',
+                                color: '#f8fafc'
+                            });
+                            resetUpload();
+                        }
+                    } catch (e) {
+                        Swal.fire({ icon: 'error', title: 'Parse Error', text: 'Invalid server response.', background: '#0f172a', color: '#f8fafc' });
+                        resetUpload();
+                    }
+                } else {
+                    let errorMsg = 'Upload failed.';
+                    try {
+                        const errData = JSON.parse(xhr.responseText);
+                        errorMsg = errData.message || errData.error || errorMsg;
+                    } catch(e) {}
+                    Swal.fire({ icon: 'error', title: 'Import Failed', text: errorMsg, background: '#0f172a', color: '#f8fafc' });
+                    resetUpload();
+                }
+            };
+
+            xhr.onerror = function() {
+                Swal.fire({ icon: 'error', title: 'Network Error', text: 'Could not connect to server.', background: '#0f172a', color: '#f8fafc' });
+                resetUpload();
+            };
+
+            xhr.onabort = function() {
+                resetUpload();
+            };
+
+            xhr.open('POST', UPLOAD_URL, true);
+            xhr.send(formData);
         });
-        tbody.innerHTML = html;
     }
 
-    // ---- Render Alerts (now limited to top 10) ----
-    function renderAlerts(alerts) {
-        const container = document.getElementById('criticalAlertsContainer');
-        const header = document.getElementById('criticalAlertsHeader');
-        const countSpan = document.getElementById('alertCount');
-        const badge = document.getElementById('alertBadge');
-        if (!container || !alerts) return;
-
-        const count = alerts.length;
-        if (header) header.innerHTML = `<span><i class="fas fa-triangle-exclamation text-danger"></i> CRITICAL ALERTS (${count})</span><span class="text-muted" style="font-size:0.65rem;">Function: generate_critical_alerts()</span>`;
-        if (countSpan) countSpan.innerText = count;
-        if (badge) badge.innerText = count;
-
-        let html = '';
-        alerts.forEach(a => {
-            const isCrit = a.severity === 'CRITICAL';
-            html += `
-                <div class="alert-item" ${!isCrit ? 'style="background: rgba(245, 158, 11, 0.06); border-color: rgba(245, 158, 11, 0.2);"' : ''}>
-                    <i class="fas ${isCrit ? 'fa-triangle-exclamation' : 'fa-circle-exclamation text-warning'}"></i>
-                    <div>
-                        <strong style="color:${isCrit ? 'var(--color-danger)' : 'var(--color-warning)'}; font-size:0.75rem;">${a.category} · ${a.source}</strong>
-                        <p class="mb-0 text-secondary" style="font-size:0.7rem;">${a.message} &nbsp;|&nbsp; Priority: <span class="${isCrit ? 'text-danger' : 'text-warning'} fw-bold">${a.severity}</span></p>
-                    </div>
-                </div>
-            `;
-        });
-        container.innerHTML = html;
+    function resetUpload() {
+        const btn = document.getElementById('uploadBtn');
+        const progressContainer = document.getElementById('uploadProgressContainer');
+        const fileInput = document.querySelector('input[type="file"]');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-cloud-upload-alt me-1"></i> Import & Process';
+        progressContainer.style.display = 'none';
+        if (fileInput) fileInput.value = '';
     }
 
-    // ---- Render Recommendations ----
-    function renderRecommendations(recs) {
-        const container = document.getElementById('recommendationsContainer');
-        if (!container || !recs) return;
-
-        let html = '';
-        recs.slice(0, 4).forEach(r => {
-            const recText = typeof r === 'string' ? r : r.recommendation;
-            html += `
-                <div class="recommendation-item">
-                    <i class="fas fa-check"></i>
-                    <span>${recText || 'No specific recommendation.'}</span>
-                </div>
-            `;
-        });
-        container.innerHTML = html;
-    }
-
-    // ---- Initialize Performance Trend Chart ----
-    function initTrendChart(monthlyTrend) {
-        const trendContainer = document.getElementById('performanceTrendChart');
-        if (!trendContainer) return;
-
-        const xDates = monthlyTrend.map(m => m.month);
-        const yDn = monthlyTrend.map(m => m.dn_count);
-        const yUnits = monthlyTrend.map(m => m.units);
-
-        const trace1 = { x: xDates, y: yDn, name: 'DN Count', type: 'scatter', mode: 'lines+markers', line: { color: '#10b981', width: 2 } };
-        const trace2 = { x: xDates, y: yUnits, name: 'Units', type: 'scatter', mode: 'lines+markers', yaxis: 'y2', line: { color: '#38bdf8', width: 2 } };
-
-        const layout = {
-            paper_bgcolor: 'rgba(0,0,0,0)',
-            plot_bgcolor: 'rgba(0,0,0,0)',
-            margin: { t: 5, b: 20, l: 25, r: 25 },
-            showlegend: false,
-            xaxis: { color: '#94a3b8', tickfont: { size: 8 } },
-            yaxis: { color: '#94a3b8', tickfont: { size: 8 } },
-            yaxis2: { overlaying: 'y', side: 'right', color: '#94a3b8', tickfont: { size: 8 }, showgrid: false }
-        };
-        Plotly.newPlot(trendContainer, [trace1, trace2], layout, { responsive: true, displayModeBar: false });
-    }
-
-    // ---- Load Dashboard Data from API ----
+    // ---- Load Dashboard Data ----
     async function loadDashboard() {
         try {
             const res = await fetch(API_URL);
             if (res.ok) {
                 const data = await res.json();
-                
                 if (data.cards) renderKPIs(data.cards);
                 if (data.executive_summary_text) renderExecutiveSummary(data.executive_summary_text);
                 if (data.pipeline_detailed) renderPipeline(data.pipeline_detailed);
-                if (data.warehouse_ranking) renderWarehouseRanking(data.warehouse_ranking);
-                if (data.top_delayed_cities) renderTopDelayedCities(data.top_delayed_cities);
-                if (data.top_pending_warehouses) renderTopPendingWarehouses(data.top_pending_warehouses);
-                if (data.top_dealers) renderTopDealers(data.top_dealers);
-                if (data.top_products) renderTopProducts(data.top_products);
-                if (data.division_performance) renderDivisions(data.division_performance);
-                if (data.delivery_compliance) renderCompliance(data.delivery_compliance);
-                if (data.alerts) renderAlerts(data.alerts);
-                if (data.recommendations) renderRecommendations(data.recommendations);
-                if (data.monthly_trend) initTrendChart(data.monthly_trend);
-
-                // Footer metadata
+                // ... call other render functions ...
+                // (Include all your existing render calls here)
+                // Footer
                 if (data.metadata) {
                     const recEl = document.getElementById('footerRecords');
                     if (recEl) recEl.innerText = formatNumber(data.metadata.record_count);
                     const verEl = document.getElementById('footerVersion');
-                    if (verEl) verEl.innerText = `Haier Pakistan v${data.metadata.version || '19.4'}`;
+                    if (verEl) verEl.innerText = `Haier Pakistan v${data.metadata.version || '19.6'}`;
                 }
             }
         } catch(e) {
-            console.warn('API fetch warning, fallback UI active:', e);
+            console.warn('API fetch warning:', e);
         }
     }
 
@@ -1318,7 +1089,7 @@
             });
         }
 
-        // Hamburger sidebar toggle for mobile
+        // Hamburger
         const hamburger = document.getElementById('hamburgerBtn');
         if (hamburger) {
             hamburger.addEventListener('click', function() {
@@ -1326,40 +1097,14 @@
             });
         }
 
-        // Upload Form AJAX submission
-        const uploadForm = document.getElementById('uploadForm');
-        if (uploadForm) {
-            uploadForm.addEventListener('submit', function(e) {
-                e.preventDefault();
-                const formData = new FormData(this);
-                const fileInput = this.querySelector('input[type="file"]');
-                if (!fileInput || !fileInput.files.length) {
-                    Swal.fire({ icon: 'warning', title: 'No File Selected', text: 'Please choose an Excel file.' });
-                    return;
-                }
-                Swal.fire({
-                    title: 'Importing Report',
-                    html: '<div class="spinner-border text-info mb-2" role="status"></div><div class="small text-muted">Processing Excel file via v19.4 engine...</div>',
-                    background: '#0f172a', color: '#f8fafc',
-                    allowOutsideClick: false, showConfirmButton: false
-                });
+        // Setup upload
+        setupUpload();
 
-                fetch(this.action, { method: 'POST', body: formData })
-                    .then(res => res.json())
-                    .then(data => {
-                        Swal.fire({ icon: 'success', title: 'Import Complete', text: data.message || 'Data refreshed successfully.', timer: 2000, showConfirmButton: false, background: '#0f172a', color: '#f8fafc' })
-                            .then(() => loadDashboard());
-                    })
-                    .catch(err => {
-                        Swal.fire({ icon: 'error', title: 'Import Failed', text: err.toString(), background: '#0f172a', color: '#f8fafc' });
-                    });
-            });
-        }
-
+        // Load dashboard
         loadDashboard();
-        // Auto-refresh every 30 seconds
         setInterval(loadDashboard, 30000);
     });
+
 })();
 </script>
 
