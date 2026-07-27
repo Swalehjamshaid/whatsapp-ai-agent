@@ -1,404 +1,1632 @@
-# ==========================================================
-# FILE: app/database.py (IMPROVED v3.1 - SPEED OPTIMIZED)
-# ==========================================================
-# PURPOSE: Database Connection Management - Pure Database Layer
-#
-# ARCHITECTURE:
-# Webhook → AIQueryService → Services → THIS FILE → Database
-#
-# RESPONSIBILITIES (ONLY):
-# - Database Engine Configuration
-# - Session Management
-# - Connection Pool Management
-# - Health Checks
-# - Table Creation
-#
-# WHAT THIS FILE DOES NOT CONTAIN:
-# - No Business Logic
-# - No AI Logic
-# - No WhatsApp Logic
-# - No Analytics Logic
-# - No KPI Logic
-# ==========================================================
+<!-- ============================================================
+     FILE: whatsapp-ai-agent-demo/app/templates/dashboard.html
+     VERSION: 20.1 – n8n INTEGRATED + HEALTH SCORE CALCULATION
+     ============================================================ -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Haier Pakistan – Enterprise Command Suite</title>
 
-import warnings
-from typing import Dict, Any, Optional
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
-from loguru import logger
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 
-from app.config import config
+  <!-- Bootstrap 5 CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <!-- Font Awesome 6 -->
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet" />
+  <!-- Plotly JS -->
+  <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist@2.26.0/plotly.min.js"></script>
+  <!-- SweetAlert2 -->
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
-# ==========================================================
-# SUPPRESS SQLAlchemy WARNINGS (for models.py help_text)
-# ==========================================================
-
-warnings.filterwarnings('ignore', message="Can't validate argument 'help_text'")
-warnings.filterwarnings('ignore', category=DeprecationWarning, module='sqlalchemy')
-
-# ==========================================================
-# DATABASE URL VALIDATION (Critical Fix)
-# ==========================================================
-
-DATABASE_URL = config.DATABASE_URL
-
-# Validate database URL at startup
-if not DATABASE_URL:
-    error_msg = "DATABASE_URL is not configured. Please set DATABASE_URL in environment variables."
-    logger.error(error_msg)
-    raise ValueError(error_msg)
-
-logger.info(f"Database URL configured (type: {DATABASE_URL.split('://')[0] if '://' in DATABASE_URL else 'unknown'})")
-
-# ==========================================================
-# ENGINE CONFIGURATION (SPEED OPTIMIZED)
-# ==========================================================
-
-# Determine if using PostgreSQL (Railway default) or SQLite (local development)
-is_postgres = DATABASE_URL.startswith(('postgresql://', 'postgres://'))
-
-# SPEED OPTIMIZATION v3.1: Increased pool size for faster response times
-# Railway optimized settings - increased for better concurrency
-engine_config = {
-    "pool_pre_ping": True,           # Verify connections before using (prevents stale connections)
-    "pool_recycle": 3600,            # Recycle connections every 60 minutes (increased from 30)
-    "pool_timeout": 15,              # Wait 15 seconds for connection from pool (reduced from 30)
-    "echo": False,                   # Disable SQL logging in production
-    "future": True,                  # SQLAlchemy 2.0 style
-}
-
-# Different pool settings for PostgreSQL vs SQLite
-if is_postgres:
-    # SPEED OPTIMIZATION: Increased pool size for concurrent requests
-    engine_config["pool_size"] = 10        # Increased from 5 for better concurrency
-    engine_config["max_overflow"] = 20     # Increased from 10 for burst handling
-    engine_config["pool_use_lifo"] = True  # LIFO: reuse most recent connections (faster)
-    logger.info(f"PostgreSQL detected - Pool size: {engine_config['pool_size']}, Max overflow: {engine_config['max_overflow']}")
-else:
-    # SQLite doesn't need connection pooling
-    engine_config["pool_size"] = 1
-    engine_config["max_overflow"] = 0
-    engine_config["connect_args"] = {"check_same_thread": False}
-    logger.info("SQLite detected - Using single connection")
-
-# SPEED OPTIMIZATION: Add execution timeout for slow queries (PostgreSQL only)
-if is_postgres:
-    # Set statement timeout to prevent long-running queries
-    engine_config["execution_options"] = {
-        "statement_timeout": 5000  # 5 second timeout for all queries
-    }
-    logger.info("Query timeout set to 5 seconds")
-
-# Create engine
-try:
-    engine = create_engine(DATABASE_URL, **engine_config)
-    logger.info("Database engine created successfully")
-except Exception as e:
-    logger.error(f"Failed to create database engine: {e}")
-    raise
-
-# ==========================================================
-# SESSION FACTORY (Optimized for FastAPI)
-# ==========================================================
-
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine
-)
-
-# ==========================================================
-# BASE MODEL
-# ==========================================================
-
-Base = declarative_base()
-
-# ==========================================================
-# CONNECTION POOL MONITORING
-# ==========================================================
-
-def get_pool_status() -> Dict[str, Any]:
-    """
-    Get current connection pool status for monitoring.
-    
-    Returns:
-        Dictionary with pool statistics
-    """
-    pool = engine.pool
-    return {
-        "size": pool.size(),
-        "checked_in": pool.checkedin(),
-        "overflow": pool.overflow(),
-        "total": pool.total(),
-        "max_connections": engine_config.get("pool_size", 0) + engine_config.get("max_overflow", 0)
+  <style>
+    /* ====== All styles remain exactly as before ====== */
+    :root {
+      --color-bg-base: #070b14;
+      --color-bg-surface: #0f172a;
+      --color-bg-elevated: #1e293b;
+      --color-border: rgba(255,255,255,0.06);
+      --color-border-hover: rgba(56,189,248,0.25);
+      --color-text-primary: #f8fafc;
+      --color-text-secondary: #94a3b8;
+      --color-text-muted: #64748b;
+      --color-accent: #38bdf8;
+      --color-accent-blue: #2563eb;
+      --color-accent-indigo: #4f46e5;
+      --color-success: #10b981;
+      --color-warning: #f59e0b;
+      --color-danger: #ef4444;
+      --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+      --radius-xl: 16px;
+      --radius-lg: 12px;
+      --radius-md: 8px;
+      --shadow-glass: 0 10px 30px rgba(0,0,0,0.4);
+      --shadow-neon: 0 0 20px rgba(56,189,248,0.06);
+      --transition-smooth: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
-# ==========================================================
-# DATABASE DEPENDENCY (FastAPI)
-# ==========================================================
-
-def get_db() -> Session:
-    """
-    FastAPI dependency for database session.
-    
-    Usage:
-        @app.get("/")
-        def endpoint(db: Session = Depends(get_db)):
-            ...
-    
-    Yields:
-        Database session for request
-    """
-    db = SessionLocal()
-    try:
-        yield db
-    except Exception as e:
-        logger.exception(f"Database session error: {e}")
-        db.rollback()
-        raise
-    finally:
-        db.close()
-
-# ==========================================================
-# HEALTH CHECK (Improved with SQLAlchemy 2.x compatibility)
-# ==========================================================
-
-def check_database_connection() -> bool:
-    """
-    Simple database connection health check.
-    
-    Returns:
-        True if connected, False otherwise
-    """
-    try:
-        db = SessionLocal()
-        # Use text() for SQLAlchemy 2.x compatibility (Critical Fix)
-        db.execute(text("SELECT 1"))
-        db.close()
-        return True
-    except Exception as e:
-        logger.error(f"Database connection check failed: {e}")
-        return False
-
-
-def get_database_health() -> Dict[str, Any]:
-    """
-    Detailed database health check with metadata (Priority 4).
-    
-    Returns:
-        Dictionary with health status and metadata
-    """
-    health_status = {
-        "connected": False,
-        "database_type": "postgresql" if is_postgres else "sqlite",
-        "pool_size": engine_config.get("pool_size", 0),
-        "max_overflow": engine_config.get("max_overflow", 0),
-        "url_configured": bool(DATABASE_URL),
-        "error": None,
-        "current_pool_status": None
+    [data-theme="light"] {
+      --color-bg-base: #f1f5f9;
+      --color-bg-surface: #ffffff;
+      --color-bg-elevated: #f8fafc;
+      --color-border: #e2e8f0;
+      --color-border-hover: rgba(37,99,235,0.15);
+      --color-text-primary: #0f172a;
+      --color-text-secondary: #475569;
+      --color-text-muted: #94a3b8;
+      --shadow-glass: 0 10px 30px rgba(0,0,0,0.04);
+      --shadow-neon: 0 0 20px rgba(37,99,235,0.04);
     }
-    
-    try:
-        db = SessionLocal()
-        # Use text() for SQLAlchemy 2.x compatibility
-        result = db.execute(text("SELECT 1 as connected, version() as version")).first()
-        db.close()
-        
-        health_status["connected"] = True
-        if result:
-            health_status["version"] = str(result[1]) if len(result) > 1 else "unknown"
-        
-        # Get current pool status
-        health_status["current_pool_status"] = get_pool_status()
-        
-        logger.debug("Database health check passed")
-        
-    except Exception as e:
-        health_status["error"] = str(e)
-        logger.error(f"Database health check failed: {e}")
-    
-    return health_status
 
+    * { box-sizing: border-box; }
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-bg-base);
+      color: var(--color-text-primary);
+      margin: 0;
+      min-height: 100vh;
+      transition: background 0.4s ease, color 0.4s ease;
+      -webkit-font-smoothing: antialiased;
+      font-size: 0.78rem;
+    }
+    .container-fluid { padding: 0; }
 
-def check_database_connection_detailed() -> Dict[str, Any]:
-    """
-    Alias for get_database_health (backward compatibility).
-    """
-    return get_database_health()
+    /* ----- Sidebar ----- */
+    .sidebar {
+      position: fixed;
+      top: 0; left: 0;
+      width: 250px;
+      height: 100vh;
+      background: var(--color-bg-surface);
+      border-right: 1px solid var(--color-border);
+      padding: 1.25rem 1rem;
+      z-index: 1050;
+      display: flex;
+      flex-direction: column;
+      backdrop-filter: blur(20px);
+      transition: transform var(--transition-smooth);
+    }
+    .sidebar-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding-bottom: 1.25rem;
+      border-bottom: 1px solid var(--color-border);
+    }
+    .brand-icon {
+      width: 38px; height: 38px;
+      background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
+      border-radius: var(--radius-md);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 1.1rem;
+      box-shadow: var(--shadow-neon);
+    }
+    .sidebar-brand h5 {
+      font-size: 1rem; font-weight: 800; color: var(--color-text-primary);
+      margin: 0; letter-spacing: -0.02em;
+    }
+    .sidebar-brand small {
+      font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
+      color: var(--color-text-secondary); letter-spacing: 0.1em;
+      display: block;
+    }
 
-# ==========================================================
-# QUERY OPTIMIZATION HELPERS
-# ==========================================================
+    .sidebar-nav {
+      flex: 1;
+      padding: 1rem 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+      overflow-y: auto;
+    }
+    .sidebar-nav::-webkit-scrollbar { width: 3px; }
+    .sidebar-nav::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
 
-def set_query_timeout(seconds: int = 5):
-    """
-    Set statement timeout for the current session.
-    
-    Args:
-        seconds: Timeout in seconds (default 5)
-    """
-    if is_postgres:
-        try:
-            db = SessionLocal()
-            db.execute(text(f"SET statement_timeout = '{seconds}s'"))
-            db.commit()
-            db.close()
-            logger.debug(f"Query timeout set to {seconds} seconds")
-        except Exception as e:
-            logger.warning(f"Failed to set query timeout: {e}")
+    .sidebar-nav .nav-link {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.55rem 0.85rem;
+      border-radius: var(--radius-md);
+      color: var(--color-text-secondary);
+      font-weight: 600;
+      font-size: 0.76rem;
+      text-decoration: none;
+      transition: var(--transition-smooth);
+    }
+    .sidebar-nav .nav-link i {
+      width: 18px; text-align: center;
+      font-size: 0.9rem;
+    }
+    .sidebar-nav .nav-link:hover {
+      background: rgba(56,189,248,0.06);
+      color: var(--color-accent);
+    }
+    .sidebar-nav .nav-link.active {
+      background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
+      color: #fff;
+      box-shadow: 0 4px 16px rgba(37,99,235,0.25);
+    }
+    .sidebar-footer {
+      padding: 0.75rem 0.25rem;
+      border-top: 1px solid var(--color-border);
+      font-size: 0.65rem;
+      color: var(--color-text-muted);
+      text-align: center;
+      font-weight: 600;
+    }
 
+    /* ----- Top Bar Command Header ----- */
+    .topbar {
+      background: var(--color-bg-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-xl);
+      padding: 0.75rem 1.5rem;
+      margin-bottom: 1.25rem;
+      box-shadow: var(--shadow-glass);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      backdrop-filter: blur(20px);
+    }
+    .topbar-left { display: flex; align-items: center; gap: 1rem; }
+    .topbar-left .hamburger {
+      display: none; background: none; border: none;
+      font-size: 1.2rem; color: var(--color-text-primary); cursor: pointer;
+    }
+    .topbar-logo-area { display: flex; flex-direction: column; }
+    .topbar-logo-area h3 {
+      font-size: 0.95rem; font-weight: 800; margin: 0;
+      color: var(--color-text-primary);
+      letter-spacing: -0.02em;
+    }
+    .topbar-logo-area small {
+      font-size: 0.6rem; color: var(--color-text-secondary); font-weight: 600;
+    }
 
-def get_query_performance_stats() -> Dict[str, Any]:
-    """
-    Get query performance statistics from PostgreSQL.
-    
-    Returns:
-        Dictionary with performance metrics
-    """
-    if not is_postgres:
-        return {"message": "Query performance stats only available for PostgreSQL"}
-    
-    try:
-        db = SessionLocal()
-        # Get slow queries
-        slow_queries = db.execute(text("""
-            SELECT query, calls, total_time, mean_time 
-            FROM pg_stat_statements 
-            ORDER BY mean_time DESC 
-            LIMIT 10
-        """)).fetchall()
-        db.close()
-        
+    .topbar-filters {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+    }
+    .filter-dropdown {
+      background: var(--color-bg-base);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: 0.3rem 0.6rem;
+      font-size: 0.72rem;
+      color: var(--color-text-primary);
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      cursor: pointer;
+    }
+    .filter-dropdown select {
+      background: transparent;
+      border: none;
+      color: var(--color-text-primary);
+      font-weight: 700;
+      font-size: 0.72rem;
+      outline: none;
+      padding: 0;
+      margin: 0;
+    }
+    .filter-dropdown select option { background: var(--color-bg-surface); color: var(--color-text-primary); }
+    .filter-dropdown span { color: var(--color-text-secondary); font-weight: 500; font-size: 0.68rem; }
+
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+    .btn-command {
+      background: var(--color-bg-base);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: 0.35rem 0.75rem;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--color-text-primary);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      cursor: pointer;
+      transition: var(--transition-smooth);
+    }
+    .btn-command.btn-primary-action {
+      background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
+      border: none;
+      color: #fff;
+      box-shadow: 0 4px 12px rgba(37,99,235,0.2);
+    }
+    .btn-command:hover { opacity: 0.9; transform: translateY(-1px); }
+    .btn-command:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    .notification-icon {
+      position: relative;
+      width: 30px; height: 30px;
+      background: var(--color-bg-base);
+      border: 1px solid var(--color-border);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+    }
+    .notification-icon .badge-dot {
+      position: absolute; top: 3px; right: 3px;
+      width: 7px; height: 7px; background: var(--color-danger);
+      border-radius: 50%;
+    }
+    .user-profile-pill {
+      display: flex; align-items: center; gap: 0.4rem;
+      background: var(--color-bg-base);
+      padding: 0.2rem 0.6rem 0.2rem 0.3rem;
+      border-radius: 9999px;
+      border: 1px solid var(--color-border);
+      font-size: 0.72rem; font-weight: 700;
+    }
+    .user-avatar {
+      width: 22px; height: 22px; background: #3b82f6; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center; color: #fff; font-size: 0.6rem;
+    }
+    .api-status {
+      display: flex; align-items: center; gap: 0.3rem;
+      font-size: 0.65rem;
+      font-weight: 600;
+      padding: 0.15rem 0.5rem;
+      border-radius: 9999px;
+      border: 1px solid var(--color-border);
+    }
+    .api-status .dot {
+      width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+    }
+    .api-status.online .dot { background: var(--color-success); }
+    .api-status.offline .dot { background: var(--color-danger); }
+
+    /* Spinner overlay */
+    #loadingOverlay {
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(7,11,20,0.7);
+      backdrop-filter: blur(4px);
+      z-index: 9999;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    #loadingOverlay .spinner {
+      width: 48px; height: 48px;
+      border: 4px solid var(--color-border);
+      border-top: 4px solid var(--color-accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loadingOverlay p { color: var(--color-text-secondary); font-weight: 600; }
+
+    /* ----- Main Content ----- */
+    .main-content {
+      margin-left: 250px;
+      padding: 1.25rem 1.5rem;
+      min-height: 100vh;
+      transition: margin var(--transition-smooth);
+    }
+
+    /* ----- Cards ----- */
+    .card {
+      background: var(--color-bg-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow-glass);
+      transition: var(--transition-smooth);
+      overflow: hidden;
+      position: relative;
+      margin-bottom: 1rem;
+    }
+    .card-header {
+      background: transparent !important;
+      border-bottom: 1px solid var(--color-border) !important;
+      color: var(--color-text-primary) !important;
+      padding: 0.75rem 1rem !important;
+      font-weight: 700;
+      font-size: 0.78rem;
+      display: flex; align-items: center; gap: 0.5rem;
+    }
+    .card-header i { color: var(--color-accent); font-size: 0.9rem; }
+
+    /* ----- KPI Grid Cards ----- */
+    .kpi-card {
+      background: var(--color-bg-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      padding: 0.85rem 1rem;
+      height: 100%;
+      position: relative;
+      transition: var(--transition-smooth);
+      box-shadow: var(--shadow-glass);
+    }
+    .kpi-card:hover {
+      border-color: var(--color-accent);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-neon);
+    }
+    .kpi-card h6 {
+      font-size: 0.62rem;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: var(--color-text-secondary);
+      letter-spacing: 0.05em;
+      margin-bottom: 0.3rem;
+      display: flex; align-items: center; gap: 0.35rem;
+    }
+    .kpi-card h6 i { color: var(--color-accent); font-size: 0.7rem; }
+    .kpi-card .kpi-value {
+      font-size: 1.35rem;
+      font-weight: 800;
+      color: var(--color-text-primary);
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+    }
+    .kpi-card .kpi-sub {
+      font-size: 0.65rem;
+      font-weight: 600;
+      margin-top: 0.25rem;
+      display: flex; align-items: center; gap: 0.3rem;
+    }
+    .text-trend-up { color: var(--color-success); }
+    .text-trend-down { color: var(--color-danger); }
+
+    /* ----- Tables & Lists inside Cards ----- */
+    .table-custom {
+      width: 100%;
+      margin-bottom: 0;
+      font-size: 0.74rem;
+      color: var(--color-text-primary);
+      border-collapse: collapse;
+    }
+    .table-custom th {
+      background: rgba(15,23,42,0.4);
+      color: var(--color-text-secondary);
+      font-weight: 700;
+      text-transform: uppercase;
+      font-size: 0.64rem;
+      padding: 0.5rem 0.65rem;
+      border-bottom: 1px solid var(--color-border);
+      letter-spacing: 0.04em;
+    }
+    .table-custom td {
+      padding: 0.5rem 0.65rem;
+      border-bottom: 1px solid var(--color-border);
+      vertical-align: middle;
+    }
+    .table-custom tr:hover td { background: rgba(56,189,248,0.03); }
+
+    /* Badges & Status Pills */
+    .badge-status {
+      padding: 0.15rem 0.45rem;
+      border-radius: 9999px;
+      font-size: 0.64rem;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+    .badge-status.success { background: rgba(16,185,129,0.12); color: #34d399; }
+    .badge-status.good { background: rgba(132,204,22,0.12); color: #a3e635; }
+    .badge-status.warning { background: rgba(245,158,11,0.12); color: #fbbf24; }
+    .badge-status.critical { background: rgba(239,68,68,0.12); color: #f87171; }
+
+    /* Alert Items */
+    .alert-item {
+      background: rgba(239, 68, 68, 0.06);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      border-radius: var(--radius-md);
+      padding: 0.6rem 0.85rem;
+      margin-bottom: 0.4rem;
+      display: flex;
+      align-items: flex-start;
+      gap: 0.6rem;
+    }
+    .alert-item i { color: var(--color-danger); font-size: 0.9rem; margin-top: 0.1rem; }
+
+    /* Recommendation Items */
+    .recommendation-item {
+      background: rgba(16, 185, 129, 0.04);
+      border: 1px solid rgba(16, 185, 129, 0.15);
+      border-radius: var(--radius-md);
+      padding: 0.45rem 0.65rem;
+      margin-bottom: 0.35rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.72rem;
+    }
+    .recommendation-item i { color: var(--color-success); font-size: 0.75rem; }
+
+    /* Pipeline funnel steps */
+    .pipeline-step {
+      background: var(--color-bg-elevated);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: 0.55rem 0.75rem;
+      text-align: center;
+      position: relative;
+    }
+    .pipeline-step .step-val { font-size: 1.15rem; font-weight: 800; color: var(--color-text-primary); margin: 0.1rem 0; }
+
+    /* Forms */
+    .form-toolbar { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; }
+    .form-toolbar .form-group { flex: 1; min-width: 160px; }
+    .form-control, .form-select {
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: 0.4rem 0.65rem;
+      font-size: 0.76rem;
+      background: rgba(15,23,42,0.5);
+      color: var(--color-text-primary);
+    }
+    .btn-upload {
+      background: linear-gradient(135deg, var(--color-accent), var(--color-accent-indigo));
+      border: none;
+      border-radius: var(--radius-md);
+      font-weight: 700;
+      color: #fff;
+      cursor: pointer;
+    }
+    .btn-upload:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    /* Upload progress bar */
+    #uploadProgressContainer {
+      margin-top: 0.75rem;
+      display: none;
+      background: var(--color-bg-elevated);
+      border-radius: var(--radius-md);
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--color-border);
+    }
+    .progress {
+      height: 8px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .progress-bar {
+      background: linear-gradient(90deg, var(--color-accent), var(--color-accent-indigo));
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+    #uploadStatusText {
+      font-size: 0.7rem;
+      color: var(--color-text-secondary);
+      margin-top: 0.25rem;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    /* Footer Bar */
+    .footer-bar {
+      background: var(--color-bg-surface);
+      border-radius: var(--radius-xl);
+      padding: 0.85rem 1.25rem;
+      border: 1px solid var(--color-border);
+      font-size: 0.72rem;
+      color: var(--color-text-secondary);
+      font-weight: 600;
+      box-shadow: var(--shadow-glass);
+      backdrop-filter: blur(20px);
+    }
+
+    @media (max-width: 991.98px) {
+      .sidebar { transform: translateX(-100%); }
+      .sidebar.open { transform: translateX(0); }
+      .main-content { margin-left: 0; padding: 1rem; }
+      .topbar-left .hamburger { display: block; }
+    }
+  </style>
+</head>
+<body data-theme="dark">
+
+<!-- ====== LOADING OVERLAY ====== -->
+<div id="loadingOverlay">
+  <div class="spinner"></div>
+  <p>Loading dashboard data...</p>
+</div>
+
+<div id="app" class="container-fluid px-0">
+
+  <!-- ============================================================
+  EXECUTIVE SIDEBAR
+  ============================================================ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-icon"><i class="fas fa-cubes"></i></div>
+      <div>
+        <h5>Haier Logistics</h5>
+        <small>Command Center</small>
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <a class="nav-link active" href="#"><i class="fas fa-chart-line"></i> Dashboard</a>
+      <a class="nav-link" href="#uploadSection"><i class="fas fa-cloud-upload-alt"></i> Import Center</a>
+      <a class="nav-link" href="#warehouseSection"><i class="fas fa-warehouse"></i> Warehouses</a>
+      <a class="nav-link" href="#dealersSection"><i class="fas fa-handshake"></i> Dealers</a>
+      <a class="nav-link" href="#citiesSection"><i class="fas fa-map-marker-alt"></i> Cities</a>
+      <a class="nav-link" href="#productsSection"><i class="fas fa-boxes"></i> Products</a>
+      <a class="nav-link" href="#divisionsSection"><i class="fas fa-layer-group"></i> Divisions</a>
+      <a class="nav-link" href="#salesOfficesSection"><i class="fas fa-building"></i> Sales Offices</a>
+      <a class="nav-link" href="#salesManagersSection"><i class="fas fa-user-tie"></i> Sales Managers</a>
+      <a class="nav-link" href="#alertsSection"><i class="fas fa-triangle-exclamation"></i> Alerts & Insights <span class="badge bg-danger ms-auto" style="font-size:0.55rem;" id="alertBadge">0</span></a>
+      <a class="nav-link" href="#reportsSection"><i class="fas fa-file-lines"></i> Reports</a>
+      <a class="nav-link" href="#dataQualitySection"><i class="fas fa-database"></i> Data Quality</a>
+      <a class="nav-link" href="#settingsSection"><i class="fas fa-gear"></i> Settings</a>
+    </nav>
+    <div class="sidebar-footer">Haier Pakistan v20.1</div>
+  </aside>
+
+  <!-- ============================================================
+  MAIN CONTENT
+  ============================================================ -->
+  <main class="main-content" id="mainContent">
+
+    <!-- COMMAND CENTER TOPBAR -->
+    <div class="topbar">
+      <div class="topbar-left">
+        <button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button>
+        <div class="topbar-logo-area">
+          <h3>HAIER LOGISTICS COMMAND CENTER – DIRECTOR DASHBOARD</h3>
+          <small>100% DATA DRIVEN FROM POSTGRESQL – n8n BACKEND</small>
+        </div>
+      </div>
+
+      <!-- Quick Global Filters Bar -->
+      <div class="topbar-filters">
+        <div class="filter-dropdown">
+          <i class="fas fa-calendar-alt text-info"></i>
+          <input type="date" id="filterDateFrom" value="2026-07-22" style="background:transparent;border:none;color:var(--color-text-primary);width:90px;" />
+          <span>to</span>
+          <input type="date" id="filterDateTo" value="2026-07-22" style="background:transparent;border:none;color:var(--color-text-primary);width:90px;" />
+        </div>
+        <div class="filter-dropdown">
+          <span>Warehouse:</span>
+          <select id="filterWarehouse"><option value="">All</option><option>Lahore</option><option>Karachi</option><option>Islamabad</option></select>
+        </div>
+        <div class="filter-dropdown">
+          <span>Division:</span>
+          <select id="filterDivision"><option value="">All</option><option>HA</option><option>AC</option><option>REF</option></select>
+        </div>
+        <div class="filter-dropdown">
+          <span>Sales Office:</span>
+          <select id="filterSalesOffice"><option value="">All</option><option>North</option><option>South</option></select>
+        </div>
+        <div class="filter-dropdown">
+          <span>Sales Manager:</span>
+          <select id="filterSalesManager"><option value="">All</option><option>Ali</option><option>Fatima</option></select>
+        </div>
+      </div>
+
+      <!-- Topbar Actions -->
+      <div class="topbar-actions">
+        <div class="api-status online" id="apiStatus">
+          <span class="dot"></span> <span id="apiStatusText">n8n Online</span>
+        </div>
+        <button class="btn-command" id="refreshBtn" onclick="loadDashboard()"><i class="fas fa-rotate text-info"></i> Refresh</button>
+        <button class="btn-command btn-primary-action"><i class="fas fa-download"></i> Export</button>
+        <div class="notification-icon">
+          <i class="fas fa-bell"></i>
+          <div class="badge-dot"></div>
+        </div>
+        <div class="user-profile-pill">
+          <div class="user-avatar">LK</div>
+          <span>Logistics Director</span>
+        </div>
+        <button class="btn-command" id="themeToggle" style="width:30px; height:30px; padding:0; justify-content:center;"><i class="fas fa-sun"></i></button>
+      </div>
+    </div>
+
+    <!-- EXECUTIVE KPI CARDS -->
+    <section id="kpiCards" class="row g-2 mb-3"></section>
+
+    <!-- EXECUTIVE SUMMARY, PIPELINE, TREND -->
+    <div class="row g-2 mb-3">
+      <div class="col-xl-4">
+        <div class="card h-100 mb-0">
+          <div class="card-header"><i class="fas fa-star text-warning"></i> EXECUTIVE SUMMARY (AI)</div>
+          <div class="card-body p-2.5" id="executiveSummaryAiBody" style="font-size: 0.74rem; line-height: 1.5; color: var(--color-text-primary);">Loading...</div>
+        </div>
+      </div>
+      <div class="col-xl-4">
+        <div class="card h-100 mb-0">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-route"></i> DELIVERY PIPELINE (TODAY)</span>
+            <small class="text-muted" style="font-size:0.6rem;">Overall Conversion <strong id="pipelineConversion">—</strong></small>
+          </div>
+          <div class="card-body p-2.5 d-flex flex-column gap-1.5 justify-content-center" id="pipelineContainer"></div>
+        </div>
+      </div>
+      <div class="col-xl-4">
+        <div class="card h-100 mb-0">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-chart-line"></i> PERFORMANCE TREND</span>
+            <div class="btn-group" role="group" style="font-size:0.6rem;">
+              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1.5 trend-period" data-period="7">7D</button>
+              <button type="button" class="btn btn-sm btn-primary py-0 px-1.5 trend-period" data-period="30">30D</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1.5 trend-period" data-period="90">90D</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1.5 trend-period" data-period="365">12M</button>
+            </div>
+          </div>
+          <div class="card-body p-2 d-flex flex-column justify-content-between">
+            <div id="performanceTrendChart" style="height: 210px; width: 100%;"></div>
+            <div class="d-flex justify-content-around text-center pt-1.5 border-top border-secondary border-opacity-25" style="font-size: 0.68rem;">
+              <div><span class="text-muted d-block" style="font-size:0.55rem;">Delivery %</span><strong class="text-success" id="trendDelivRate">—</strong></div>
+              <div><span class="text-muted d-block" style="font-size:0.55rem;">POD %</span><strong class="text-danger" id="trendPodRate">—</strong></div>
+              <div><span class="text-muted d-block" style="font-size:0.55rem;">Avg Delivery Days</span><strong id="trendDelivDays">—</strong></div>
+              <div><span class="text-muted d-block" style="font-size:0.55rem;">Avg POD Days</span><strong id="trendPodDays">—</strong></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- WAREHOUSE RANKING & TOP CITIES / PENDING -->
+    <div class="row g-2 mb-3">
+      <div class="col-xl-6">
+        <div class="card h-100 mb-0">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-warehouse"></i> WAREHOUSE PERFORMANCE (ALL WAREHOUSES)</span>
+            <a href="#" class="text-info text-decoration-none" style="font-size:0.65rem;">View All</a>
+          </div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table-custom">
+                <thead><tr><th>Rank</th><th>Warehouse</th><th>Health Score</th><th>DNs</th><th>Units</th><th>Revenue (PKR)</th><th>PGI %</th><th>Delivery %</th><th>POD %</th><th>Avg Delivery Days</th><th>Avg POD Days</th><th>Pending Units</th><th>Risk</th><th>Trend</th><th>AI Insight</th></tr></thead>
+                <tbody id="warehouseRankingTbody"></tbody>
+              </table>
+            </div>
+            <div class="p-1.5 text-center text-muted border-top border-secondary border-opacity-25" style="font-size:0.65rem;">Function: calculate_warehouse_performance()</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-xl-6">
+        <div class="row g-2">
+          <div class="col-12">
+            <div class="card mb-0">
+              <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-map-marker-alt"></i> TOP 5 DELAYED CITIES <small class="text-muted fw-normal">(By Avg Delivery Days)</small></span>
+                <span class="text-muted" style="font-size:0.65rem;">Function: calculate_city_performance()</span>
+              </div>
+              <div class="card-body p-0">
+                <div class="table-responsive">
+                  <table class="table-custom">
+                    <thead><tr><th>City</th><th>Avg Delivery Days</th><th>Pending Units</th><th>Risk</th></tr></thead>
+                    <tbody id="topDelayedCitiesTbody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col-12">
+            <div class="card mb-0">
+              <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-warehouse"></i> TOP 5 PENDING WAREHOUSES</span>
+                <span class="text-muted" style="font-size:0.65rem;">Function: calculate_pending_analysis()</span>
+              </div>
+              <div class="card-body p-0">
+                <div class="table-responsive">
+                  <table class="table-custom">
+                    <thead><tr><th>Warehouse</th><th>Pending DNs</th><th>Pending Units</th></tr></thead>
+                    <tbody id="topPendingWarehousesTbody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TOP DEALERS, PRODUCTS, DIVISIONS, COMPLIANCE -->
+    <div class="row g-2 mb-3">
+      <div class="col-xl-3 col-md-6">
+        <div class="card h-100 mb-0">
+          <div class="card-header"><i class="fas fa-users"></i> TOP 5 DEALERS <small class="text-muted fw-normal">(By Sales Value)</small></div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table-custom"><thead><tr><th>Dealer</th><th>Units</th><th>Revenue (PKR)</th></tr></thead><tbody id="topDealersTbody"></tbody></table>
+            </div>
+            <div class="p-1.5 text-center border-top border-secondary border-opacity-25 text-muted" style="font-size:0.62rem;">Function: calculate_dealer_performance()</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-xl-3 col-md-6">
+        <div class="card h-100 mb-0">
+          <div class="card-header"><i class="fas fa-boxes"></i> TOP 5 PRODUCTS <small class="text-muted fw-normal">(By Units)</small></div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table-custom"><thead><tr><th>Product / Model</th><th>Units</th><th>DNs</th></tr></thead><tbody id="topProductsTbody"></tbody></table>
+            </div>
+            <div class="p-1.5 text-center border-top border-secondary border-opacity-25 text-muted" style="font-size:0.62rem;">Function: calculate_product_performance()</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-xl-3 col-md-6">
+        <div class="card h-100 mb-0">
+          <div class="card-header"><i class="fas fa-layer-group"></i> DIVISION PERFORMANCE <small class="text-muted fw-normal">(By Revenue)</small></div>
+          <div class="card-body p-2 d-flex flex-column justify-content-between">
+            <div id="divisionDonutChart" style="height: 125px; width: 100%;"></div>
+            <div style="font-size:0.68rem;" class="d-flex flex-column gap-1" id="divisionLegend"></div>
+            <div class="p-1 text-center border-top border-secondary border-opacity-25 text-muted mt-1" style="font-size:0.62rem;">Function: calculate_division_performance()</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-xl-3 col-md-6">
+        <div class="card h-100 mb-0">
+          <div class="card-header"><i class="fas fa-ruler-combined"></i> DELIVERY STANDARD COMPLIANCE</div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table-custom"><thead><tr><th>Distance (KM)</th><th>Target Days</th><th>Actual Avg</th><th>Compliance %</th></tr></thead><tbody id="standardComplianceTbody"></tbody></table>
+            </div>
+            <div class="p-1.5 text-center border-top border-secondary border-opacity-25 text-muted" style="font-size:0.62rem;">Function: calculate_delivery_compliance()</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ALERTS & RECOMMENDATIONS -->
+    <div class="row g-2 mb-3">
+      <div class="col-xl-6">
+        <div class="card h-100 mb-0">
+          <div class="card-header d-flex justify-content-between align-items-center" id="criticalAlertsHeader">
+            <span><i class="fas fa-triangle-exclamation text-danger"></i> CRITICAL ALERTS (<span id="alertCount">0</span>)</span>
+            <span class="text-muted" style="font-size:0.65rem;">Function: generate_critical_alerts()</span>
+          </div>
+          <div class="card-body p-2.5" id="criticalAlertsContainer"></div>
+        </div>
+      </div>
+      <div class="col-xl-6">
+        <div class="card h-100 mb-0">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-bullseye text-success"></i> DIRECTOR RECOMMENDATIONS</span>
+            <span class="text-muted" style="font-size:0.65rem;">Function: get_import_center_recommendations()</span>
+          </div>
+          <div class="card-body p-2.5 d-flex flex-column justify-content-between">
+            <div class="d-flex flex-column gap-1.5" id="recommendationsContainer"></div>
+            <div class="p-2.5 mt-2 rounded-3 border border-secondary border-opacity-25 bg-opacity-50 d-flex align-items-center justify-content-around" style="background:var(--color-bg-elevated);">
+              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">PGI Target</span><strong class="fs-6 text-success" id="meterPgi">—</strong><small class="text-muted d-block" style="font-size:0.55rem;">Target: 95%</small></div>
+              <div class="vr bg-secondary opacity-25"></div>
+              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">POD Target</span><strong class="fs-6 text-danger" id="meterPod">—</strong><small class="text-muted d-block" style="font-size:0.55rem;">Target: 90%</small></div>
+              <div class="vr bg-secondary opacity-25"></div>
+              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">Health Score</span><strong class="fs-6 text-success" id="meterHealth">—</strong><small class="text-success d-block" style="font-size:0.55rem;">Excellent</small></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         IMPORT CENTER – with upload progress
+         ============================================================ -->
+    <section id="uploadSection" class="row g-2 mb-3">
+      <div class="col-12">
+        <div class="card upload-highlight mb-0">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-file-excel text-success"></i> IMPORT CENTER - ENTERPRISE EXCEL LOADER</span>
+            <span class="text-muted" style="font-size:0.65rem;">Endpoint: POST /upload/excel</span>
+          </div>
+          <div class="card-body p-2.5">
+            <form class="form-toolbar" id="uploadForm" action="/upload/excel" method="post" enctype="multipart/form-data">
+              <div class="form-group mb-0">
+                <label style="font-size:0.7rem;"><i class="fas fa-file-arrow-up me-1"></i> CHOOSE EXCEL FILE (.XLSX, .XLS)</label>
+                <input type="file" name="file" accept=".xlsx,.xls" class="form-control form-control-sm" required />
+                <small class="text-muted mt-1 d-block" style="font-size:0.6rem;">SAP standard format with DN, PGI, and POD records.</small>
+              </div>
+              <div class="form-group mb-0">
+                <label style="font-size:0.7rem;"><i class="fas fa-copy me-1"></i> DUPLICATE HANDLING</label>
+                <select name="skip_duplicates" class="form-select form-select-sm">
+                  <option value="true">Skip Existing DNs (Recommended)</option>
+                  <option value="false">Update Existing DN Records</option>
+                </select>
+              </div>
+              <div class="form-group mb-0" style="flex: 0 0 auto;">
+                <button type="submit" class="btn-upload btn-sm py-1.5 px-3 w-100" id="uploadBtn" style="font-size:0.75rem;">
+                  <i class="fas fa-cloud-upload-alt me-1"></i> Import & Process
+                </button>
+              </div>
+            </form>
+
+            <!-- Progress Bar (hidden initially) -->
+            <div id="uploadProgressContainer">
+              <div class="progress">
+                <div class="progress-bar" id="uploadProgressBar" role="progressbar" style="width:0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+              </div>
+              <div id="uploadStatusText">
+                <span id="uploadStatusLabel">Preparing upload...</span>
+                <span id="uploadPercentLabel">0%</span>
+              </div>
+            </div>
+
+            <!-- Excel Preview -->
+            <div class="mt-2.5 pt-2.5 border-top border-secondary border-opacity-25">
+              <span class="text-muted fw-bold d-block mb-1.5" style="font-size:0.65rem; text-transform:uppercase;"><i class="fas fa-table me-1"></i> Excel Preview (First 5 Rows)</span>
+              <div class="table-responsive">
+                <table class="table-custom" style="font-size:0.7rem;">
+                  <thead>
+                    <tr><th>SN</th><th>Warehouse</th><th>Total Number of Units</th><th>Delivered</th><th>Delivery Days</th><th>POD Days</th><th>Total Cycle Days</th><th>Delivery Performance</th><th>POD Performance</th></tr>
+                  </thead>
+                  <tbody id="excelPreviewTbody">
+                    <tr><td colspan="9" class="text-muted text-center">Upload a file to see preview</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer id="footer" class="footer-bar d-flex justify-content-between align-items-center">
+      <div><span class="text-primary fw-bold" id="footerVersion">Haier Pakistan v20.1</span> &nbsp;|&nbsp; <span class="text-info"><i class="fas fa-database me-1"></i>PostgreSQL</span></div>
+      <div><span><i class="fas fa-clock text-muted me-1"></i>Sync: <span id="footerSyncTime">—</span></span></div>
+      <div><span class="text-success"><i class="fas fa-cubes me-1"></i>Records: <span id="footerRecords">—</span></span> &nbsp;|&nbsp; <span class="text-muted">Last sync: <span id="footerLastSync">—</span> &nbsp;<i class="fas fa-circle text-success" style="font-size:0.45rem;"></i> Live</span></div>
+    </footer>
+
+  </main>
+</div>
+
+<!-- Bootstrap JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+<!-- ============================================================
+     APPLICATION JAVASCRIPT – n8n SINGLE BACKEND v20.1
+     ============================================================ -->
+<script>
+(function() {
+    'use strict';
+
+    // ===== CONFIGURATION =====
+    // !!! IMPORTANT: Replace this URL with your actual n8n webhook endpoint !!!
+    // Example: 'https://your-n8n.railway.app/webhook/dashboard-api'
+    const API_URL = 'https://your-n8n-domain.com/webhook/dashboard-api';
+    const UPLOAD_URL = '/upload/excel'; // or your n8n upload webhook
+    const TIMEOUT_MS = 15000; // 15 seconds
+
+    // ===== DOM REFS =====
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const apiStatus = document.getElementById('apiStatus');
+    const apiStatusText = document.getElementById('apiStatusText');
+
+    // ===== UTILITY FUNCTIONS =====
+    function formatNumber(v) { return (v || 0).toLocaleString(); }
+    function formatPct(v) { return (v || 0).toFixed(1) + '%'; }
+    function formatCurrency(v) {
+        if (v >= 1e9) return (v/1e9).toFixed(1) + ' B';
+        if (v >= 1e6) return (v/1e6).toFixed(1) + ' M';
+        return (v/1e3).toFixed(1) + ' K';
+    }
+
+    function getFilters() {
         return {
-            "slow_queries": [{"query": q[0][:100], "calls": q[1], "total_time_ms": q[2], "avg_time_ms": q[3]} for q in slow_queries]
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-
-# ==========================================================
-# STARTUP DIAGNOSTICS (Priority 5)
-# ==========================================================
-
-def database_info() -> Dict[str, Any]:
-    """
-    Database startup diagnostics for monitoring.
-    
-    Returns:
-        Dictionary with database configuration information
-    """
-    return {
-        "database_url_exists": bool(DATABASE_URL),
-        "database_type": "postgresql" if is_postgres else "sqlite",
-        "engine_ready": engine is not None,
-        "pool_size": engine_config.get("pool_size", 0),
-        "max_overflow": engine_config.get("max_overflow", 0),
-        "pool_recycle": engine_config.get("pool_recycle", 0),
-        "pool_timeout": engine_config.get("pool_timeout", 0),
-        "pool_pre_ping": engine_config.get("pool_pre_ping", False),
-        "pool_use_lifo": engine_config.get("pool_use_lifo", False),
-        "future_mode": engine_config.get("future", False),
-        "database_connected": check_database_connection(),
-        "query_timeout_ms": engine_config.get("execution_options", {}).get("statement_timeout", "Not set")
+            from: document.getElementById('filterDateFrom').value,
+            to: document.getElementById('filterDateTo').value,
+            warehouse: document.getElementById('filterWarehouse').value,
+            division: document.getElementById('filterDivision').value,
+            sales_office: document.getElementById('filterSalesOffice').value,
+            sales_manager: document.getElementById('filterSalesManager').value,
+            trend_period: document.querySelector('.trend-period.btn-primary')?.dataset.period || '30'
+        };
     }
 
+    // ===== RENDER FUNCTIONS =====
 
-def validate_database_setup() -> bool:
-    """
-    Validate complete database setup at startup.
-    
-    Returns:
-        True if setup is valid, False otherwise
-    """
-    logger.info("Validating database setup...")
-    
-    info = database_info()
-    
-    if not info["database_url_exists"]:
-        logger.error("❌ DATABASE_URL not configured")
-        return False
-    
-    if not info["engine_ready"]:
-        logger.error("❌ Database engine not ready")
-        return False
-    
-    if not info["database_connected"]:
-        logger.error("❌ Cannot connect to database")
-        return False
-    
-    logger.info(f"✅ Database setup validated (Type: {info['database_type']}, Pool: {info['pool_size']}/{info['max_overflow']}, Query Timeout: {info['query_timeout_ms']}ms)")
-    return True
+    // KPI Cards – now calculates health_score if missing
+    function renderKPIs(cards) {
+        const container = document.getElementById('kpiCards');
+        if (!container) return;
+        if (!cards || typeof cards !== 'object') {
+            container.innerHTML = '<div class="col-12"><div class="empty-state"><p>No KPIs available</p></div></div>';
+            return;
+        }
+        const kpiConfig = [
+            { key: 'total_dn', label: 'TOTAL DELIVERY NOTES', icon: 'fa-file-invoice', fmt: v => formatNumber(v) },
+            { key: 'total_units', label: 'TOTAL UNITS', icon: 'fa-boxes', fmt: v => formatNumber(v) },
+            { key: 'total_value', label: 'TOTAL REVENUE', icon: 'fa-money-bill-wave', fmt: v => 'PKR ' + formatCurrency(v) },
+            { key: 'pgi_achievement', label: 'PGI ACHIEVEMENT', icon: 'fa-check-circle', fmt: v => formatPct(v) },
+            { key: 'pod_achievement', label: 'POD ACHIEVEMENT', icon: 'fa-file-signature', fmt: v => formatPct(v) },
+            { key: 'pending_dn', label: 'PENDING DNS', icon: 'fa-hourglass-half', fmt: v => formatNumber(v) },
+            { key: 'pending_units', label: 'PENDING UNITS', icon: 'fa-hourglass', fmt: v => formatNumber(v) },
+            { key: 'health_score', label: 'LOGISTICS HEALTH SCORE', icon: 'fa-heart-pulse', fmt: v => formatPct(v) }
+        ];
 
-# ==========================================================
-# TABLE CREATION (Pure - No Business Logic)
-# ==========================================================
+        let html = '';
+        kpiConfig.forEach(cfg => {
+            const val = (cards[cfg.key] && cards[cfg.key].value !== undefined) ? cards[cfg.key].value : 0;
+            html += `
+                <div class="col-xl-3 col-lg-4 col-md-6 mb-2">
+                    <div class="card kpi-card">
+                        <h6><i class="fas ${cfg.icon}"></i> ${cfg.label}</h6>
+                        <div class="kpi-value">${cfg.fmt(val)}</div>
+                        <div class="kpi-sub">Real-time metric</div>
+                    </div>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+    }
 
-def create_tables() -> None:
-    """
-    Create all database tables based on models.
-    Called during application startup.
-    """
-    try:
-        # Import models inside function to avoid circular imports
-        import app.models
-        Base.metadata.create_all(bind=engine)
-        logger.info("Database tables created/verified successfully")
-    except Exception as e:
-        logger.error(f"Failed to create database tables: {e}")
-        raise
+    function renderExecutiveSummary(text) {
+        const body = document.getElementById('executiveSummaryAiBody');
+        if (!body) return;
+        if (!text) {
+            body.innerHTML = 'No summary available.';
+            return;
+        }
+        body.innerHTML = `<p class="mb-0">${text}</p>`;
+    }
 
+    function renderPipeline(pipeline) {
+        const container = document.getElementById('pipelineContainer');
+        if (!container || !pipeline) return;
+        const stages = [
+            { key: 'dn_created', label: 'DN Created', bg: 'linear-gradient(90deg, #1d4ed8, #2563eb)' },
+            { key: 'pgi_completed', label: 'PGI Completed', bg: 'linear-gradient(90deg, #059669, #10b981)' },
+            { key: 'in_transit', label: 'In Transit', bg: 'linear-gradient(90deg, #d97706, #f59e0b)' },
+            { key: 'delivered', label: 'Delivered', bg: 'linear-gradient(90deg, #ea580c, #f97316)' },
+            { key: 'pod_received', label: 'POD Received', bg: 'linear-gradient(90deg, #b91c1c, #ef4444)' }
+        ];
+        let html = '';
+        let totalDn = 0;
+        stages.forEach(st => {
+            const stageData = pipeline[st.key] || { dn: 0, pct: 0 };
+            totalDn += stageData.dn;
+            html += `
+                <div class="pipeline-step" style="background: ${st.bg}; color:#fff; border:none;">
+                    <div class="d-flex justify-content-between align-items-center" style="font-size:0.72rem; font-weight:700;">
+                        <span>${st.label}</span>
+                        <span style="font-size:0.6rem; font-weight:500;">${stageData.pct}%</span>
+                    </div>
+                    <div class="step-val text-white">${formatNumber(stageData.dn)}</div>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+        // Update conversion
+        const convEl = document.getElementById('pipelineConversion');
+        if (convEl && totalDn > 0) {
+            const lastStage = pipeline['pod_received'] || { dn: 0 };
+            const pct = (lastStage.dn / totalDn * 100).toFixed(1);
+            convEl.textContent = pct + '%';
+        }
+    }
 
-def drop_tables() -> None:
-    """
-    Drop all database tables (development only!).
-    WARNING: This will delete all data!
-    """
-    if config.ENVIRONMENT == "production":
-        logger.warning("drop_tables() called in production - operation blocked")
-        return
-    
-    try:
-        import app.models
-        Base.metadata.drop_all(bind=engine)
-        logger.warning("Database tables dropped successfully")
-    except Exception as e:
-        logger.error(f"Failed to drop database tables: {e}")
-        raise
+    function renderWarehouseRanking(data) {
+        const tbody = document.getElementById('warehouseRankingTbody');
+        if (!tbody) return;
+        if (!data || !data.length) {
+            tbody.innerHTML = '<tr><td colspan="15" class="text-muted text-center">No data</td></tr>';
+            return;
+        }
+        let html = '';
+        data.forEach(row => {
+            html += `<tr>
+                <td>${row.rank || '-'}</td>
+                <td><strong>${row.warehouse || '-'}</strong></td>
+                <td>${row.health_score || '-'}</td>
+                <td>${formatNumber(row.total_dn)}</td>
+                <td>${formatNumber(row.total_units)}</td>
+                <td>${formatCurrency(row.revenue)}</td>
+                <td>${formatPct(row.pgi_pct)}</td>
+                <td>${formatPct(row.delivery_pct)}</td>
+                <td>${formatPct(row.pod_pct)}</td>
+                <td>${row.avg_delivery_days || '-'}</td>
+                <td>${row.avg_pod_days || '-'}</td>
+                <td>${formatNumber(row.pending_units)}</td>
+                <td><span class="badge-status ${(row.risk || '').toLowerCase()}">${row.risk || '-'}</span></td>
+                <td>${row.trend || '-'}</td>
+                <td>${row.ai_insight || '-'}</td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
 
-# ==========================================================
-# CONNECTION POOL RESET (For maintenance)
-# ==========================================================
+    function renderCityPerformance(data) {
+        const tbody = document.getElementById('topDelayedCitiesTbody');
+        if (!tbody) return;
+        if (!data || !data.length) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-muted text-center">No data</td></tr>';
+            return;
+        }
+        let html = '';
+        data.slice(0,5).forEach(row => {
+            html += `<tr>
+                <td><strong>${row.city || '-'}</strong></td>
+                <td>${row.avg_delivery_days || '-'}</td>
+                <td>${formatNumber(row.pending_units)}</td>
+                <td><span class="badge-status ${(row.risk || '').toLowerCase()}">${row.risk || '-'}</span></td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
 
-def reset_connection_pool() -> Dict[str, Any]:
-    """
-    Reset the connection pool (useful for maintenance).
-    
-    Returns:
-        Status of the reset operation
-    """
-    try:
-        engine.dispose()
-        logger.info("Connection pool disposed and reset")
-        return {"success": True, "message": "Connection pool reset successfully"}
-    except Exception as e:
-        logger.error(f"Failed to reset connection pool: {e}")
-        return {"success": False, "error": str(e)}
+    function renderPendingWarehouses(data) {
+        const tbody = document.getElementById('topPendingWarehousesTbody');
+        if (!tbody) return;
+        if (!data || !data.length) {
+            tbody.innerHTML = '<tr><td colspan="3" class="text-muted text-center">No data</td></tr>';
+            return;
+        }
+        let html = '';
+        data.slice(0,5).forEach(row => {
+            html += `<tr>
+                <td><strong>${row.warehouse || '-'}</strong></td>
+                <td>${formatNumber(row.pending_dn)}</td>
+                <td>${formatNumber(row.pending_units)}</td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
 
-# ==========================================================
-# INITIALIZATION LOG
-# ==========================================================
+    function renderDealerPerformance(data) {
+        const tbody = document.getElementById('topDealersTbody');
+        if (!tbody) return;
+        if (!data || !data.length) {
+            tbody.innerHTML = '<tr><td colspan="3" class="text-muted text-center">No data</td></tr>';
+            return;
+        }
+        let html = '';
+        data.slice(0,5).forEach(row => {
+            html += `<tr>
+                <td><strong>${row.dealer || '-'}</strong></td>
+                <td>${formatNumber(row.units)}</td>
+                <td>${formatCurrency(row.revenue)}</td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
 
-logger.info("=" * 60)
-logger.info("🗄️ DATABASE SERVICE v3.1 - SPEED OPTIMIZED")
-logger.info(f"   Type: {'PostgreSQL' if is_postgres else 'SQLite'}")
-logger.info(f"   Pool Size: {engine_config.get('pool_size', 'N/A')}")
-logger.info(f"   Max Overflow: {engine_config.get('max_overflow', 'N/A')}")
-logger.info(f"   Pool Recycle: {engine_config.get('pool_recycle', 'N/A')}s")
-logger.info(f"   Pool LIFO: {engine_config.get('pool_use_lifo', False)}")
-logger.info(f"   Query Timeout: {engine_config.get('execution_options', {}).get('statement_timeout', 'Not set')}ms")
-logger.info(f"   SQLAlchemy Future Mode: {engine_config.get('future', False)}")
-logger.info("=" * 60)
+    function renderProductPerformance(data) {
+        const tbody = document.getElementById('topProductsTbody');
+        if (!tbody) return;
+        if (!data || !data.length) {
+            tbody.innerHTML = '<tr><td colspan="3" class="text-muted text-center">No data</td></tr>';
+            return;
+        }
+        let html = '';
+        data.slice(0,5).forEach(row => {
+            html += `<tr>
+                <td><strong>${row.product || '-'}</strong></td>
+                <td>${formatNumber(row.units)}</td>
+                <td>${formatNumber(row.dn)}</td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
 
-# Auto-validate on import (optional - can be disabled in production)
-if config.ENVIRONMENT != "production":
-    validate_database_setup()
+    function renderDivisionPerformance(data) {
+        const chartDiv = document.getElementById('divisionDonutChart');
+        const legendDiv = document.getElementById('divisionLegend');
+        if (!chartDiv || !legendDiv) return;
+        if (!data || !data.length) {
+            chartDiv.innerHTML = '<p class="text-muted text-center">No data</p>';
+            legendDiv.innerHTML = '';
+            return;
+        }
+        const labels = data.map(d => d.division || 'Unknown');
+        const values = data.map(d => d.revenue || 0);
+        const colors = ['#38bdf8', '#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+
+        const trace = {
+            type: 'pie',
+            labels: labels,
+            values: values,
+            hole: 0.4,
+            marker: { colors: colors.slice(0, labels.length) },
+            textinfo: 'percent',
+            hoverinfo: 'label+percent+value',
+            textposition: 'inside',
+            showlegend: false
+        };
+        const layout = {
+            margin: { l: 0, r: 0, t: 0, b: 0 },
+            height: 125,
+            paper_bgcolor: 'transparent',
+            plot_bgcolor: 'transparent',
+            font: { color: '#94a3b8', size: 10 }
+        };
+        Plotly.react(chartDiv, [trace], layout, { responsive: true });
+
+        let legendHtml = '';
+        data.slice(0,5).forEach((d, i) => {
+            const color = colors[i % colors.length];
+            const pct = formatPct(d.pct || 0);
+            legendHtml += `<div><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:6px;"></span> ${d.division} ${pct}</div>`;
+        });
+        legendDiv.innerHTML = legendHtml;
+    }
+
+    function renderCompliance(data) {
+        const tbody = document.getElementById('standardComplianceTbody');
+        if (!tbody) return;
+        if (!data || !data.length) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-muted text-center">No data</td></tr>';
+            return;
+        }
+        let html = '';
+        data.forEach(row => {
+            html += `<tr>
+                <td>${row.distance || '-'}</td>
+                <td>${row.target_days || '-'}</td>
+                <td>${row.actual_avg || '-'}</td>
+                <td>${formatPct(row.compliance)}</td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
+
+    function renderAlerts(alerts) {
+        const container = document.getElementById('criticalAlertsContainer');
+        const countEl = document.getElementById('alertCount');
+        const badgeEl = document.getElementById('alertBadge');
+        if (!container) return;
+        if (!alerts || !alerts.length) {
+            container.innerHTML = '<div class="text-muted text-center py-2">No critical alerts.</div>';
+            if (countEl) countEl.textContent = '0';
+            if (badgeEl) badgeEl.textContent = '0';
+            return;
+        }
+        let html = '';
+        alerts.forEach(alert => {
+            html += `
+                <div class="alert-item">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <div>${alert.text || 'Alert'}</div>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+        if (countEl) countEl.textContent = alerts.length;
+        if (badgeEl) badgeEl.textContent = alerts.length;
+    }
+
+    function renderRecommendations(recommendations) {
+        const container = document.getElementById('recommendationsContainer');
+        if (!container) return;
+        if (!recommendations || !recommendations.length) {
+            container.innerHTML = '<div class="text-muted text-center py-2">No recommendations.</div>';
+            return;
+        }
+        let html = '';
+        recommendations.forEach(rec => {
+            html += `
+                <div class="recommendation-item">
+                    <i class="fas fa-lightbulb"></i>
+                    <span>${rec.text || 'Recommendation'}</span>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+    }
+
+    function renderTrendChart(trendData) {
+        const chartDiv = document.getElementById('performanceTrendChart');
+        if (!chartDiv) return;
+        if (!trendData || !trendData.labels || !trendData.labels.length) {
+            chartDiv.innerHTML = '<p class="text-muted text-center">No trend data</p>';
+            return;
+        }
+        const trace1 = {
+            x: trendData.labels,
+            y: trendData.delivery || [],
+            type: 'scatter',
+            mode: 'lines+markers',
+            name: 'Delivery %',
+            line: { color: '#10b981', width: 2 },
+            marker: { size: 4 }
+        };
+        const trace2 = {
+            x: trendData.labels,
+            y: trendData.pod || [],
+            type: 'scatter',
+            mode: 'lines+markers',
+            name: 'POD %',
+            line: { color: '#ef4444', width: 2 },
+            marker: { size: 4 }
+        };
+        const layout = {
+            margin: { l: 30, r: 20, t: 10, b: 30 },
+            height: 180,
+            paper_bgcolor: 'transparent',
+            plot_bgcolor: 'transparent',
+            font: { color: '#94a3b8', size: 9 },
+            xaxis: { gridcolor: 'rgba(255,255,255,0.05)', showgrid: true },
+            yaxis: { gridcolor: 'rgba(255,255,255,0.05)', showgrid: true, range: [0, 100] },
+            legend: { orientation: 'h', x: 0, y: 1.1, font: { size: 9 } }
+        };
+        Plotly.react(chartDiv, [trace1, trace2], layout, { responsive: true });
+
+        // Update summary values
+        const delivPct = trendData.delivery && trendData.delivery.length ? trendData.delivery[trendData.delivery.length-1] : 0;
+        const podPct = trendData.pod && trendData.pod.length ? trendData.pod[trendData.pod.length-1] : 0;
+        document.getElementById('trendDelivRate').textContent = formatPct(delivPct);
+        document.getElementById('trendPodRate').textContent = formatPct(podPct);
+        // If we have avg days in metadata, we could set them; otherwise keep placeholder
+    }
+
+    function updateFooter(metadata) {
+        if (!metadata) return;
+        const recEl = document.getElementById('footerRecords');
+        if (recEl) recEl.textContent = formatNumber(metadata.record_count);
+        const verEl = document.getElementById('footerVersion');
+        if (verEl) verEl.textContent = `Haier Pakistan v${metadata.version || '20.1'}`;
+        const syncEl = document.getElementById('footerSyncTime');
+        if (syncEl && metadata.last_sync) {
+            syncEl.textContent = metadata.last_sync;
+        }
+        const lastSyncEl = document.getElementById('footerLastSync');
+        if (lastSyncEl && metadata.last_sync) {
+            lastSyncEl.textContent = metadata.last_sync;
+        }
+    }
+
+    function updateMeters(cards) {
+        if (!cards) return;
+        const pgi = cards.pgi_achievement?.value || 0;
+        const pod = cards.pod_achievement?.value || 0;
+        const health = cards.health_score?.value || 0;
+        document.getElementById('meterPgi').textContent = formatPct(pgi);
+        document.getElementById('meterPod').textContent = formatPct(pod);
+        document.getElementById('meterHealth').textContent = formatPct(health);
+    }
+
+    // ===== MAIN LOAD FUNCTION =====
+    let currentAbortController = null;
+    let isLoading = false;
+    let refreshInterval = null;
+
+    async function loadDashboard() {
+        if (isLoading) return;
+        if (document.hidden) return;
+
+        if (currentAbortController) {
+            currentAbortController.abort();
+            currentAbortController = null;
+        }
+
+        isLoading = true;
+        refreshBtn.disabled = true;
+        loadingOverlay.style.display = 'flex';
+        setApiStatus('loading');
+
+        const controller = new AbortController();
+        currentAbortController = controller;
+        const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+        try {
+            const filters = getFilters();
+            const queryParams = new URLSearchParams(filters);
+            const url = API_URL + '?' + queryParams.toString();
+
+            const response = await fetch(url, {
+                signal: controller.signal,
+                headers: { 'Accept': 'application/json' }
+            });
+
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const result = await response.json();
+
+            // ---- n8n response format: { success: true, data: [ { ... } ] } ----
+            let data = {};
+            if (result.success && Array.isArray(result.data) && result.data.length > 0) {
+                data = result.data[0];
+            } else if (result.success && result.data && typeof result.data === 'object') {
+                data = result.data;
+            } else {
+                // fallback – maybe it's already the flat object
+                data = result;
+            }
+
+            // ---- Build cards object with health_score calculation ----
+            let healthVal = parseFloat(data.health_score);
+            if (isNaN(healthVal) || healthVal === 0) {
+                const pgi = parseFloat(data.pgi_achievement) || 0;
+                const pod = parseFloat(data.pod_achievement) || 0;
+                healthVal = (pgi + pod) / 2;
+            }
+
+            const cards = {
+                total_dn:        { value: data.total_dn || 0 },
+                total_units:     { value: data.total_units || 0 },
+                total_value:     { value: data.total_value || 0 },
+                pgi_achievement: { value: data.pgi_achievement || 0 },
+                pod_achievement: { value: data.pod_achievement || 0 },
+                pending_dn:      { value: data.pending_dn || 0 },
+                pending_units:   { value: data.pending_units || 0 },
+                health_score:    { value: healthVal }
+            };
+
+            // ---- Render all sections ----
+            renderKPIs(cards);
+            renderExecutiveSummary(data.executive_summary_text || data.executive_summary || '');
+            renderPipeline(data.pipeline_detailed || data.pipeline || {});
+            renderWarehouseRanking(data.warehouse_ranking || []);
+            renderCityPerformance(data.city_performance || []);
+            renderPendingWarehouses(data.pending_warehouses || []);
+            renderDealerPerformance(data.dealer_performance || []);
+            renderProductPerformance(data.product_performance || []);
+            renderDivisionPerformance(data.division_performance || []);
+            renderCompliance(data.delivery_compliance || []);
+            renderAlerts(data.alerts || []);
+            renderRecommendations(data.recommendations || []);
+            renderTrendChart(data.trend || {});
+            updateFooter(data.metadata || {});
+            updateMeters(cards);
+
+            setApiStatus('online');
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                setApiStatus('offline');
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Request Timeout',
+                    text: `n8n did not respond within ${TIMEOUT_MS/1000} seconds.`,
+                    background: '#0f172a',
+                    color: '#f8fafc'
+                });
+            } else {
+                setApiStatus('offline');
+                console.error('Dashboard load error:', err);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Dashboard Error',
+                    text: err.message || 'Could not load dashboard data.',
+                    background: '#0f172a',
+                    color: '#f8fafc'
+                });
+            }
+        } finally {
+            isLoading = false;
+            refreshBtn.disabled = false;
+            loadingOverlay.style.display = 'none';
+            currentAbortController = null;
+        }
+    }
+
+    // ===== API STATUS =====
+    function setApiStatus(state) {
+        apiStatus.classList.remove('online', 'offline', 'loading');
+        if (state === 'online') {
+            apiStatus.classList.add('online');
+            apiStatusText.textContent = 'n8n Online';
+        } else if (state === 'offline') {
+            apiStatus.classList.add('offline');
+            apiStatusText.textContent = 'n8n Offline';
+        } else {
+            apiStatus.classList.add('offline');
+            apiStatusText.textContent = 'Loading...';
+        }
+    }
+
+    // ===== FILTER CHANGE HANDLING =====
+    function setupFilters() {
+        const filterSelectors = ['filterDateFrom', 'filterDateTo', 'filterWarehouse', 'filterDivision', 'filterSalesOffice', 'filterSalesManager'];
+        filterSelectors.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('change', () => loadDashboard());
+            }
+        });
+        document.querySelectorAll('.trend-period').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.trend-period').forEach(b => b.classList.remove('btn-primary', 'btn-outline-secondary'));
+                this.classList.remove('btn-outline-secondary');
+                this.classList.add('btn-primary');
+                loadDashboard();
+            });
+        });
+    }
+
+    // ===== UPLOAD HANDLER =====
+    function setupUpload() {
+        const form = document.getElementById('uploadForm');
+        const btn = document.getElementById('uploadBtn');
+        const progressContainer = document.getElementById('uploadProgressContainer');
+        const progressBar = document.getElementById('uploadProgressBar');
+        const statusLabel = document.getElementById('uploadStatusLabel');
+        const percentLabel = document.getElementById('uploadPercentLabel');
+
+        if (!form) return;
+
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const fileInput = this.querySelector('input[type="file"]');
+            if (!fileInput || !fileInput.files.length) {
+                Swal.fire({ icon: 'warning', title: 'No File Selected', text: 'Please choose an Excel file.' });
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const formData = new FormData(this);
+
+            progressContainer.style.display = 'block';
+            progressBar.style.width = '0%';
+            progressBar.setAttribute('aria-valuenow', 0);
+            statusLabel.textContent = 'Starting upload...';
+            percentLabel.textContent = '0%';
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Uploading...';
+
+            const xhr = new XMLHttpRequest();
+
+            xhr.upload.addEventListener('progress', function(event) {
+                if (event.lengthComputable) {
+                    const percent = Math.round((event.loaded / event.total) * 100);
+                    progressBar.style.width = percent + '%';
+                    progressBar.setAttribute('aria-valuenow', percent);
+                    percentLabel.textContent = percent + '%';
+                    const loadedMB = (event.loaded / (1024 * 1024)).toFixed(2);
+                    const totalMB = (event.total / (1024 * 1024)).toFixed(2);
+                    statusLabel.textContent = `Uploading ${loadedMB} MB / ${totalMB} MB`;
+                } else {
+                    statusLabel.textContent = `Uploading... (${event.loaded} bytes)`;
+                }
+            });
+
+            xhr.onload = function() {
+                progressBar.style.width = '100%';
+                percentLabel.textContent = '100%';
+                statusLabel.textContent = 'Processing complete! Refreshing dashboard...';
+
+                if (xhr.status === 200) {
+                    try {
+                        const data = JSON.parse(xhr.responseText);
+                        const isSuccess = data.success === true || data.status === 'success';
+                        const message = data.message || data.msg || 'Import completed.';
+                        if (isSuccess) {
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Import Complete',
+                                text: message,
+                                timer: 2000,
+                                showConfirmButton: false,
+                                background: '#0f172a',
+                                color: '#f8fafc'
+                            }).then(() => {
+                                loadDashboard();
+                                setTimeout(() => {
+                                    progressContainer.style.display = 'none';
+                                    btn.disabled = false;
+                                    btn.innerHTML = '<i class="fas fa-cloud-upload-alt me-1"></i> Import & Process';
+                                    fileInput.value = '';
+                                }, 1500);
+                            });
+                        } else {
+                            Swal.fire({
+                                icon: 'error',
+                                title: 'Import Failed',
+                                text: data.message || data.error || 'Unknown error.',
+                                background: '#0f172a',
+                                color: '#f8fafc'
+                            });
+                            resetUpload();
+                        }
+                    } catch (e) {
+                        Swal.fire({ icon: 'error', title: 'Parse Error', text: 'Invalid server response.', background: '#0f172a', color: '#f8fafc' });
+                        resetUpload();
+                    }
+                } else {
+                    let errorMsg = 'Upload failed.';
+                    try {
+                        const errData = JSON.parse(xhr.responseText);
+                        errorMsg = errData.message || errData.error || errorMsg;
+                    } catch(e) {}
+                    Swal.fire({ icon: 'error', title: 'Import Failed', text: errorMsg, background: '#0f172a', color: '#f8fafc' });
+                    resetUpload();
+                }
+            };
+
+            xhr.onerror = function() {
+                Swal.fire({ icon: 'error', title: 'Network Error', text: 'Could not connect to server.', background: '#0f172a', color: '#f8fafc' });
+                resetUpload();
+            };
+
+            xhr.onabort = function() {
+                resetUpload();
+            };
+
+            xhr.open('POST', UPLOAD_URL, true);
+            xhr.send(formData);
+        });
+    }
+
+    function resetUpload() {
+        const btn = document.getElementById('uploadBtn');
+        const progressContainer = document.getElementById('uploadProgressContainer');
+        const fileInput = document.querySelector('input[type="file"]');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-cloud-upload-alt me-1"></i> Import & Process';
+        progressContainer.style.display = 'none';
+        if (fileInput) fileInput.value = '';
+    }
+
+    // ===== VISIBILITY API =====
+    function handleVisibilityChange() {
+        if (document.hidden) {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+            }
+        } else {
+            if (!refreshInterval) {
+                refreshInterval = setInterval(loadDashboard, 30000);
+            }
+            loadDashboard();
+        }
+    }
+
+    // ===== INIT =====
+    document.addEventListener('DOMContentLoaded', function() {
+        // Theme toggle
+        const themeToggle = document.getElementById('themeToggle');
+        if (themeToggle) {
+            themeToggle.addEventListener('click', function() {
+                const current = document.documentElement.getAttribute('data-theme');
+                const next = current === 'dark' ? 'light' : 'dark';
+                document.documentElement.setAttribute('data-theme', next);
+                this.innerHTML = next === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+            });
+        }
+
+        // Hamburger
+        const hamburger = document.getElementById('hamburgerBtn');
+        if (hamburger) {
+            hamburger.addEventListener('click', function() {
+                document.querySelector('.sidebar').classList.toggle('open');
+            });
+        }
+
+        setupFilters();
+        setupUpload();
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
+        loadDashboard();
+        if (!document.hidden) {
+            refreshInterval = setInterval(loadDashboard, 30000);
+        }
+
+        document.getElementById('refreshBtn').addEventListener('click', loadDashboard);
+    });
+
+})();
+</script>
+
+<!-- ===== CORS NOTE =====
+If you see "n8n Offline" after updating the API_URL, check:
+1. CORS: n8n must allow your dashboard's origin.
+   Set environment variable: N8N_CORS_ORIGIN=*
+   (or your specific domain) and restart n8n.
+2. The webhook URL must be publicly accessible.
+3. The workflow must be Active in n8n.
+-->
+
+</body>
+</html>
