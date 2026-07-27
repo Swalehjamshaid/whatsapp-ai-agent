@@ -1,7 +1,6 @@
 <!-- ============================================================
      FILE: whatsapp-ai-agent-demo/app/templates/dashboard.html
-     VERSION: 19.6 – UPLOAD ROUTER INTEGRATION (PROGRESS + IMPORT)
-     + SUPPORT FOR n8n RESPONSE FORMAT
+     VERSION: 20.0 – n8n SINGLE BACKEND + ALL SECTIONS RENDERED
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
@@ -211,6 +210,17 @@
       gap: 0.4rem;
       cursor: pointer;
     }
+    .filter-dropdown select {
+      background: transparent;
+      border: none;
+      color: var(--color-text-primary);
+      font-weight: 700;
+      font-size: 0.72rem;
+      outline: none;
+      padding: 0;
+      margin: 0;
+    }
+    .filter-dropdown select option { background: var(--color-bg-surface); color: var(--color-text-primary); }
     .filter-dropdown span { color: var(--color-text-secondary); font-weight: 500; font-size: 0.68rem; }
 
     .topbar-actions {
@@ -239,6 +249,7 @@
       box-shadow: 0 4px 12px rgba(37,99,235,0.2);
     }
     .btn-command:hover { opacity: 0.9; transform: translateY(-1px); }
+    .btn-command:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
     .notification-icon {
       position: relative;
@@ -267,6 +278,42 @@
       width: 22px; height: 22px; background: #3b82f6; border-radius: 50%;
       display: flex; align-items: center; justify-content: center; color: #fff; font-size: 0.6rem;
     }
+    .api-status {
+      display: flex; align-items: center; gap: 0.3rem;
+      font-size: 0.65rem;
+      font-weight: 600;
+      padding: 0.15rem 0.5rem;
+      border-radius: 9999px;
+      border: 1px solid var(--color-border);
+    }
+    .api-status .dot {
+      width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+    }
+    .api-status.online .dot { background: var(--color-success); }
+    .api-status.offline .dot { background: var(--color-danger); }
+
+    /* Spinner overlay */
+    #loadingOverlay {
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(7,11,20,0.7);
+      backdrop-filter: blur(4px);
+      z-index: 9999;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    #loadingOverlay .spinner {
+      width: 48px; height: 48px;
+      border: 4px solid var(--color-border);
+      border-top: 4px solid var(--color-accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loadingOverlay p { color: var(--color-text-secondary); font-weight: 600; }
 
     /* ----- Main Content ----- */
     .main-content {
@@ -493,6 +540,12 @@
 </head>
 <body data-theme="dark">
 
+<!-- ====== LOADING OVERLAY ====== -->
+<div id="loadingOverlay">
+  <div class="spinner"></div>
+  <p>Loading dashboard data...</p>
+</div>
+
 <div id="app" class="container-fluid px-0">
 
   <!-- ============================================================
@@ -535,7 +588,7 @@
         <button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button>
         <div class="topbar-logo-area">
           <h3>HAIER LOGISTICS COMMAND CENTER – DIRECTOR DASHBOARD</h3>
-          <small>100% DATA DRIVEN FROM POSTGRESQL (delivery_reports) – ALL CALCULATIONS IN dashboard_service.py</small>
+          <small>100% DATA DRIVEN FROM POSTGRESQL – n8n BACKEND</small>
         </div>
       </div>
 
@@ -543,26 +596,34 @@
       <div class="topbar-filters">
         <div class="filter-dropdown">
           <i class="fas fa-calendar-alt text-info"></i>
-          <span id="dateRangeDisplay">22 Jul 2026 - 22 Jul 2026</span>
-          <i class="fas fa-chevron-down ms-1" style="font-size:0.55rem;"></i>
+          <input type="date" id="filterDateFrom" value="2026-07-22" style="background:transparent;border:none;color:var(--color-text-primary);width:90px;" />
+          <span>to</span>
+          <input type="date" id="filterDateTo" value="2026-07-22" style="background:transparent;border:none;color:var(--color-text-primary);width:90px;" />
         </div>
         <div class="filter-dropdown">
-          <span>Warehouse:</span> <strong>All</strong> <i class="fas fa-chevron-down ms-1" style="font-size:0.55rem;"></i>
+          <span>Warehouse:</span>
+          <select id="filterWarehouse"><option value="">All</option><option>Lahore</option><option>Karachi</option><option>Islamabad</option></select>
         </div>
         <div class="filter-dropdown">
-          <span>Division:</span> <strong>All</strong> <i class="fas fa-chevron-down ms-1" style="font-size:0.55rem;"></i>
+          <span>Division:</span>
+          <select id="filterDivision"><option value="">All</option><option>HA</option><option>AC</option><option>REF</option></select>
         </div>
         <div class="filter-dropdown">
-          <span>Sales Office:</span> <strong>All</strong> <i class="fas fa-chevron-down ms-1" style="font-size:0.55rem;"></i>
+          <span>Sales Office:</span>
+          <select id="filterSalesOffice"><option value="">All</option><option>North</option><option>South</option></select>
         </div>
         <div class="filter-dropdown">
-          <span>Sales Manager:</span> <strong>All</strong> <i class="fas fa-chevron-down ms-1" style="font-size:0.55rem;"></i>
+          <span>Sales Manager:</span>
+          <select id="filterSalesManager"><option value="">All</option><option>Ali</option><option>Fatima</option></select>
         </div>
       </div>
 
       <!-- Topbar Actions -->
       <div class="topbar-actions">
-        <button class="btn-command" onclick="loadDashboard()"><i class="fas fa-rotate text-info"></i> Refresh</button>
+        <div class="api-status online" id="apiStatus">
+          <span class="dot"></span> <span id="apiStatusText">n8n Online</span>
+        </div>
+        <button class="btn-command" id="refreshBtn" onclick="loadDashboard()"><i class="fas fa-rotate text-info"></i> Refresh</button>
         <button class="btn-command btn-primary-action"><i class="fas fa-download"></i> Export</button>
         <div class="notification-icon">
           <i class="fas fa-bell"></i>
@@ -591,7 +652,7 @@
         <div class="card h-100 mb-0">
           <div class="card-header d-flex justify-content-between align-items-center">
             <span><i class="fas fa-route"></i> DELIVERY PIPELINE (TODAY)</span>
-            <small class="text-muted" style="font-size:0.6rem;">Overall Conversion <strong id="pipelineConversion">70.0%</strong></small>
+            <small class="text-muted" style="font-size:0.6rem;">Overall Conversion <strong id="pipelineConversion">—</strong></small>
           </div>
           <div class="card-body p-2.5 d-flex flex-column gap-1.5 justify-content-center" id="pipelineContainer"></div>
         </div>
@@ -601,19 +662,19 @@
           <div class="card-header d-flex justify-content-between align-items-center">
             <span><i class="fas fa-chart-line"></i> PERFORMANCE TREND</span>
             <div class="btn-group" role="group" style="font-size:0.6rem;">
-              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1.5">7D</button>
-              <button type="button" class="btn btn-sm btn-primary py-0 px-1.5">30D</button>
-              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1.5">90D</button>
-              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1.5">12M</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1.5 trend-period" data-period="7">7D</button>
+              <button type="button" class="btn btn-sm btn-primary py-0 px-1.5 trend-period" data-period="30">30D</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1.5 trend-period" data-period="90">90D</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1.5 trend-period" data-period="365">12M</button>
             </div>
           </div>
           <div class="card-body p-2 d-flex flex-column justify-content-between">
             <div id="performanceTrendChart" style="height: 210px; width: 100%;"></div>
             <div class="d-flex justify-content-around text-center pt-1.5 border-top border-secondary border-opacity-25" style="font-size: 0.68rem;">
-              <div><span class="text-muted d-block" style="font-size:0.55rem;">Delivery %</span><strong class="text-success" id="trendDelivRate">96.9%</strong></div>
-              <div><span class="text-muted d-block" style="font-size:0.55rem;">POD %</span><strong class="text-danger" id="trendPodRate">70.0%</strong></div>
-              <div><span class="text-muted d-block" style="font-size:0.55rem;">Avg Delivery Days</span><strong id="trendDelivDays">3.2</strong></div>
-              <div><span class="text-muted d-block" style="font-size:0.55rem;">Avg POD Days</span><strong id="trendPodDays">1.8</strong></div>
+              <div><span class="text-muted d-block" style="font-size:0.55rem;">Delivery %</span><strong class="text-success" id="trendDelivRate">—</strong></div>
+              <div><span class="text-muted d-block" style="font-size:0.55rem;">POD %</span><strong class="text-danger" id="trendPodRate">—</strong></div>
+              <div><span class="text-muted d-block" style="font-size:0.55rem;">Avg Delivery Days</span><strong id="trendDelivDays">—</strong></div>
+              <div><span class="text-muted d-block" style="font-size:0.55rem;">Avg POD Days</span><strong id="trendPodDays">—</strong></div>
             </div>
           </div>
         </div>
@@ -744,11 +805,11 @@
           <div class="card-body p-2.5 d-flex flex-column justify-content-between">
             <div class="d-flex flex-column gap-1.5" id="recommendationsContainer"></div>
             <div class="p-2.5 mt-2 rounded-3 border border-secondary border-opacity-25 bg-opacity-50 d-flex align-items-center justify-content-around" style="background:var(--color-bg-elevated);">
-              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">PGI Target</span><strong class="fs-6 text-success" id="meterPgi">96.9%</strong><small class="text-muted d-block" style="font-size:0.55rem;">Target: 95%</small></div>
+              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">PGI Target</span><strong class="fs-6 text-success" id="meterPgi">—</strong><small class="text-muted d-block" style="font-size:0.55rem;">Target: 95%</small></div>
               <div class="vr bg-secondary opacity-25"></div>
-              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">POD Target</span><strong class="fs-6 text-danger" id="meterPod">70.0%</strong><small class="text-muted d-block" style="font-size:0.55rem;">Target: 90%</small></div>
+              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">POD Target</span><strong class="fs-6 text-danger" id="meterPod">—</strong><small class="text-muted d-block" style="font-size:0.55rem;">Target: 90%</small></div>
               <div class="vr bg-secondary opacity-25"></div>
-              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">Health Score</span><strong class="fs-6 text-success" id="meterHealth">92%</strong><small class="text-success d-block" style="font-size:0.55rem;">Excellent</small></div>
+              <div class="text-center"><span class="text-muted d-block text-uppercase" style="font-size:0.6rem;">Health Score</span><strong class="fs-6 text-success" id="meterHealth">—</strong><small class="text-success d-block" style="font-size:0.55rem;">Excellent</small></div>
             </div>
           </div>
         </div>
@@ -756,7 +817,7 @@
     </div>
 
     <!-- ============================================================
-         IMPORT CENTER – with upload progress and using /upload/excel
+         IMPORT CENTER – with upload progress
          ============================================================ -->
     <section id="uploadSection" class="row g-2 mb-3">
       <div class="col-12">
@@ -766,7 +827,6 @@
             <span class="text-muted" style="font-size:0.65rem;">Endpoint: POST /upload/excel</span>
           </div>
           <div class="card-body p-2.5">
-            <!-- ACTION changed to /upload/excel -->
             <form class="form-toolbar" id="uploadForm" action="/upload/excel" method="post" enctype="multipart/form-data">
               <div class="form-group mb-0">
                 <label style="font-size:0.7rem;"><i class="fas fa-file-arrow-up me-1"></i> CHOOSE EXCEL FILE (.XLSX, .XLS)</label>
@@ -807,11 +867,7 @@
                     <tr><th>SN</th><th>Warehouse</th><th>Total Number of Units</th><th>Delivered</th><th>Delivery Days</th><th>POD Days</th><th>Total Cycle Days</th><th>Delivery Performance</th><th>POD Performance</th></tr>
                   </thead>
                   <tbody id="excelPreviewTbody">
-                    <tr><td>1</td><td>Lahore</td><td>30,000</td><td>28,000</td><td>1</td><td>2</td><td>3</td><td>Good</td><td>Bad</td></tr>
-                    <tr><td>2</td><td>Karachi</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
-                    <tr><td>3</td><td>Hyderabad</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
-                    <tr><td>4</td><td>Sukkur</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
-                    <tr><td>5</td><td>Multan</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+                    <tr><td colspan="9" class="text-muted text-center">Upload a file to see preview</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -824,8 +880,8 @@
     <!-- FOOTER -->
     <footer id="footer" class="footer-bar d-flex justify-content-between align-items-center">
       <div><span class="text-primary fw-bold" id="footerVersion">Haier Pakistan v19.6</span> &nbsp;|&nbsp; <span class="text-info"><i class="fas fa-database me-1"></i>PostgreSQL</span></div>
-      <div><span><i class="fas fa-clock text-muted me-1"></i>Sync: <span id="footerSyncTime">4:34:20 PM</span></span></div>
-      <div><span class="text-success"><i class="fas fa-cubes me-1"></i>Records: <span id="footerRecords">75,123</span></span> &nbsp;|&nbsp; <span class="text-muted">All data is real-time. Last sync: <span id="footerLastSync">22 Jul 2026 04:34 PM</span> &nbsp;<i class="fas fa-circle text-success" style="font-size:0.45rem;"></i> Live</span></div>
+      <div><span><i class="fas fa-clock text-muted me-1"></i>Sync: <span id="footerSyncTime">—</span></span></div>
+      <div><span class="text-success"><i class="fas fa-cubes me-1"></i>Records: <span id="footerRecords">—</span></span> &nbsp;|&nbsp; <span class="text-muted">Last sync: <span id="footerLastSync">—</span> &nbsp;<i class="fas fa-circle text-success" style="font-size:0.45rem;"></i> Live</span></div>
     </footer>
 
   </main>
@@ -835,28 +891,46 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
 <!-- ============================================================
-     APPLICATION JAVASCRIPT – v19.6 (UPLOAD ROUTER INTEGRATION + n8n SUPPORT)
+     APPLICATION JAVASCRIPT – n8n SINGLE BACKEND v20.0
      ============================================================ -->
 <script>
 (function() {
-    // ----- CONFIGURABLE API URL -----
-    // Use the Railway backend (default)
-    const API_URL = '/dashboard/api/data';
+    'use strict';
 
-    // To switch to n8n, comment the line above and uncomment the line below:
-    // const API_URL = 'https://your-n8n-domain.com/webhook/dashboard-api';
+    // ===== CONFIGURATION =====
+    // Replace with your actual n8n webhook URL
+    const API_URL = 'https://your-n8n-domain.com/webhook/dashboard-api';
+    const UPLOAD_URL = '/upload/excel'; // or your n8n upload webhook
+    const TIMEOUT_MS = 15000; // 15 seconds
 
-    const UPLOAD_URL = '/upload/excel';
+    // ===== DOM REFS =====
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const apiStatus = document.getElementById('apiStatus');
+    const apiStatusText = document.getElementById('apiStatusText');
 
+    // ===== UTILITY FUNCTIONS =====
     function formatNumber(v) { return (v || 0).toLocaleString(); }
     function formatPct(v) { return (v || 0).toFixed(1) + '%'; }
-    function formatCurrency(v) { 
+    function formatCurrency(v) {
         if (v >= 1e9) return (v/1e9).toFixed(1) + ' B';
         if (v >= 1e6) return (v/1e6).toFixed(1) + ' M';
         return (v/1e3).toFixed(1) + ' K';
     }
 
-    // ---- Render functions (unchanged) ----
+    function getFilters() {
+        return {
+            from: document.getElementById('filterDateFrom').value,
+            to: document.getElementById('filterDateTo').value,
+            warehouse: document.getElementById('filterWarehouse').value,
+            division: document.getElementById('filterDivision').value,
+            sales_office: document.getElementById('filterSalesOffice').value,
+            sales_manager: document.getElementById('filterSalesManager').value,
+            trend_period: document.querySelector('.trend-period.btn-primary')?.dataset.period || '30'
+        };
+    }
+
+    // ===== RENDER FUNCTIONS =====
     function renderKPIs(cards) {
         const container = document.getElementById('kpiCards');
         if (!container) return;
@@ -912,8 +986,10 @@
             { key: 'pod_received', label: 'POD Received', bg: 'linear-gradient(90deg, #b91c1c, #ef4444)' }
         ];
         let html = '';
+        let totalDn = 0;
         stages.forEach(st => {
             const stageData = pipeline[st.key] || { dn: 0, pct: 0 };
+            totalDn += stageData.dn;
             html += `
                 <div class="pipeline-step" style="background: ${st.bg}; color:#fff; border:none;">
                     <div class="d-flex justify-content-between align-items-center" style="font-size:0.72rem; font-weight:700;">
@@ -925,9 +1001,423 @@
             `;
         });
         container.innerHTML = html;
+        // Update conversion
+        const convEl = document.getElementById('pipelineConversion');
+        if (convEl && totalDn > 0) {
+            const lastStage = pipeline['pod_received'] || { dn: 0 };
+            const pct = (lastStage.dn / totalDn * 100).toFixed(1);
+            convEl.textContent = pct + '%';
+        }
     }
 
-    // ---- Upload handler with progress ----
+    function renderWarehouseRanking(data) {
+        const tbody = document.getElementById('warehouseRankingTbody');
+        if (!tbody) return;
+        if (!data || !data.length) {
+            tbody.innerHTML = '<tr><td colspan="15" class="text-muted text-center">No data</td></tr>';
+            return;
+        }
+        let html = '';
+        data.forEach(row => {
+            html += `<tr>
+                <td>${row.rank || '-'}</td>
+                <td><strong>${row.warehouse || '-'}</strong></td>
+                <td>${row.health_score || '-'}</td>
+                <td>${formatNumber(row.total_dn)}</td>
+                <td>${formatNumber(row.total_units)}</td>
+                <td>${formatCurrency(row.revenue)}</td>
+                <td>${formatPct(row.pgi_pct)}</td>
+                <td>${formatPct(row.delivery_pct)}</td>
+                <td>${formatPct(row.pod_pct)}</td>
+                <td>${row.avg_delivery_days || '-'}</td>
+                <td>${row.avg_pod_days || '-'}</td>
+                <td>${formatNumber(row.pending_units)}</td>
+                <td><span class="badge-status ${(row.risk || '').toLowerCase()}">${row.risk || '-'}</span></td>
+                <td>${row.trend || '-'}</td>
+                <td>${row.ai_insight || '-'}</td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
+
+    function renderCityPerformance(data) {
+        const tbody = document.getElementById('topDelayedCitiesTbody');
+        if (!tbody) return;
+        if (!data || !data.length) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-muted text-center">No data</td></tr>';
+            return;
+        }
+        let html = '';
+        data.slice(0,5).forEach(row => {
+            html += `<tr>
+                <td><strong>${row.city || '-'}</strong></td>
+                <td>${row.avg_delivery_days || '-'}</td>
+                <td>${formatNumber(row.pending_units)}</td>
+                <td><span class="badge-status ${(row.risk || '').toLowerCase()}">${row.risk || '-'}</span></td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
+
+    function renderPendingWarehouses(data) {
+        const tbody = document.getElementById('topPendingWarehousesTbody');
+        if (!tbody) return;
+        if (!data || !data.length) {
+            tbody.innerHTML = '<tr><td colspan="3" class="text-muted text-center">No data</td></tr>';
+            return;
+        }
+        let html = '';
+        data.slice(0,5).forEach(row => {
+            html += `<tr>
+                <td><strong>${row.warehouse || '-'}</strong></td>
+                <td>${formatNumber(row.pending_dn)}</td>
+                <td>${formatNumber(row.pending_units)}</td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
+
+    function renderDealerPerformance(data) {
+        const tbody = document.getElementById('topDealersTbody');
+        if (!tbody) return;
+        if (!data || !data.length) {
+            tbody.innerHTML = '<tr><td colspan="3" class="text-muted text-center">No data</td></tr>';
+            return;
+        }
+        let html = '';
+        data.slice(0,5).forEach(row => {
+            html += `<tr>
+                <td><strong>${row.dealer || '-'}</strong></td>
+                <td>${formatNumber(row.units)}</td>
+                <td>${formatCurrency(row.revenue)}</td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
+
+    function renderProductPerformance(data) {
+        const tbody = document.getElementById('topProductsTbody');
+        if (!tbody) return;
+        if (!data || !data.length) {
+            tbody.innerHTML = '<tr><td colspan="3" class="text-muted text-center">No data</td></tr>';
+            return;
+        }
+        let html = '';
+        data.slice(0,5).forEach(row => {
+            html += `<tr>
+                <td><strong>${row.product || '-'}</strong></td>
+                <td>${formatNumber(row.units)}</td>
+                <td>${formatNumber(row.dn)}</td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
+
+    function renderDivisionPerformance(data) {
+        const chartDiv = document.getElementById('divisionDonutChart');
+        const legendDiv = document.getElementById('divisionLegend');
+        if (!chartDiv || !legendDiv) return;
+        if (!data || !data.length) {
+            chartDiv.innerHTML = '<p class="text-muted text-center">No data</p>';
+            legendDiv.innerHTML = '';
+            return;
+        }
+        const labels = data.map(d => d.division || 'Unknown');
+        const values = data.map(d => d.revenue || 0);
+        const colors = ['#38bdf8', '#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+
+        // Plotly donut
+        const trace = {
+            type: 'pie',
+            labels: labels,
+            values: values,
+            hole: 0.4,
+            marker: { colors: colors.slice(0, labels.length) },
+            textinfo: 'percent',
+            hoverinfo: 'label+percent+value',
+            textposition: 'inside',
+            showlegend: false
+        };
+        const layout = {
+            margin: { l: 0, r: 0, t: 0, b: 0 },
+            height: 125,
+            paper_bgcolor: 'transparent',
+            plot_bgcolor: 'transparent',
+            font: { color: '#94a3b8', size: 10 }
+        };
+        Plotly.react(chartDiv, [trace], layout, { responsive: true });
+
+        // Legend
+        let legendHtml = '';
+        data.slice(0,5).forEach((d, i) => {
+            const color = colors[i % colors.length];
+            const pct = formatPct(d.pct || 0);
+            legendHtml += `<div><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:6px;"></span> ${d.division} ${pct}</div>`;
+        });
+        legendDiv.innerHTML = legendHtml;
+    }
+
+    function renderCompliance(data) {
+        const tbody = document.getElementById('standardComplianceTbody');
+        if (!tbody) return;
+        if (!data || !data.length) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-muted text-center">No data</td></tr>';
+            return;
+        }
+        let html = '';
+        data.forEach(row => {
+            html += `<tr>
+                <td>${row.distance || '-'}</td>
+                <td>${row.target_days || '-'}</td>
+                <td>${row.actual_avg || '-'}</td>
+                <td>${formatPct(row.compliance)}</td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
+
+    function renderAlerts(alerts) {
+        const container = document.getElementById('criticalAlertsContainer');
+        const countEl = document.getElementById('alertCount');
+        const badgeEl = document.getElementById('alertBadge');
+        if (!container) return;
+        if (!alerts || !alerts.length) {
+            container.innerHTML = '<div class="text-muted text-center py-2">No critical alerts.</div>';
+            if (countEl) countEl.textContent = '0';
+            if (badgeEl) badgeEl.textContent = '0';
+            return;
+        }
+        let html = '';
+        alerts.forEach(alert => {
+            html += `
+                <div class="alert-item">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <div>${alert.text || 'Alert'}</div>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+        if (countEl) countEl.textContent = alerts.length;
+        if (badgeEl) badgeEl.textContent = alerts.length;
+    }
+
+    function renderRecommendations(recommendations) {
+        const container = document.getElementById('recommendationsContainer');
+        if (!container) return;
+        if (!recommendations || !recommendations.length) {
+            container.innerHTML = '<div class="text-muted text-center py-2">No recommendations.</div>';
+            return;
+        }
+        let html = '';
+        recommendations.forEach(rec => {
+            html += `
+                <div class="recommendation-item">
+                    <i class="fas fa-lightbulb"></i>
+                    <span>${rec.text || 'Recommendation'}</span>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+    }
+
+    function renderTrendChart(trendData) {
+        const chartDiv = document.getElementById('performanceTrendChart');
+        if (!chartDiv) return;
+        if (!trendData || !trendData.labels || !trendData.labels.length) {
+            chartDiv.innerHTML = '<p class="text-muted text-center">No trend data</p>';
+            return;
+        }
+        const trace1 = {
+            x: trendData.labels,
+            y: trendData.delivery || [],
+            type: 'scatter',
+            mode: 'lines+markers',
+            name: 'Delivery %',
+            line: { color: '#10b981', width: 2 },
+            marker: { size: 4 }
+        };
+        const trace2 = {
+            x: trendData.labels,
+            y: trendData.pod || [],
+            type: 'scatter',
+            mode: 'lines+markers',
+            name: 'POD %',
+            line: { color: '#ef4444', width: 2 },
+            marker: { size: 4 }
+        };
+        const layout = {
+            margin: { l: 30, r: 20, t: 10, b: 30 },
+            height: 180,
+            paper_bgcolor: 'transparent',
+            plot_bgcolor: 'transparent',
+            font: { color: '#94a3b8', size: 9 },
+            xaxis: { gridcolor: 'rgba(255,255,255,0.05)', showgrid: true },
+            yaxis: { gridcolor: 'rgba(255,255,255,0.05)', showgrid: true, range: [0, 100] },
+            legend: { orientation: 'h', x: 0, y: 1.1, font: { size: 9 } }
+        };
+        Plotly.react(chartDiv, [trace1, trace2], layout, { responsive: true });
+
+        // Update summary values
+        const delivPct = trendData.delivery && trendData.delivery.length ? trendData.delivery[trendData.delivery.length-1] : 0;
+        const podPct = trendData.pod && trendData.pod.length ? trendData.pod[trendData.pod.length-1] : 0;
+        document.getElementById('trendDelivRate').textContent = formatPct(delivPct);
+        document.getElementById('trendPodRate').textContent = formatPct(podPct);
+        // If we have avg days in metadata, we could set them; otherwise keep placeholder
+    }
+
+    function updateFooter(metadata) {
+        if (!metadata) return;
+        const recEl = document.getElementById('footerRecords');
+        if (recEl) recEl.textContent = formatNumber(metadata.record_count);
+        const verEl = document.getElementById('footerVersion');
+        if (verEl) verEl.textContent = `Haier Pakistan v${metadata.version || '19.6'}`;
+        const syncEl = document.getElementById('footerSyncTime');
+        if (syncEl && metadata.last_sync) {
+            syncEl.textContent = metadata.last_sync;
+        }
+        const lastSyncEl = document.getElementById('footerLastSync');
+        if (lastSyncEl && metadata.last_sync) {
+            lastSyncEl.textContent = metadata.last_sync;
+        }
+    }
+
+    function updateMeters(cards) {
+        if (!cards) return;
+        const pgi = cards.pgi_achievement?.value || 0;
+        const pod = cards.pod_achievement?.value || 0;
+        const health = cards.health_score?.value || 0;
+        document.getElementById('meterPgi').textContent = formatPct(pgi);
+        document.getElementById('meterPod').textContent = formatPct(pod);
+        document.getElementById('meterHealth').textContent = formatPct(health);
+    }
+
+    // ===== MAIN LOAD FUNCTION (with timeout, abort, visibility) =====
+    let currentAbortController = null;
+    let isLoading = false;
+    let refreshInterval = null;
+
+    async function loadDashboard() {
+        // Prevent overlapping requests
+        if (isLoading) return;
+        // If tab is hidden, skip (we'll reload when visible)
+        if (document.hidden) return;
+
+        // Cancel previous request if any
+        if (currentAbortController) {
+            currentAbortController.abort();
+            currentAbortController = null;
+        }
+
+        isLoading = true;
+        refreshBtn.disabled = true;
+        loadingOverlay.style.display = 'flex';
+        setApiStatus('loading');
+
+        const controller = new AbortController();
+        currentAbortController = controller;
+        const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+        try {
+            const filters = getFilters();
+            const queryParams = new URLSearchParams(filters);
+            const url = API_URL + '?' + queryParams.toString();
+
+            const response = await fetch(url, {
+                signal: controller.signal,
+                headers: { 'Accept': 'application/json' }
+            });
+
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const data = await response.json();
+
+            // Render all sections
+            renderKPIs(data.cards);
+            renderExecutiveSummary(data.executive_summary_text);
+            renderPipeline(data.pipeline_detailed);
+            renderWarehouseRanking(data.warehouse_ranking);
+            renderCityPerformance(data.city_performance);
+            renderPendingWarehouses(data.pending_warehouses);
+            renderDealerPerformance(data.dealer_performance);
+            renderProductPerformance(data.product_performance);
+            renderDivisionPerformance(data.division_performance);
+            renderCompliance(data.delivery_compliance);
+            renderAlerts(data.alerts);
+            renderRecommendations(data.recommendations);
+            renderTrendChart(data.trend);
+            updateFooter(data.metadata);
+            updateMeters(data.cards);
+
+            setApiStatus('online');
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                setApiStatus('offline');
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Request Timeout',
+                    text: `n8n did not respond within ${TIMEOUT_MS/1000} seconds.`,
+                    background: '#0f172a',
+                    color: '#f8fafc'
+                });
+            } else {
+                setApiStatus('offline');
+                console.error('Dashboard load error:', err);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Dashboard Error',
+                    text: err.message || 'Could not load dashboard data.',
+                    background: '#0f172a',
+                    color: '#f8fafc'
+                });
+            }
+        } finally {
+            isLoading = false;
+            refreshBtn.disabled = false;
+            loadingOverlay.style.display = 'none';
+            currentAbortController = null;
+        }
+    }
+
+    // ===== API STATUS =====
+    function setApiStatus(state) {
+        apiStatus.classList.remove('online', 'offline', 'loading');
+        if (state === 'online') {
+            apiStatus.classList.add('online');
+            apiStatusText.textContent = 'n8n Online';
+        } else if (state === 'offline') {
+            apiStatus.classList.add('offline');
+            apiStatusText.textContent = 'n8n Offline';
+        } else {
+            apiStatus.classList.add('offline'); // loading state -> show offline indicator
+            apiStatusText.textContent = 'Loading...';
+        }
+    }
+
+    // ===== FILTER CHANGE HANDLING =====
+    function setupFilters() {
+        const filterSelectors = ['filterDateFrom', 'filterDateTo', 'filterWarehouse', 'filterDivision', 'filterSalesOffice', 'filterSalesManager'];
+        filterSelectors.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('change', () => loadDashboard());
+            }
+        });
+        // Trend period buttons
+        document.querySelectorAll('.trend-period').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.trend-period').forEach(b => b.classList.remove('btn-primary', 'btn-outline-secondary'));
+                this.classList.remove('btn-outline-secondary');
+                this.classList.add('btn-primary');
+                loadDashboard();
+            });
+        });
+    }
+
+    // ===== UPLOAD HANDLER =====
     function setupUpload() {
         const form = document.getElementById('uploadForm');
         const btn = document.getElementById('uploadBtn');
@@ -950,7 +1440,6 @@
             const file = fileInput.files[0];
             const formData = new FormData(this);
 
-            // Show progress bar
             progressContainer.style.display = 'block';
             progressBar.style.width = '0%';
             progressBar.setAttribute('aria-valuenow', 0);
@@ -961,7 +1450,6 @@
 
             const xhr = new XMLHttpRequest();
 
-            // Track upload progress
             xhr.upload.addEventListener('progress', function(event) {
                 if (event.lengthComputable) {
                     const percent = Math.round((event.loaded / event.total) * 100);
@@ -976,7 +1464,6 @@
                 }
             });
 
-            // Handle response
             xhr.onload = function() {
                 progressBar.style.width = '100%';
                 percentLabel.textContent = '100%';
@@ -1054,89 +1541,24 @@
         if (fileInput) fileInput.value = '';
     }
 
-    // ---- LOAD DASHBOARD (supports both Railway and n8n responses) ----
-    async function loadDashboard() {
-        try {
-            const res = await fetch(API_URL);
-            if (!res.ok) {
-                throw new Error(`HTTP ${res.status}`);
+    // ===== VISIBILITY API – pause refresh when tab hidden =====
+    function handleVisibilityChange() {
+        if (document.hidden) {
+            // Pause refresh
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
             }
-            let result = await res.json();
-
-            // 1) Railway / FastAPI format
-            if (result.cards) {
-                renderKPIs(result.cards);
-                if (result.executive_summary_text) renderExecutiveSummary(result.executive_summary_text);
-                if (result.pipeline_detailed) renderPipeline(result.pipeline_detailed);
-                // Update footer metadata if present
-                if (result.metadata) {
-                    const recEl = document.getElementById('footerRecords');
-                    if (recEl) recEl.innerText = formatNumber(result.metadata.record_count);
-                    const verEl = document.getElementById('footerVersion');
-                    if (verEl) verEl.innerText = `Haier Pakistan v${result.metadata.version || '19.6'}`;
-                }
-                return;
+        } else {
+            // Resume refresh and reload immediately
+            if (!refreshInterval) {
+                refreshInterval = setInterval(loadDashboard, 30000);
             }
-
-            // 2) n8n webhook format: { success: true, data: [ { total_dn, total_units, ... } ] }
-            if (result.success && result.data) {
-                // data might be an array of objects; pick the first row
-                const data = Array.isArray(result.data) ? result.data[0] : result.data;
-
-                // Build the cards object exactly as renderKPIs expects
-                const cards = {
-                    total_dn:        { value: data.total_dn || 0 },
-                    total_units:     { value: data.total_units || 0 },
-                    total_value:     { value: data.total_value || 0 },
-                    pgi_achievement: { value: data.pgi_achievement || 0 },
-                    pod_achievement: { value: data.pod_achievement || 0 },
-                    pending_dn:      { value: data.pending_dn || 0 },
-                    pending_units:   { value: data.pending_units || 0 },
-                    health_score:    { value: data.health_score || 0 }
-                };
-                renderKPIs(cards);
-
-                // Executive summary
-                renderExecutiveSummary(data.executive_summary || "No summary available");
-
-                // Pipeline (if provided)
-                if (data.pipeline_detailed) {
-                    renderPipeline(data.pipeline_detailed);
-                }
-
-                // Footer metadata (if present)
-                if (data.record_count) {
-                    const recEl = document.getElementById('footerRecords');
-                    if (recEl) recEl.innerText = formatNumber(data.record_count);
-                }
-                if (data.version) {
-                    const verEl = document.getElementById('footerVersion');
-                    if (verEl) verEl.innerText = `Haier Pakistan v${data.version}`;
-                }
-            } else {
-                // No known structure: show error or fallback
-                console.warn('Unknown response structure:', result);
-                Swal.fire({
-                    icon: 'warning',
-                    title: 'Data Format Issue',
-                    text: 'The API response does not match expected formats.',
-                    background: '#0f172a',
-                    color: '#f8fafc'
-                });
-            }
-        } catch (err) {
-            console.error('Dashboard load error:', err);
-            Swal.fire({
-                icon: 'error',
-                title: 'Dashboard Error',
-                text: err.message || 'Could not load dashboard data.',
-                background: '#0f172a',
-                color: '#f8fafc'
-            });
+            loadDashboard(); // immediate refresh when tab becomes visible
         }
     }
 
-    // ---- Event Listeners ----
+    // ===== INIT =====
     document.addEventListener('DOMContentLoaded', function() {
         // Theme toggle
         const themeToggle = document.getElementById('themeToggle');
@@ -1157,13 +1579,25 @@
             });
         }
 
+        // Setup filters
+        setupFilters();
+
         // Setup upload
         setupUpload();
 
-        // Load dashboard
+        // Visibility change
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
+        // Initial load
         loadDashboard();
-        // Refresh every 30 seconds
-        setInterval(loadDashboard, 30000);
+
+        // Start interval (only if tab is visible)
+        if (!document.hidden) {
+            refreshInterval = setInterval(loadDashboard, 30000);
+        }
+
+        // Manual refresh via button
+        document.getElementById('refreshBtn').addEventListener('click', loadDashboard);
     });
 
 })();
