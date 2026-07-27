@@ -1,1227 +1,157 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Haier Logistics – Enterprise Command Center</title>
-  <!-- Google Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet">
-  <!-- Font Awesome 6 for icons -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
-  <style>
-    /* ==========================================================
-       RESET & BASE
-       ========================================================== */
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
-    :root {
-      --primary: #0a2a5e;
-      --primary-light: #1a4a8a;
-      --primary-dark: #061a3a;
-      --accent: #2b7be4;
-      --accent-light: #5b9bf5;
-      --bg-body: #f0f4f9;
-      --bg-card: #ffffff;
-      --bg-sidebar: #0a2a5e;
-      --text-primary: #1a1a2e;
-      --text-secondary: #4a4a6a;
-      --text-muted: #7a7a9a;
-      --border: #dce4ec;
-      --shadow: 0 8px 24px rgba(10, 42, 94, 0.08);
-      --radius: 12px;
-      --radius-sm: 6px;
-      --transition: 0.3s ease;
-      --font: 'Inter', sans-serif;
-      --kpi-bg: #ffffff;
-      --kpi-border: #e6edf4;
-      --table-header-bg: #f7faff;
-      --table-row-hover: #f0f7ff;
-      --table-alt-row: #fafcff;
-    }
-
-    body {
-      font-family: var(--font);
-      background: var(--bg-body);
-      color: var(--text-primary);
-      display: flex;
-      min-height: 100vh;
-      margin: 0;
-      transition: background 0.3s;
-    }
-
-    /* ==========================================================
-       SIDEBAR
-       ========================================================== */
-    .sidebar {
-      width: 250px;
-      background: var(--bg-sidebar);
-      color: #fff;
-      padding: 20px 0;
-      display: flex;
-      flex-direction: column;
-      position: fixed;
-      top: 0;
-      left: 0;
-      bottom: 0;
-      z-index: 1000;
-      transition: transform 0.3s;
-      overflow-y: auto;
-    }
-    .sidebar-brand {
-      display: flex;
-      align-items: center;
-      padding: 0 20px 24px;
-      gap: 12px;
-      border-bottom: 1px solid rgba(255,255,255,0.1);
-    }
-    .sidebar-brand i {
-      font-size: 28px;
-      color: var(--accent-light);
-    }
-    .sidebar-brand span {
-      font-weight: 700;
-      font-size: 18px;
-      letter-spacing: -0.5px;
-    }
-    .sidebar-brand small {
-      font-size: 11px;
-      opacity: 0.7;
-      display: block;
-      font-weight: 400;
-    }
-    .sidebar-nav {
-      flex: 1;
-      padding: 20px 0;
-    }
-    .sidebar-nav a {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      padding: 12px 24px;
-      color: rgba(255,255,255,0.7);
-      text-decoration: none;
-      font-weight: 500;
-      font-size: 14px;
-      transition: var(--transition);
-      border-left: 3px solid transparent;
-    }
-    .sidebar-nav a:hover,
-    .sidebar-nav a.active {
-      color: #fff;
-      background: rgba(255,255,255,0.08);
-      border-left-color: var(--accent-light);
-    }
-    .sidebar-nav a i {
-      width: 20px;
-      text-align: center;
-      font-size: 16px;
-    }
-    .sidebar-footer {
-      padding: 16px 24px;
-      font-size: 12px;
-      opacity: 0.6;
-      border-top: 1px solid rgba(255,255,255,0.08);
-      text-align: center;
-    }
-
-    /* ==========================================================
-       MAIN CONTENT
-       ========================================================== */
-    .main-content {
-      margin-left: 250px;
-      flex: 1;
-      padding: 24px 32px;
-      min-height: 100vh;
-      transition: margin 0.3s;
-    }
-
-    /* ==========================================================
-       TOP BAR
-       ========================================================== */
-    .topbar {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      background: var(--bg-card);
-      border-radius: var(--radius);
-      padding: 14px 24px;
-      box-shadow: var(--shadow);
-      margin-bottom: 24px;
-      gap: 12px;
-    }
-    .topbar-left {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-    }
-    .hamburger {
-      display: none;
-      background: none;
-      border: none;
-      font-size: 20px;
-      color: var(--text-primary);
-      cursor: pointer;
-    }
-    .topbar-title h2 {
-      font-size: 18px;
-      font-weight: 700;
-      letter-spacing: -0.3px;
-    }
-    .topbar-title small {
-      font-size: 12px;
-      color: var(--text-muted);
-      display: block;
-    }
-    .topbar-actions {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-    .topbar-actions .connection-status {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 13px;
-      font-weight: 500;
-      padding: 6px 14px;
-      border-radius: 20px;
-      background: #eef3f8;
-      color: var(--text-secondary);
-    }
-    .connection-status.online {
-      background: #e1f7e6;
-      color: #0f7b3a;
-    }
-    .connection-status.offline {
-      background: #fde8e8;
-      color: #b91c1c;
-    }
-    .connection-status .dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      display: inline-block;
-    }
-    .online .dot { background: #10b981; }
-    .offline .dot { background: #ef4444; }
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 8px 16px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      background: #fff;
-      font-weight: 600;
-      font-size: 13px;
-      cursor: pointer;
-      transition: var(--transition);
-      color: var(--text-primary);
-      text-decoration: none;
-    }
-    .btn-primary {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #fff;
-    }
-    .btn-primary:hover {
-      background: var(--primary-light);
-      border-color: var(--primary-light);
-    }
-    .btn-outline {
-      background: transparent;
-    }
-    .btn-outline:hover {
-      background: #f0f4f9;
-    }
-    .btn-icon {
-      padding: 8px 10px;
-      border-radius: 50%;
-    }
-    .last-updated {
-      font-size: 12px;
-      color: var(--text-muted);
-      margin-left: 8px;
-    }
-
-    /* ==========================================================
-       KPI CARDS
-       ========================================================== */
-    .kpi-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 16px;
-      margin-bottom: 28px;
-    }
-    .kpi-card {
-      background: var(--bg-card);
-      padding: 18px 20px;
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      border-left: 4px solid var(--accent);
-      transition: var(--transition);
-    }
-    .kpi-card:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 12px 30px rgba(10,42,94,0.12);
-    }
-    .kpi-label {
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.3px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .kpi-label i {
-      color: var(--accent);
-    }
-    .kpi-value {
-      font-size: 26px;
-      font-weight: 700;
-      margin-top: 4px;
-      color: var(--text-primary);
-    }
-    .kpi-value .sub {
-      font-size: 14px;
-      font-weight: 400;
-      color: var(--text-muted);
-    }
-
-    /* ==========================================================
-       TABLE SECTION
-       ========================================================== */
-    .section-title {
-      font-size: 18px;
-      font-weight: 700;
-      margin: 28px 0 16px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-    .section-title i {
-      color: var(--accent);
-    }
-    .table-controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 16px;
-    }
-    .table-search {
-      padding: 8px 14px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      font-size: 14px;
-      min-width: 220px;
-      background: #fff;
-    }
-    .table-search:focus {
-      outline: none;
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(43,123,228,0.15);
-    }
-    .table-wrapper {
-      overflow-x: auto;
-      background: var(--bg-card);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      position: relative;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 14px;
-    }
-    thead {
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      background: var(--table-header-bg);
-    }
-    thead th {
-      padding: 14px 16px;
-      text-align: left;
-      font-weight: 600;
-      color: var(--text-secondary);
-      border-bottom: 2px solid var(--border);
-      cursor: pointer;
-      white-space: nowrap;
-      user-select: none;
-    }
-    thead th:hover {
-      color: var(--accent);
-    }
-    thead th i {
-      margin-left: 4px;
-      font-size: 12px;
-      opacity: 0.5;
-    }
-    tbody tr {
-      transition: background 0.2s;
-    }
-    tbody tr:nth-child(even) {
-      background: var(--table-alt-row);
-    }
-    tbody tr:hover {
-      background: var(--table-row-hover);
-    }
-    tbody td {
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--border);
-    }
-    .health-score {
-      font-weight: 700;
-      padding: 4px 10px;
-      border-radius: 20px;
-      display: inline-block;
-      font-size: 13px;
-    }
-    .health-high { background: #d1fae5; color: #065f46; }
-    .health-medium { background: #fef3c7; color: #92400e; }
-    .health-low { background: #fee2e2; color: #991b1b; }
-    .risk-badge {
-      padding: 4px 12px;
-      border-radius: 20px;
-      font-size: 12px;
-      font-weight: 600;
-    }
-    .risk-low { background: #d1fae5; color: #065f46; }
-    .risk-medium { background: #fef3c7; color: #92400e; }
-    .risk-high { background: #fee2e2; color: #991b1b; }
-    .trend-up { color: #10b981; }
-    .trend-down { color: #ef4444; }
-    .trend-neutral { color: #6b7280; }
-
-    /* Pagination */
-    .pagination {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 14px 16px;
-      border-top: 1px solid var(--border);
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-    .pagination button {
-      background: #fff;
-      border: 1px solid var(--border);
-      padding: 6px 14px;
-      border-radius: var(--radius-sm);
-      cursor: pointer;
-      font-weight: 500;
-      transition: var(--transition);
-    }
-    .pagination button:hover:not(:disabled) {
-      background: var(--accent);
-      color: #fff;
-      border-color: var(--accent);
-    }
-    .pagination button:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
-    .pagination .page-info {
-      font-size: 14px;
-      color: var(--text-secondary);
-    }
-
-    /* ==========================================================
-       UPLOAD SECTION
-       ========================================================== */
-    .upload-section {
-      background: var(--bg-card);
-      border-radius: var(--radius);
-      padding: 24px;
-      box-shadow: var(--shadow);
-      margin-top: 32px;
-    }
-    .upload-section .title {
-      font-size: 18px;
-      font-weight: 700;
-      margin-bottom: 16px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-    .upload-section .title i {
-      color: var(--accent);
-    }
-    .upload-form {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 16px;
-      align-items: flex-end;
-    }
-    .upload-form .form-group {
-      flex: 1;
-      min-width: 200px;
-    }
-    .upload-form label {
-      display: block;
-      font-size: 13px;
-      font-weight: 600;
-      margin-bottom: 4px;
-      color: var(--text-secondary);
-    }
-    .upload-form input[type="file"],
-    .upload-form select {
-      width: 100%;
-      padding: 10px 14px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      font-size: 14px;
-      background: #fff;
-    }
-    .upload-form .btn-upload {
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      padding: 10px 28px;
-      border-radius: var(--radius-sm);
-      font-weight: 600;
-      cursor: pointer;
-      transition: var(--transition);
-      font-size: 14px;
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      white-space: nowrap;
-    }
-    .upload-form .btn-upload:hover:not(:disabled) {
-      background: var(--primary-light);
-    }
-    .upload-form .btn-upload:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-    .upload-progress {
-      margin-top: 16px;
-      display: none;
-    }
-    .upload-progress .progress-bar {
-      height: 8px;
-      background: #e6edf4;
-      border-radius: 4px;
-      overflow: hidden;
-    }
-    .upload-progress .progress-fill {
-      height: 100%;
-      width: 0%;
-      background: var(--accent);
-      transition: width 0.3s;
-    }
-    .upload-progress .status-text {
-      display: flex;
-      justify-content: space-between;
-      margin-top: 6px;
-      font-size: 13px;
-      color: var(--text-secondary);
-    }
-
-    /* ==========================================================
-       LOADING OVERLAY
-       ========================================================== */
-    #loadingOverlay {
-      display: none;
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(255,255,255,0.7);
-      backdrop-filter: blur(4px);
-      z-index: 9999;
-      justify-content: center;
-      align-items: center;
-      flex-direction: column;
-      gap: 16px;
-    }
-    #loadingOverlay .spinner {
-      width: 48px;
-      height: 48px;
-      border: 5px solid var(--border);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-    }
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-    #loadingOverlay p {
-      font-weight: 600;
-      color: var(--text-secondary);
-    }
-
-    /* ==========================================================
-       FOOTER
-       ========================================================== */
-    .footer {
-      margin-top: 32px;
-      padding: 16px 0;
-      border-top: 1px solid var(--border);
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      font-size: 13px;
-      color: var(--text-muted);
-    }
-
-    /* ==========================================================
-       RESPONSIVE
-       ========================================================== */
-    @media (max-width: 1024px) {
-      .sidebar { transform: translateX(-100%); }
-      .sidebar.open { transform: translateX(0); }
-      .main-content { margin-left: 0; padding: 16px; }
-      .hamburger { display: block; }
-    }
-    @media (max-width: 600px) {
-      .kpi-grid { grid-template-columns: repeat(2, 1fr); }
-      .topbar { flex-direction: column; align-items: stretch; }
-      .topbar-actions { justify-content: flex-start; }
-      .table-controls { flex-direction: column; align-items: stretch; }
-    }
-
-    /* ==========================================================
-       PLACEHOLDER SECTIONS (future extendability)
-       ========================================================== */
-    .future-section {
-      display: block; /* show them as placeholders */
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Haier Logistics Dashboard</title>
+<style>
+body{font-family:Arial,sans-serif;background:#f4f6f9;margin:0}
+header{background:#1565c0;color:#fff;padding:18px;text-align:center}
+.container{max-width:1300px;margin:20px auto;padding:0 20px}
+.toolbar{text-align:right;margin-bottom:15px}
+button{padding:10px 18px;border:none;background:#1565c0;color:#fff;border-radius:6px;cursor:pointer}
+.status{font-weight:bold;margin:10px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px}
+.card{background:#fff;border-radius:10px;padding:18px;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.card h3{margin:0;color:#666;font-size:16px}
+.value{margin-top:10px;font-size:30px;font-weight:bold;color:#1565c0}
+table{width:100%;border-collapse:collapse;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.12);margin-top:25px}
+th,td{padding:10px;border:1px solid #ddd;text-align:center}
+thead{background:#1565c0;color:#fff}
+tbody tr:nth-child(even){background:#f8f8f8}
+tbody tr:hover{background:#e8f1ff}
+.good{color:#2e7d32;font-weight:bold}
+.warn{color:#ef6c00;font-weight:bold}
+.bad{color:#c62828;font-weight:bold}
+</style>
 </head>
 <body>
-  <!-- LOADING OVERLAY -->
-  <div id="loadingOverlay">
-    <div class="spinner"></div>
-    <p>Loading dashboard data...</p>
-  </div>
 
-  <!-- SIDEBAR -->
-  <aside class="sidebar" id="sidebar">
-    <div class="sidebar-brand">
-      <i class="fas fa-cubes"></i>
-      <div>
-        <span>Haier Logistics</span>
-        <small>Command Center</small>
-      </div>
-    </div>
-    <nav class="sidebar-nav">
-      <a href="#" class="active"><i class="fas fa-chart-line"></i> Dashboard</a>
-      <a href="#upload"><i class="fas fa-cloud-upload-alt"></i> Import Center</a>
-      <a href="#"><i class="fas fa-warehouse"></i> Warehouses</a>
-      <a href="#"><i class="fas fa-handshake"></i> Dealers</a>
-      <a href="#"><i class="fas fa-map-marker-alt"></i> Cities</a>
-      <a href="#"><i class="fas fa-boxes"></i> Products</a>
-      <a href="#"><i class="fas fa-layer-group"></i> Divisions</a>
-      <a href="#"><i class="fas fa-building"></i> Sales Offices</a>
-      <a href="#"><i class="fas fa-user-tie"></i> Sales Managers</a>
-      <a href="#"><i class="fas fa-triangle-exclamation"></i> Alerts &amp; Insights</a>
-      <a href="#"><i class="fas fa-file-lines"></i> Reports</a>
-      <a href="#"><i class="fas fa-database"></i> Data Quality</a>
-    </nav>
-    <div class="sidebar-footer">Haier Pakistan v21.0</div>
-  </aside>
+<header>
+<h2>Haier Logistics Enterprise Dashboard</h2>
+</header>
 
-  <!-- MAIN CONTENT -->
-  <main class="main-content" id="mainContent">
-    <!-- Top Bar -->
-    <header class="topbar">
-      <div class="topbar-left">
-        <button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button>
-        <div class="topbar-title">
-          <h2>Logistics Command Center</h2>
-          <small>100% data driven · n8n backend</small>
-        </div>
-      </div>
-      <div class="topbar-actions">
-        <div class="connection-status" id="connectionStatus">
-          <span class="dot"></span>
-          <span id="statusText">Connecting...</span>
-        </div>
-        <span class="last-updated" id="lastUpdated">—</span>
-        <button class="btn btn-outline" id="refreshBtn"><i class="fas fa-sync-alt"></i> Refresh</button>
-        <button class="btn btn-primary"><i class="fas fa-download"></i> Export</button>
-        <button class="btn btn-outline btn-icon" id="themeToggle"><i class="fas fa-moon"></i></button>
-      </div>
-    </header>
+<div class="container">
 
-    <!-- KPI Cards -->
-    <section class="kpi-grid" id="kpiGrid">
-      <!-- Cards will be injected here -->
-    </section>
+<div class="toolbar">
+<button onclick="loadDashboard()">Refresh Dashboard</button>
+</div>
 
-    <!-- Warehouse Ranking Table -->
-    <div class="section-title">
-      <i class="fas fa-warehouse"></i> Warehouse Performance
-      <span style="font-weight:400;font-size:14px;color:var(--text-muted);margin-left:8px;">All warehouses ranked by Health Score</span>
-    </div>
-    <div class="table-controls">
-      <input type="text" class="table-search" id="tableSearch" placeholder="Search warehouse..." />
-      <div style="display:flex;gap:8px;align-items:center;">
-        <span style="font-size:13px;color:var(--text-muted);">Rows per page:</span>
-        <select id="pageSizeSelect" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:#fff;">
-          <option value="5">5</option>
-          <option value="10" selected>10</option>
-          <option value="20">20</option>
-          <option value="50">50</option>
-        </select>
-      </div>
-    </div>
-    <div class="table-wrapper">
-      <table id="warehouseTable">
-        <thead>
-          <tr>
-            <th data-sort="rank">Rank <i class="fas fa-sort"></i></th>
-            <th data-sort="warehouse">Warehouse <i class="fas fa-sort"></i></th>
-            <th data-sort="total_dn">DNs <i class="fas fa-sort"></i></th>
-            <th data-sort="total_units">Units <i class="fas fa-sort"></i></th>
-            <th data-sort="total_revenue">Revenue <i class="fas fa-sort"></i></th>
-            <th data-sort="pgi_achievement">PGI % <i class="fas fa-sort"></i></th>
-            <th data-sort="delivery_achievement">Delivery % <i class="fas fa-sort"></i></th>
-            <th data-sort="pod_achievement">POD % <i class="fas fa-sort"></i></th>
-            <th data-sort="pending_dn">Pending DNs <i class="fas fa-sort"></i></th>
-            <th data-sort="pending_units">Pending Units <i class="fas fa-sort"></i></th>
-            <th data-sort="health_score">Health Score <i class="fas fa-sort"></i></th>
-            <th data-sort="risk">Risk <i class="fas fa-sort"></i></th>
-            <th data-sort="trend">Trend <i class="fas fa-sort"></i></th>
-          </tr>
-        </thead>
-        <tbody id="tableBody">
-          <!-- rows will be injected -->
-        </tbody>
-      </table>
-      <div class="pagination">
-        <div>
-          <button id="prevPageBtn" disabled><i class="fas fa-chevron-left"></i> Previous</button>
-          <button id="nextPageBtn">Next <i class="fas fa-chevron-right"></i></button>
-        </div>
-        <div class="page-info" id="pageInfo">Showing 1-10 of 0</div>
-      </div>
-    </div>
+<div class="status" id="status">Connecting...</div>
 
-    <!-- Future Sections (placeholders for extending) -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:32px;">
-      <div class="future-section" id="dealerSection" style="background:var(--bg-card);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow);">
-        <h3 style="font-size:16px;font-weight:600;margin-bottom:12px;"><i class="fas fa-users" style="color:var(--accent);margin-right:8px;"></i> Dealer Ranking</h3>
-        <p style="color:var(--text-muted);font-size:14px;">Coming soon – data from n8n</p>
-      </div>
-      <div class="future-section" id="productSection" style="background:var(--bg-card);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow);">
-        <h3 style="font-size:16px;font-weight:600;margin-bottom:12px;"><i class="fas fa-boxes" style="color:var(--accent);margin-right:8px;"></i> Product Ranking</h3>
-        <p style="color:var(--text-muted);font-size:14px;">Coming soon – data from n8n</p>
-      </div>
-    </div>
+<div class="grid">
 
-    <!-- UPLOAD SECTION -->
-    <section class="upload-section" id="upload">
-      <div class="title">
-        <i class="fas fa-file-excel"></i> Import Center – Excel Loader
-        <span style="font-size:13px;font-weight:400;color:var(--text-muted);margin-left:auto;">POST /upload/excel</span>
-      </div>
-      <form class="upload-form" id="uploadForm" action="/upload/excel" method="post" enctype="multipart/form-data">
-        <div class="form-group">
-          <label for="fileInput"><i class="fas fa-file-arrow-up"></i> Choose Excel file (.xlsx, .xls)</label>
-          <input type="file" name="file" id="fileInput" accept=".xlsx,.xls" required />
-          <small style="color:var(--text-muted);font-size:12px;">SAP standard format with DN, PGI, POD records.</small>
-        </div>
-        <div class="form-group">
-          <label for="skipDuplicates"><i class="fas fa-copy"></i> Duplicate handling</label>
-          <select name="skip_duplicates" id="skipDuplicates">
-            <option value="true">Skip existing DNs (recommended)</option>
-            <option value="false">Update existing DN records</option>
-          </select>
-        </div>
-        <button type="submit" class="btn-upload" id="uploadBtn">
-          <i class="fas fa-cloud-upload-alt"></i> Import &amp; Process
-        </button>
-      </form>
-      <div class="upload-progress" id="uploadProgress">
-        <div class="progress-bar">
-          <div class="progress-fill" id="progressFill" style="width:0%;"></div>
-        </div>
-        <div class="status-text">
-          <span id="uploadStatus">Preparing...</span>
-          <span id="uploadPercent">0%</span>
-        </div>
-      </div>
-    </section>
+<div class="card"><h3>Total DNs</h3><div class="value" id="total_dn">-</div></div>
+<div class="card"><h3>Total Units</h3><div class="value" id="total_units">-</div></div>
+<div class="card"><h3>Total Revenue</h3><div class="value" id="total_value">-</div></div>
+<div class="card"><h3>PGI %</h3><div class="value" id="pgi">-</div></div>
+<div class="card"><h3>Delivery %</h3><div class="value" id="delivery">-</div></div>
+<div class="card"><h3>POD %</h3><div class="value" id="pod">-</div></div>
+<div class="card"><h3>Pending DNs</h3><div class="value" id="pending_dn">-</div></div>
+<div class="card"><h3>Pending Units</h3><div class="value" id="pending_units">-</div></div>
 
-    <!-- FOOTER -->
-    <footer class="footer">
-      <div>
-        <span class="text-primary fw-bold">Haier Pakistan v21.0</span> &nbsp;|&nbsp;
-        <span><i class="fas fa-database"></i> PostgreSQL</span>
-      </div>
-      <div>
-        <span><i class="fas fa-clock"></i> Sync: <span id="syncTime">—</span></span>
-        &nbsp;|&nbsp;
-        <span><i class="fas fa-cubes"></i> Records: <span id="recordCount">—</span></span>
-      </div>
-    </footer>
-  </main>
+</div>
 
-  <script>
-    // ==========================================================
-    // CONFIGURATION
-    // ==========================================================
-    const API_URL = 'https://jamshaidkhan.app.n8n.cloud/webhook/haier-dashboard';
-    const REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
+<div id="warehouseTable"></div>
 
-    // ==========================================================
-    // STATE
-    // ==========================================================
-    let dashboardData = null;          // full n8n response
-    let warehouseData = [];            // processed warehouse array
-    let filteredData = [];
-    let currentPage = 1;
-    let pageSize = 10;
-    let sortBy = 'health_score';
-    let sortAsc = false;
-    let isLoading = false;
+</div>
 
-    // DOM refs
-    const kpiGrid = document.getElementById('kpiGrid');
-    const tableBody = document.getElementById('tableBody');
-    const tableSearch = document.getElementById('tableSearch');
-    const pageSizeSelect = document.getElementById('pageSizeSelect');
-    const prevPageBtn = document.getElementById('prevPageBtn');
-    const nextPageBtn = document.getElementById('nextPageBtn');
-    const pageInfo = document.getElementById('pageInfo');
-    const refreshBtn = document.getElementById('refreshBtn');
-    const lastUpdatedEl = document.getElementById('lastUpdated');
-    const connectionStatus = document.getElementById('connectionStatus');
-    const statusText = document.getElementById('statusText');
-    const loadingOverlay = document.getElementById('loadingOverlay');
-    const syncTime = document.getElementById('syncTime');
-    const recordCount = document.getElementById('recordCount');
-    const uploadForm = document.getElementById('uploadForm');
-    const uploadBtn = document.getElementById('uploadBtn');
-    const uploadProgress = document.getElementById('uploadProgress');
-    const progressFill = document.getElementById('progressFill');
-    const uploadStatus = document.getElementById('uploadStatus');
-    const uploadPercent = document.getElementById('uploadPercent');
+<script>
+const API_URL="https://jamshaidkhan.app.n8n.cloud/webhook/haier-dashboard";
 
-    // ==========================================================
-    // UTILITY
-    // ==========================================================
-    function formatNumber(v) {
-      if (v === undefined || v === null) return '—';
-      return Number(v).toLocaleString();
-    }
-    function formatCurrency(v) {
-      if (v === undefined || v === null) return '—';
-      const num = Number(v);
-      if (num >= 1e9) return (num/1e9).toFixed(1) + 'B';
-      if (num >= 1e6) return (num/1e6).toFixed(1) + 'M';
-      if (num >= 1e3) return (num/1e3).toFixed(1) + 'K';
-      return num.toFixed(0);
-    }
-    function formatPct(v) {
-      if (v === undefined || v === null) return '—';
-      return Number(v).toFixed(1) + '%';
-    }
-    function getHealthScore(row) {
-      // average of pgi, delivery, pod
-      const pgi = parseFloat(row.pgi_achievement) || 0;
-      const del = parseFloat(row.delivery_achievement) || 0;
-      const pod = parseFloat(row.pod_achievement) || 0;
-      return (pgi + del + pod) / 3;
-    }
-    function getRisk(pendingUnits) {
-      const u = parseInt(pendingUnits) || 0;
-      if (u < 1000) return { label: 'Low', class: 'risk-low' };
-      if (u < 5000) return { label: 'Medium', class: 'risk-medium' };
-      return { label: 'High', class: 'risk-high' };
-    }
-    function getTrend(score) {
-      // For demo, we return neutral; can be enhanced with historical data
-      return { icon: 'fa-arrow-right', class: 'trend-neutral' };
-    }
+function health(score){
+    score=Number(score);
+    if(score>=90) return '<span class="good">'+score.toFixed(1)+'%</span>';
+    if(score>=80) return '<span class="warn">'+score.toFixed(1)+'%</span>';
+    return '<span class="bad">'+score.toFixed(1)+'%</span>';
+}
 
-    // ==========================================================
-    // RENDER KPI CARDS
-    // ==========================================================
-    function renderKPIs(cards) {
-      if (!cards) return;
-      const config = [
-        { key: 'total_dn', label: 'Total Delivery Notes', icon: 'fa-file-invoice', fmt: formatNumber },
-        { key: 'total_units', label: 'Total Units', icon: 'fa-boxes', fmt: formatNumber },
-        { key: 'total_value', label: 'Total Revenue', icon: 'fa-money-bill-wave', fmt: (v) => 'PKR ' + formatCurrency(v) },
-        { key: 'pgi_achievement', label: 'PGI %', icon: 'fa-check-circle', fmt: formatPct },
-        { key: 'delivery_achievement', label: 'Delivery %', icon: 'fa-truck', fmt: formatPct },
-        { key: 'pod_achievement', label: 'POD %', icon: 'fa-file-signature', fmt: formatPct },
-        { key: 'pending_dn', label: 'Pending DNs', icon: 'fa-hourglass-half', fmt: formatNumber },
-        { key: 'pending_units', label: 'Pending Units', icon: 'fa-hourglass', fmt: formatNumber },
-      ];
-      let html = '';
-      config.forEach(cfg => {
-        const val = cards[cfg.key] !== undefined ? cards[cfg.key] : 0;
-        html += `
-          <div class="kpi-card">
-            <div class="kpi-label"><i class="fas ${cfg.icon}"></i> ${cfg.label}</div>
-            <div class="kpi-value">${cfg.fmt(val)}</div>
-          </div>
-        `;
-      });
-      kpiGrid.innerHTML = html;
-    }
+function risk(units){
+    units=Number(units);
+    if(units<1000) return "Low";
+    if(units<5000) return "Medium";
+    return "High";
+}
 
-    // ==========================================================
-    // RENDER TABLE
-    // ==========================================================
-    function renderTable() {
-      const searchTerm = tableSearch.value.toLowerCase().trim();
-      filteredData = warehouseData.filter(row => {
-        const wh = (row.warehouse || '').toLowerCase();
-        return wh.includes(searchTerm);
-      });
+async function loadDashboard(){
 
-      // Sort
-      const sortField = sortBy;
-      const asc = sortAsc;
-      filteredData.sort((a, b) => {
-        let va = a[sortField] ?? 0;
-        let vb = b[sortField] ?? 0;
-        if (typeof va === 'string') va = va.toLowerCase();
-        if (typeof vb === 'string') vb = vb.toLowerCase();
-        if (va < vb) return asc ? -1 : 1;
-        if (va > vb) return asc ? 1 : -1;
-        return 0;
-      });
+document.getElementById("status").innerHTML="Loading...";
 
-      // Paginate
-      const total = filteredData.length;
-      const totalPages = Math.ceil(total / pageSize) || 1;
-      if (currentPage > totalPages) currentPage = totalPages;
-      const start = (currentPage - 1) * pageSize;
-      const end = Math.min(start + pageSize, total);
-      const pageItems = filteredData.slice(start, end);
+try{
 
-      // Build rows
-      let tbodyHtml = '';
-      if (pageItems.length === 0) {
-        tbodyHtml = `<tr><td colspan="13" style="text-align:center;padding:24px;color:var(--text-muted);">No warehouses found</td></tr>`;
-      } else {
-        pageItems.forEach((row, idx) => {
-          const rank = start + idx + 1;
-          const health = getHealthScore(row);
-          let healthClass = 'health-low';
-          if (health >= 90) healthClass = 'health-high';
-          else if (health >= 80) healthClass = 'health-medium';
-          const risk = getRisk(row.pending_units);
-          const trend = getTrend(health);
+const response=await fetch(API_URL);
 
-          tbodyHtml += `
-            <tr>
-              <td>${rank}</td>
-              <td><strong>${row.warehouse || '—'}</strong></td>
-              <td>${formatNumber(row.total_dn)}</td>
-              <td>${formatNumber(row.total_units)}</td>
-              <td>${formatCurrency(row.total_revenue)}</td>
-              <td>${formatPct(row.pgi_achievement)}</td>
-              <td>${formatPct(row.delivery_achievement)}</td>
-              <td>${formatPct(row.pod_achievement)}</td>
-              <td>${formatNumber(row.pending_dn)}</td>
-              <td>${formatNumber(row.pending_units)}</td>
-              <td><span class="health-score ${healthClass}">${health.toFixed(1)}%</span></td>
-              <td><span class="risk-badge ${risk.class}">${risk.label}</span></td>
-              <td><i class="fas ${trend.icon} ${trend.class}"></i></td>
-            </tr>
-          `;
-        });
-      }
-      tableBody.innerHTML = tbodyHtml;
+if(!response.ok) throw new Error("HTTP "+response.status);
 
-      // Update pagination info
-      pageInfo.textContent = `Showing ${start+1}–${end} of ${total}`;
-      prevPageBtn.disabled = currentPage <= 1;
-      nextPageBtn.disabled = currentPage >= totalPages;
+const result=await response.json();
 
-      // Update table header sort icons
-      document.querySelectorAll('#warehouseTable thead th').forEach(th => {
-        const key = th.dataset.sort;
-        const icon = th.querySelector('i');
-        if (key === sortBy) {
-          icon.className = `fas fa-sort-${asc ? 'up' : 'down'}`;
-        } else {
-          icon.className = 'fas fa-sort';
-        }
-      });
-    }
+if(!result.success) throw new Error(result.message);
 
-    // ==========================================================
-    // FETCH DATA
-    // ==========================================================
-    async function fetchDashboard() {
-      if (isLoading) return;
-      isLoading = true;
-      loadingOverlay.style.display = 'flex';
-      setConnectionStatus('loading');
+const data=result.cards;
+const warehouses=result.warehouse_ranking;
 
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 15000);
+total_dn.innerHTML=Number(data.total_dn).toLocaleString();
+total_units.innerHTML=Number(data.total_units).toLocaleString();
+total_value.innerHTML=Number(data.total_value).toLocaleString();
+pgi.innerHTML=data.pgi_achievement+"%";
+delivery.innerHTML=data.delivery_achievement+"%";
+pod.innerHTML=data.pod_achievement+"%";
+pending_dn.innerHTML=Number(data.pending_dn).toLocaleString();
+pending_units.innerHTML=Number(data.pending_units).toLocaleString();
 
-        const response = await fetch(API_URL, {
-          signal: controller.signal,
-          headers: { 'Accept': 'application/json' }
-        });
-        clearTimeout(timeout);
+let html=`
+<h2>Warehouse Ranking</h2>
+<table>
+<thead>
+<tr>
+<th>Rank</th>
+<th>Warehouse</th>
+<th>DNs</th>
+<th>Units</th>
+<th>Revenue</th>
+<th>PGI%</th>
+<th>Delivery%</th>
+<th>POD%</th>
+<th>Health</th>
+<th>Risk</th>
+<th>Pending DNs</th>
+<th>Pending Units</th>
+</tr>
+</thead>
+<tbody>`;
 
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
+warehouses.forEach((w,i)=>{
+const hs=(Number(w.pgi_achievement)+Number(w.delivery_achievement)+Number(w.pod_achievement))/3;
+html+=`
+<tr>
+<td>${i+1}</td>
+<td>${w.warehouse}</td>
+<td>${Number(w.total_dn).toLocaleString()}</td>
+<td>${Number(w.total_units).toLocaleString()}</td>
+<td>${Number(w.total_revenue).toLocaleString()}</td>
+<td>${w.pgi_achievement}%</td>
+<td>${w.delivery_achievement}%</td>
+<td>${w.pod_achievement}%</td>
+<td>${health(hs)}</td>
+<td>${risk(w.pending_units)}</td>
+<td>${Number(w.pending_dn).toLocaleString()}</td>
+<td>${Number(w.pending_units).toLocaleString()}</td>
+</tr>`;
+});
 
-        const data = await response.json();
+html+="</tbody></table>";
+document.getElementById("warehouseTable").innerHTML=html;
+document.getElementById("status").innerHTML="✅ Connected Successfully";
 
-        // Validate structure
-        if (!data.success) {
-          throw new Error(data.message || 'API returned error');
-        }
+}catch(e){
+document.getElementById("status").innerHTML="❌ "+e.message;
+console.error(e);
+}
+}
 
-        // Extract cards and warehouse_ranking
-        const cards = data.cards || {};
-        const warehouses = data.warehouse_ranking || [];
+loadDashboard();
+setInterval(loadDashboard,300000);
+</script>
 
-        // Store data
-        dashboardData = data;
-        warehouseData = warehouses;
-
-        // Render
-        renderKPIs(cards);
-        renderTable();
-
-        // Update footer metadata if available
-        if (data.metadata) {
-          recordCount.textContent = formatNumber(data.metadata.record_count);
-        } else {
-          recordCount.textContent = formatNumber(warehouses.length);
-        }
-        const now = new Date();
-        const timeStr = now.toLocaleTimeString();
-        lastUpdatedEl.textContent = 'Updated ' + timeStr;
-        syncTime.textContent = timeStr;
-
-        setConnectionStatus('online');
-      } catch (err) {
-        console.error('Dashboard fetch error:', err);
-        setConnectionStatus('offline');
-        // Show error but keep existing data if any
-        if (!dashboardData) {
-          // first load failed
-          tableBody.innerHTML = `<tr><td colspan="13" style="text-align:center;padding:24px;color:var(--text-muted);">Failed to load data. Please refresh.</td></tr>`;
-        }
-      } finally {
-        isLoading = false;
-        loadingOverlay.style.display = 'none';
-      }
-    }
-
-    // ==========================================================
-    // CONNECTION STATUS
-    // ==========================================================
-    function setConnectionStatus(state) {
-      connectionStatus.classList.remove('online', 'offline');
-      if (state === 'online') {
-        connectionStatus.classList.add('online');
-        statusText.textContent = 'Online';
-      } else if (state === 'offline') {
-        connectionStatus.classList.add('offline');
-        statusText.textContent = 'Offline';
-      } else {
-        statusText.textContent = 'Connecting...';
-      }
-    }
-
-    // ==========================================================
-    // TABLE SORT HANDLING
-    // ==========================================================
-    document.querySelectorAll('#warehouseTable thead th').forEach(th => {
-      th.addEventListener('click', () => {
-        const key = th.dataset.sort;
-        if (!key) return;
-        if (sortBy === key) {
-          sortAsc = !sortAsc;
-        } else {
-          sortBy = key;
-          sortAsc = false;
-        }
-        currentPage = 1;
-        renderTable();
-      });
-    });
-
-    // ==========================================================
-    // SEARCH & PAGINATION
-    // ==========================================================
-    tableSearch.addEventListener('input', () => {
-      currentPage = 1;
-      renderTable();
-    });
-
-    pageSizeSelect.addEventListener('change', (e) => {
-      pageSize = parseInt(e.target.value);
-      currentPage = 1;
-      renderTable();
-    });
-
-    prevPageBtn.addEventListener('click', () => {
-      if (currentPage > 1) {
-        currentPage--;
-        renderTable();
-      }
-    });
-
-    nextPageBtn.addEventListener('click', () => {
-      const total = filteredData.length;
-      const totalPages = Math.ceil(total / pageSize);
-      if (currentPage < totalPages) {
-        currentPage++;
-        renderTable();
-      }
-    });
-
-    // ==========================================================
-    // REFRESH
-    // ==========================================================
-    refreshBtn.addEventListener('click', fetchDashboard);
-
-    // ==========================================================
-    // AUTO REFRESH
-    // ==========================================================
-    let refreshInterval = setInterval(fetchDashboard, REFRESH_INTERVAL);
-    // Pause when tab hidden
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden) {
-        clearInterval(refreshInterval);
-      } else {
-        refreshInterval = setInterval(fetchDashboard, REFRESH_INTERVAL);
-        fetchDashboard(); // immediate refresh on visibility
-      }
-    });
-
-    // ==========================================================
-    // UPLOAD HANDLER
-    // ==========================================================
-    uploadForm.addEventListener('submit', async function(e) {
-      e.preventDefault();
-      const fileInput = document.getElementById('fileInput');
-      if (!fileInput.files.length) {
-        alert('Please select a file.');
-        return;
-      }
-      const formData = new FormData(this);
-
-      uploadBtn.disabled = true;
-      uploadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
-      uploadProgress.style.display = 'block';
-      progressFill.style.width = '0%';
-      uploadPercent.textContent = '0%';
-      uploadStatus.textContent = 'Starting upload...';
-
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/upload/excel', true);
-
-      xhr.upload.addEventListener('progress', (event) => {
-        if (event.lengthComputable) {
-          const pct = Math.round((event.loaded / event.total) * 100);
-          progressFill.style.width = pct + '%';
-          uploadPercent.textContent = pct + '%';
-          uploadStatus.textContent = `Uploading ${(event.loaded/1024/1024).toFixed(2)} MB / ${(event.total/1024/1024).toFixed(2)} MB`;
-        }
-      });
-
-      xhr.onload = function() {
-        uploadStatus.textContent = 'Processing complete!';
-        uploadBtn.disabled = false;
-        uploadBtn.innerHTML = '<i class="fas fa-cloud-upload-alt"></i> Import & Process';
-        if (xhr.status === 200) {
-          try {
-            const resp = JSON.parse(xhr.responseText);
-            if (resp.success) {
-              alert('Import successful: ' + (resp.message || ''));
-              fetchDashboard(); // refresh dashboard after import
-            } else {
-              alert('Import failed: ' + (resp.message || resp.error || 'Unknown error'));
-            }
-          } catch (e) {
-            alert('Import succeeded but response parsing failed.');
-          }
-        } else {
-          alert('Upload failed with status ' + xhr.status);
-        }
-        setTimeout(() => {
-          uploadProgress.style.display = 'none';
-          fileInput.value = '';
-        }, 2000);
-      };
-
-      xhr.onerror = function() {
-        alert('Network error during upload.');
-        uploadBtn.disabled = false;
-        uploadBtn.innerHTML = '<i class="fas fa-cloud-upload-alt"></i> Import & Process';
-        uploadProgress.style.display = 'none';
-      };
-
-      xhr.send(formData);
-    });
-
-    // ==========================================================
-    // THEME TOGGLE (simple light/dark)
-    // ==========================================================
-    let darkMode = true;
-    document.getElementById('themeToggle').addEventListener('click', () => {
-      darkMode = !darkMode;
-      const root = document.documentElement;
-      if (darkMode) {
-        root.style.setProperty('--bg-body', '#f0f4f9');
-        root.style.setProperty('--bg-card', '#ffffff');
-        root.style.setProperty('--text-primary', '#1a1a2e');
-        root.style.setProperty('--text-secondary', '#4a4a6a');
-        root.style.setProperty('--text-muted', '#7a7a9a');
-        root.style.setProperty('--border', '#dce4ec');
-        root.style.setProperty('--table-header-bg', '#f7faff');
-        root.style.setProperty('--table-alt-row', '#fafcff');
-        root.style.setProperty('--table-row-hover', '#f0f7ff');
-        document.getElementById('themeToggle').innerHTML = '<i class="fas fa-moon"></i>';
-      } else {
-        root.style.setProperty('--bg-body', '#0b1526');
-        root.style.setProperty('--bg-card', '#1a2744');
-        root.style.setProperty('--text-primary', '#e8edf5');
-        root.style.setProperty('--text-secondary', '#b0c4de');
-        root.style.setProperty('--text-muted', '#7a94b5');
-        root.style.setProperty('--border', '#2a3a5a');
-        root.style.setProperty('--table-header-bg', '#1f3050');
-        root.style.setProperty('--table-alt-row', '#16213e');
-        root.style.setProperty('--table-row-hover', '#1f3050');
-        document.getElementById('themeToggle').innerHTML = '<i class="fas fa-sun"></i>';
-      }
-    });
-
-    // ==========================================================
-    // SIDEBAR TOGGLE (mobile)
-    // ==========================================================
-    document.getElementById('hamburgerBtn').addEventListener('click', () => {
-      document.getElementById('sidebar').classList.toggle('open');
-    });
-
-    // ==========================================================
-    // INIT
-    // ==========================================================
-    fetchDashboard();
-  </script>
 </body>
 </html>
