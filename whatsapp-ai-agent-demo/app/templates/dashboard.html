@@ -6,150 +6,109 @@
 <title>Haier Logistics Dashboard</title>
 
 <style>
-
 body{
     font-family:Arial,sans-serif;
     background:#f5f5f5;
     margin:0;
     padding:40px;
 }
-
 .container{
     max-width:1100px;
     margin:auto;
 }
-
-h1{
+h2{
     text-align:center;
     color:#1565c0;
 }
-
 .status{
     text-align:center;
-    margin:20px 0;
+    margin:20px;
     font-weight:bold;
 }
-
 .grid{
     display:grid;
     grid-template-columns:repeat(4,1fr);
     gap:20px;
 }
-
 .card{
-
-    background:white;
+    background:#fff;
     border-radius:10px;
-    padding:25px;
-    box-shadow:0 3px 12px rgba(0,0,0,.1);
+    padding:20px;
     text-align:center;
-
+    box-shadow:0 2px 10px rgba(0,0,0,.1);
 }
-
 .card h3{
-
     margin:0;
     color:#666;
-    font-size:16px;
-
 }
-
 .value{
-
-    margin-top:15px;
-    font-size:34px;
-    color:#1565c0;
+    font-size:32px;
     font-weight:bold;
-
+    color:#1565c0;
+    margin-top:15px;
 }
-
 button{
-
     padding:12px 25px;
-    font-size:15px;
     cursor:pointer;
-    margin-bottom:25px;
-
+    margin-bottom:20px;
 }
-
-@media(max-width:900px){
-
-.grid{
-
-grid-template-columns:repeat(2,1fr);
-
-}
-
-}
-
-@media(max-width:600px){
-
-.grid{
-
-grid-template-columns:1fr;
-
-}
-
-}
-
 </style>
-
 </head>
 
 <body>
 
 <div class="container">
 
-<h1>Haier Logistics Dashboard</h1>
+<h2>Haier Logistics Dashboard</h2>
 
-<div style="text-align:center">
+<div style="text-align:center;">
 <button onclick="loadDashboard()">Refresh Dashboard</button>
 </div>
 
 <div class="status" id="status">
-Loading...
+Connecting to n8n...
 </div>
 
 <div class="grid">
 
 <div class="card">
 <h3>Total DNs</h3>
-<div id="total_dn" class="value">-</div>
+<div class="value" id="total_dn">-</div>
 </div>
 
 <div class="card">
 <h3>Total Units</h3>
-<div id="total_units" class="value">-</div>
+<div class="value" id="total_units">-</div>
 </div>
 
 <div class="card">
 <h3>Total Revenue</h3>
-<div id="total_value" class="value">-</div>
+<div class="value" id="total_value">-</div>
 </div>
 
 <div class="card">
-<h3>PGI Achievement</h3>
-<div id="pgi" class="value">-</div>
+<h3>PGI %</h3>
+<div class="value" id="pgi">-</div>
 </div>
 
 <div class="card">
-<h3>Delivery Achievement</h3>
-<div id="delivery" class="value">-</div>
+<h3>Delivery %</h3>
+<div class="value" id="delivery">-</div>
 </div>
 
 <div class="card">
-<h3>POD Achievement</h3>
-<div id="pod" class="value">-</div>
+<h3>POD %</h3>
+<div class="value" id="pod">-</div>
 </div>
 
 <div class="card">
 <h3>Pending DNs</h3>
-<div id="pending_dn" class="value">-</div>
+<div class="value" id="pending_dn">-</div>
 </div>
 
 <div class="card">
 <h3>Pending Units</h3>
-<div id="pending_units" class="value">-</div>
+<div class="value" id="pending_units">-</div>
 </div>
 
 </div>
@@ -158,76 +117,78 @@ Loading...
 
 <script>
 
-const API_URL = "YOUR_N8N_WEBHOOK_URL";
+const API_URL = "https://jamshaidkhan.app.n8n.cloud/webhook/haier-dashboard";
 
 async function loadDashboard(){
 
-document.getElementById("status").innerHTML="Loading Dashboard...";
+    document.getElementById("status").innerHTML="Loading...";
 
-try{
+    try{
 
-const response = await fetch(API_URL);
+        const response = await fetch(API_URL,{
+            method:"GET",
+            headers:{
+                "Accept":"application/json"
+            }
+        });
 
-if(!response.ok){
+        console.log("HTTP Status:",response.status);
 
-throw new Error("HTTP "+response.status);
+        if(!response.ok){
+            throw new Error("HTTP "+response.status);
+        }
 
-}
+        const result = await response.json();
 
-const result = await response.json();
+        console.log("API Response:",result);
 
-console.log("API Response:",result);
+        if(!result.success){
+            throw new Error(result.message || "Unknown API Error");
+        }
 
-if(!result.success){
+        const data=result.data[0];
 
-throw new Error(result.message);
+        document.getElementById("total_dn").innerHTML=
+            Number(data.total_dn).toLocaleString();
 
-}
+        document.getElementById("total_units").innerHTML=
+            Number(data.total_units).toLocaleString();
 
-const data = result.data[0];
+        document.getElementById("total_value").innerHTML=
+            Number(data.total_value).toLocaleString();
 
-document.getElementById("total_dn").innerHTML =
-Number(data.total_dn).toLocaleString();
+        document.getElementById("pgi").innerHTML=
+            data.pgi_achievement+"%";
 
-document.getElementById("total_units").innerHTML =
-Number(data.total_units).toLocaleString();
+        document.getElementById("delivery").innerHTML=
+            data.delivery_achievement+"%";
 
-document.getElementById("total_value").innerHTML =
-Number(data.total_value).toLocaleString();
+        document.getElementById("pod").innerHTML=
+            data.pod_achievement+"%";
 
-document.getElementById("pgi").innerHTML =
-data.pgi_achievement+"%";
+        document.getElementById("pending_dn").innerHTML=
+            Number(data.pending_dn).toLocaleString();
 
-document.getElementById("delivery").innerHTML =
-data.delivery_achievement+"%";
+        document.getElementById("pending_units").innerHTML=
+            Number(data.pending_units).toLocaleString();
 
-document.getElementById("pod").innerHTML =
-data.pod_achievement+"%";
+        document.getElementById("status").innerHTML=
+            "✅ Connected Successfully";
 
-document.getElementById("pending_dn").innerHTML =
-Number(data.pending_dn).toLocaleString();
+    }
 
-document.getElementById("pending_units").innerHTML =
-Number(data.pending_units).toLocaleString();
+    catch(error){
 
-document.getElementById("status").innerHTML =
-"✅ Dashboard Loaded Successfully";
+        console.error(error);
 
-}
-catch(error){
+        document.getElementById("status").innerHTML=
+            "❌ "+error.message;
 
-console.error(error);
-
-document.getElementById("status").innerHTML =
-"❌ "+error.message;
-
-}
+    }
 
 }
 
 loadDashboard();
-
-setInterval(loadDashboard,60000);
 
 </script>
 
