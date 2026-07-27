@@ -1,5 +1,5 @@
 <!-- ============================================================
-     FILE: dashboard.html – v20.2 (n8n Single Backend)
+     FILE: dashboard.html – v20.2 FINAL
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
@@ -889,29 +889,26 @@
 <!-- Bootstrap JS -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
-<!-- ============================================================
-     APPLICATION JAVASCRIPT – n8n SINGLE BACKEND v20.2
-     ============================================================ -->
 <script>
 (function() {
     'use strict';
 
     // ============================================================
-    // !!!  IMPORTANT: Set your actual n8n webhook URL here  !!!
+    // !!!  CRITICAL: Change this URL to your actual n8n webhook  !!!
     // ============================================================
- const API_URL = 'https://my-n8n.up.railway.app/webhook/dashboard-api';
-    // Example: 'https://your-app-name.up.railway.app/webhook/dashboard-api'
+    const API_URL = 'https://your-n8n-domain.com/webhook/dashboard-api';
+    // Example: 'https://my-n8n.up.railway.app/webhook/dashboard-api'
 
-    const UPLOAD_URL = '/upload/excel'; // or your n8n upload webhook
-    const TIMEOUT_MS = 15000; // 15 seconds
+    const UPLOAD_URL = '/upload/excel';
+    const TIMEOUT_MS = 15000;
 
-    // ===== DOM REFS =====
+    // DOM refs
     const loadingOverlay = document.getElementById('loadingOverlay');
     const refreshBtn = document.getElementById('refreshBtn');
     const apiStatus = document.getElementById('apiStatus');
     const apiStatusText = document.getElementById('apiStatusText');
 
-    // ===== UTILITY FUNCTIONS =====
+    // Utilities
     function formatNumber(v) { return (v || 0).toLocaleString(); }
     function formatPct(v) { return (v || 0).toFixed(1) + '%'; }
     function formatCurrency(v) {
@@ -932,9 +929,7 @@
         };
     }
 
-    // ===== RENDER FUNCTIONS =====
-
-    // ---- KPI Cards – automatically calculates health_score if missing ----
+    // ---- Render functions ----
     function renderKPIs(cards) {
         const container = document.getElementById('kpiCards');
         if (!container) return;
@@ -1005,7 +1000,6 @@
             `;
         });
         container.innerHTML = html;
-        // Update conversion
         const convEl = document.getElementById('pipelineConversion');
         if (convEl && totalDn > 0) {
             const lastStage = pipeline['pod_received'] || { dn: 0 };
@@ -1013,6 +1007,8 @@
             convEl.textContent = pct + '%';
         }
     }
+
+    // Other render functions (warehouse, cities, etc.) are placeholders – they will work when n8n sends the data.
 
     function renderWarehouseRanking(data) {
         const tbody = document.getElementById('warehouseRankingTbody');
@@ -1284,7 +1280,7 @@
         document.getElementById('meterHealth').textContent = formatPct(cards.health_score?.value || 0);
     }
 
-    // ===== MAIN LOAD FUNCTION – handles n8n response =====
+    // ---- Main load function ----
     let currentAbortController = null;
     let isLoading = false;
     let refreshInterval = null;
@@ -1325,14 +1321,13 @@
 
             const result = await response.json();
 
-            // ---- n8n response format: { success: true, data: [ { ... } ] } ----
+            // ---- n8n response: { success: true, data: [ { ... } ] } ----
             let data = {};
             if (result.success && Array.isArray(result.data) && result.data.length > 0) {
                 data = result.data[0];
             } else if (result.success && result.data && typeof result.data === 'object') {
                 data = result.data;
             } else {
-                // fallback – treat the whole result as the data
                 data = result;
             }
 
@@ -1355,7 +1350,7 @@
                 health_score:    { value: healthVal }
             };
 
-            // ---- Render all sections (only KPIs populated now) ----
+            // ---- Render ----
             renderKPIs(cards);
             renderExecutiveSummary(data.executive_summary_text || data.executive_summary || '');
             renderPipeline(data.pipeline_detailed || data.pipeline || {});
@@ -1402,7 +1397,6 @@
         }
     }
 
-    // ===== API STATUS =====
     function setApiStatus(state) {
         apiStatus.classList.remove('online', 'offline', 'loading');
         if (state === 'online') {
@@ -1417,7 +1411,7 @@
         }
     }
 
-    // ===== FILTER CHANGE HANDLING =====
+    // ---- Filters ----
     function setupFilters() {
         const filterSelectors = ['filterDateFrom', 'filterDateTo', 'filterWarehouse', 'filterDivision', 'filterSalesOffice', 'filterSalesManager'];
         filterSelectors.forEach(id => {
@@ -1434,7 +1428,7 @@
         });
     }
 
-    // ===== UPLOAD HANDLER =====
+    // ---- Upload ----
     function setupUpload() {
         const form = document.getElementById('uploadForm');
         const btn = document.getElementById('uploadBtn');
@@ -1558,7 +1552,7 @@
         if (fileInput) fileInput.value = '';
     }
 
-    // ===== VISIBILITY API =====
+    // ---- Visibility ----
     function handleVisibilityChange() {
         if (document.hidden) {
             if (refreshInterval) {
@@ -1573,9 +1567,8 @@
         }
     }
 
-    // ===== INIT =====
+    // ---- Init ----
     document.addEventListener('DOMContentLoaded', function() {
-        // Theme toggle
         const themeToggle = document.getElementById('themeToggle');
         if (themeToggle) {
             themeToggle.addEventListener('click', function() {
@@ -1586,7 +1579,6 @@
             });
         }
 
-        // Hamburger
         const hamburger = document.getElementById('hamburgerBtn');
         if (hamburger) {
             hamburger.addEventListener('click', function() {
@@ -1610,11 +1602,9 @@
 </script>
 
 <!-- ===== CORS REMINDER =====
-If you see "n8n Offline" or "Failed to fetch", make sure:
-1. The API_URL above points to your actual n8n webhook (replace the placeholder).
-2. CORS is enabled in n8n: set N8N_CORS_ORIGIN=* and restart.
-3. Your n8n workflow is Active.
-4. The URL is publicly accessible (test it in a browser).
+If you still see "n8n Offline" after setting the correct API_URL:
+- Enable CORS in n8n: set environment variable N8N_CORS_ORIGIN=* and restart.
+- Or use FastAPI as a proxy (see previous answers).
 -->
 
 </body>
