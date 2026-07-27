@@ -1,6 +1,6 @@
 <!-- ============================================================
      FILE: whatsapp-ai-agent-demo/app/templates/dashboard.html
-     VERSION: 20.0 – n8n SINGLE BACKEND + ALL SECTIONS RENDERED
+     VERSION: 20.1 – n8n INTEGRATED + HEALTH SCORE CALCULATION
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
@@ -574,7 +574,7 @@
       <a class="nav-link" href="#dataQualitySection"><i class="fas fa-database"></i> Data Quality</a>
       <a class="nav-link" href="#settingsSection"><i class="fas fa-gear"></i> Settings</a>
     </nav>
-    <div class="sidebar-footer">Haier Pakistan v19.6</div>
+    <div class="sidebar-footer">Haier Pakistan v20.1</div>
   </aside>
 
   <!-- ============================================================
@@ -879,7 +879,7 @@
 
     <!-- FOOTER -->
     <footer id="footer" class="footer-bar d-flex justify-content-between align-items-center">
-      <div><span class="text-primary fw-bold" id="footerVersion">Haier Pakistan v19.6</span> &nbsp;|&nbsp; <span class="text-info"><i class="fas fa-database me-1"></i>PostgreSQL</span></div>
+      <div><span class="text-primary fw-bold" id="footerVersion">Haier Pakistan v20.1</span> &nbsp;|&nbsp; <span class="text-info"><i class="fas fa-database me-1"></i>PostgreSQL</span></div>
       <div><span><i class="fas fa-clock text-muted me-1"></i>Sync: <span id="footerSyncTime">—</span></span></div>
       <div><span class="text-success"><i class="fas fa-cubes me-1"></i>Records: <span id="footerRecords">—</span></span> &nbsp;|&nbsp; <span class="text-muted">Last sync: <span id="footerLastSync">—</span> &nbsp;<i class="fas fa-circle text-success" style="font-size:0.45rem;"></i> Live</span></div>
     </footer>
@@ -891,14 +891,15 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
 <!-- ============================================================
-     APPLICATION JAVASCRIPT – n8n SINGLE BACKEND v20.0
+     APPLICATION JAVASCRIPT – n8n SINGLE BACKEND v20.1
      ============================================================ -->
 <script>
 (function() {
     'use strict';
 
     // ===== CONFIGURATION =====
-    // Replace with your actual n8n webhook URL
+    // !!! IMPORTANT: Replace this URL with your actual n8n webhook endpoint !!!
+    // Example: 'https://your-n8n.railway.app/webhook/dashboard-api'
     const API_URL = 'https://your-n8n-domain.com/webhook/dashboard-api';
     const UPLOAD_URL = '/upload/excel'; // or your n8n upload webhook
     const TIMEOUT_MS = 15000; // 15 seconds
@@ -931,6 +932,8 @@
     }
 
     // ===== RENDER FUNCTIONS =====
+
+    // KPI Cards – now calculates health_score if missing
     function renderKPIs(cards) {
         const container = document.getElementById('kpiCards');
         if (!container) return;
@@ -1126,7 +1129,6 @@
         const values = data.map(d => d.revenue || 0);
         const colors = ['#38bdf8', '#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
-        // Plotly donut
         const trace = {
             type: 'pie',
             labels: labels,
@@ -1147,7 +1149,6 @@
         };
         Plotly.react(chartDiv, [trace], layout, { responsive: true });
 
-        // Legend
         let legendHtml = '';
         data.slice(0,5).forEach((d, i) => {
             const color = colors[i % colors.length];
@@ -1270,7 +1271,7 @@
         const recEl = document.getElementById('footerRecords');
         if (recEl) recEl.textContent = formatNumber(metadata.record_count);
         const verEl = document.getElementById('footerVersion');
-        if (verEl) verEl.textContent = `Haier Pakistan v${metadata.version || '19.6'}`;
+        if (verEl) verEl.textContent = `Haier Pakistan v${metadata.version || '20.1'}`;
         const syncEl = document.getElementById('footerSyncTime');
         if (syncEl && metadata.last_sync) {
             syncEl.textContent = metadata.last_sync;
@@ -1291,18 +1292,15 @@
         document.getElementById('meterHealth').textContent = formatPct(health);
     }
 
-    // ===== MAIN LOAD FUNCTION (with timeout, abort, visibility) =====
+    // ===== MAIN LOAD FUNCTION =====
     let currentAbortController = null;
     let isLoading = false;
     let refreshInterval = null;
 
     async function loadDashboard() {
-        // Prevent overlapping requests
         if (isLoading) return;
-        // If tab is hidden, skip (we'll reload when visible)
         if (document.hidden) return;
 
-        // Cancel previous request if any
         if (currentAbortController) {
             currentAbortController.abort();
             currentAbortController = null;
@@ -1333,24 +1331,54 @@
                 throw new Error(`HTTP ${response.status}`);
             }
 
-            const data = await response.json();
+            const result = await response.json();
 
-            // Render all sections
-            renderKPIs(data.cards);
-            renderExecutiveSummary(data.executive_summary_text);
-            renderPipeline(data.pipeline_detailed);
-            renderWarehouseRanking(data.warehouse_ranking);
-            renderCityPerformance(data.city_performance);
-            renderPendingWarehouses(data.pending_warehouses);
-            renderDealerPerformance(data.dealer_performance);
-            renderProductPerformance(data.product_performance);
-            renderDivisionPerformance(data.division_performance);
-            renderCompliance(data.delivery_compliance);
-            renderAlerts(data.alerts);
-            renderRecommendations(data.recommendations);
-            renderTrendChart(data.trend);
-            updateFooter(data.metadata);
-            updateMeters(data.cards);
+            // ---- n8n response format: { success: true, data: [ { ... } ] } ----
+            let data = {};
+            if (result.success && Array.isArray(result.data) && result.data.length > 0) {
+                data = result.data[0];
+            } else if (result.success && result.data && typeof result.data === 'object') {
+                data = result.data;
+            } else {
+                // fallback – maybe it's already the flat object
+                data = result;
+            }
+
+            // ---- Build cards object with health_score calculation ----
+            let healthVal = parseFloat(data.health_score);
+            if (isNaN(healthVal) || healthVal === 0) {
+                const pgi = parseFloat(data.pgi_achievement) || 0;
+                const pod = parseFloat(data.pod_achievement) || 0;
+                healthVal = (pgi + pod) / 2;
+            }
+
+            const cards = {
+                total_dn:        { value: data.total_dn || 0 },
+                total_units:     { value: data.total_units || 0 },
+                total_value:     { value: data.total_value || 0 },
+                pgi_achievement: { value: data.pgi_achievement || 0 },
+                pod_achievement: { value: data.pod_achievement || 0 },
+                pending_dn:      { value: data.pending_dn || 0 },
+                pending_units:   { value: data.pending_units || 0 },
+                health_score:    { value: healthVal }
+            };
+
+            // ---- Render all sections ----
+            renderKPIs(cards);
+            renderExecutiveSummary(data.executive_summary_text || data.executive_summary || '');
+            renderPipeline(data.pipeline_detailed || data.pipeline || {});
+            renderWarehouseRanking(data.warehouse_ranking || []);
+            renderCityPerformance(data.city_performance || []);
+            renderPendingWarehouses(data.pending_warehouses || []);
+            renderDealerPerformance(data.dealer_performance || []);
+            renderProductPerformance(data.product_performance || []);
+            renderDivisionPerformance(data.division_performance || []);
+            renderCompliance(data.delivery_compliance || []);
+            renderAlerts(data.alerts || []);
+            renderRecommendations(data.recommendations || []);
+            renderTrendChart(data.trend || {});
+            updateFooter(data.metadata || {});
+            updateMeters(cards);
 
             setApiStatus('online');
         } catch (err) {
@@ -1392,7 +1420,7 @@
             apiStatus.classList.add('offline');
             apiStatusText.textContent = 'n8n Offline';
         } else {
-            apiStatus.classList.add('offline'); // loading state -> show offline indicator
+            apiStatus.classList.add('offline');
             apiStatusText.textContent = 'Loading...';
         }
     }
@@ -1406,7 +1434,6 @@
                 el.addEventListener('change', () => loadDashboard());
             }
         });
-        // Trend period buttons
         document.querySelectorAll('.trend-period').forEach(btn => {
             btn.addEventListener('click', function() {
                 document.querySelectorAll('.trend-period').forEach(b => b.classList.remove('btn-primary', 'btn-outline-secondary'));
@@ -1541,20 +1568,18 @@
         if (fileInput) fileInput.value = '';
     }
 
-    // ===== VISIBILITY API – pause refresh when tab hidden =====
+    // ===== VISIBILITY API =====
     function handleVisibilityChange() {
         if (document.hidden) {
-            // Pause refresh
             if (refreshInterval) {
                 clearInterval(refreshInterval);
                 refreshInterval = null;
             }
         } else {
-            // Resume refresh and reload immediately
             if (!refreshInterval) {
                 refreshInterval = setInterval(loadDashboard, 30000);
             }
-            loadDashboard(); // immediate refresh when tab becomes visible
+            loadDashboard();
         }
     }
 
@@ -1579,29 +1604,29 @@
             });
         }
 
-        // Setup filters
         setupFilters();
-
-        // Setup upload
         setupUpload();
-
-        // Visibility change
         document.addEventListener('visibilitychange', handleVisibilityChange);
 
-        // Initial load
         loadDashboard();
-
-        // Start interval (only if tab is visible)
         if (!document.hidden) {
             refreshInterval = setInterval(loadDashboard, 30000);
         }
 
-        // Manual refresh via button
         document.getElementById('refreshBtn').addEventListener('click', loadDashboard);
     });
 
 })();
 </script>
+
+<!-- ===== CORS NOTE =====
+If you see "n8n Offline" after updating the API_URL, check:
+1. CORS: n8n must allow your dashboard's origin.
+   Set environment variable: N8N_CORS_ORIGIN=*
+   (or your specific domain) and restart n8n.
+2. The webhook URL must be publicly accessible.
+3. The workflow must be Active in n8n.
+-->
 
 </body>
 </html>
