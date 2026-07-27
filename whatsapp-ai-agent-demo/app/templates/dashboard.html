@@ -1,6 +1,7 @@
 <!-- ============================================================
      FILE: whatsapp-ai-agent-demo/app/templates/dashboard.html
      VERSION: 19.6 – UPLOAD ROUTER INTEGRATION (PROGRESS + IMPORT)
+     + SUPPORT FOR n8n RESPONSE FORMAT
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
@@ -834,11 +835,17 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
 <!-- ============================================================
-     APPLICATION JAVASCRIPT – v19.6 (UPLOAD ROUTER INTEGRATION)
+     APPLICATION JAVASCRIPT – v19.6 (UPLOAD ROUTER INTEGRATION + n8n SUPPORT)
      ============================================================ -->
 <script>
 (function() {
+    // ----- CONFIGURABLE API URL -----
+    // Use the Railway backend (default)
     const API_URL = '/dashboard/api/data';
+
+    // To switch to n8n, comment the line above and uncomment the line below:
+    // const API_URL = 'https://your-n8n-domain.com/webhook/dashboard-api';
+
     const UPLOAD_URL = '/upload/excel';
 
     function formatNumber(v) { return (v || 0).toLocaleString(); }
@@ -849,7 +856,7 @@
         return (v/1e3).toFixed(1) + ' K';
     }
 
-    // ---- Render functions (same as before) ----
+    // ---- Render functions (unchanged) ----
     function renderKPIs(cards) {
         const container = document.getElementById('kpiCards');
         if (!container) return;
@@ -1047,27 +1054,85 @@
         if (fileInput) fileInput.value = '';
     }
 
-    // ---- Load Dashboard Data ----
+    // ---- LOAD DASHBOARD (supports both Railway and n8n responses) ----
     async function loadDashboard() {
         try {
             const res = await fetch(API_URL);
-            if (res.ok) {
-                const data = await res.json();
-                if (data.cards) renderKPIs(data.cards);
-                if (data.executive_summary_text) renderExecutiveSummary(data.executive_summary_text);
-                if (data.pipeline_detailed) renderPipeline(data.pipeline_detailed);
-                // ... call other render functions ...
-                // (Include all your existing render calls here)
-                // Footer
-                if (data.metadata) {
-                    const recEl = document.getElementById('footerRecords');
-                    if (recEl) recEl.innerText = formatNumber(data.metadata.record_count);
-                    const verEl = document.getElementById('footerVersion');
-                    if (verEl) verEl.innerText = `Haier Pakistan v${data.metadata.version || '19.6'}`;
-                }
+            if (!res.ok) {
+                throw new Error(`HTTP ${res.status}`);
             }
-        } catch(e) {
-            console.warn('API fetch warning:', e);
+            let result = await res.json();
+
+            // 1) Railway / FastAPI format
+            if (result.cards) {
+                renderKPIs(result.cards);
+                if (result.executive_summary_text) renderExecutiveSummary(result.executive_summary_text);
+                if (result.pipeline_detailed) renderPipeline(result.pipeline_detailed);
+                // Update footer metadata if present
+                if (result.metadata) {
+                    const recEl = document.getElementById('footerRecords');
+                    if (recEl) recEl.innerText = formatNumber(result.metadata.record_count);
+                    const verEl = document.getElementById('footerVersion');
+                    if (verEl) verEl.innerText = `Haier Pakistan v${result.metadata.version || '19.6'}`;
+                }
+                return;
+            }
+
+            // 2) n8n webhook format: { success: true, data: [ { total_dn, total_units, ... } ] }
+            if (result.success && result.data) {
+                // data might be an array of objects; pick the first row
+                const data = Array.isArray(result.data) ? result.data[0] : result.data;
+
+                // Build the cards object exactly as renderKPIs expects
+                const cards = {
+                    total_dn:        { value: data.total_dn || 0 },
+                    total_units:     { value: data.total_units || 0 },
+                    total_value:     { value: data.total_value || 0 },
+                    pgi_achievement: { value: data.pgi_achievement || 0 },
+                    pod_achievement: { value: data.pod_achievement || 0 },
+                    pending_dn:      { value: data.pending_dn || 0 },
+                    pending_units:   { value: data.pending_units || 0 },
+                    health_score:    { value: data.health_score || 0 }
+                };
+                renderKPIs(cards);
+
+                // Executive summary
+                renderExecutiveSummary(data.executive_summary || "No summary available");
+
+                // Pipeline (if provided)
+                if (data.pipeline_detailed) {
+                    renderPipeline(data.pipeline_detailed);
+                }
+
+                // Footer metadata (if present)
+                if (data.record_count) {
+                    const recEl = document.getElementById('footerRecords');
+                    if (recEl) recEl.innerText = formatNumber(data.record_count);
+                }
+                if (data.version) {
+                    const verEl = document.getElementById('footerVersion');
+                    if (verEl) verEl.innerText = `Haier Pakistan v${data.version}`;
+                }
+            } else {
+                // No known structure: show error or fallback
+                console.warn('Unknown response structure:', result);
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Data Format Issue',
+                    text: 'The API response does not match expected formats.',
+                    background: '#0f172a',
+                    color: '#f8fafc'
+                });
+            }
+        } catch (err) {
+            console.error('Dashboard load error:', err);
+            Swal.fire({
+                icon: 'error',
+                title: 'Dashboard Error',
+                text: err.message || 'Could not load dashboard data.',
+                background: '#0f172a',
+                color: '#f8fafc'
+            });
         }
     }
 
@@ -1097,6 +1162,7 @@
 
         // Load dashboard
         loadDashboard();
+        // Refresh every 30 seconds
         setInterval(loadDashboard, 30000);
     });
 
