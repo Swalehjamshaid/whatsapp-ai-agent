@@ -9,7 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
   <style>
-    /* ----- RESET & VARIABLES ----- */
+    /* ----- RESET & VARIABLES (unchanged) ----- */
     * { margin:0; padding:0; box-sizing:border-box; }
     :root {
       --primary: #0a2a5e;
@@ -35,7 +35,7 @@
     }
     body { font-family: var(--font); background: var(--bg-body); color: var(--text-primary); display: flex; min-height:100vh; margin:0; transition:background 0.3s; }
 
-    /* Sidebar */
+    /* Sidebar (unchanged) */
     .sidebar {
       width: var(--sidebar-width);
       background: var(--bg-sidebar);
@@ -62,7 +62,7 @@
     /* Main content */
     .main-content { margin-left:var(--sidebar-width); flex:1; padding:24px 32px; min-height:100vh; transition:margin 0.3s; }
 
-    /* Top Bar */
+    /* Top Bar – added logout button */
     .topbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; background:var(--bg-card); border-radius:var(--radius); padding:14px 24px; box-shadow:var(--shadow); margin-bottom:24px; gap:12px; }
     .topbar-left { display:flex; align-items:center; gap:16px; }
     .hamburger { display:none; background:none; border:none; font-size:20px; color:var(--text-primary); cursor:pointer; }
@@ -81,9 +81,11 @@
     .btn-outline { background:transparent; }
     .btn-outline:hover { background:#f0f4f9; }
     .btn-icon { padding:8px 10px; border-radius:50%; }
+    .btn-danger { background:#dc2626; border-color:#dc2626; color:#fff; }
+    .btn-danger:hover { background:#b91c1c; border-color:#b91c1c; }
     .last-updated { font-size:12px; color:var(--text-muted); margin-left:8px; }
 
-    /* KPI Cards */
+    /* KPI Cards (unchanged) */
     .kpi-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px,1fr)); gap:16px; margin-bottom:28px; }
     .kpi-card { background:var(--bg-card); padding:18px 20px; border-radius:var(--radius); box-shadow:var(--shadow); border-left:4px solid var(--accent); transition:var(--transition); }
     .kpi-card:hover { transform:translateY(-2px); box-shadow:0 12px 30px rgba(10,42,94,0.12); }
@@ -91,7 +93,7 @@
     .kpi-label i { color:var(--accent); }
     .kpi-value { font-size:26px; font-weight:700; margin-top:4px; color:var(--text-primary); }
 
-    /* Table */
+    /* Table (unchanged) */
     .section-title { font-size:18px; font-weight:700; margin:28px 0 16px; display:flex; align-items:center; gap:12px; }
     .section-title i { color:var(--accent); }
     .table-controls { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; margin-bottom:16px; }
@@ -125,7 +127,7 @@
     .pagination button:disabled { opacity:0.4; cursor:not-allowed; }
     .page-info { font-size:14px; color:var(--text-secondary); }
 
-    /* Upload Section */
+    /* Upload Section (unchanged) */
     .upload-section { background:var(--bg-card); border-radius:var(--radius); padding:24px; box-shadow:var(--shadow); margin-top:32px; }
     .upload-section .title { font-size:18px; font-weight:700; margin-bottom:16px; display:flex; align-items:center; gap:12px; }
     .upload-section .title i { color:var(--accent); }
@@ -141,7 +143,7 @@
     .upload-progress .progress-fill { height:100%; width:0%; background:var(--accent); transition:width 0.3s; }
     .upload-progress .status-text { display:flex; justify-content:space-between; margin-top:6px; font-size:13px; color:var(--text-secondary); }
 
-    /* Loading */
+    /* Loading (unchanged) */
     #loadingOverlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(255,255,255,0.7); backdrop-filter:blur(4px); z-index:9999; justify-content:center; align-items:center; flex-direction:column; gap:16px; }
     #loadingOverlay .spinner { width:48px; height:48px; border:5px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; }
     @keyframes spin { to { transform:rotate(360deg); } }
@@ -149,7 +151,7 @@
 
     .footer { margin-top:32px; padding:16px 0; border-top:1px solid var(--border); display:flex; flex-wrap:wrap; justify-content:space-between; font-size:13px; color:var(--text-muted); }
 
-    /* Responsive */
+    /* Responsive (unchanged) */
     @media (max-width:1024px) { .sidebar { transform:translateX(-100%); } .sidebar.open { transform:translateX(0); } .main-content { margin-left:0; padding:16px; } .hamburger { display:block; } }
     @media (max-width:600px) { .kpi-grid { grid-template-columns:repeat(2,1fr); } .topbar { flex-direction:column; align-items:stretch; } .topbar-actions { justify-content:flex-start; } .table-controls { flex-direction:column; align-items:stretch; } }
   </style>
@@ -182,7 +184,7 @@
   <!-- MAIN CONTENT -->
   <main class="main-content" id="mainContent">
 
-    <!-- TOP BAR -->
+    <!-- TOP BAR – added Logout button -->
     <header class="topbar">
       <div class="topbar-left">
         <button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button>
@@ -194,6 +196,8 @@
         <button class="btn btn-outline" id="refreshBtn"><i class="fas fa-sync-alt"></i> Refresh</button>
         <button class="btn btn-primary"><i class="fas fa-download"></i> Export</button>
         <button class="btn btn-outline btn-icon" id="themeToggle"><i class="fas fa-moon"></i></button>
+        <!-- LOGOUT BUTTON (new) -->
+        <button class="btn btn-danger" id="logoutBtn"><i class="fas fa-sign-out-alt"></i> Logout</button>
       </div>
     </header>
 
@@ -244,7 +248,7 @@
     <!-- UPLOAD SECTION -->
     <section class="upload-section" id="upload">
       <div class="title"><i class="fas fa-file-excel"></i> Import Center – Excel Loader <span style="font-size:13px;font-weight:400;color:var(--text-muted);margin-left:auto;">POST /upload/excel</span></div>
-      <form class="upload-form" id="uploadForm" action="/upload/excel" method="post" enctype="multipart/form-data">
+      <form class="upload-form" id="uploadForm" enctype="multipart/form-data">
         <div class="form-group">
           <label for="fileInput"><i class="fas fa-file-arrow-up"></i> Choose Excel file (.xlsx, .xls)</label>
           <input type="file" name="file" id="fileInput" accept=".xlsx,.xls" required />
@@ -275,7 +279,7 @@
 
   <script>
     // ================================================================
-    // 1. CONFIGURATION – n8n returns an ARRAY
+    // 1. CONFIGURATION – n8n endpoint
     // ================================================================
     const API_URL = 'https://jamshaidkhan.app.n8n.cloud/webhook/haier-dashboard';
     const REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
@@ -390,7 +394,7 @@
     }
 
     // ================================================================
-    // 5. RENDER WAREHOUSE TABLE – MAPPING & FALLBACKS FOR n8n
+    // 5. RENDER WAREHOUSE TABLE
     // ================================================================
     function renderTable() {
       var searchTerm = tableSearch.value.toLowerCase().trim();
@@ -471,7 +475,7 @@
     }
 
     // ================================================================
-    // 6. FETCH DATA FROM n8n WITH ROBUST FALLBACK MAPPING
+    // 6. FETCH DATA FROM n8n
     // ================================================================
     async function fetchDashboard() {
       if (isLoading) return;
@@ -565,7 +569,7 @@
     }
 
     // ================================================================
-    // 8. EVENT BINDINGS
+    // 8. EVENT BINDINGS (unchanged)
     // ================================================================
     // Sorting
     document.querySelectorAll('#warehouseTable thead th').forEach(function(th) {
@@ -608,7 +612,7 @@
     });
 
     // ================================================================
-    // 9. UPLOAD HANDLER (Excel) - UNTOUCHED ATTRIBUTES
+    // 9. UPLOAD HANDLER – sends to /upload/excel (or change to your endpoint)
     // ================================================================
     document.getElementById('uploadForm').addEventListener('submit', function(e) {
       e.preventDefault();
@@ -652,7 +656,7 @@
     });
 
     // ================================================================
-    // 10. THEME TOGGLE
+    // 10. THEME TOGGLE (unchanged)
     // ================================================================
     var darkMode = true;
     document.getElementById('themeToggle').addEventListener('click', function() {
@@ -691,7 +695,19 @@
     });
 
     // ================================================================
-    // 12. INIT
+    // 12. LOGOUT – FIXED
+    // ================================================================
+    document.getElementById('logoutBtn').addEventListener('click', async function() {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+      } catch (err) {
+        console.error('Logout error:', err);
+      }
+      window.location.href = '/';
+    });
+
+    // ================================================================
+    // 13. INIT
     // ================================================================
     fetchDashboard();
   </script>
