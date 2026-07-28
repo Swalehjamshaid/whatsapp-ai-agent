@@ -315,6 +315,11 @@
       if (v === undefined || v === null || v === '') return '—';
       return Number(v).toLocaleString();
     }
+    function formatDecimal(v) {
+      if (v === undefined || v === null || v === '') return '—';
+      var num = Number(v);
+      return isNaN(num) ? '—' : num.toFixed(1);
+    }
     function formatCurrency(v) {
       if (v === undefined || v === null || v === '') return '—';
       var num = Number(v);
@@ -325,7 +330,8 @@
     }
     function formatPct(v) {
       if (v === undefined || v === null || v === '') return '—';
-      return Number(v).toFixed(1) + '%';
+      var num = Number(v);
+      return isNaN(num) ? '—' : num.toFixed(1) + '%';
     }
 
     function computeHealthScore(row) {
@@ -433,9 +439,9 @@
             '<td>' + formatPct(row.pgi_achievement) + '</td>' +
             '<td>' + formatPct(row.delivery_achievement) + '</td>' +
             '<td>' + formatPct(row.pod_achievement) + '</td>' +
-            '<td>' + formatNumber(row.avg_delivery_days) + '</td>' +
-            '<td>' + formatNumber(row.avg_pod_days) + '</td>' +
-            '<td>' + formatNumber(row.avg_cycle_days) + '</td>' +
+            '<td>' + formatDecimal(row.avg_delivery_days) + '</td>' +
+            '<td>' + formatDecimal(row.avg_pod_days) + '</td>' +
+            '<td>' + formatDecimal(row.avg_cycle_days) + '</td>' +
             '<td>' + formatNumber(row.pending_dn) + '</td>' +
             '<td>' + formatNumber(row.pending_units) + '</td>' +
             '<td><span class="health-score ' + healthClass + '">' + health.toFixed(1) + '%</span></td>' +
@@ -506,7 +512,6 @@
           pending_units: rawCards.pending_units || 0
         };
 
-        // Ensure warehouse items handle missing fields gracefully by defaulting to global metrics or zero
         var rawWarehouses = result.warehouse_ranking || [];
         warehouses = rawWarehouses.map(function(row) {
           return {
