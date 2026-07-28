@@ -494,7 +494,18 @@
           throw new Error(result && result.message ? result.message : 'API error');
         }
 
-        cards = result.cards || {};
+        var rawCards = result.cards || {};
+        cards = {
+          total_dn: rawCards.total_delivery_notes !== undefined ? rawCards.total_delivery_notes : (rawCards.total_dn || 0),
+          total_units: rawCards.total_units || 0,
+          total_value: rawCards.total_revenue !== undefined ? rawCards.total_revenue : (rawCards.total_value || 0),
+          pgi_achievement: rawCards.pgi_percentage !== undefined ? rawCards.pgi_percentage : (rawCards.pgi_achievement || 0),
+          delivery_achievement: rawCards.delivery_percentage !== undefined ? rawCards.delivery_percentage : (rawCards.delivery_achievement || 0),
+          pod_achievement: rawCards.pod_percentage !== undefined ? rawCards.pod_percentage : (rawCards.pod_achievement || 0),
+          pending_dn: rawCards.pending_dns !== undefined ? rawCards.pending_dns : (rawCards.pending_dn || 0),
+          pending_units: rawCards.pending_units || 0
+        };
+
         warehouses = result.warehouse_ranking || [];
 
         renderKPIs(cards);
@@ -510,7 +521,7 @@
       } catch (err) {
         console.error('Fetch error:', err);
         setConnectionStatus('offline');
-        if (!cards && !warehouses.length) {
+        if (!Object.keys(cards).length && !warehouses.length) {
           tableBody.innerHTML = '<tr><td colspan="16" style="text-align:center;padding:24px;color:var(--text-muted);">Failed to load data. Please refresh.</td></tr>';
         }
       } finally {
