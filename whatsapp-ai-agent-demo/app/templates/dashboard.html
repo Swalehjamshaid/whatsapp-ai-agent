@@ -384,7 +384,7 @@
     }
 
     // ================================================================
-    // 5. RENDER WAREHOUSE TABLE – ALL FIELDS INCLUDED
+    // 5. RENDER WAREHOUSE TABLE – MAPPING & FALLBACKS FOR n8n
     // ================================================================
     function renderTable() {
       var searchTerm = tableSearch.value.toLowerCase().trim();
@@ -465,7 +465,7 @@
     }
 
     // ================================================================
-    // 6. FETCH DATA FROM n8n
+    // 6. FETCH DATA FROM n8n WITH ROBUST FALLBACK MAPPING
     // ================================================================
     async function fetchDashboard() {
       if (isLoading) return;
@@ -506,7 +506,26 @@
           pending_units: rawCards.pending_units || 0
         };
 
-        warehouses = result.warehouse_ranking || [];
+        // Ensure warehouse items handle missing fields gracefully by defaulting to global metrics or zero
+        var rawWarehouses = result.warehouse_ranking || [];
+        warehouses = rawWarehouses.map(function(row) {
+          return {
+            warehouse: row.warehouse,
+            total_dn: row.total_dn,
+            total_units: row.total_units,
+            total_revenue: row.total_revenue,
+            pgi_achievement: row.pgi_achievement !== undefined ? row.pgi_achievement : cards.pgi_achievement,
+            delivery_achievement: row.delivery_achievement !== undefined ? row.delivery_achievement : cards.delivery_achievement,
+            pod_achievement: row.pod_achievement,
+            avg_delivery_days: row.avg_delivery_days,
+            avg_pod_days: row.avg_pod_days,
+            avg_cycle_days: row.avg_cycle_days,
+            pending_dn: row.pending_dn,
+            pending_units: row.pending_units,
+            health_score: row.health_score,
+            risk_level: row.risk_level
+          };
+        });
 
         renderKPIs(cards);
         renderTable();
@@ -584,7 +603,7 @@
     });
 
     // ================================================================
-    // 9. UPLOAD HANDLER (Excel)
+    // 9. UPLOAD HANDLER (Excel) - UNTOUCHED ATTRIBUTES
     // ================================================================
     document.getElementById('uploadForm').addEventListener('submit', function(e) {
       e.preventDefault();
