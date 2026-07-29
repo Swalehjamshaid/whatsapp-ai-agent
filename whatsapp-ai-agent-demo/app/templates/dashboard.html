@@ -422,9 +422,10 @@
 
 <script>
     // ============================================================
-    //  CONFIGURATION — uses your exact n8n webhook URL
+    //  CONFIG
     // ============================================================
     const WEBHOOK_URL = 'https://jamshaidkhan.app.n8n.cloud/webhook/haier-dashboard';
+    const UPLOAD_URL = '/webhook/upload-excel'; // adjust if needed
 
     // ============================================================
     //  STATE
@@ -527,10 +528,12 @@
         return d.toLocaleString('en-PK', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true });
     }
 
-    // Smart Health Score (if needed – but we can use the provided health_score)
+    // Compute smart health (if health_score not provided or we want our own)
     function computeSmartHealth(w) {
-        // Use the health_score from the API if available, else compute
-        if (w.health_score) return parseInt(w.health_score);
+        // Use health_score from API if present
+        if (w.health_score !== undefined && w.health_score !== null) {
+            return parseInt(w.health_score);
+        }
         // Fallback calculation
         const totalDN = parseFloat(w.total_dn) || 1;
         const pendingDN = parseFloat(w.pending_dn) || 0;
@@ -557,9 +560,8 @@
     //  RENDER FUNCTIONS
     // ============================================================
 
-    // ----- Executive Summary (uses cards data) -----
+    // Executive Summary
     function renderExecutiveSummary(cards) {
-        // cards: { total_delivery_notes, total_units, total_revenue, pgi_percentage, delivery_percentage, pod_percentage, ... }
         const totalDN = cards.total_delivery_notes || 0;
         const totalUnits = cards.total_units || 0;
         const revenue = cards.total_revenue || 0;
@@ -567,7 +569,6 @@
         const deliveryPct = cards.delivery_percentage || 0;
         const podPct = cards.pod_percentage || 0;
 
-        // Compute average health from warehouse data
         let totalHealth = 0, count = 0;
         warehouses.forEach(w => { totalHealth += computeSmartHealth(w); count++; });
         const avgHealth = count > 0 ? Math.round(totalHealth / count) : 0;
@@ -597,7 +598,7 @@
         `;
     }
 
-    // ----- KPI Cards -----
+    // KPI Cards
     function renderKPIs(cards) {
         // Overview
         const overview = [
@@ -655,7 +656,7 @@
         `).join('');
     }
 
-    // ----- Warehouse Ranking Table -----
+    // Table
     function renderTable(whs) {
         if (!whs || whs.length === 0) {
             tableBody.innerHTML = `<tr><td colspan="12" style="text-align:center;padding:28px;color:#6a8aa8;">No warehouse data available</td></tr>`;
@@ -664,10 +665,8 @@
         }
         warehouseCount.textContent = `${whs.length} warehouses`;
 
-        // Sort by health (or provided health_score)
         const sorted = [...whs].map(w => ({ ...w, _health: computeSmartHealth(w) }));
         sorted.sort((a,b) => b._health - a._health);
-        // Mock previous health for trends (we'll use current as baseline)
         const prevHealth = sorted.map(w => w._health + (Math.random() * 10 - 5));
 
         tableBody.innerHTML = sorted.map((w, idx) => {
@@ -677,7 +676,6 @@
             const riskLevel = getRiskLevel(100 - healthScore);
             const riskCls = riskLevel;
             const riskLabel = getRiskLabel(riskLevel);
-            // PGI %, Delivery % for each warehouse (approximated from pending)
             const pgiPct = Math.round(100 - (parseFloat(w.pending_dn) || 0) / (parseFloat(w.total_dn) || 1) * 100);
             const deliveryPct = Math.round(100 - (parseFloat(w.pending_units) || 0) / (parseFloat(w.total_units) || 1) * 100);
             const trend = generateTrend(healthScore, prevHealth[idx] || healthScore);
@@ -701,7 +699,6 @@
             `;
         }).join('');
 
-        // Click event for drill-down
         document.querySelectorAll('#tableBody tr').forEach(tr => {
             tr.addEventListener('click', function() {
                 const name = this.dataset.warehouse;
@@ -711,9 +708,8 @@
         });
     }
 
-    // ----- Charts (12 charts) -----
+    // Charts
     function renderCharts(whs) {
-        // Sort by health for consistent ordering
         const sorted = [...whs].map(w => ({ ...w, _health: computeSmartHealth(w) }));
         sorted.sort((a,b) => b._health - a._health);
         const labels = sorted.map(w => w.warehouse);
@@ -761,7 +757,7 @@
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#8aa4be', font: { size: 9 } } } } }
         });
 
-        // Horizontal: Warehouse Ranking (Health)
+        // Horizontal Ranking
         const rankCtx = document.getElementById('chartRanking').getContext('2d');
         if (chartInstances['chartRanking']) chartInstances['chartRanking'].destroy();
         chartInstances['chartRanking'] = new Chart(rankCtx, {
@@ -770,7 +766,7 @@
             options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8aa4be', font: { size: 9 } } }, y: { grid: { display: false }, ticks: { color: '#8aa4be', font: { size: 8 } } } } }
         });
 
-        // Line: Delivery Cycle Days
+        // Line: Delivery Cycle
         const delCtx = document.getElementById('chartCycleDelivery').getContext('2d');
         if (chartInstances['chartCycleDelivery']) chartInstances['chartCycleDelivery'].destroy();
         chartInstances['chartCycleDelivery'] = new Chart(delCtx, {
@@ -779,7 +775,7 @@
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#8aa4be', font: { size: 9 } } } }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8aa4be', font: { size: 9 } } }, x: { grid: { display: false }, ticks: { color: '#8aa4be', font: { size: 8 }, maxRotation: 30, autoSkip: true } } } }
         });
 
-        // Line: POD Cycle Days
+        // Line: POD Cycle
         const podCtx = document.getElementById('chartCyclePOD').getContext('2d');
         if (chartInstances['chartCyclePOD']) chartInstances['chartCyclePOD'].destroy();
         chartInstances['chartCyclePOD'] = new Chart(podCtx, {
@@ -818,7 +814,7 @@
         });
     }
 
-    // ----- AI Insights -----
+    // AI Insights
     function generateAIInsights(whs) {
         if (!whs || whs.length === 0) { aiText.textContent = 'No data available for insights.'; aiRecommend.textContent = ''; return; }
         const sortedPOD = [...whs].sort((a,b) => parseFloat(a.pod_achievement) - parseFloat(b.pod_achievement));
@@ -837,7 +833,7 @@
         aiRecommend.textContent = '💡 ' + recommend;
     }
 
-    // ----- Drill Down (modal) -----
+    // Drill Down
     function openDrill(w) {
         drillTitle.textContent = `${w.warehouse} — Warehouse Dashboard`;
         const health = computeSmartHealth(w);
@@ -892,7 +888,7 @@
             // Fallback: if raw is the warehouse array directly
             if (!whs && Array.isArray(raw) && raw.length > 0 && raw[0].warehouse) {
                 whs = raw;
-                // compute cards from whs if needed (but we have cards from n8n)
+                // compute cards from whs if needed
             }
 
             if (!whs || whs.length === 0) {
@@ -901,22 +897,16 @@
 
             warehouses = whs;
 
-            // Use cards from response; if missing, compute
-            const computedCards = cards || computeKPIs(whs); // computeKPIs is not defined but we can compute from whs
-
-            // If cards is missing, compute from whs
-            let finalCards = cards;
-            if (!finalCards) {
-                // Compute from whs (we have computeKPIs function)
-                // We'll define computeKPIs at the bottom or reuse
-                finalCards = computeKPIs(whs);
+            // If cards not provided, compute from whs
+            if (!cards) {
+                cards = computeKPIs(whs);
             }
 
             const now = new Date();
             lastUpdated.innerHTML = `<i class="fas fa-clock"></i> <span>Updated ${formatDate(now)}</span>`;
 
-            renderExecutiveSummary(finalCards);
-            renderKPIs(finalCards);
+            renderExecutiveSummary(cards);
+            renderKPIs(cards);
             renderTable(whs);
             renderCharts(whs);
             generateAIInsights(whs);
@@ -934,7 +924,7 @@
         }
     }
 
-    // Helper to compute KPIs from warehouse array (fallback)
+    // Fallback KPI computation (if cards missing)
     function computeKPIs(whs) {
         let totalDN = 0, totalUnits = 0, totalRevenue = 0;
         let pgiPendingDN = 0, pgiPendingUnits = 0;
@@ -981,7 +971,7 @@
     }
 
     // ============================================================
-    //  UPLOAD LOGIC (placeholder)
+    //  UPLOAD
     // ============================================================
     function updateFileUI(file) {
         if (file) {
@@ -1009,7 +999,7 @@
         try {
             let progress = 0;
             const interval = setInterval(() => { progress = Math.min(progress + 5, 90); uploadFill.style.width = progress + '%'; }, 200);
-            const response = await fetch('/webhook/upload-excel', { method: 'POST', body: formData });
+            const response = await fetch(UPLOAD_URL, { method: 'POST', body: formData });
             clearInterval(interval);
             const result = await response.json();
             if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
