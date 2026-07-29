@@ -336,7 +336,7 @@
         }
 
         /* ============================================================
-           CHARTS ROW
+           CHARTS GRID
            ============================================================ */
         .charts-grid {
             display: grid;
@@ -1622,25 +1622,20 @@
 
         // Smart Health Score: 30% PGI, 30% Delivery, 20% POD, 10% Pending Units, 10% Cycle Time
         function computeSmartHealth(w) {
-            // PGI % — we don't have it directly, approximate from pod_achievement and pending
             const totalDN = parseFloat(w.total_dn) || 1;
             const pendingDN = parseFloat(w.pending_dn) || 0;
             const pgiDone = totalDN - pendingDN;
             const pgiPct = Math.min(100, (pgiDone / totalDN) * 100);
 
-            // Delivery % — approximate from avg_delivery_days (lower is better)
             const avgDel = parseFloat(w.avg_delivery_days) || 1;
             const deliveryScore = Math.max(0, Math.min(100, 100 - (avgDel / 10) * 100));
 
-            // POD %
             const podPct = parseFloat(w.pod_achievement) || 0;
 
-            // Pending Units penalty (lower is better)
             const pendingUnits = parseFloat(w.pending_units) || 0;
             const maxPending = 50000;
             const pendingScore = Math.max(0, 100 - (pendingUnits / maxPending) * 100);
 
-            // Cycle Time (lower is better)
             const avgCycle = parseFloat(w.avg_cycle_days) || 1;
             const cycleScore = Math.max(0, Math.min(100, 100 - (avgCycle / 20) * 100));
 
@@ -2039,7 +2034,6 @@
                 }
 
                 const raw = await response.json();
-                // The endpoint returns an array with one object
                 const payload = Array.isArray(raw) ? raw[0] : raw;
 
                 if (!payload || !payload.success) {
@@ -2061,7 +2055,6 @@
                 renderCharts(rawWarehouses);
                 generateAIInsights(rawWarehouses);
 
-                // Populate filter dropdowns
                 populateFilters(rawWarehouses);
 
                 loadingState.classList.add('hidden');
