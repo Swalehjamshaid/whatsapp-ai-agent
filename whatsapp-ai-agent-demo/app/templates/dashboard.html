@@ -1461,7 +1461,7 @@
 
     <script>
         // ============================================================
-        //  CONFIG — 100% aligned with n8n webhook
+        //  CONFIG — 100% aligned with n8n webhook response
         // ============================================================
         const WEBHOOK_URL =
             'https://jamshaidkhan.app.n8n.cloud/webhook/haier-dashboard';
@@ -2042,7 +2042,7 @@
         }
 
         // ============================================================
-        //  LOAD DASHBOARD — 100% ALIGNED WITH n8n RESPONSE
+        //  LOAD DASHBOARD — EXACTLY PARSES THE n8n RESPONSE FORMAT
         // ============================================================
         async function loadDashboard(showLoading = true) {
             if (showLoading) {
@@ -2060,27 +2060,32 @@
                     throw new Error(`HTTP ${response.status} — ${response.statusText}`);
                 }
 
-                // n8n returns the warehouse array directly (or wrapped in a single-element array)
                 const raw = await response.json();
 
-                // Handle both [{warehouse:...}] and [[{warehouse:...}]]
-                let whs = raw;
-                if (Array.isArray(raw) && raw.length === 1 && Array.isArray(raw[0])) {
-                    whs = raw[0];
-                } else if (Array.isArray(raw) && raw.length > 0 && !raw[0].warehouse) {
-                    // Maybe it's wrapped with a success field?
-                    if (raw.success && Array.isArray(raw.data)) {
-                        whs = raw.data;
-                    } else if (raw.warehouse_ranking && Array.isArray(raw.warehouse_ranking)) {
-                        whs = raw.warehouse_ranking;
-                    } else {
-                        throw new Error('Unexpected response format from n8n');
+                // Expected format: [ { success, message, cards, warehouse_ranking } ]
+                let whs = null;
+                let cardsMeta = null;
+
+                if (Array.isArray(raw) && raw.length > 0) {
+                    const first = raw[0];
+                    if (first && typeof first === 'object') {
+                        if (first.warehouse_ranking && Array.isArray(first.warehouse_ranking)) {
+                            whs = first.warehouse_ranking;
+                            cardsMeta = first.cards || null;
+                        } else if (first.data && Array.isArray(first.data)) {
+                            // fallback: maybe nested data
+                            whs = first.data;
+                        }
                     }
                 }
 
-                // Ensure it's an array of warehouse objects
-                if (!Array.isArray(whs) || whs.length === 0 || !whs[0].warehouse) {
-                    throw new Error('Invalid warehouse data format');
+                // If still not found, try direct array of warehouses
+                if (!whs && Array.isArray(raw) && raw.length > 0 && raw[0].warehouse) {
+                    whs = raw;
+                }
+
+                if (!whs || !Array.isArray(whs) || whs.length === 0 || !whs[0].warehouse) {
+                    throw new Error('Unable to parse warehouse data from n8n response');
                 }
 
                 warehouses = whs;
