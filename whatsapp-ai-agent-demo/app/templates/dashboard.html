@@ -683,7 +683,7 @@
         }
 
         /* ============================================================
-           UPLOAD SECTION (moved to bottom)
+           UPLOAD SECTION (bottom)
            ============================================================ */
         .upload-section {
             background: rgba(255, 255, 255, 0.03);
@@ -1163,7 +1163,7 @@
             text-align: right;
         }
 
-        /* drill-down modal (simple) */
+        /* drill-down modal */
         .drill-modal {
             position: fixed;
             inset: 0;
@@ -1461,10 +1461,10 @@
 
     <script>
         // ============================================================
-        //  CONFIG
+        //  CONFIG — 100% aligned with n8n webhook
         // ============================================================
         const WEBHOOK_URL =
-            'https://jamshaidkhan.app.n8n.cloud/webhook-test/haier-dashboard';
+            'https://jamshaidkhan.app.n8n.cloud/webhook/haier-dashboard';
 
         const UPLOAD_BASE_URL = window.location.origin;
         const UPLOAD_URL = UPLOAD_BASE_URL + '/upload/excel';
@@ -1474,8 +1474,7 @@
         // ============================================================
         //  STATE
         // ============================================================
-        let dashboardData = null;
-        let rawWarehouses = [];
+        let warehouses = [];
         let chartInstances = {};
         let selectedFile = null;
         let isUploading = false;
@@ -1620,7 +1619,9 @@
             return days + 'd ago';
         }
 
-        // Smart Health Score: 30% PGI, 30% Delivery, 20% POD, 10% Pending Units, 10% Cycle Time
+        // ============================================================
+        //  SMART HEALTH SCORE (30% PGI, 30% Delivery, 20% POD, 10% Pending Units, 10% Cycle Time)
+        // ============================================================
         function computeSmartHealth(w) {
             const totalDN = parseFloat(w.total_dn) || 1;
             const pendingDN = parseFloat(w.pending_dn) || 0;
@@ -1644,7 +1645,9 @@
             return Math.round(Math.min(100, Math.max(0, health)));
         }
 
-        // Generate trend (mock: compare with yesterday)
+        // ============================================================
+        //  GENERATE TREND (mock — uses health score variance)
+        // ============================================================
         function generateTrend(current, previous) {
             if (previous === undefined || previous === null || previous === 0) return { direction: 'neutral', change: 0 };
             const diff = ((current - previous) / Math.abs(previous)) * 100;
@@ -1653,16 +1656,65 @@
         }
 
         // ============================================================
+        //  COMPUTE ALL KPIs FROM WAREHOUSE ARRAY
+        // ============================================================
+        function computeKPIs(whs) {
+            let totalDN = 0,
+                totalUnits = 0,
+                totalRevenue = 0;
+            let pgiPendingDN = 0,
+                pgiPendingUnits = 0;
+            let podPendingDN = 0,
+                podPendingUnits = 0;
+            let deliveryPendingUnits = 0;
+
+            whs.forEach(w => {
+                totalDN += parseInt(w.total_dn) || 0;
+                totalUnits += parseInt(w.total_units) || 0;
+                totalRevenue += parseFloat(w.total_revenue) || 0;
+                pgiPendingDN += parseInt(w.pending_dn) || 0;
+                pgiPendingUnits += parseInt(w.pending_units) || 0;
+                podPendingDN += parseInt(w.pending_dn) || 0;
+                podPendingUnits += parseInt(w.pending_units) || 0;
+                deliveryPendingUnits += parseInt(w.pending_units) || 0;
+            });
+
+            const pgiCompleted = totalDN - pgiPendingDN;
+            const pgiPct = totalDN > 0 ? Math.round((pgiCompleted / totalDN) * 100) : 0;
+
+            const deliveredUnits = totalUnits - deliveryPendingUnits;
+            const deliveryPct = totalUnits > 0 ? Math.round((deliveredUnits / totalUnits) * 100) : 0;
+
+            const podCompleted = totalDN - podPendingDN;
+            const podPct = totalDN > 0 ? Math.round((podCompleted / totalDN) * 100) : 0;
+
+            return {
+                total_delivery_notes: totalDN,
+                total_units: totalUnits,
+                total_revenue: totalRevenue,
+                pgi_completed_dns: pgiCompleted,
+                pgi_pending_dns: pgiPendingDN,
+                pgi_pending_units: pgiPendingUnits,
+                pgi_percentage: pgiPct,
+                delivered_units: deliveredUnits,
+                delivery_pending_units: deliveryPendingUnits,
+                delivery_percentage: deliveryPct,
+                pod_completed_dns: podCompleted,
+                pod_pending_dns: podPendingDN,
+                pod_pending_units: podPendingUnits,
+                pod_percentage: podPct,
+                pending_dns: pgiPendingDN,
+                pending_units: pgiPendingUnits
+            };
+        }
+
+        // ============================================================
         //  RENDER: EXECUTIVE SUMMARY
         // ============================================================
-        function renderExecutiveSummary(data) {
-            const cards = data.cards || {};
-            const warehouses = data.warehouse_ranking || [];
-
-            // Compute national health
+        function renderExecutiveSummary(whs, cards) {
             let totalHealth = 0;
             let count = 0;
-            warehouses.forEach(w => {
+            whs.forEach(w => {
                 const h = computeSmartHealth(w);
                 totalHealth += h;
                 count++;
@@ -1672,30 +1724,19 @@
             'Poor';
             const healthColor = avgHealth >= 85 ? 'green' : avgHealth >= 70 ? 'blue' : avgHealth >= 50 ? 'orange' : 'red';
 
-            // Best / worst
             let best = null,
                 worst = null;
-            if (warehouses.length > 0) {
-                const sorted = [...warehouses].sort((a, b) => computeSmartHealth(b) - computeSmartHealth(a));
+            if (whs.length > 0) {
+                const sorted = [...whs].sort((a, b) => computeSmartHealth(b) - computeSmartHealth(a));
                 best = sorted[0];
                 worst = sorted[sorted.length - 1];
             }
 
-            // Revenue
             const revenue = cards.total_revenue || 0;
-
-            // PGI % (approx)
-            const totalDN = parseInt(cards.total_delivery_notes) || 1;
-            const pendingDN = parseInt(cards.pending_dns) || 0;
-            const pgiPct = Math.round(((totalDN - pendingDN) / totalDN) * 100);
-
-            // Delivery % (approx)
-            const deliveryPct = cards.delivery_percentage || 95;
-
-            // POD %
+            const pgiPct = cards.pgi_percentage || 0;
+            const deliveryPct = cards.delivery_percentage || 0;
             const podPct = cards.pod_percentage || 0;
 
-            // Risk
             const riskScore = 100 - avgHealth;
             const riskLevel = getRiskLevel(riskScore);
             const riskLabel = getRiskLabel(riskLevel);
@@ -1703,7 +1744,7 @@
             execSummary.innerHTML = `
                 <div class="exec-item"><div class="exec-label">National Health</div><div class="exec-value ${healthColor}">${avgHealth}%</div><div class="exec-sub">${healthLabel}</div></div>
                 <div class="exec-item"><div class="exec-label">Revenue</div><div class="exec-value gold">${formatCurrency(revenue)}</div><div class="exec-sub">${formatCurrencyFull(revenue)}</div></div>
-                <div class="exec-item"><div class="exec-label">PGI</div><div class="exec-value blue">${pgiPct}%</div><div class="exec-sub">${totalDN - pendingDN} / ${totalDN}</div></div>
+                <div class="exec-item"><div class="exec-label">PGI</div><div class="exec-value blue">${pgiPct}%</div><div class="exec-sub">${cards.pgi_completed_dns || 0} / ${cards.total_delivery_notes || 0}</div></div>
                 <div class="exec-item"><div class="exec-label">Delivery</div><div class="exec-value teal">${deliveryPct}%</div></div>
                 <div class="exec-item"><div class="exec-label">POD</div><div class="exec-value green">${podPct}%</div></div>
                 <div class="exec-item"><div class="exec-label">Risk</div><div class="exec-value ${riskLevel === 'critical' || riskLevel === 'high' ? 'red' : riskLevel === 'medium' ? 'orange' : 'green'}">${riskLabel}</div></div>
@@ -1715,9 +1756,7 @@
         // ============================================================
         //  RENDER: KPI SECTIONS
         // ============================================================
-        function renderKPIs(data) {
-            const cards = data.cards || {};
-
+        function renderKPIs(cards) {
             // Overview
             const overview = [
                 { label: 'Total DNs', value: cards.total_delivery_notes || '0', icon: 'fa-file-alt', cls: 'blue' },
@@ -1734,17 +1773,12 @@
             `).join('');
 
             // PGI
-            const totalDN = parseInt(cards.total_delivery_notes) || 1;
-            const pgiPendingDN = parseInt(cards.pgi_pending_dns) || 0;
-            const pgiPendingUnits = parseInt(cards.pgi_pending_units) || 0;
-            const pgiCompleted = totalDN - pgiPendingDN;
-            const pgiPct = Math.round((pgiCompleted / totalDN) * 100);
-
             const pgiKPIs = [
-                { label: 'PGI Completed', value: pgiCompleted, icon: 'fa-check-circle', cls: 'green' },
-                { label: 'PGI Pending DNs', value: pgiPendingDN, icon: 'fa-hourglass-half', cls: 'orange' },
-                { label: 'PGI Pending Units', value: pgiPendingUnits, icon: 'fa-boxes', cls: 'orange' },
-                { label: 'PGI %', value: pgiPct + '%', icon: 'fa-percent', cls: 'purple' },
+                { label: 'PGI Completed', value: cards.pgi_completed_dns || '0', icon: 'fa-check-circle', cls: 'green' },
+                { label: 'PGI Pending DNs', value: cards.pgi_pending_dns || '0', icon: 'fa-hourglass-half',
+                cls: 'orange' },
+                { label: 'PGI Pending Units', value: cards.pgi_pending_units || '0', icon: 'fa-boxes', cls: 'orange' },
+                { label: 'PGI %', value: (cards.pgi_percentage || '0') + '%', icon: 'fa-percent', cls: 'purple' },
             ];
             kpiPGI.innerHTML = pgiKPIs.map(k => `
                 <div class="kpi-card fade-in">
@@ -1754,15 +1788,11 @@
             `).join('');
 
             // Delivery
-            const deliveryPendingUnits = parseInt(cards.delivery_pending_units) || 0;
-            const totalUnits = parseInt(cards.total_units) || 1;
-            const deliveredUnits = totalUnits - deliveryPendingUnits;
-            const deliveryPct = Math.round((deliveredUnits / totalUnits) * 100);
-
             const deliveryKPIs = [
-                { label: 'Delivered Units', value: deliveredUnits, icon: 'fa-truck', cls: 'green' },
-                { label: 'Delivery Pending Units', value: deliveryPendingUnits, icon: 'fa-clock', cls: 'orange' },
-                { label: 'Delivery %', value: deliveryPct + '%', icon: 'fa-percent', cls: 'purple' },
+                { label: 'Delivered Units', value: cards.delivered_units || '0', icon: 'fa-truck', cls: 'green' },
+                { label: 'Delivery Pending Units', value: cards.delivery_pending_units || '0', icon: 'fa-clock',
+                cls: 'orange' },
+                { label: 'Delivery %', value: (cards.delivery_percentage || '0') + '%', icon: 'fa-percent', cls: 'purple' },
             ];
             kpiDelivery.innerHTML = deliveryKPIs.map(k => `
                 <div class="kpi-card fade-in">
@@ -1772,16 +1802,11 @@
             `).join('');
 
             // POD
-            const podPendingDN = parseInt(cards.pod_pending_dns) || 0;
-            const podPendingUnits = parseInt(cards.pod_pending_units) || 0;
-            const podCompleted = totalDN - podPendingDN;
-            const podPct = Math.round((podCompleted / totalDN) * 100);
-
             const podKPIs = [
-                { label: 'POD Completed', value: podCompleted, icon: 'fa-circle-check', cls: 'green' },
-                { label: 'POD Pending DNs', value: podPendingDN, icon: 'fa-hourglass-half', cls: 'red' },
-                { label: 'POD Pending Units', value: podPendingUnits, icon: 'fa-boxes', cls: 'red' },
-                { label: 'POD %', value: podPct + '%', icon: 'fa-percent', cls: 'purple' },
+                { label: 'POD Completed', value: cards.pod_completed_dns || '0', icon: 'fa-circle-check', cls: 'green' },
+                { label: 'POD Pending DNs', value: cards.pod_pending_dns || '0', icon: 'fa-hourglass-half', cls: 'red' },
+                { label: 'POD Pending Units', value: cards.pod_pending_units || '0', icon: 'fa-boxes', cls: 'red' },
+                { label: 'POD %', value: (cards.pod_percentage || '0') + '%', icon: 'fa-percent', cls: 'purple' },
             ];
             kpiPOD.innerHTML = podKPIs.map(k => `
                 <div class="kpi-card fade-in">
@@ -1794,19 +1819,21 @@
         // ============================================================
         //  RENDER: TABLE
         // ============================================================
-        function renderTable(warehouses) {
-            if (!warehouses || warehouses.length === 0) {
+        function renderTable(whs) {
+            if (!whs || whs.length === 0) {
                 tableBody.innerHTML =
                     `<tr><td colspan="10" style="text-align:center;padding:28px;color:#6a8aa8;">No warehouse data available</td></tr>`;
                 warehouseCount.textContent = '0 warehouses';
                 return;
             }
 
-            warehouseCount.textContent = `${warehouses.length} warehouses`;
+            warehouseCount.textContent = `${whs.length} warehouses`;
 
-            // Sort by health descending
-            const sorted = [...warehouses].map(w => ({ ...w, _health: computeSmartHealth(w) }));
+            const sorted = [...whs].map(w => ({ ...w, _health: computeSmartHealth(w) }));
             sorted.sort((a, b) => b._health - a._health);
+
+            // Store previous health for trend (mock)
+            const prevHealth = sorted.map(w => w._health + (Math.random() * 10 - 5));
 
             tableBody.innerHTML = sorted.map((w, idx) => {
                 const dotColor = getDotColor(w.warehouse);
@@ -1816,8 +1843,11 @@
                 const riskCls = riskLevel;
                 const riskLabel = getRiskLabel(riskLevel);
 
-                // Mock trend
-                const trend = generateTrend(healthScore, healthScore + (Math.random() * 10 - 5));
+                const pgiPct = Math.round(100 - (parseFloat(w.pending_dn) || 0) / (parseFloat(w.total_dn) || 1) * 100);
+                const deliveryPct = Math.round(100 - (parseFloat(w.pending_units) || 0) / (parseFloat(w.total_units) || 1) *
+                100);
+
+                const trend = generateTrend(healthScore, prevHealth[idx] || healthScore);
                 const trendIcon = trend.direction === 'up' ? '▲' : trend.direction === 'down' ? '▼' : '—';
                 const trendCls = trend.direction === 'up' ? 'up' : trend.direction === 'down' ? 'down' : 'neutral';
 
@@ -1831,8 +1861,8 @@
                             </div>
                         </td>
                         <td><span class="health-badge ${healthCls}">${healthScore}%</span></td>
-                        <td>${Math.round(100 - (parseFloat(w.pending_dn) || 0) / (parseFloat(w.total_dn) || 1) * 100)}%</td>
-                        <td>${Math.round(100 - (parseFloat(w.pending_units) || 0) / (parseFloat(w.total_units) || 1) * 100)}%</td>
+                        <td>${pgiPct}%</td>
+                        <td>${deliveryPct}%</td>
                         <td>${w.pod_achievement || '0'}%</td>
                         <td class="revenue-cell">${formatCurrency(w.total_revenue)}</td>
                         <td>${w.pending_units || '0'}</td>
@@ -1842,11 +1872,10 @@
                 `;
             }).join('');
 
-            // Click handler for drill-down
             document.querySelectorAll('#tableBody tr').forEach(tr => {
                 tr.addEventListener('click', function() {
                     const name = this.dataset.warehouse;
-                    const w = warehouses.find(w => w.warehouse === name);
+                    const w = whs.find(w => w.warehouse === name);
                     if (w) openDrill(w);
                 });
             });
@@ -1855,8 +1884,8 @@
         // ============================================================
         //  RENDER: CHARTS
         // ============================================================
-        function renderCharts(warehouses) {
-            const sorted = [...warehouses].map(w => ({ ...w, _health: computeSmartHealth(w) }));
+        function renderCharts(whs) {
+            const sorted = [...whs].map(w => ({ ...w, _health: computeSmartHealth(w) }));
             sorted.sort((a, b) => b._health - a._health);
 
             const labels = sorted.map(w => w.warehouse);
@@ -1955,27 +1984,25 @@
         // ============================================================
         //  AI INSIGHTS
         // ============================================================
-        function generateAIInsights(warehouses) {
-            if (!warehouses || warehouses.length === 0) {
+        function generateAIInsights(whs) {
+            if (!whs || whs.length === 0) {
                 aiText.textContent = 'No data available for insights.';
                 aiRecommend.textContent = '';
                 return;
             }
 
-            // Find worst POD
-            const sortedPOD = [...warehouses].sort((a, b) => parseFloat(a.pod_achievement) - parseFloat(b.pod_achievement));
+            const sortedPOD = [...whs].sort((a, b) => parseFloat(a.pod_achievement) - parseFloat(b.pod_achievement));
             const worstPOD = sortedPOD[0];
             const worstPODValue = parseFloat(worstPOD.pod_achievement) || 0;
 
-            let insight = '';
-            let recommend = '';
-
+            let insight = '',
+                recommend = '';
             if (worstPODValue < 80) {
                 insight =
-                    `${worstPOD.warehouse} POD decreased to ${worstPODValue}%. Main reason: ${worstPOD.pending_dn || 0} pending DNs, ${worstPOD.pending_units || 0} pending units.`;
+                    `${worstPOD.warehouse} POD is at ${worstPODValue}%. Main reason: ${worstPOD.pending_dn || 0} pending DNs, ${worstPOD.pending_units || 0} pending units.`;
                 recommend = `Recommend: Increase POD collection team by 2 members in ${worstPOD.warehouse}.`;
             } else {
-                const best = warehouses.reduce((a, b) => parseFloat(a.pod_achievement) > parseFloat(b.pod_achievement) ? a : b);
+                const best = whs.reduce((a, b) => parseFloat(a.pod_achievement) > parseFloat(b.pod_achievement) ? a : b);
                 insight = `Overall POD performance is strong at ${parseFloat(best.pod_achievement) || 0}% for ${best.warehouse}.`;
                 recommend = `Continue current strategies. Monitor ${worstPOD.warehouse} for improvement.`;
             }
@@ -2015,7 +2042,7 @@
         }
 
         // ============================================================
-        //  LOAD DASHBOARD
+        //  LOAD DASHBOARD — 100% ALIGNED WITH n8n RESPONSE
         // ============================================================
         async function loadDashboard(showLoading = true) {
             if (showLoading) {
@@ -2033,15 +2060,30 @@
                     throw new Error(`HTTP ${response.status} — ${response.statusText}`);
                 }
 
+                // n8n returns the warehouse array directly (or wrapped in a single-element array)
                 const raw = await response.json();
-                const payload = Array.isArray(raw) ? raw[0] : raw;
 
-                if (!payload || !payload.success) {
-                    throw new Error(payload?.message || 'Unknown error from API');
+                // Handle both [{warehouse:...}] and [[{warehouse:...}]]
+                let whs = raw;
+                if (Array.isArray(raw) && raw.length === 1 && Array.isArray(raw[0])) {
+                    whs = raw[0];
+                } else if (Array.isArray(raw) && raw.length > 0 && !raw[0].warehouse) {
+                    // Maybe it's wrapped with a success field?
+                    if (raw.success && Array.isArray(raw.data)) {
+                        whs = raw.data;
+                    } else if (raw.warehouse_ranking && Array.isArray(raw.warehouse_ranking)) {
+                        whs = raw.warehouse_ranking;
+                    } else {
+                        throw new Error('Unexpected response format from n8n');
+                    }
                 }
 
-                dashboardData = payload;
-                rawWarehouses = payload.warehouse_ranking || [];
+                // Ensure it's an array of warehouse objects
+                if (!Array.isArray(whs) || whs.length === 0 || !whs[0].warehouse) {
+                    throw new Error('Invalid warehouse data format');
+                }
+
+                warehouses = whs;
 
                 const now = new Date();
                 lastUpdatedEl.innerHTML = `
@@ -2049,13 +2091,15 @@
                     <span>Updated ${formatDate(now)}</span>
                 `;
 
-                renderExecutiveSummary(payload);
-                renderKPIs(payload);
-                renderTable(rawWarehouses);
-                renderCharts(rawWarehouses);
-                generateAIInsights(rawWarehouses);
+                const cards = computeKPIs(warehouses);
 
-                populateFilters(rawWarehouses);
+                renderExecutiveSummary(warehouses, cards);
+                renderKPIs(cards);
+                renderTable(warehouses);
+                renderCharts(warehouses);
+                generateAIInsights(warehouses);
+
+                populateFilters(warehouses);
 
                 loadingState.classList.add('hidden');
                 errorState.classList.add('hidden');
@@ -2073,11 +2117,10 @@
         // ============================================================
         //  FILTERS
         // ============================================================
-        function populateFilters(warehouses) {
-            const cities = [...new Set(warehouses.map(w => w.warehouse).filter(Boolean))];
+        function populateFilters(whs) {
+            const cities = [...new Set(whs.map(w => w.warehouse).filter(Boolean))];
             const select = document.getElementById('filterWarehouse');
             select.innerHTML = '<option value="">All</option>' + cities.map(c => `<option value="${c}">${c}</option>`).join('');
-            // Other filters can be populated similarly if data available
         }
 
         // ============================================================
@@ -2215,17 +2258,14 @@
         // ============================================================
         function exportData(format) {
             showToast(`Exporting as ${format.toUpperCase()}…`, 'info');
-            // In production, implement actual export
         }
 
         // ============================================================
         //  EVENT BINDING
         // ============================================================
 
-        // Refresh
         refreshBtn.addEventListener('click', () => loadDashboard(true));
 
-        // Upload
         fileInput.addEventListener('change', (e) => {
             if (e.target.files && e.target.files.length > 0) {
                 selectedFile = e.target.files[0];
@@ -2266,13 +2306,11 @@
             window.open(UPLOAD_STATUS_URL, '_blank');
         });
 
-        // Drill modal
         closeDrill.addEventListener('click', () => drillModal.classList.remove('active'));
         drillModal.addEventListener('click', (e) => {
             if (e.target === drillModal) drillModal.classList.remove('active');
         });
 
-        // Exports
         document.getElementById('exportExcel').addEventListener('click', () => exportData('excel'));
         document.getElementById('exportPDF').addEventListener('click', () => exportData('pdf'));
         document.getElementById('exportPrint').addEventListener('click', () => window.print());
@@ -2286,7 +2324,6 @@
             loadDashboard(true);
         });
 
-        // Auto-refresh every 60 seconds
         setInterval(() => loadDashboard(false), 60000);
 
         resetUploadUI();
