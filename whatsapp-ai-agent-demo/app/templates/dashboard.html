@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Haier Dashboard — Logistics Performance</title>
+    <title>Haier Dashboard — Logistics Performance + Upload</title>
 
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet" />
@@ -245,6 +245,242 @@
             border-radius: 20px;
             background: rgba(79, 195, 247, 0.12);
             color: #4fc3f7;
+        }
+
+        /* ===== UPLOAD SECTION ===== */
+        .upload-section {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 16px;
+            padding: 20px 24px 24px;
+            margin-bottom: 28px;
+            transition: all 0.25s;
+        }
+        .upload-section:hover {
+            border-color: rgba(79, 195, 247, 0.15);
+        }
+
+        .upload-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .upload-header h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #d8e4f0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .upload-header h3 i {
+            color: #4fc3f7;
+        }
+        .upload-header .upload-badge {
+            font-size: 12px;
+            color: #8aa4be;
+            background: rgba(255, 255, 255, 0.06);
+            padding: 4px 14px;
+            border-radius: 30px;
+        }
+
+        .upload-dropzone {
+            border: 2px dashed rgba(79, 195, 247, 0.25);
+            border-radius: 12px;
+            padding: 32px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.25s;
+            background: rgba(79, 195, 247, 0.04);
+            position: relative;
+        }
+        .upload-dropzone:hover,
+        .upload-dropzone.dragover {
+            border-color: #4fc3f7;
+            background: rgba(79, 195, 247, 0.08);
+        }
+        .upload-dropzone.dragover {
+            transform: scale(1.01);
+        }
+        .upload-dropzone .icon-wrap {
+            font-size: 40px;
+            color: #4fc3f7;
+            opacity: 0.6;
+            margin-bottom: 10px;
+        }
+        .upload-dropzone p {
+            color: #8aa4be;
+            font-size: 14px;
+        }
+        .upload-dropzone p strong {
+            color: #4fc3f7;
+            font-weight: 600;
+        }
+        .upload-dropzone .file-types {
+            font-size: 12px;
+            color: #5a7a98;
+            margin-top: 6px;
+        }
+        .upload-dropzone input[type="file"] {
+            position: absolute;
+            inset: 0;
+            opacity: 0;
+            cursor: pointer;
+            width: 100%;
+            height: 100%;
+        }
+
+        .upload-controls {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .upload-controls .file-name {
+            font-size: 13px;
+            color: #c8d8e8;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 6px 16px;
+            border-radius: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            flex: 1;
+            min-width: 120px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .upload-controls .file-name .placeholder {
+            color: #5a7a98;
+        }
+
+        .upload-btn {
+            background: linear-gradient(135deg, #0066b3, #0099ff);
+            border: none;
+            color: #fff;
+            padding: 10px 28px;
+            border-radius: 30px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.25s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            white-space: nowrap;
+        }
+        .upload-btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(0, 102, 179, 0.4);
+        }
+        .upload-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .upload-btn i {
+            font-size: 16px;
+        }
+
+        .upload-progress-wrap {
+            margin-top: 14px;
+            display: none;
+        }
+        .upload-progress-wrap.active {
+            display: block;
+        }
+
+        .upload-progress-bar {
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+        }
+        .upload-progress-bar .fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #0066b3, #4fc3f7);
+            border-radius: 10px;
+            transition: width 0.3s ease;
+        }
+
+        .upload-status {
+            font-size: 13px;
+            margin-top: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #8aa4be;
+        }
+        .upload-status .success {
+            color: #66d9a0;
+        }
+        .upload-status .error {
+            color: #ef5350;
+        }
+        .upload-status .info {
+            color: #4fc3f7;
+        }
+
+        /* ===== UPLOAD HISTORY MINI ===== */
+        .upload-history-mini {
+            margin-top: 16px;
+            padding-top: 14px;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            display: none;
+        }
+        .upload-history-mini.active {
+            display: block;
+        }
+
+        .upload-history-mini .history-title {
+            font-size: 12px;
+            font-weight: 500;
+            color: #6a8aa8;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .upload-history-mini .history-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 0;
+            font-size: 13px;
+            color: #c8d8e8;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        }
+        .upload-history-mini .history-item .h-name {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .upload-history-mini .history-item .h-name i {
+            color: #66d9a0;
+            font-size: 12px;
+        }
+        .upload-history-mini .history-item .h-time {
+            color: #6a8aa8;
+            font-size: 12px;
+        }
+
+        .upload-history-mini .history-more {
+            text-align: center;
+            margin-top: 8px;
+            font-size: 12px;
+            color: #4fc3f7;
+            cursor: pointer;
+        }
+        .upload-history-mini .history-more:hover {
+            text-decoration: underline;
         }
 
         /* ===== CHARTS ROW ===== */
@@ -547,6 +783,13 @@
             .header-title h1 {
                 font-size: 20px;
             }
+            .upload-controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .upload-btn {
+                justify-content: center;
+            }
         }
 
         @media (max-width: 480px) {
@@ -593,11 +836,92 @@
             overflow: hidden;
             text-overflow: ellipsis;
         }
+
+        /* ===== TOAST ===== */
+        .toast-container {
+            position: fixed;
+            top: 24px;
+            right: 24px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-width: 380px;
+            width: 100%;
+        }
+        .toast {
+            padding: 14px 20px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+            animation: slideIn 0.35s ease forwards;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            backdrop-filter: blur(8px);
+        }
+        .toast.success {
+            background: rgba(102, 217, 160, 0.15);
+            color: #66d9a0;
+            border-color: rgba(102, 217, 160, 0.2);
+        }
+        .toast.error {
+            background: rgba(239, 83, 80, 0.15);
+            color: #ef5350;
+            border-color: rgba(239, 83, 80, 0.2);
+        }
+        .toast.info {
+            background: rgba(79, 195, 247, 0.15);
+            color: #4fc3f7;
+            border-color: rgba(79, 195, 247, 0.2);
+        }
+        .toast i {
+            font-size: 20px;
+        }
+        .toast .toast-close {
+            margin-left: auto;
+            cursor: pointer;
+            opacity: 0.5;
+            transition: opacity 0.2s;
+            background: none;
+            border: none;
+            color: inherit;
+            font-size: 18px;
+        }
+        .toast .toast-close:hover {
+            opacity: 1;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(40px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        @keyframes slideOut {
+            from {
+                opacity: 1;
+                transform: translateX(0);
+            }
+            to {
+                opacity: 0;
+                transform: translateX(40px);
+            }
+        }
     </style>
 </head>
 <body>
 
     <div class="dashboard-container" id="app">
+
+        <!-- ===== TOAST CONTAINER ===== -->
+        <div class="toast-container" id="toastContainer"></div>
 
         <!-- ===== HEADER ===== -->
         <header class="dashboard-header">
@@ -622,6 +946,46 @@
         <!-- ===== KPI CARDS ===== -->
         <section class="kpi-grid" id="kpiGrid">
             <!-- populated by JS -->
+        </section>
+
+        <!-- ===== UPLOAD SECTION ===== -->
+        <section class="upload-section" id="uploadSection">
+            <div class="upload-header">
+                <h3><i class="fas fa-cloud-upload-alt"></i> Upload Excel Data</h3>
+                <span class="upload-badge"><i class="far fa-file-excel"></i> .xlsx / .xls</span>
+            </div>
+
+            <div class="upload-dropzone" id="dropzone">
+                <div class="icon-wrap"><i class="fas fa-file-upload"></i></div>
+                <p><strong>Click to choose</strong> or drag &amp; drop your Excel file here</p>
+                <div class="file-types">Supported: .xlsx, .xls</div>
+                <input type="file" id="fileInput" accept=".xlsx,.xls" />
+            </div>
+
+            <div class="upload-controls">
+                <div class="file-name" id="fileName">
+                    <span class="placeholder">No file selected</span>
+                </div>
+                <button class="upload-btn" id="uploadBtn" disabled>
+                    <i class="fas fa-upload"></i> Upload
+                </button>
+            </div>
+
+            <div class="upload-progress-wrap" id="uploadProgressWrap">
+                <div class="upload-progress-bar">
+                    <div class="fill" id="uploadProgressFill"></div>
+                </div>
+                <div class="upload-status" id="uploadStatus">
+                    <span>Ready</span>
+                </div>
+            </div>
+
+            <!-- Mini history -->
+            <div class="upload-history-mini" id="uploadHistoryMini">
+                <div class="history-title"><i class="fas fa-history"></i> Recent Uploads</div>
+                <div id="historyList"></div>
+                <div class="history-more" id="historyMore">View all uploads →</div>
+            </div>
         </section>
 
         <!-- ===== CHARTS ===== -->
@@ -692,12 +1056,21 @@
         const WEBHOOK_URL =
             'https://jamshaidkhan.app.n8n.cloud/webhook/haier-dashboard';
 
+        // Upload endpoint — use same host as current page, or override
+        // If your FastAPI backend is on a different host, set UPLOAD_BASE_URL accordingly.
+        const UPLOAD_BASE_URL = window.location.origin;
+        const UPLOAD_URL = UPLOAD_BASE_URL + '/upload/excel';
+        const UPLOAD_STATUS_URL = UPLOAD_BASE_URL + '/upload/status';
+        const UPLOAD_BATCHES_URL = UPLOAD_BASE_URL + '/upload/batches/recent';
+
         // ============================================================
         //  STATE
         // ============================================================
         let dashboardData = null;
         let revenueChartInstance = null;
         let podChartInstance = null;
+        let selectedFile = null;
+        let isUploading = false;
 
         // ============================================================
         //  DOM REFS
@@ -710,6 +1083,55 @@
         const errorState = document.getElementById('errorState');
         const errorText = document.getElementById('errorText');
         const refreshBtn = document.getElementById('refreshBtn');
+
+        // Upload DOM
+        const fileInput = document.getElementById('fileInput');
+        const dropzone = document.getElementById('dropzone');
+        const fileName = document.getElementById('fileName');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const uploadProgressWrap = document.getElementById('uploadProgressWrap');
+        const uploadProgressFill = document.getElementById('uploadProgressFill');
+        const uploadStatus = document.getElementById('uploadStatus');
+        const historyList = document.getElementById('historyList');
+        const historyMore = document.getElementById('historyMore');
+        const uploadHistoryMini = document.getElementById('uploadHistoryMini');
+
+        // Toast container
+        const toastContainer = document.getElementById('toastContainer');
+
+        // ============================================================
+        //  TOAST SYSTEM
+        // ============================================================
+        function showToast(message, type = 'info', duration = 4500) {
+            const icons = {
+                success: 'fa-check-circle',
+                error: 'fa-exclamation-circle',
+                info: 'fa-info-circle'
+            };
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = `
+                <i class="fas ${icons[type] || icons.info}"></i>
+                <span>${message}</span>
+                <button class="toast-close">&times;</button>
+            `;
+            toastContainer.appendChild(toast);
+
+            const closeBtn = toast.querySelector('.toast-close');
+            closeBtn.addEventListener('click', () => {
+                toast.style.animation = 'slideOut 0.3s ease forwards';
+                setTimeout(() => toast.remove(), 350);
+            });
+
+            setTimeout(() => {
+                if (toast.parentNode) {
+                    toast.style.animation = 'slideOut 0.3s ease forwards';
+                    setTimeout(() => toast.remove(), 350);
+                }
+            }, duration);
+
+            return toast;
+        }
 
         // ============================================================
         //  HELPERS
@@ -749,11 +1171,7 @@
         }
 
         function getRiskTag(level) {
-            const map = {
-                'High': 'high',
-                'Medium': 'medium',
-                'Low': 'low'
-            };
+            const map = { 'High': 'high', 'Medium': 'medium', 'Low': 'low' };
             return map[level] || 'medium';
         }
 
@@ -768,6 +1186,17 @@
                 second: '2-digit',
                 hour12: true
             });
+        }
+
+        function formatTimeAgo(ts) {
+            const diff = Date.now() - new Date(ts).getTime();
+            const mins = Math.floor(diff / 60000);
+            if (mins < 1) return 'just now';
+            if (mins < 60) return mins + 'm ago';
+            const hrs = Math.floor(mins / 60);
+            if (hrs < 24) return hrs + 'h ago';
+            const days = Math.floor(hrs / 24);
+            return days + 'd ago';
         }
 
         // ============================================================
@@ -887,15 +1316,14 @@
         //  RENDER CHARTS
         // ============================================================
         function renderCharts(warehouses) {
-            // prepare data: top 10 by revenue
             const sorted = [...warehouses].sort((a, b) => (b.total_revenue || 0) - (a.total_revenue || 0));
             const top10 = sorted.slice(0, 10);
 
             const labels = top10.map(w => w.warehouse);
-            const revenueData = top10.map(w => (w.total_revenue || 0) / 1e6); // in millions
+            const revenueData = top10.map(w => (w.total_revenue || 0) / 1e6);
             const podData = top10.map(w => parseFloat(w.pod_achievement) || 0);
 
-            // --- Revenue Chart (Bar) ---
+            // --- Revenue Chart ---
             const ctx1 = document.getElementById('revenueChart').getContext('2d');
             if (revenueChartInstance) revenueChartInstance.destroy();
             revenueChartInstance = new Chart(ctx1, {
@@ -938,7 +1366,7 @@
                 }
             });
 
-            // --- POD Chart (Bar) ---
+            // --- POD Chart ---
             const ctx2 = document.getElementById('podChart').getContext('2d');
             if (podChartInstance) podChartInstance.destroy();
             podChartInstance = new Chart(ctx2, {
@@ -992,7 +1420,7 @@
         }
 
         // ============================================================
-        //  LOAD DATA
+        //  LOAD DASHBOARD DATA
         // ============================================================
         async function loadDashboard(showLoading = true) {
             if (showLoading) {
@@ -1013,7 +1441,6 @@
                 }
 
                 const raw = await response.json();
-                // The endpoint returns an array with one object
                 const payload = Array.isArray(raw) ? raw[0] : raw;
 
                 if (!payload || !payload.success) {
@@ -1022,14 +1449,12 @@
 
                 dashboardData = payload;
 
-                // Update last updated
                 const now = new Date();
                 lastUpdatedEl.innerHTML = `
                     <i class="fas fa-clock"></i>
                     <span>Updated ${formatDate(now)}</span>
                 `;
 
-                // Render
                 renderKPI(payload);
                 renderTable(payload.warehouse_ranking || []);
                 renderCharts(payload.warehouse_ranking || []);
@@ -1037,13 +1462,15 @@
                 loadingState.classList.add('hidden');
                 errorState.classList.add('hidden');
 
+                // After loading dashboard, fetch upload history
+                fetchUploadHistory();
+
             } catch (err) {
                 console.error('Dashboard load error:', err);
                 loadingState.classList.add('hidden');
                 errorState.classList.remove('hidden');
                 errorText.textContent = err.message || 'Failed to fetch dashboard data.';
 
-                // show fallback empty state
                 kpiGrid.innerHTML =
                     `<div style="grid-column:1/-1;text-align:center;padding:32px;color:#6a8aa8;">⚠️ Could not load KPI data</div>`;
                 tableBody.innerHTML =
@@ -1053,21 +1480,231 @@
         }
 
         // ============================================================
+        //  UPLOAD LOGIC
+        // ============================================================
+        function updateFileUI(file) {
+            if (file) {
+                fileName.innerHTML = `<i class="fas fa-file-excel" style="color:#66d9a0;"></i> ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+                uploadBtn.disabled = false;
+            } else {
+                fileName.innerHTML = `<span class="placeholder">No file selected</span>`;
+                uploadBtn.disabled = true;
+            }
+        }
+
+        function resetUploadUI() {
+            selectedFile = null;
+            fileInput.value = '';
+            updateFileUI(null);
+            uploadProgressWrap.classList.remove('active');
+            uploadProgressFill.style.width = '0%';
+            uploadStatus.innerHTML = '<span>Ready</span>';
+            isUploading = false;
+            uploadBtn.disabled = true;
+        }
+
+        async function uploadFile(file) {
+            if (!file || isUploading) return;
+
+            isUploading = true;
+            uploadBtn.disabled = true;
+            uploadProgressWrap.classList.add('active');
+            uploadStatus.innerHTML = '<span class="info"><i class="fas fa-spinner fa-spin"></i> Uploading…</span>';
+            uploadProgressFill.style.width = '0%';
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                // Simulate progress (since fetch doesn't support upload progress natively)
+                let progress = 0;
+                const progressInterval = setInterval(() => {
+                    progress = Math.min(progress + 5, 90);
+                    uploadProgressFill.style.width = progress + '%';
+                }, 200);
+
+                const response = await fetch(UPLOAD_URL, {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                clearInterval(progressInterval);
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.message || result.detail || `HTTP ${response.status}`);
+                }
+
+                uploadProgressFill.style.width = '100%';
+                uploadStatus.innerHTML = `<span class="success"><i class="fas fa-check-circle"></i> ${result.message || 'Upload successful!'}</span>`;
+                showToast('✅ Excel uploaded successfully! Refreshing data…', 'success');
+
+                // Refresh dashboard data after upload
+                setTimeout(() => {
+                    loadDashboard(true);
+                    resetUploadUI();
+                    fetchUploadHistory();
+                }, 800);
+
+            } catch (err) {
+                console.error('Upload error:', err);
+                uploadProgressFill.style.width = '100%';
+                uploadStatus.innerHTML = `<span class="error"><i class="fas fa-exclamation-circle"></i> ${err.message || 'Upload failed'}</span>`;
+                showToast('❌ Upload failed: ' + (err.message || 'Unknown error'), 'error');
+                isUploading = false;
+                uploadBtn.disabled = false;
+            }
+        }
+
+        // ============================================================
+        //  UPLOAD HISTORY
+        // ============================================================
+        async function fetchUploadHistory() {
+            try {
+                const response = await fetch(UPLOAD_BATCHES_URL, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' },
+                });
+
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        // No history endpoint or no data
+                        uploadHistoryMini.classList.remove('active');
+                        return;
+                    }
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                // Handle different response formats
+                let batches = [];
+                if (Array.isArray(data)) {
+                    batches = data;
+                } else if (data.batches && Array.isArray(data.batches)) {
+                    batches = data.batches;
+                } else if (data.data && Array.isArray(data.data)) {
+                    batches = data.data;
+                } else {
+                    // Try to extract any array
+                    for (const key in data) {
+                        if (Array.isArray(data[key])) {
+                            batches = data[key];
+                            break;
+                        }
+                    }
+                }
+
+                if (batches && batches.length > 0) {
+                    uploadHistoryMini.classList.add('active');
+                    historyList.innerHTML = batches.slice(0, 5).map(b => {
+                        const name = b.filename || b.file_name || b.name || 'Upload';
+                        const time = b.uploaded_at || b.created_at || b.timestamp || Date.now();
+                        return `
+                            <div class="history-item">
+                                <div class="h-name">
+                                    <i class="fas fa-file-excel"></i>
+                                    ${name}
+                                </div>
+                                <div class="h-time">${formatTimeAgo(time)}</div>
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    uploadHistoryMini.classList.remove('active');
+                }
+
+            } catch (err) {
+                console.warn('Could not fetch upload history:', err);
+                uploadHistoryMini.classList.remove('active');
+            }
+        }
+
+        // ============================================================
+        //  EVENT BINDING — UPLOAD
+        // ============================================================
+
+        // File input change
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files.length > 0) {
+                selectedFile = e.target.files[0];
+                updateFileUI(selectedFile);
+            } else {
+                resetUploadUI();
+            }
+        });
+
+        // Drag & drop
+        dropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropzone.classList.add('dragover');
+        });
+
+        dropzone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            dropzone.classList.remove('dragover');
+        });
+
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropzone.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files && files.length > 0) {
+                const file = files[0];
+                const ext = file.name.split('.').pop().toLowerCase();
+                if (['xlsx', 'xls'].includes(ext)) {
+                    selectedFile = file;
+                    // Update the input's files
+                    const dt = new DataTransfer();
+                    dt.items.add(file);
+                    fileInput.files = dt.files;
+                    updateFileUI(selectedFile);
+                } else {
+                    showToast('❌ Please upload an Excel file (.xlsx or .xls)', 'error');
+                }
+            }
+        });
+
+        // Upload button
+        uploadBtn.addEventListener('click', () => {
+            if (selectedFile && !isUploading) {
+                uploadFile(selectedFile);
+            }
+        });
+
+        // History "View all" link
+        historyMore.addEventListener('click', () => {
+            // Open upload status page or show more
+            window.open(UPLOAD_STATUS_URL, '_blank');
+        });
+
+        // ============================================================
         //  INIT
         // ============================================================
         refreshBtn.addEventListener('click', () => {
             loadDashboard(true);
         });
 
-        // Auto-load on page load
         document.addEventListener('DOMContentLoaded', () => {
             loadDashboard(true);
+            // Check if upload endpoint is reachable
+            fetch(UPLOAD_URL, { method: 'OPTIONS' }).catch(() => {
+                // Silent fail — upload will show error if used
+            });
         });
 
         // Auto-refresh every 60 seconds
         setInterval(() => {
             loadDashboard(false);
         }, 60000);
+
+        // Reset upload UI on page load
+        resetUploadUI();
+
+        console.log('🚀 Haier Dashboard v16.3 — Upload feature enabled');
+        console.log(`   Upload URL: ${UPLOAD_URL}`);
+        console.log(`   Data URL: ${WEBHOOK_URL}`);
     </script>
 
 </body>
