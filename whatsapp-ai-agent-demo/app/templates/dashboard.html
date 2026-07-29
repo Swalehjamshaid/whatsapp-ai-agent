@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
+        /* ----- RESET & BASE ----- */
         * { margin:0; padding:0; box-sizing:border-box; }
         body {
             font-family: 'Inter', -apple-system, sans-serif;
@@ -21,7 +22,7 @@
         ::-webkit-scrollbar-thumb:hover { background:#3a6a8a; }
         .container { max-width:1600px; margin:0 auto; }
 
-        /* Header */
+        /* ----- HEADER ----- */
         .header {
             display: flex; flex-wrap: wrap; justify-content:space-between; align-items:center;
             margin-bottom:24px; padding-bottom:14px; border-bottom:1px solid rgba(255,255,255,0.06);
@@ -41,7 +42,7 @@
         .refresh-btn:hover { background:rgba(79,195,247,0.15); border-color:#4fc3f7; color:#fff; }
         .refresh-btn:active { transform:scale(0.96); }
 
-        /* Executive Summary */
+        /* ----- EXECUTIVE SUMMARY ----- */
         .exec-summary {
             display:grid; grid-template-columns:repeat(auto-fit, minmax(110px,1fr));
             gap:12px; margin-bottom:24px;
@@ -60,7 +61,7 @@
         .color-teal { color:#4dd0e1; }
         .color-purple { color:#b39ddb; }
 
-        /* Filters */
+        /* ----- FILTERS ----- */
         .filters {
             display:flex; flex-wrap:wrap; gap:10px; margin-bottom:20px;
             background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06);
@@ -76,7 +77,7 @@
         .filter-group select:focus, .filter-group input:focus { border-color:#4fc3f7; }
         .filter-group select option { background:#0b131e; }
 
-        /* KPI Sections */
+        /* ----- KPI SECTIONS ----- */
         .kpi-section { margin-bottom:20px; }
         .section-title {
             font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:0.8px;
@@ -101,7 +102,7 @@
         .kpi-card .value.small { font-size:18px; }
         .kpi-card .sub { font-size:11px; color:#6a8aa8; margin-top:2px; }
 
-        /* Charts */
+        /* ----- CHARTS ----- */
         .charts-grid {
             display:grid; grid-template-columns:repeat(auto-fit, minmax(280px,1fr));
             gap:16px; margin-bottom:24px;
@@ -116,7 +117,7 @@
         .chart-box .chart-header h4 i { color:#4fc3f7; margin-right:6px; }
         .chart-box canvas { width:100% !important; max-height:170px; }
 
-        /* AI Insights */
+        /* ----- AI INSIGHTS ----- */
         .ai-insights {
             background:rgba(79,195,247,0.05); border:1px solid rgba(79,195,247,0.12);
             border-radius:14px; padding:16px 20px; margin-bottom:20px;
@@ -128,12 +129,12 @@
         .ai-insights .ai-text { font-size:13px; color:#d0dce8; line-height:1.5; }
         .ai-insights .ai-recommend { margin-top:6px; font-size:12px; color:#8aa4be; padding:6px 12px; background:rgba(255,255,255,0.04); border-radius:8px; border-left:3px solid #4fc3f7; }
 
-        /* Export */
+        /* ----- EXPORT ----- */
         .export-centre { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:20px; }
         .export-btn { background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.08); color:#c8d8e8; padding:6px 14px; border-radius:30px; font-size:11px; font-weight:500; cursor:pointer; transition:all 0.2s; display:flex; align-items:center; gap:6px; }
         .export-btn:hover { background:rgba(79,195,247,0.12); border-color:#4fc3f7; color:#fff; }
 
-        /* Table */
+        /* ----- TABLE ----- */
         .table-section {
             background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06);
             border-radius:14px; padding:16px; overflow:hidden; margin-bottom:20px;
@@ -168,7 +169,7 @@
         .trend-down { color:#ef5350; }
         .trend-neutral { color:#8aa4be; }
 
-        /* Upload */
+        /* ----- UPLOAD ----- */
         .upload-section {
             background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06);
             border-radius:14px; padding:16px 20px; margin-top:8px;
@@ -201,7 +202,7 @@
         .upload-status .error { color:#ef5350; }
         .upload-status .info { color:#4fc3f7; }
 
-        /* Toast */
+        /* ----- TOAST ----- */
         .toast-container { position:fixed; top:20px; right:20px; z-index:9999; display:flex; flex-direction:column; gap:8px; max-width:360px; width:100%; }
         .toast { padding:12px 16px; border-radius:10px; font-size:13px; font-weight:500; display:flex; align-items:center; gap:10px; box-shadow:0 12px 40px rgba(0,0,0,0.5); animation:slideIn 0.3s ease forwards; border:1px solid rgba(255,255,255,0.06); backdrop-filter:blur(8px); }
         .toast.success { background:rgba(102,217,160,0.15); color:#66d9a0; border-color:rgba(102,217,160,0.2); }
@@ -213,7 +214,7 @@
         @keyframes slideIn { from { opacity:0; transform:translateX(40px); } to { opacity:1; transform:translateX(0); } }
         @keyframes slideOut { from { opacity:1; transform:translateX(0); } to { opacity:0; transform:translateX(40px); } }
 
-        /* Drill Modal */
+        /* ----- DRILL MODAL ----- */
         .modal { position:fixed; inset:0; background:rgba(0,0,0,0.7); backdrop-filter:blur(4px); display:none; align-items:center; justify-content:center; z-index:1000; padding:20px; }
         .modal.active { display:flex; }
         .modal-content { background:#0b131e; border:1px solid rgba(255,255,255,0.1); border-radius:16px; max-width:700px; width:100%; max-height:80vh; overflow-y:auto; padding:24px 28px; box-shadow:0 24px 60px rgba(0,0,0,0.6); }
@@ -225,7 +226,7 @@
         .detail-row .label { color:#8aa4be; }
         .detail-row .value { font-weight:600; }
 
-        /* Loading */
+        /* ----- LOADING / ERROR ----- */
         .loading { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:60px 20px; color:#8aa4be; gap:14px; }
         .loading .spinner { width:40px; height:40px; border:3px solid rgba(79,195,247,0.15); border-top-color:#4fc3f7; border-radius:50%; animation:spin 0.8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg); } }
@@ -297,7 +298,7 @@
     <!-- Executive Summary -->
     <section class="exec-summary" id="execSummary"></section>
 
-    <!-- Filters (static) -->
+    <!-- Filters -->
     <div class="filters" id="filtersBar">
         <div class="filter-group"><label><i class="fas fa-calendar-alt"></i> Date</label><input type="date" id="filterDate" /></div>
         <div class="filter-group"><label><i class="fas fa-warehouse"></i> Warehouse</label><select id="filterWarehouse"><option value="">All</option></select></div>
@@ -372,9 +373,18 @@
             <table>
                 <thead>
                     <tr>
-                        <th>Rank</th><th>Warehouse</th><th>Health</th><th>DNs</th><th>Units</th>
-                        <th>Revenue</th><th>PGI %</th><th>Delivery %</th><th>POD %</th>
-                        <th>Pending Units</th><th>Risk</th><th>Trend</th>
+                        <th>Rank</th>
+                        <th>Warehouse</th>
+                        <th>Health</th>
+                        <th>DNs</th>
+                        <th>Units</th>
+                        <th>Revenue</th>
+                        <th>PGI %</th>
+                        <th>Delivery %</th>
+                        <th>POD %</th>
+                        <th>Pending Units</th>
+                        <th>Risk</th>
+                        <th>Trend</th>
                     </tr>
                 </thead>
                 <tbody id="tableBody"></tbody>
@@ -412,9 +422,8 @@
 
 <script>
     // ============================================================
-    //  CONFIGURATION
+    //  CONFIGURATION — uses your exact n8n webhook URL
     // ============================================================
-    // Use the actual n8n webhook URL
     const WEBHOOK_URL = 'https://jamshaidkhan.app.n8n.cloud/webhook/haier-dashboard';
 
     // ============================================================
@@ -517,18 +526,12 @@
         const d = new Date(ts);
         return d.toLocaleString('en-PK', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true });
     }
-    function formatTimeAgo(ts) {
-        const diff = Date.now() - new Date(ts).getTime();
-        const mins = Math.floor(diff / 60000);
-        if (mins < 1) return 'just now';
-        if (mins < 60) return mins + 'm ago';
-        const hrs = Math.floor(mins / 60);
-        if (hrs < 24) return hrs + 'h ago';
-        return Math.floor(hrs / 24) + 'd ago';
-    }
 
-    // Smart Health Score (computed from warehouse data)
+    // Smart Health Score (if needed – but we can use the provided health_score)
     function computeSmartHealth(w) {
+        // Use the health_score from the API if available, else compute
+        if (w.health_score) return parseInt(w.health_score);
+        // Fallback calculation
         const totalDN = parseFloat(w.total_dn) || 1;
         const pendingDN = parseFloat(w.pending_dn) || 0;
         const pgiPct = Math.min(100, ((totalDN - pendingDN) / totalDN) * 100);
@@ -551,65 +554,32 @@
     }
 
     // ============================================================
-    //  COMPUTE KPIs FROM WAREHOUSE DATA
+    //  RENDER FUNCTIONS
     // ============================================================
-    function computeKPIs(whs) {
-        let totalDN = 0, totalUnits = 0, totalRevenue = 0;
-        let pgiPendingDN = 0, pgiPendingUnits = 0;
-        let podPendingDN = 0, podPendingUnits = 0;
-        let deliveryPendingUnits = 0;
-        whs.forEach(w => {
-            totalDN += parseInt(w.total_dn) || 0;
-            totalUnits += parseInt(w.total_units) || 0;
-            totalRevenue += parseFloat(w.total_revenue) || 0;
-            pgiPendingDN += parseInt(w.pending_dn) || 0;
-            pgiPendingUnits += parseInt(w.pending_units) || 0;
-            podPendingDN += parseInt(w.pending_dn) || 0;
-            podPendingUnits += parseInt(w.pending_units) || 0;
-            deliveryPendingUnits += parseInt(w.pending_units) || 0;
-        });
-        const pgiCompleted = totalDN - pgiPendingDN;
-        const pgiPct = totalDN > 0 ? Math.round((pgiCompleted / totalDN) * 100) : 0;
-        const deliveredUnits = totalUnits - deliveryPendingUnits;
-        const deliveryPct = totalUnits > 0 ? Math.round((deliveredUnits / totalUnits) * 100) : 0;
-        const podCompleted = totalDN - podPendingDN;
-        const podPct = totalDN > 0 ? Math.round((podCompleted / totalDN) * 100) : 0;
-        return {
-            total_delivery_notes: totalDN,
-            total_units: totalUnits,
-            total_revenue: totalRevenue,
-            pgi_completed_dns: pgiCompleted,
-            pgi_pending_dns: pgiPendingDN,
-            pgi_pending_units: pgiPendingUnits,
-            pgi_percentage: pgiPct,
-            delivered_units: deliveredUnits,
-            delivery_pending_units: deliveryPendingUnits,
-            delivery_percentage: deliveryPct,
-            pod_completed_dns: podCompleted,
-            pod_pending_dns: podPendingDN,
-            pod_pending_units: podPendingUnits,
-            pod_percentage: podPct
-        };
-    }
 
-    // ============================================================
-    //  RENDER EXECUTIVE SUMMARY
-    // ============================================================
-    function renderExecutiveSummary(whs, cards) {
-        let totalHealth = 0, count = 0;
-        whs.forEach(w => { totalHealth += computeSmartHealth(w); count++; });
-        const avgHealth = count > 0 ? Math.round(totalHealth / count) : 0;
-        const healthLabel = avgHealth >= 85 ? 'Excellent' : avgHealth >= 70 ? 'Good' : avgHealth >= 50 ? 'Fair' : 'Poor';
-        const healthColor = avgHealth >= 85 ? 'color-green' : avgHealth >= 70 ? 'color-blue' : avgHealth >= 50 ? 'color-orange' : 'color-red';
-        let best = null, worst = null;
-        if (whs.length > 0) {
-            const sorted = [...whs].sort((a,b) => computeSmartHealth(b) - computeSmartHealth(a));
-            best = sorted[0]; worst = sorted[sorted.length-1];
-        }
+    // ----- Executive Summary (uses cards data) -----
+    function renderExecutiveSummary(cards) {
+        // cards: { total_delivery_notes, total_units, total_revenue, pgi_percentage, delivery_percentage, pod_percentage, ... }
+        const totalDN = cards.total_delivery_notes || 0;
+        const totalUnits = cards.total_units || 0;
         const revenue = cards.total_revenue || 0;
         const pgiPct = cards.pgi_percentage || 0;
         const deliveryPct = cards.delivery_percentage || 0;
         const podPct = cards.pod_percentage || 0;
+
+        // Compute average health from warehouse data
+        let totalHealth = 0, count = 0;
+        warehouses.forEach(w => { totalHealth += computeSmartHealth(w); count++; });
+        const avgHealth = count > 0 ? Math.round(totalHealth / count) : 0;
+        const healthLabel = avgHealth >= 85 ? 'Excellent' : avgHealth >= 70 ? 'Good' : avgHealth >= 50 ? 'Fair' : 'Poor';
+        const healthColor = avgHealth >= 85 ? 'color-green' : avgHealth >= 70 ? 'color-blue' : avgHealth >= 50 ? 'color-orange' : 'color-red';
+
+        let best = null, worst = null;
+        if (warehouses.length > 0) {
+            const sorted = [...warehouses].sort((a,b) => computeSmartHealth(b) - computeSmartHealth(a));
+            best = sorted[0]; worst = sorted[sorted.length-1];
+        }
+
         const riskScore = 100 - avgHealth;
         const riskLevel = getRiskLevel(riskScore);
         const riskLabel = getRiskLabel(riskLevel);
@@ -618,7 +588,7 @@
         execSummary.innerHTML = `
             <div class="exec-item"><div class="label">National Health</div><div class="value ${healthColor}">${avgHealth}%</div><div class="sub">${healthLabel}</div></div>
             <div class="exec-item"><div class="label">Revenue</div><div class="value color-gold">${formatCurrency(revenue)}</div><div class="sub">${formatCurrencyFull(revenue)}</div></div>
-            <div class="exec-item"><div class="label">PGI</div><div class="value color-blue">${pgiPct}%</div><div class="sub">${cards.pgi_completed_dns || 0} / ${cards.total_delivery_notes || 0}</div></div>
+            <div class="exec-item"><div class="label">PGI</div><div class="value color-blue">${pgiPct}%</div><div class="sub">${cards.pgi_completed_dns || 0} / ${totalDN}</div></div>
             <div class="exec-item"><div class="label">Delivery</div><div class="value color-teal">${deliveryPct}%</div></div>
             <div class="exec-item"><div class="label">POD</div><div class="value color-green">${podPct}%</div></div>
             <div class="exec-item"><div class="label">Risk</div><div class="value ${riskColor}">${riskLabel}</div></div>
@@ -627,9 +597,7 @@
         `;
     }
 
-    // ============================================================
-    //  RENDER KPI SECTIONS
-    // ============================================================
+    // ----- KPI Cards -----
     function renderKPIs(cards) {
         // Overview
         const overview = [
@@ -661,7 +629,7 @@
 
         // Delivery
         const delivery = [
-            { label:'Delivered Units', value: cards.delivered_units || '0', icon:'fa-truck', cls:'color-green' },
+            { label:'Delivered Units', value: cards.delivery_completed_units || '0', icon:'fa-truck', cls:'color-green' },
             { label:'Delivery Pending Units', value: cards.delivery_pending_units || '0', icon:'fa-clock', cls:'color-orange' },
             { label:'Delivery %', value: (cards.delivery_percentage || '0') + '%', icon:'fa-percent', cls:'color-purple' }
         ];
@@ -687,9 +655,7 @@
         `).join('');
     }
 
-    // ============================================================
-    //  RENDER TABLE
-    // ============================================================
+    // ----- Warehouse Ranking Table -----
     function renderTable(whs) {
         if (!whs || whs.length === 0) {
             tableBody.innerHTML = `<tr><td colspan="12" style="text-align:center;padding:28px;color:#6a8aa8;">No warehouse data available</td></tr>`;
@@ -697,8 +663,11 @@
             return;
         }
         warehouseCount.textContent = `${whs.length} warehouses`;
+
+        // Sort by health (or provided health_score)
         const sorted = [...whs].map(w => ({ ...w, _health: computeSmartHealth(w) }));
         sorted.sort((a,b) => b._health - a._health);
+        // Mock previous health for trends (we'll use current as baseline)
         const prevHealth = sorted.map(w => w._health + (Math.random() * 10 - 5));
 
         tableBody.innerHTML = sorted.map((w, idx) => {
@@ -708,6 +677,7 @@
             const riskLevel = getRiskLevel(100 - healthScore);
             const riskCls = riskLevel;
             const riskLabel = getRiskLabel(riskLevel);
+            // PGI %, Delivery % for each warehouse (approximated from pending)
             const pgiPct = Math.round(100 - (parseFloat(w.pending_dn) || 0) / (parseFloat(w.total_dn) || 1) * 100);
             const deliveryPct = Math.round(100 - (parseFloat(w.pending_units) || 0) / (parseFloat(w.total_units) || 1) * 100);
             const trend = generateTrend(healthScore, prevHealth[idx] || healthScore);
@@ -731,6 +701,7 @@
             `;
         }).join('');
 
+        // Click event for drill-down
         document.querySelectorAll('#tableBody tr').forEach(tr => {
             tr.addEventListener('click', function() {
                 const name = this.dataset.warehouse;
@@ -740,10 +711,9 @@
         });
     }
 
-    // ============================================================
-    //  RENDER CHARTS (12 charts)
-    // ============================================================
+    // ----- Charts (12 charts) -----
     function renderCharts(whs) {
+        // Sort by health for consistent ordering
         const sorted = [...whs].map(w => ({ ...w, _health: computeSmartHealth(w) }));
         sorted.sort((a,b) => b._health - a._health);
         const labels = sorted.map(w => w.warehouse);
@@ -791,7 +761,7 @@
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#8aa4be', font: { size: 9 } } } } }
         });
 
-        // Horizontal: Ranking
+        // Horizontal: Warehouse Ranking (Health)
         const rankCtx = document.getElementById('chartRanking').getContext('2d');
         if (chartInstances['chartRanking']) chartInstances['chartRanking'].destroy();
         chartInstances['chartRanking'] = new Chart(rankCtx, {
@@ -800,7 +770,7 @@
             options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8aa4be', font: { size: 9 } } }, y: { grid: { display: false }, ticks: { color: '#8aa4be', font: { size: 8 } } } } }
         });
 
-        // Line: Delivery Cycle
+        // Line: Delivery Cycle Days
         const delCtx = document.getElementById('chartCycleDelivery').getContext('2d');
         if (chartInstances['chartCycleDelivery']) chartInstances['chartCycleDelivery'].destroy();
         chartInstances['chartCycleDelivery'] = new Chart(delCtx, {
@@ -809,7 +779,7 @@
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#8aa4be', font: { size: 9 } } } }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8aa4be', font: { size: 9 } } }, x: { grid: { display: false }, ticks: { color: '#8aa4be', font: { size: 8 }, maxRotation: 30, autoSkip: true } } } }
         });
 
-        // Line: POD Cycle
+        // Line: POD Cycle Days
         const podCtx = document.getElementById('chartCyclePOD').getContext('2d');
         if (chartInstances['chartCyclePOD']) chartInstances['chartCyclePOD'].destroy();
         chartInstances['chartCyclePOD'] = new Chart(podCtx, {
@@ -848,9 +818,7 @@
         });
     }
 
-    // ============================================================
-    //  AI INSIGHTS
-    // ============================================================
+    // ----- AI Insights -----
     function generateAIInsights(whs) {
         if (!whs || whs.length === 0) { aiText.textContent = 'No data available for insights.'; aiRecommend.textContent = ''; return; }
         const sortedPOD = [...whs].sort((a,b) => parseFloat(a.pod_achievement) - parseFloat(b.pod_achievement));
@@ -869,9 +837,7 @@
         aiRecommend.textContent = '💡 ' + recommend;
     }
 
-    // ============================================================
-    //  DRILL DOWN (mock – uses existing warehouse data)
-    // ============================================================
+    // ----- Drill Down (modal) -----
     function openDrill(w) {
         drillTitle.textContent = `${w.warehouse} — Warehouse Dashboard`;
         const health = computeSmartHealth(w);
@@ -905,30 +871,51 @@
     async function loadDashboard(showLoading = true) {
         if (showLoading) { loadingState.classList.remove('hidden'); errorState.classList.add('hidden'); }
         try {
-            const response = await fetch(WEBHOOK_URL, { method: 'GET', headers: { 'Accept': 'application/json' } });
+            const response = await fetch(WEBHOOK_URL, {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' }
+            });
             if (!response.ok) throw new Error(`HTTP ${response.status} — ${response.statusText}`);
+
             const raw = await response.json();
 
-            // Parse response: array with one object containing cards & warehouse_ranking
-            let whs = null, cards = null;
+            // Expected: array with one object containing 'cards' and 'warehouse_ranking'
+            let cards = null;
+            let whs = null;
             if (Array.isArray(raw) && raw.length > 0) {
                 const first = raw[0];
-                if (first && first.warehouse_ranking && Array.isArray(first.warehouse_ranking)) {
+                if (first && first.cards && first.warehouse_ranking) {
+                    cards = first.cards;
                     whs = first.warehouse_ranking;
-                    cards = first.cards || null;
                 }
             }
-            if (!whs) throw new Error('Invalid response format from n8n');
+            // Fallback: if raw is the warehouse array directly
+            if (!whs && Array.isArray(raw) && raw.length > 0 && raw[0].warehouse) {
+                whs = raw;
+                // compute cards from whs if needed (but we have cards from n8n)
+            }
+
+            if (!whs || whs.length === 0) {
+                throw new Error('No warehouse data found in the response');
+            }
+
             warehouses = whs;
 
-            // Compute KPIs from warehouse data (cards only has "column_name":"id")
-            const computedCards = computeKPIs(whs);
-            const finalCards = { ...computedCards };
+            // Use cards from response; if missing, compute
+            const computedCards = cards || computeKPIs(whs); // computeKPIs is not defined but we can compute from whs
+
+            // If cards is missing, compute from whs
+            let finalCards = cards;
+            if (!finalCards) {
+                // Compute from whs (we have computeKPIs function)
+                // We'll define computeKPIs at the bottom or reuse
+                finalCards = computeKPIs(whs);
+            }
 
             const now = new Date();
             lastUpdated.innerHTML = `<i class="fas fa-clock"></i> <span>Updated ${formatDate(now)}</span>`;
 
-            renderExecutiveSummary(whs, finalCards);
+            renderExecutiveSummary(finalCards);
             renderKPIs(finalCards);
             renderTable(whs);
             renderCharts(whs);
@@ -937,6 +924,8 @@
 
             loadingState.classList.add('hidden');
             errorState.classList.add('hidden');
+
+            console.log(`✅ Dashboard loaded: ${whs.length} warehouses`);
         } catch (err) {
             console.error('Dashboard load error:', err);
             loadingState.classList.add('hidden');
@@ -945,9 +934,46 @@
         }
     }
 
-    // ============================================================
-    //  FILTERS POPULATE
-    // ============================================================
+    // Helper to compute KPIs from warehouse array (fallback)
+    function computeKPIs(whs) {
+        let totalDN = 0, totalUnits = 0, totalRevenue = 0;
+        let pgiPendingDN = 0, pgiPendingUnits = 0;
+        let podPendingDN = 0, podPendingUnits = 0;
+        let deliveryPendingUnits = 0;
+        whs.forEach(w => {
+            totalDN += parseInt(w.total_dn) || 0;
+            totalUnits += parseInt(w.total_units) || 0;
+            totalRevenue += parseFloat(w.total_revenue) || 0;
+            pgiPendingDN += parseInt(w.pending_dn) || 0;
+            pgiPendingUnits += parseInt(w.pending_units) || 0;
+            podPendingDN += parseInt(w.pending_dn) || 0;
+            podPendingUnits += parseInt(w.pending_units) || 0;
+            deliveryPendingUnits += parseInt(w.pending_units) || 0;
+        });
+        const pgiCompleted = totalDN - pgiPendingDN;
+        const pgiPct = totalDN > 0 ? Math.round((pgiCompleted / totalDN) * 100) : 0;
+        const deliveredUnits = totalUnits - deliveryPendingUnits;
+        const deliveryPct = totalUnits > 0 ? Math.round((deliveredUnits / totalUnits) * 100) : 0;
+        const podCompleted = totalDN - podPendingDN;
+        const podPct = totalDN > 0 ? Math.round((podCompleted / totalDN) * 100) : 0;
+        return {
+            total_delivery_notes: totalDN,
+            total_units: totalUnits,
+            total_revenue: totalRevenue,
+            pgi_completed_dns: pgiCompleted,
+            pgi_pending_dns: pgiPendingDN,
+            pgi_pending_units: pgiPendingUnits,
+            pgi_percentage: pgiPct,
+            delivered_units: deliveredUnits,
+            delivery_pending_units: deliveryPendingUnits,
+            delivery_percentage: deliveryPct,
+            pod_completed_dns: podCompleted,
+            pod_pending_dns: podPendingDN,
+            pod_pending_units: podPendingUnits,
+            pod_percentage: podPct
+        };
+    }
+
     function populateFilters(whs) {
         const warehouseNames = [...new Set(whs.map(w => w.warehouse).filter(Boolean))];
         const select = document.getElementById('filterWarehouse');
@@ -983,7 +1009,6 @@
         try {
             let progress = 0;
             const interval = setInterval(() => { progress = Math.min(progress + 5, 90); uploadFill.style.width = progress + '%'; }, 200);
-            // Replace with actual upload endpoint if available
             const response = await fetch('/webhook/upload-excel', { method: 'POST', body: formData });
             clearInterval(interval);
             const result = await response.json();
@@ -1040,7 +1065,7 @@
     document.addEventListener('DOMContentLoaded', () => { loadDashboard(true); });
     setInterval(() => loadDashboard(false), 60000);
     resetUploadUI();
-    console.log('🚀 Haier Dashboard loaded');
+    console.log('🚀 Haier Dashboard v3.0 loaded');
 </script>
 
 </body>
