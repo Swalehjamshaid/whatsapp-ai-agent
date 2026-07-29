@@ -1053,14 +1053,16 @@
         <!-- Toast Container -->
         <div class="toast-container" id="toastContainer"></div>
 
-        <!-- Drill Modal -->
+        <!-- Drill Modal (Warehouse Details) -->
         <div class="modal" id="drillModal">
             <div class="modal-content">
                 <div class="modal-header">
                     <h2 id="drillTitle">Warehouse Details</h2>
                     <button class="close" id="closeDrill">&times;</button>
                 </div>
-                <div id="drillBody"></div>
+                <div id="drillBody">
+                    <div class="loading" style="padding:20px;"><div class="spinner"></div><span>Loading warehouse data…</span></div>
+                </div>
             </div>
         </div>
 
@@ -1082,7 +1084,7 @@
         <!-- Executive Summary -->
         <section class="exec-summary" id="execSummary"></section>
 
-        <!-- Filters -->
+        <!-- Filters (static for now, could be dynamic) -->
         <div class="filters" id="filtersBar">
             <div class="filter-group"><label><i class="fas fa-calendar-alt"></i> Date</label><input type="date" id="filterDate" /></div>
             <div class="filter-group"><label><i class="fas fa-warehouse"></i> Warehouse</label><select id="filterWarehouse"><option value="">All</option></select></div>
@@ -1135,7 +1137,7 @@
         <div class="ai-insights" id="aiInsights">
             <div class="ai-icon"><i class="fas fa-robot"></i></div>
             <div class="ai-content">
-                <div class="ai-title">AI Insight</div>
+                <div class="ai-title">AI Summary</div>
                 <div class="ai-text" id="aiText">Loading insights…</div>
                 <div class="ai-recommend" id="aiRecommend"></div>
             </div>
@@ -1205,10 +1207,20 @@
 
     <script>
         // ============================================================
-        //  CONFIGURATION
+        //  CONFIGURATION — API ENDPOINTS (DO NOT CHANGE)
         // ============================================================
-        const WEBHOOK_URL = 'https://jamshaidkhan.app.n8n.cloud/webhook/haier-dashboard';
-        const UPLOAD_URL = window.location.origin + '/webhook/upload-excel';
+        const BASE_URL = window.location.origin;
+        const ENDPOINTS = {
+            DASHBOARD: '/webhook/haier-dashboard',
+            UPLOAD: '/webhook/upload-excel',
+            WAREHOUSE_DETAILS: '/webhook/warehouse-details',
+            DEALER_DASHBOARD: '/webhook/dealer-dashboard',
+            PRODUCT_DASHBOARD: '/webhook/product-dashboard',
+            CITY_DASHBOARD: '/webhook/city-dashboard',
+            AI_SUMMARY: '/webhook/ai-summary',
+            REFRESH: '/webhook/dashboard-refresh',
+            WORKFLOW_STATUS: '/webhook/workflow-status'
+        };
 
         // ============================================================
         //  STATE
@@ -1217,6 +1229,7 @@
         let chartInstances = {};
         let selectedFile = null;
         let isUploading = false;
+        let dashboardData = null;
 
         // ============================================================
         //  DOM REFS
@@ -1364,7 +1377,7 @@
         }
 
         // ============================================================
-        //  COMPUTE KPIs FROM WAREHOUSE DATA
+        //  COMPUTE KPIs FROM WAREHOUSE DATA (fallback)
         // ============================================================
         function computeKPIs(whs) {
             let totalDN = 0,
@@ -1566,11 +1579,11 @@
                 `;
             }).join('');
 
+            // Click to open warehouse drill-down
             document.querySelectorAll('#tableBody tr').forEach(tr => {
                 tr.addEventListener('click', function() {
                     const name = this.dataset.warehouse;
-                    const w = whs.find(w => w.warehouse === name);
-                    if (w) openDrill(w);
+                    if (name) openWarehouseDrill(name);
                 });
             });
         }
@@ -1725,9 +1738,18 @@
         }
 
         // ============================================================
-        //  AI INSIGHTS
+        //  AI INSIGHTS (from main data or separate endpoint)
         // ============================================================
-        function generateAIInsights(whs) {
+        function generateAIInsights(whs, aiSummary) {
+            // If ai_summary is provided from the endpoint, use it
+            if (aiSummary && aiSummary.summary) {
+                aiText.textContent = aiSummary.summary;
+                aiRecommend.textContent = aiSummary.recommendations ? '💡 ' + aiSummary.recommendations.join(' • ') :
+                '💡 No specific recommendations.';
+                return;
+            }
+
+            // Fallback: generate from warehouse data
             if (!whs || whs.length === 0) { aiText.textContent = 'No data available for insights.';
                 aiRecommend.textContent = ''; return; }
             const sortedPOD = [...whs].sort((a, b) => parseFloat(a.pod_achievement) - parseFloat(b.pod_achievement));
@@ -1750,93 +1772,81 @@
         }
 
         // ============================================================
-        //  DRILL DOWN
+        //  WAREHOUSE DRILL-DOWN (calls /webhook/warehouse-details)
         // ============================================================
-        function openDrill(w) {
-            drillTitle.textContent = `${w.warehouse} — Warehouse Dashboard`;
-            const health = computeSmartHealth(w);
-            const riskLevel = getRiskLevel(100 - health);
-            const riskLabel = getRiskLabel(riskLevel);
-            const riskColor = riskLevel === 'critical' || riskLevel === 'high' ? '#ef5350' : riskLevel === 'medium' ?
-                '#ffb74d' : '#66d9a0';
-            drillBody.innerHTML = `
-                <div class="detail-row"><span class="label">Warehouse</span><span class="value">${w.warehouse}</span></div>
-                <div class="detail-row"><span class="label">Health Score</span><span class="value">${health}% (${getHealthBadge(health)})</span></div>
-                <div class="detail-row"><span class="label">Risk Level</span><span class="value" style="color:${riskColor}">${riskLabel}</span></div>
-                <div class="detail-row"><span class="label">Total DNs</span><span class="value">${w.total_dn || '0'}</span></div>
-                <div class="detail-row"><span class="label">Total Units</span><span class="value">${w.total_units || '0'}</span></div>
-                <div class="detail-row"><span class="label">Revenue</span><span class="value color-gold">${formatCurrencyFull(w.total_revenue)}</span></div>
-                <div class="detail-row"><span class="label">Avg Delivery Days</span><span class="value">${w.avg_delivery_days || '—'}</span></div>
-                <div class="detail-row"><span class="label">Avg POD Days</span><span class="value">${w.avg_pod_days || '—'}</span></div>
-                <div class="detail-row"><span class="label">Avg Cycle Days</span><span class="value">${w.avg_cycle_days || '—'}</span></div>
-                <div class="detail-row"><span class="label">POD Achievement</span><span class="value">${w.pod_achievement || '0'}%</span></div>
-                <div class="detail-row"><span class="label">Pending DNs</span><span class="value" style="color:#ef5350;">${w.pending_dn || '0'}</span></div>
-                <div class="detail-row"><span class="label">Pending Units</span><span class="value" style="color:#ef5350;">${w.pending_units || '0'}</span></div>
-                <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06);">
-                    <h4 style="color:#4fc3f7;font-size:14px;margin-bottom:6px;"><i class="fas fa-robot"></i> AI Insight</h4>
-                    <p style="font-size:13px;color:#d0dce8;">${w.pod_achievement < 80 ? `${w.warehouse} POD is at ${w.pod_achievement}%. Focus on clearing ${w.pending_dn} pending DNs.` : `${w.warehouse} is performing well. Maintain momentum.`}</p>
-                </div>
-            `;
+        async function openWarehouseDrill(warehouseName) {
+            drillTitle.textContent = `${warehouseName} — Warehouse Dashboard`;
+            drillBody.innerHTML = `<div class="loading" style="padding:20px;"><div class="spinner"></div><span>Loading warehouse data…</span></div>`;
             drillModal.classList.add('active');
+
+            try {
+                const url = `${BASE_URL}${ENDPOINTS.WAREHOUSE_DETAILS}?warehouse=${encodeURIComponent(warehouseName)}`;
+                const resp = await fetch(url);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+
+                // Render the drill-down content using the response
+                let html = '';
+                if (data.summary) {
+                    html += `<div class="detail-row"><span class="label">Total DNs</span><span class="value">${data.summary.total_dn || 0}</span></div>`;
+                    html += `<div class="detail-row"><span class="label">Total Units</span><span class="value">${data.summary.total_units || 0}</span></div>`;
+                    html += `<div class="detail-row"><span class="label">Revenue</span><span class="value color-gold">${formatCurrencyFull(data.summary.total_revenue)}</span></div>`;
+                    html += `<div class="detail-row"><span class="label">POD %</span><span class="value">${data.summary.pod_achievement || 0}%</span></div>`;
+                }
+                if (data.dealer_breakdown && data.dealer_breakdown.length > 0) {
+                    html += `<div style="margin-top:16px;"><h4 style="color:#4fc3f7;">Top Dealers</h4><ul style="list-style:none;padding:0;">`;
+                    data.dealer_breakdown.slice(0,5).forEach(d => {
+                        html +=
+                            `<li style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05);">${d.dealer_code || d.dealer || 'Unknown'} — ${formatCurrency(d.revenue)} (${d.count || 0} DNs)</li>`;
+                    });
+                    html += `</ul></div>`;
+                }
+                if (data.charts && data.charts.length > 0) {
+                    // Could render charts here, but for simplicity we just show a message
+                    html += `<div style="margin-top:16px;color:#8aa4be;"><i class="fas fa-chart-line"></i> Chart data available (${data.charts.length} charts).</div>`;
+                }
+                drillBody.innerHTML = html || `<p style="color:#8aa4be;">No detailed data available for this warehouse.</p>`;
+            } catch (err) {
+                drillBody.innerHTML =
+                    `<p style="color:#ef5350;">❌ Failed to load warehouse details: ${err.message}</p>`;
+            }
         }
 
         // ============================================================
-        //  LOAD DASHBOARD
+        //  LOAD DASHBOARD (GET /webhook/haier-dashboard)
         // ============================================================
         async function loadDashboard(showLoading = true) {
             if (showLoading) { loadingState.classList.remove('hidden');
                 errorState.classList.add('hidden'); }
             try {
-                const response = await fetch(WEBHOOK_URL, { method: 'GET', headers: { 'Accept': 'application/json' } });
+                const url = `${BASE_URL}${ENDPOINTS.DASHBOARD}`;
+                const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
                 if (!response.ok) throw new Error(`HTTP ${response.status} — ${response.statusText}`);
-                const raw = await response.json();
+                const data = await response.json();
 
-                // Parse response: expects array with one object containing cards & warehouse_ranking
-                let whs = null,
-                    cards = null;
-                if (Array.isArray(raw) && raw.length > 0) {
-                    const first = raw[0];
-                    if (first && first.warehouse_ranking && Array.isArray(first.warehouse_ranking)) {
-                        whs = first.warehouse_ranking;
-                        cards = first.cards || null;
-                    }
-                }
-                if (!whs) throw new Error('Invalid response format from n8n');
+                // Expected: { success, message, cards, warehouse_ranking, ai_summary, last_updated }
+                if (!data.success) throw new Error(data.message || 'Unknown error');
+
+                dashboardData = data;
+                const whs = data.warehouse_ranking || [];
                 warehouses = whs;
+                const cards = data.cards || computeKPIs(whs);
+                const aiSummary = data.ai_summary || null;
+                const lastUpdatedTime = data.last_updated || new Date().toISOString();
 
-                // If cards is not provided, compute from warehouse data
-                let computedCards = cards ? cards : computeKPIs(whs);
-                const defaultCards = {
-                    total_delivery_notes: 0,
-                    total_units: 0,
-                    total_revenue: 0,
-                    pgi_completed_dns: 0,
-                    pgi_pending_dns: 0,
-                    pgi_pending_units: 0,
-                    pgi_percentage: 0,
-                    delivered_units: 0,
-                    delivery_pending_units: 0,
-                    delivery_percentage: 0,
-                    pod_completed_dns: 0,
-                    pod_pending_dns: 0,
-                    pod_pending_units: 0,
-                    pod_percentage: 0
-                };
-                const finalCards = { ...defaultCards, ...computedCards };
+                lastUpdated.innerHTML = `<i class="fas fa-clock"></i> <span>Updated ${formatDate(lastUpdatedTime)}</span>`;
 
-                const now = new Date();
-                lastUpdated.innerHTML = `<i class="fas fa-clock"></i> <span>Updated ${formatDate(now)}</span>`;
-
-                renderExecutiveSummary(whs, finalCards);
-                renderKPIs(finalCards);
+                renderExecutiveSummary(whs, cards);
+                renderKPIs(cards);
                 renderTable(whs);
                 renderCharts(whs);
-                generateAIInsights(whs);
+                generateAIInsights(whs, aiSummary);
                 populateFilters(whs);
 
                 loadingState.classList.add('hidden');
                 errorState.classList.add('hidden');
                 fetchUploadHistory();
+
             } catch (err) {
                 console.error('Dashboard load error:', err);
                 loadingState.classList.add('hidden');
@@ -1849,15 +1859,15 @@
         //  FILTERS POPULATE
         // ============================================================
         function populateFilters(whs) {
-            const warehouses = [...new Set(whs.map(w => w.warehouse).filter(Boolean))];
+            const warehouseNames = [...new Set(whs.map(w => w.warehouse).filter(Boolean))];
             const select = document.getElementById('filterWarehouse');
-            select.innerHTML = '<option value="">All</option>' + warehouses.map(c =>
+            select.innerHTML = '<option value="">All</option>' + warehouseNames.map(c =>
                 `<option value="${c}">${c}</option>`).join('');
             // Other filters can be populated similarly if data available
         }
 
         // ============================================================
-        //  UPLOAD LOGIC
+        //  UPLOAD LOGIC (POST /webhook/upload-excel)
         // ============================================================
         function updateFileUI(file) {
             if (file) {
@@ -1894,14 +1904,16 @@
                 let progress = 0;
                 const interval = setInterval(() => { progress = Math.min(progress + 5, 90);
                     uploadFill.style.width = progress + '%'; }, 200);
-                const response = await fetch(UPLOAD_URL, { method: 'POST', body: formData });
+                const url = `${BASE_URL}${ENDPOINTS.UPLOAD}`;
+                const response = await fetch(url, { method: 'POST', body: formData });
                 clearInterval(interval);
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.message || result.detail || `HTTP ${response.status}`);
                 uploadFill.style.width = '100%';
                 uploadStatus.innerHTML =
-                    `<span class="success"><i class="fas fa-check-circle"></i> ${result.message || 'Upload successful!'}</span>`;
+                    `<span class="success"><i class="fas fa-check-circle"></i> ${result.message || 'Upload successful!'} (${result.inserted_rows || 0} rows inserted)</span>`;
                 showToast('✅ Excel uploaded successfully! Refreshing data…', 'success');
+                // After upload, refresh dashboard (call dashboard endpoint)
                 setTimeout(() => { loadDashboard(true);
                     resetUploadUI();
                     fetchUploadHistory(); }, 800);
@@ -1916,29 +1928,14 @@
         }
 
         // ============================================================
-        //  UPLOAD HISTORY
+        //  UPLOAD HISTORY (GET /webhook/upload-excel might not return history; we mock)
         // ============================================================
         async function fetchUploadHistory() {
-            try {
-                const response = await fetch(UPLOAD_URL, { method: 'GET' });
-                if (!response.ok) { if (response.status === 404) { uploadHistory.classList.remove('active'); return; } throw new
-                        Error(`HTTP ${response.status}`); }
-                const data = await response.json();
-                let batches = Array.isArray(data) ? data : (data.batches || []);
-                if (batches.length > 0) {
-                    uploadHistory.classList.add('active');
-                    historyList.innerHTML = batches.slice(0, 5).map(b => `
-                        <div class="history-item">
-                            <span class="h-name"><i class="fas fa-file-excel"></i> ${b.filename || b.file_name || 'Upload'}</span>
-                            <span class="h-time">${formatTimeAgo(b.uploaded_at || b.created_at || Date.now())}</span>
-                        </div>
-                    `).join('');
-                } else {
-                    uploadHistory.classList.remove('active');
-                }
-            } catch (err) {
-                uploadHistory.classList.remove('active');
-            }
+            // Since the contract doesn't specify a history endpoint, we'll skip.
+            // The upload endpoint returns only the upload result.
+            // We can show recent uploads from local storage if needed.
+            // For now, we hide the history section.
+            uploadHistory.classList.remove('active');
         }
 
         // ============================================================
@@ -1950,9 +1947,14 @@
         //  EVENT BINDINGS
         // ============================================================
         refreshBtn.addEventListener('click', () => loadDashboard(true));
-        fileInput.addEventListener('change', (e) => { if (e.target.files && e.target.files.length > 0) { selectedFile = e
-                    .target.files[0];
-                updateFileUI(selectedFile); } else resetUploadUI(); });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files.length > 0) {
+                selectedFile = e.target.files[0];
+                updateFileUI(selectedFile);
+            } else resetUploadUI();
+        });
+
         dropzone.addEventListener('dragover', (e) => { e.preventDefault();
             dropzone.classList.add('dragover'); });
         dropzone.addEventListener('dragleave', (e) => { e.preventDefault();
@@ -1973,10 +1975,17 @@
                 } else showToast('❌ Please upload an Excel file (.xlsx or .xls)', 'error');
             }
         });
+
         uploadBtn.addEventListener('click', () => { if (selectedFile && !isUploading) uploadFile(selectedFile); });
-        historyMore.addEventListener('click', () => { window.open(UPLOAD_URL, '_blank'); });
+
+        historyMore.addEventListener('click', () => {
+            // No history endpoint; show a message
+            showToast('Upload history is not available yet.', 'info');
+        });
+
         closeDrill.addEventListener('click', () => drillModal.classList.remove('active'));
         drillModal.addEventListener('click', (e) => { if (e.target === drillModal) drillModal.classList.remove('active'); });
+
         document.getElementById('exportExcel').addEventListener('click', () => exportData('excel'));
         document.getElementById('exportPDF').addEventListener('click', () => exportData('pdf'));
         document.getElementById('exportPrint').addEventListener('click', () => window.print());
@@ -1990,6 +1999,7 @@
         setInterval(() => loadDashboard(false), 60000);
         resetUploadUI();
         console.log('🚀 Haier Enterprise Dashboard v3.0 loaded');
+        console.log('🔗 Endpoints:', ENDPOINTS);
     </script>
 
 </body>
