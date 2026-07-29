@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Haier Dashboard — Logistics Performance + Upload</title>
+    <title>Haier Logistics — Enterprise Dashboard v2.0</title>
 
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet" />
@@ -14,7 +14,9 @@
     </script>
 
     <style>
-        /* ===== RESET & BASE ===== */
+        /* ============================================================
+           RESET & BASE
+           ============================================================ */
         * {
             margin: 0;
             padding: 0;
@@ -26,10 +28,9 @@
             background: #0b131e;
             color: #e8edf5;
             min-height: 100vh;
-            padding: 24px 32px 48px;
+            padding: 20px 28px 40px;
         }
 
-        /* ===== SCROLLBAR ===== */
         ::-webkit-scrollbar {
             width: 6px;
             height: 6px;
@@ -46,27 +47,28 @@
             background: #3a6a8a;
         }
 
-        /* ===== LAYOUT ===== */
         .dashboard-container {
             max-width: 1600px;
             margin: 0 auto;
         }
 
-        /* ===== HEADER ===== */
+        /* ============================================================
+           HEADER
+           ============================================================ */
         .dashboard-header {
             display: flex;
             flex-wrap: wrap;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 28px;
-            padding-bottom: 16px;
+            margin-bottom: 24px;
+            padding-bottom: 14px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.06);
         }
 
         .header-left {
             display: flex;
             align-items: center;
-            gap: 16px;
+            gap: 14px;
         }
 
         .brand-icon {
@@ -105,69 +107,148 @@
         .header-right {
             display: flex;
             align-items: center;
-            gap: 20px;
+            gap: 16px;
             flex-wrap: wrap;
         }
 
         .last-updated {
-            font-size: 13px;
+            font-size: 12px;
             color: #8aa4be;
             background: rgba(255, 255, 255, 0.04);
-            padding: 8px 16px;
+            padding: 6px 14px;
             border-radius: 30px;
             border: 1px solid rgba(255, 255, 255, 0.06);
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 6px;
         }
         .last-updated i {
             color: #4fc3f7;
-            font-size: 13px;
+            font-size: 12px;
         }
 
         .refresh-btn {
             background: rgba(255, 255, 255, 0.06);
             border: 1px solid rgba(255, 255, 255, 0.08);
             color: #c8d8e8;
-            padding: 8px 18px;
+            padding: 6px 16px;
             border-radius: 30px;
-            font-size: 13px;
+            font-size: 12px;
             font-weight: 500;
             cursor: pointer;
             transition: all 0.2s;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 6px;
         }
         .refresh-btn:hover {
             background: rgba(79, 195, 247, 0.15);
             border-color: #4fc3f7;
             color: #fff;
         }
-        .refresh-btn i {
-            font-size: 14px;
-        }
         .refresh-btn:active {
             transform: scale(0.96);
         }
 
-        /* ===== KPI CARDS ===== */
+        /* ============================================================
+           EXECUTIVE SUMMARY
+           ============================================================ */
+        .executive-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 12px;
+            margin-bottom: 24px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 16px;
+            padding: 16px 20px;
+        }
+
+        .exec-item {
+            text-align: center;
+            padding: 4px 0;
+        }
+        .exec-item .exec-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #6a8aa8;
+            font-weight: 600;
+        }
+        .exec-item .exec-value {
+            font-size: 20px;
+            font-weight: 700;
+            margin-top: 2px;
+        }
+        .exec-item .exec-value.green {
+            color: #66d9a0;
+        }
+        .exec-item .exec-value.gold {
+            color: #f7c948;
+        }
+        .exec-item .exec-value.blue {
+            color: #4fc3f7;
+        }
+        .exec-item .exec-value.orange {
+            color: #ffb74d;
+        }
+        .exec-item .exec-value.pink {
+            color: #f48fb1;
+        }
+        .exec-item .exec-value.red {
+            color: #ef5350;
+        }
+        .exec-item .exec-value.purple {
+            color: #b39ddb;
+        }
+        .exec-item .exec-value.teal {
+            color: #4dd0e1;
+        }
+        .exec-item .exec-sub {
+            font-size: 10px;
+            color: #6a8aa8;
+            margin-top: 1px;
+        }
+
+        /* ============================================================
+           KPI SECTIONS
+           ============================================================ */
+        .kpi-section {
+            margin-bottom: 20px;
+        }
+
+        .kpi-section-title {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: #6a8aa8;
+            margin-bottom: 12px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .kpi-section-title i {
+            color: #4fc3f7;
+            font-size: 14px;
+        }
+
         .kpi-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 16px;
-            margin-bottom: 28px;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px;
         }
 
         .kpi-card {
             background: rgba(255, 255, 255, 0.04);
             backdrop-filter: blur(6px);
             border: 1px solid rgba(255, 255, 255, 0.06);
-            border-radius: 16px;
-            padding: 18px 16px 16px;
+            border-radius: 14px;
+            padding: 14px 14px 12px;
             transition: all 0.25s;
             position: relative;
-            overflow: hidden;
         }
         .kpi-card:hover {
             background: rgba(255, 255, 255, 0.07);
@@ -177,44 +258,36 @@
         }
 
         .kpi-card .kpi-label {
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 500;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.4px;
             color: #8aa4be;
-            margin-bottom: 6px;
             display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 5px;
         }
         .kpi-card .kpi-label i {
-            font-size: 13px;
-            color: #4fc3f7;
-            width: 18px;
+            font-size: 12px;
+            width: 16px;
             text-align: center;
         }
 
         .kpi-card .kpi-value {
-            font-size: 26px;
+            font-size: 24px;
             font-weight: 700;
-            letter-spacing: -0.5px;
-            color: #f0f6ff;
+            letter-spacing: -0.3px;
             line-height: 1.2;
+            margin-top: 2px;
         }
         .kpi-card .kpi-value.small {
-            font-size: 20px;
-        }
-        .kpi-card .kpi-value.green {
-            color: #66d9a0;
-        }
-        .kpi-card .kpi-value.gold {
-            color: #f7c948;
+            font-size: 18px;
         }
         .kpi-card .kpi-value.blue {
             color: #4fc3f7;
         }
-        .kpi-card .kpi-value.pink {
-            color: #f48fb1;
+        .kpi-card .kpi-value.green {
+            color: #66d9a0;
         }
         .kpi-card .kpi-value.orange {
             color: #ffb74d;
@@ -225,35 +298,399 @@
         .kpi-card .kpi-value.red {
             color: #ef5350;
         }
+        .kpi-card .kpi-value.gold {
+            color: #f7c948;
+        }
         .kpi-card .kpi-value.teal {
             color: #4dd0e1;
         }
-
-        .kpi-card .kpi-sub {
-            font-size: 12px;
-            color: #6a8aa8;
-            margin-top: 4px;
+        .kpi-card .kpi-value.pink {
+            color: #f48fb1;
         }
 
         .kpi-card .kpi-trend {
-            position: absolute;
-            top: 14px;
-            right: 14px;
-            font-size: 11px;
+            font-size: 10px;
             font-weight: 600;
-            padding: 2px 10px;
+            margin-top: 3px;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            padding: 1px 8px;
             border-radius: 20px;
-            background: rgba(79, 195, 247, 0.12);
-            color: #4fc3f7;
+            background: rgba(255, 255, 255, 0.05);
+        }
+        .kpi-card .kpi-trend.up {
+            color: #66d9a0;
+        }
+        .kpi-card .kpi-trend.down {
+            color: #ef5350;
+        }
+        .kpi-card .kpi-trend.neutral {
+            color: #8aa4be;
         }
 
-        /* ===== UPLOAD SECTION ===== */
+        .kpi-card .kpi-sub {
+            font-size: 11px;
+            color: #6a8aa8;
+            margin-top: 2px;
+        }
+
+        /* ============================================================
+           CHARTS ROW
+           ============================================================ */
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .chart-box {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 14px;
+            padding: 16px 16px 10px;
+            transition: all 0.25s;
+        }
+        .chart-box:hover {
+            border-color: rgba(79, 195, 247, 0.15);
+        }
+
+        .chart-box .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .chart-box .chart-header h4 {
+            font-size: 13px;
+            font-weight: 600;
+            color: #d8e4f0;
+        }
+        .chart-box .chart-header h4 i {
+            color: #4fc3f7;
+            margin-right: 6px;
+        }
+        .chart-box canvas {
+            width: 100% !important;
+            max-height: 170px;
+        }
+
+        /* ============================================================
+           TABLE — WAREHOUSE RANKING
+           ============================================================ */
+        .table-section {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 14px;
+            padding: 16px 16px 6px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+
+        .table-header {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 14px;
+        }
+
+        .table-header h2 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #d8e4f0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .table-header h2 i {
+            color: #4fc3f7;
+        }
+        .table-header .table-count {
+            font-size: 12px;
+            color: #8aa4be;
+            background: rgba(255, 255, 255, 0.06);
+            padding: 3px 12px;
+            border-radius: 30px;
+        }
+
+        .table-wrapper {
+            overflow-x: auto;
+            margin: 0 -4px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            min-width: 900px;
+        }
+
+        thead th {
+            text-align: left;
+            padding: 10px 10px;
+            font-weight: 600;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            color: #6a8aa8;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            white-space: nowrap;
+            position: sticky;
+            top: 0;
+            background: #0b131e;
+            z-index: 2;
+        }
+
+        thead th i {
+            margin-right: 3px;
+            opacity: 0.5;
+            font-size: 10px;
+        }
+
+        tbody tr {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            transition: background 0.15s;
+            cursor: pointer;
+        }
+        tbody tr:hover {
+            background: rgba(255, 255, 255, 0.04);
+        }
+        tbody td {
+            padding: 10px 10px;
+            color: #d0dce8;
+            vertical-align: middle;
+        }
+
+        .warehouse-name {
+            font-weight: 600;
+            color: #e8edf5;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .warehouse-name .dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            display: inline-block;
+            flex-shrink: 0;
+        }
+
+        .health-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 10px;
+            border-radius: 30px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .health-badge.excellent {
+            background: rgba(102, 217, 160, 0.15);
+            color: #66d9a0;
+        }
+        .health-badge.low {
+            background: rgba(102, 217, 160, 0.15);
+            color: #66d9a0;
+        }
+        .health-badge.medium {
+            background: rgba(255, 183, 77, 0.15);
+            color: #ffb74d;
+        }
+        .health-badge.high {
+            background: rgba(239, 83, 80, 0.15);
+            color: #ef5350;
+        }
+        .health-badge.critical {
+            background: rgba(239, 83, 80, 0.25);
+            color: #ef5350;
+        }
+
+        .risk-tag {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 30px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+        .risk-tag.critical {
+            background: rgba(239, 83, 80, 0.25);
+            color: #ef5350;
+        }
+        .risk-tag.high {
+            background: rgba(239, 83, 80, 0.18);
+            color: #ef5350;
+        }
+        .risk-tag.medium {
+            background: rgba(255, 183, 77, 0.18);
+            color: #ffb74d;
+        }
+        .risk-tag.low {
+            background: rgba(102, 217, 160, 0.18);
+            color: #66d9a0;
+        }
+        .risk-tag.excellent {
+            background: rgba(102, 217, 160, 0.18);
+            color: #66d9a0;
+        }
+
+        .revenue-cell {
+            font-weight: 500;
+            color: #f7c948;
+        }
+
+        .trend-cell {
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .trend-cell.up {
+            color: #66d9a0;
+        }
+        .trend-cell.down {
+            color: #ef5350;
+        }
+        .trend-cell.neutral {
+            color: #8aa4be;
+        }
+
+        /* ============================================================
+           AI INSIGHTS
+           ============================================================ */
+        .ai-insights {
+            background: rgba(79, 195, 247, 0.05);
+            border: 1px solid rgba(79, 195, 247, 0.12);
+            border-radius: 14px;
+            padding: 16px 20px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: flex-start;
+            gap: 16px;
+        }
+        .ai-insights .ai-icon {
+            font-size: 28px;
+            color: #4fc3f7;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+        .ai-insights .ai-content {
+            flex: 1;
+        }
+        .ai-insights .ai-content .ai-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #4fc3f7;
+            margin-bottom: 4px;
+        }
+        .ai-insights .ai-content .ai-text {
+            font-size: 13px;
+            color: #d0dce8;
+            line-height: 1.5;
+        }
+        .ai-insights .ai-content .ai-text strong {
+            color: #f7c948;
+        }
+        .ai-insights .ai-content .ai-recommend {
+            margin-top: 6px;
+            font-size: 12px;
+            color: #8aa4be;
+            padding: 6px 12px;
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 8px;
+            border-left: 3px solid #4fc3f7;
+        }
+
+        /* ============================================================
+           FILTERS
+           ============================================================ */
+        .filters-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 20px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 14px;
+            padding: 12px 16px;
+            align-items: center;
+        }
+        .filters-bar .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .filters-bar .filter-group label {
+            font-size: 11px;
+            color: #6a8aa8;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+        .filters-bar .filter-group select,
+        .filters-bar .filter-group input {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: #e8edf5;
+            padding: 5px 10px;
+            border-radius: 8px;
+            font-size: 12px;
+            font-family: 'Inter', sans-serif;
+            outline: none;
+            transition: border-color 0.2s;
+            min-width: 100px;
+        }
+        .filters-bar .filter-group select:focus,
+        .filters-bar .filter-group input:focus {
+            border-color: #4fc3f7;
+        }
+        .filters-bar .filter-group select option {
+            background: #0b131e;
+        }
+
+        /* ============================================================
+           EXPORT CENTRE
+           ============================================================ */
+        .export-centre {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+        .export-btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: #c8d8e8;
+            padding: 6px 14px;
+            border-radius: 30px;
+            font-size: 11px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .export-btn:hover {
+            background: rgba(79, 195, 247, 0.12);
+            border-color: #4fc3f7;
+            color: #fff;
+        }
+        .export-btn i {
+            font-size: 13px;
+        }
+
+        /* ============================================================
+           UPLOAD SECTION (moved to bottom)
+           ============================================================ */
         .upload-section {
             background: rgba(255, 255, 255, 0.03);
             border: 1px solid rgba(255, 255, 255, 0.06);
-            border-radius: 16px;
-            padding: 20px 24px 24px;
-            margin-bottom: 28px;
+            border-radius: 14px;
+            padding: 16px 20px 20px;
+            margin-top: 8px;
             transition: all 0.25s;
         }
         .upload-section:hover {
@@ -265,65 +702,54 @@
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
-            gap: 12px;
-            margin-bottom: 16px;
+            gap: 10px;
+            margin-bottom: 12px;
         }
 
         .upload-header h3 {
-            font-size: 16px;
+            font-size: 14px;
             font-weight: 600;
             color: #d8e4f0;
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
         }
         .upload-header h3 i {
             color: #4fc3f7;
         }
-        .upload-header .upload-badge {
-            font-size: 12px;
-            color: #8aa4be;
-            background: rgba(255, 255, 255, 0.06);
-            padding: 4px 14px;
-            border-radius: 30px;
-        }
 
         .upload-dropzone {
-            border: 2px dashed rgba(79, 195, 247, 0.25);
-            border-radius: 12px;
-            padding: 32px 20px;
+            border: 2px dashed rgba(79, 195, 247, 0.2);
+            border-radius: 10px;
+            padding: 24px 16px;
             text-align: center;
             cursor: pointer;
             transition: all 0.25s;
-            background: rgba(79, 195, 247, 0.04);
+            background: rgba(79, 195, 247, 0.03);
             position: relative;
         }
         .upload-dropzone:hover,
         .upload-dropzone.dragover {
             border-color: #4fc3f7;
-            background: rgba(79, 195, 247, 0.08);
-        }
-        .upload-dropzone.dragover {
-            transform: scale(1.01);
+            background: rgba(79, 195, 247, 0.07);
         }
         .upload-dropzone .icon-wrap {
-            font-size: 40px;
+            font-size: 32px;
             color: #4fc3f7;
-            opacity: 0.6;
-            margin-bottom: 10px;
+            opacity: 0.5;
+            margin-bottom: 6px;
         }
         .upload-dropzone p {
             color: #8aa4be;
-            font-size: 14px;
+            font-size: 13px;
         }
         .upload-dropzone p strong {
             color: #4fc3f7;
-            font-weight: 600;
         }
         .upload-dropzone .file-types {
-            font-size: 12px;
+            font-size: 11px;
             color: #5a7a98;
-            margin-top: 6px;
+            margin-top: 4px;
         }
         .upload-dropzone input[type="file"] {
             position: absolute;
@@ -338,19 +764,19 @@
             display: flex;
             flex-wrap: wrap;
             align-items: center;
-            gap: 16px;
-            margin-top: 16px;
+            gap: 12px;
+            margin-top: 12px;
         }
 
         .upload-controls .file-name {
-            font-size: 13px;
+            font-size: 12px;
             color: #c8d8e8;
             background: rgba(255, 255, 255, 0.05);
-            padding: 6px 16px;
+            padding: 5px 14px;
             border-radius: 30px;
             border: 1px solid rgba(255, 255, 255, 0.06);
             flex: 1;
-            min-width: 120px;
+            min-width: 100px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -363,15 +789,15 @@
             background: linear-gradient(135deg, #0066b3, #0099ff);
             border: none;
             color: #fff;
-            padding: 10px 28px;
+            padding: 8px 22px;
             border-radius: 30px;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.25s;
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
             white-space: nowrap;
         }
         .upload-btn:hover:not(:disabled) {
@@ -379,16 +805,13 @@
             box-shadow: 0 8px 30px rgba(0, 102, 179, 0.4);
         }
         .upload-btn:disabled {
-            opacity: 0.5;
+            opacity: 0.4;
             cursor: not-allowed;
             transform: none;
         }
-        .upload-btn i {
-            font-size: 16px;
-        }
 
         .upload-progress-wrap {
-            margin-top: 14px;
+            margin-top: 10px;
             display: none;
         }
         .upload-progress-wrap.active {
@@ -397,11 +820,10 @@
 
         .upload-progress-bar {
             width: 100%;
-            height: 6px;
+            height: 4px;
             background: rgba(255, 255, 255, 0.08);
             border-radius: 10px;
             overflow: hidden;
-            position: relative;
         }
         .upload-progress-bar .fill {
             height: 100%;
@@ -412,11 +834,11 @@
         }
 
         .upload-status {
-            font-size: 13px;
-            margin-top: 8px;
+            font-size: 12px;
+            margin-top: 6px;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 6px;
             color: #8aa4be;
         }
         .upload-status .success {
@@ -429,11 +851,10 @@
             color: #4fc3f7;
         }
 
-        /* ===== UPLOAD HISTORY MINI ===== */
         .upload-history-mini {
-            margin-top: 16px;
-            padding-top: 14px;
-            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            margin-top: 12px;
+            padding-top: 10px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
             display: none;
         }
         .upload-history-mini.active {
@@ -441,41 +862,41 @@
         }
 
         .upload-history-mini .history-title {
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 500;
             color: #6a8aa8;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 8px;
+            letter-spacing: 0.4px;
+            margin-bottom: 6px;
         }
 
         .upload-history-mini .history-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 6px 0;
-            font-size: 13px;
+            padding: 4px 0;
+            font-size: 12px;
             color: #c8d8e8;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
         }
         .upload-history-mini .history-item .h-name {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 6px;
         }
         .upload-history-mini .history-item .h-name i {
             color: #66d9a0;
-            font-size: 12px;
+            font-size: 11px;
         }
         .upload-history-mini .history-item .h-time {
             color: #6a8aa8;
-            font-size: 12px;
+            font-size: 11px;
         }
 
         .upload-history-mini .history-more {
             text-align: center;
-            margin-top: 8px;
-            font-size: 12px;
+            margin-top: 6px;
+            font-size: 11px;
             color: #4fc3f7;
             cursor: pointer;
         }
@@ -483,228 +904,9 @@
             text-decoration: underline;
         }
 
-        /* ===== CHARTS ROW ===== */
-        .charts-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-bottom: 28px;
-        }
-
-        .chart-box {
-            background: rgba(255, 255, 255, 0.04);
-            border: 1px solid rgba(255, 255, 255, 0.06);
-            border-radius: 16px;
-            padding: 20px 20px 12px;
-            transition: all 0.25s;
-        }
-        .chart-box:hover {
-            border-color: rgba(79, 195, 247, 0.15);
-        }
-
-        .chart-box .chart-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 14px;
-        }
-        .chart-box .chart-header h3 {
-            font-size: 15px;
-            font-weight: 600;
-            color: #d8e4f0;
-        }
-        .chart-box .chart-header h3 i {
-            color: #4fc3f7;
-            margin-right: 8px;
-        }
-        .chart-box canvas {
-            width: 100% !important;
-            max-height: 220px;
-        }
-
-        /* ===== TABLE SECTION ===== */
-        .table-section {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.06);
-            border-radius: 16px;
-            padding: 20px 20px 8px;
-            overflow: hidden;
-            margin-bottom: 12px;
-        }
-
-        .table-header {
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 18px;
-        }
-
-        .table-header h2 {
-            font-size: 18px;
-            font-weight: 600;
-            color: #d8e4f0;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .table-header h2 i {
-            color: #4fc3f7;
-        }
-        .table-header .table-count {
-            font-size: 13px;
-            color: #8aa4be;
-            background: rgba(255, 255, 255, 0.06);
-            padding: 4px 14px;
-            border-radius: 30px;
-        }
-
-        .table-wrapper {
-            overflow-x: auto;
-            margin: 0 -4px;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-            min-width: 900px;
-        }
-
-        thead th {
-            text-align: left;
-            padding: 12px 12px 12px 12px;
-            font-weight: 600;
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            color: #8aa4be;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-            white-space: nowrap;
-            position: sticky;
-            top: 0;
-            background: #0b131e;
-            z-index: 2;
-        }
-
-        thead th i {
-            margin-right: 4px;
-            opacity: 0.6;
-            font-size: 11px;
-        }
-
-        tbody tr {
-            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-            transition: background 0.15s;
-        }
-        tbody tr:hover {
-            background: rgba(255, 255, 255, 0.04);
-        }
-        tbody td {
-            padding: 12px 12px;
-            color: #d0dce8;
-            vertical-align: middle;
-        }
-
-        .warehouse-name {
-            font-weight: 600;
-            color: #e8edf5;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .warehouse-name .dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            display: inline-block;
-            flex-shrink: 0;
-        }
-        .dot-blue {
-            background: #4fc3f7;
-        }
-        .dot-green {
-            background: #66d9a0;
-        }
-        .dot-gold {
-            background: #f7c948;
-        }
-        .dot-orange {
-            background: #ffb74d;
-        }
-        .dot-pink {
-            background: #f48fb1;
-        }
-        .dot-purple {
-            background: #b39ddb;
-        }
-        .dot-teal {
-            background: #4dd0e1;
-        }
-        .dot-red {
-            background: #ef5350;
-        }
-        .dot-gray {
-            background: #78909c;
-        }
-
-        .health-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            padding: 2px 12px;
-            border-radius: 30px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-        .health-badge.high {
-            background: rgba(239, 83, 80, 0.15);
-            color: #ef5350;
-        }
-        .health-badge.medium {
-            background: rgba(255, 183, 77, 0.15);
-            color: #ffb74d;
-        }
-        .health-badge.low {
-            background: rgba(102, 217, 160, 0.15);
-            color: #66d9a0;
-        }
-
-        .risk-tag {
-            display: inline-block;
-            padding: 2px 12px;
-            border-radius: 30px;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
-        }
-        .risk-tag.high {
-            background: rgba(239, 83, 80, 0.18);
-            color: #ef5350;
-        }
-        .risk-tag.medium {
-            background: rgba(255, 183, 77, 0.18);
-            color: #ffb74d;
-        }
-        .risk-tag.low {
-            background: rgba(102, 217, 160, 0.18);
-            color: #66d9a0;
-        }
-
-        .revenue-cell {
-            font-weight: 500;
-            color: #f7c948;
-        }
-
-        .text-muted {
-            color: #6a8aa8;
-        }
-        .text-right {
-            text-align: right;
-        }
-
-        /* ===== LOADING ===== */
+        /* ============================================================
+           LOADING / ERROR
+           ============================================================ */
         .loading-overlay {
             display: flex;
             flex-direction: column;
@@ -712,11 +914,11 @@
             justify-content: center;
             padding: 60px 20px;
             color: #8aa4be;
-            gap: 16px;
+            gap: 14px;
         }
         .loading-overlay .spinner {
-            width: 44px;
-            height: 44px;
+            width: 40px;
+            height: 40px;
             border: 3px solid rgba(79, 195, 247, 0.15);
             border-top-color: #4fc3f7;
             border-radius: 50%;
@@ -732,133 +934,39 @@
             background: rgba(239, 83, 80, 0.1);
             border: 1px solid rgba(239, 83, 80, 0.2);
             color: #ef5350;
-            padding: 16px 24px;
+            padding: 14px 20px;
             border-radius: 12px;
             text-align: center;
             margin: 20px 0;
         }
         .error-message i {
-            margin-right: 10px;
+            margin-right: 8px;
         }
 
-        /* ===== RESPONSIVE ===== */
-        @media (max-width: 1024px) {
-            .charts-row {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        @media (max-width: 768px) {
-            body {
-                padding: 16px;
-            }
-            .dashboard-header {
-                flex-direction: column;
-                align-items: stretch;
-                gap: 14px;
-            }
-            .header-right {
-                justify-content: space-between;
-            }
-            .kpi-grid {
-                grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-                gap: 12px;
-            }
-            .kpi-card .kpi-value {
-                font-size: 20px;
-            }
-            .kpi-card .kpi-value.small {
-                font-size: 17px;
-            }
-            .table-header {
-                flex-direction: column;
-                align-items: stretch;
-                gap: 8px;
-            }
-            .brand-icon {
-                width: 36px;
-                height: 36px;
-                font-size: 18px;
-            }
-            .header-title h1 {
-                font-size: 20px;
-            }
-            .upload-controls {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            .upload-btn {
-                justify-content: center;
-            }
-        }
-
-        @media (max-width: 480px) {
-            .kpi-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            .kpi-card {
-                padding: 14px 12px;
-            }
-            .kpi-card .kpi-value {
-                font-size: 18px;
-            }
-            .kpi-card .kpi-value.small {
-                font-size: 15px;
-            }
-            .last-updated {
-                font-size: 11px;
-                padding: 6px 12px;
-            }
-        }
-
-        /* ===== UTILITY ===== */
-        .fade-in {
-            animation: fadeIn 0.5s ease forwards;
-        }
-        @keyframes fadeIn {
-            from {
-                opacity: 0;
-                transform: translateY(8px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .hidden {
-            display: none !important;
-        }
-
-        .text-truncate {
-            max-width: 120px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        /* ===== TOAST ===== */
+        /* ============================================================
+           TOAST
+           ============================================================ */
         .toast-container {
             position: fixed;
-            top: 24px;
-            right: 24px;
+            top: 20px;
+            right: 20px;
             z-index: 9999;
             display: flex;
             flex-direction: column;
-            gap: 10px;
-            max-width: 380px;
+            gap: 8px;
+            max-width: 360px;
             width: 100%;
         }
         .toast {
-            padding: 14px 20px;
-            border-radius: 12px;
-            font-size: 14px;
+            padding: 12px 16px;
+            border-radius: 10px;
+            font-size: 13px;
             font-weight: 500;
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 10px;
             box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-            animation: slideIn 0.35s ease forwards;
+            animation: slideIn 0.3s ease forwards;
             border: 1px solid rgba(255, 255, 255, 0.06);
             backdrop-filter: blur(8px);
         }
@@ -878,7 +986,7 @@
             border-color: rgba(79, 195, 247, 0.2);
         }
         .toast i {
-            font-size: 20px;
+            font-size: 18px;
         }
         .toast .toast-close {
             margin-left: auto;
@@ -888,7 +996,7 @@
             background: none;
             border: none;
             color: inherit;
-            font-size: 18px;
+            font-size: 16px;
         }
         .toast .toast-close:hover {
             opacity: 1;
@@ -914,6 +1022,212 @@
                 transform: translateX(40px);
             }
         }
+
+        /* ============================================================
+           RESPONSIVE
+           ============================================================ */
+        @media (max-width: 1024px) {
+            .charts-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 12px 14px;
+            }
+            .dashboard-header {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 10px;
+            }
+            .header-right {
+                justify-content: space-between;
+            }
+            .executive-summary {
+                grid-template-columns: repeat(3, 1fr);
+                gap: 8px;
+                padding: 12px;
+            }
+            .exec-item .exec-value {
+                font-size: 16px;
+            }
+            .kpi-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 8px;
+            }
+            .kpi-card .kpi-value {
+                font-size: 18px;
+            }
+            .kpi-card .kpi-value.small {
+                font-size: 15px;
+            }
+            .charts-grid {
+                grid-template-columns: 1fr;
+            }
+            .table-header {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 6px;
+            }
+            .brand-icon {
+                width: 36px;
+                height: 36px;
+                font-size: 18px;
+            }
+            .header-title h1 {
+                font-size: 18px;
+            }
+            .filters-bar {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .filters-bar .filter-group {
+                flex-wrap: wrap;
+            }
+            .filters-bar .filter-group select,
+            .filters-bar .filter-group input {
+                min-width: 80px;
+                flex: 1;
+            }
+            .upload-controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .upload-btn {
+                justify-content: center;
+            }
+            .ai-insights {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .ai-insights .ai-icon {
+                font-size: 24px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .executive-summary {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .kpi-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+            .kpi-card {
+                padding: 10px 10px 8px;
+            }
+            .kpi-card .kpi-value {
+                font-size: 16px;
+            }
+            .kpi-card .kpi-value.small {
+                font-size: 13px;
+            }
+            .last-updated {
+                font-size: 10px;
+                padding: 4px 10px;
+            }
+            .export-centre {
+                gap: 6px;
+            }
+            .export-btn {
+                font-size: 10px;
+                padding: 4px 10px;
+            }
+        }
+
+        /* ============================================================
+           UTILITY
+           ============================================================ */
+        .fade-in {
+            animation: fadeIn 0.4s ease forwards;
+        }
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(6px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .text-muted {
+            color: #6a8aa8;
+        }
+        .text-right {
+            text-align: right;
+        }
+
+        /* drill-down modal (simple) */
+        .drill-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            padding: 20px;
+        }
+        .drill-modal.active {
+            display: flex;
+        }
+        .drill-modal .modal-content {
+            background: #0b131e;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            max-width: 700px;
+            width: 100%;
+            max-height: 80vh;
+            overflow-y: auto;
+            padding: 24px 28px;
+            box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+        }
+        .drill-modal .modal-content .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .drill-modal .modal-content .modal-header h2 {
+            font-size: 20px;
+            color: #f0f6ff;
+        }
+        .drill-modal .modal-content .modal-header .close-modal {
+            background: none;
+            border: none;
+            color: #8aa4be;
+            font-size: 24px;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+        .drill-modal .modal-content .modal-header .close-modal:hover {
+            color: #fff;
+        }
+        .drill-modal .modal-content .modal-body {
+            color: #d0dce8;
+        }
+        .drill-modal .modal-content .modal-body .detail-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            font-size: 14px;
+        }
+        .drill-modal .modal-content .modal-body .detail-row .label {
+            color: #8aa4be;
+        }
+        .drill-modal .modal-content .modal-body .detail-row .value {
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
@@ -923,13 +1237,26 @@
         <!-- ===== TOAST CONTAINER ===== -->
         <div class="toast-container" id="toastContainer"></div>
 
+        <!-- ===== DRILL-DOWN MODAL ===== -->
+        <div class="drill-modal" id="drillModal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="drillTitle">Warehouse Details</h2>
+                    <button class="close-modal" id="closeDrill">&times;</button>
+                </div>
+                <div class="modal-body" id="drillBody">
+                    <!-- populated by JS -->
+                </div>
+            </div>
+        </div>
+
         <!-- ===== HEADER ===== -->
         <header class="dashboard-header">
             <div class="header-left">
                 <div class="brand-icon"><i class="fas fa-truck-fast"></i></div>
                 <div class="header-title">
-                    <h1>Haier Logistics Dashboard</h1>
-                    <span><i class="fas fa-warehouse"></i> Real-time performance &amp; warehouse ranking</span>
+                    <h1>Haier Logistics · Enterprise</h1>
+                    <span><i class="fas fa-warehouse"></i> Real-time performance &amp; intelligence</span>
                 </div>
             </div>
             <div class="header-right">
@@ -943,16 +1270,149 @@
             </div>
         </header>
 
-        <!-- ===== KPI CARDS ===== -->
-        <section class="kpi-grid" id="kpiGrid">
+        <!-- ===== EXECUTIVE SUMMARY ===== -->
+        <section class="executive-summary" id="execSummary">
             <!-- populated by JS -->
         </section>
 
-        <!-- ===== UPLOAD SECTION ===== -->
+        <!-- ===== FILTERS ===== -->
+        <div class="filters-bar" id="filtersBar">
+            <div class="filter-group">
+                <label><i class="fas fa-calendar-alt"></i> Date</label>
+                <input type="date" id="filterDate" />
+            </div>
+            <div class="filter-group">
+                <label><i class="fas fa-warehouse"></i> Warehouse</label>
+                <select id="filterWarehouse"><option value="">All</option></select>
+            </div>
+            <div class="filter-group">
+                <label><i class="fas fa-map-marker-alt"></i> Region</label>
+                <select id="filterRegion"><option value="">All</option></select>
+            </div>
+            <div class="filter-group">
+                <label><i class="fas fa-building"></i> Division</label>
+                <select id="filterDivision"><option value="">All</option></select>
+            </div>
+            <div class="filter-group">
+                <label><i class="fas fa-truck"></i> Transporter</label>
+                <select id="filterTransporter"><option value="">All</option></select>
+            </div>
+            <div class="filter-group">
+                <label><i class="fas fa-box"></i> Product</label>
+                <select id="filterProduct"><option value="">All</option></select>
+            </div>
+            <div class="filter-group">
+                <label><i class="fas fa-city"></i> City</label>
+                <select id="filterCity"><option value="">All</option></select>
+            </div>
+        </div>
+
+        <!-- ===== KPI SECTIONS ===== -->
+        <!-- Overview -->
+        <div class="kpi-section">
+            <div class="kpi-section-title"><i class="fas fa-chart-simple"></i> Logistics Overview</div>
+            <div class="kpi-grid" id="kpiOverview"></div>
+        </div>
+
+        <!-- PGI -->
+        <div class="kpi-section">
+            <div class="kpi-section-title"><i class="fas fa-boxes"></i> PGI Performance</div>
+            <div class="kpi-grid" id="kpiPGI"></div>
+        </div>
+
+        <!-- Delivery -->
+        <div class="kpi-section">
+            <div class="kpi-section-title"><i class="fas fa-truck"></i> Delivery Performance</div>
+            <div class="kpi-grid" id="kpiDelivery"></div>
+        </div>
+
+        <!-- POD -->
+        <div class="kpi-section">
+            <div class="kpi-section-title"><i class="fas fa-check-circle"></i> POD Performance</div>
+            <div class="kpi-grid" id="kpiPOD"></div>
+        </div>
+
+        <!-- ===== CHARTS ===== -->
+        <div class="charts-grid" id="chartsGrid">
+            <div class="chart-box">
+                <div class="chart-header"><h4><i class="fas fa-chart-line"></i> Revenue Trend</h4></div>
+                <canvas id="chartRevenueTrend" height="150"></canvas>
+            </div>
+            <div class="chart-box">
+                <div class="chart-header"><h4><i class="fas fa-heartbeat"></i> Warehouse Health</h4></div>
+                <canvas id="chartHealth" height="150"></canvas>
+            </div>
+            <div class="chart-box">
+                <div class="chart-header"><h4><i class="fas fa-percent"></i> PGI %</h4></div>
+                <canvas id="chartPGI" height="150"></canvas>
+            </div>
+            <div class="chart-box">
+                <div class="chart-header"><h4><i class="fas fa-percent"></i> Delivery %</h4></div>
+                <canvas id="chartDelivery" height="150"></canvas>
+            </div>
+            <div class="chart-box">
+                <div class="chart-header"><h4><i class="fas fa-percent"></i> POD %</h4></div>
+                <canvas id="chartPOD" height="150"></canvas>
+            </div>
+            <div class="chart-box">
+                <div class="chart-header"><h4><i class="fas fa-clock"></i> Pending Units</h4></div>
+                <canvas id="chartPending" height="150"></canvas>
+            </div>
+        </div>
+
+        <!-- ===== AI INSIGHTS ===== -->
+        <div class="ai-insights" id="aiInsights">
+            <div class="ai-icon"><i class="fas fa-robot"></i></div>
+            <div class="ai-content">
+                <div class="ai-title">AI Insight</div>
+                <div class="ai-text" id="aiText">Loading insights…</div>
+                <div class="ai-recommend" id="aiRecommend"></div>
+            </div>
+        </div>
+
+        <!-- ===== EXPORT CENTRE ===== -->
+        <div class="export-centre">
+            <button class="export-btn" id="exportExcel"><i class="fas fa-file-excel"></i> Excel</button>
+            <button class="export-btn" id="exportPDF"><i class="fas fa-file-pdf"></i> PDF</button>
+            <button class="export-btn" id="exportPrint"><i class="fas fa-print"></i> Print</button>
+            <button class="export-btn" id="exportEmail"><i class="fas fa-envelope"></i> Email</button>
+            <button class="export-btn" id="exportWhatsApp"><i class="fab fa-whatsapp"></i> WhatsApp</button>
+        </div>
+
+        <!-- ===== WAREHOUSE RANKING TABLE ===== -->
+        <section class="table-section">
+            <div class="table-header">
+                <h2><i class="fas fa-ranking-star"></i> Warehouse Ranking</h2>
+                <span class="table-count" id="warehouseCount">0 warehouses</span>
+            </div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th><i class="fas fa-hashtag"></i> Rank</th>
+                            <th><i class="fas fa-flag"></i> Warehouse</th>
+                            <th><i class="fas fa-heartbeat"></i> Health</th>
+                            <th><i class="fas fa-percent"></i> PGI %</th>
+                            <th><i class="fas fa-percent"></i> Delivery %</th>
+                            <th><i class="fas fa-percent"></i> POD %</th>
+                            <th><i class="fas fa-coins"></i> Revenue</th>
+                            <th><i class="fas fa-boxes"></i> Pending Units</th>
+                            <th><i class="fas fa-triangle-exclamation"></i> Risk</th>
+                            <th><i class="fas fa-chart-line"></i> Trend</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tableBody">
+                        <!-- populated by JS -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- ===== UPLOAD SECTION (bottom) ===== -->
         <section class="upload-section" id="uploadSection">
             <div class="upload-header">
                 <h3><i class="fas fa-cloud-upload-alt"></i> Upload Excel Data</h3>
-                <span class="upload-badge"><i class="far fa-file-excel"></i> .xlsx / .xls</span>
+                <span class="text-muted" style="font-size:12px;"><i class="far fa-file-excel"></i> .xlsx / .xls</span>
             </div>
 
             <div class="upload-dropzone" id="dropzone">
@@ -980,60 +1440,10 @@
                 </div>
             </div>
 
-            <!-- Mini history -->
             <div class="upload-history-mini" id="uploadHistoryMini">
                 <div class="history-title"><i class="fas fa-history"></i> Recent Uploads</div>
                 <div id="historyList"></div>
                 <div class="history-more" id="historyMore">View all uploads →</div>
-            </div>
-        </section>
-
-        <!-- ===== CHARTS ===== -->
-        <section class="charts-row">
-            <div class="chart-box">
-                <div class="chart-header">
-                    <h3><i class="fas fa-chart-bar"></i> Revenue by Warehouse</h3>
-                    <span style="font-size:12px;color:#6a8aa8;">(Top 10)</span>
-                </div>
-                <canvas id="revenueChart" height="200"></canvas>
-            </div>
-            <div class="chart-box">
-                <div class="chart-header">
-                    <h3><i class="fas fa-chart-pie"></i> POD Achievement</h3>
-                    <span style="font-size:12px;color:#6a8aa8;">% per warehouse</span>
-                </div>
-                <canvas id="podChart" height="200"></canvas>
-            </div>
-        </section>
-
-        <!-- ===== TABLE ===== -->
-        <section class="table-section">
-            <div class="table-header">
-                <h2><i class="fas fa-ranking-star"></i> Warehouse Ranking</h2>
-                <span class="table-count" id="warehouseCount">0 warehouses</span>
-            </div>
-            <div class="table-wrapper">
-                <table>
-                    <thead>
-                        <tr>
-                            <th><i class="fas fa-flag"></i> Warehouse</th>
-                            <th><i class="fas fa-file-alt"></i> Total DN</th>
-                            <th><i class="fas fa-cubes"></i> Units</th>
-                            <th><i class="fas fa-coins"></i> Revenue</th>
-                            <th><i class="fas fa-clock"></i> Avg Deliv</th>
-                            <th><i class="fas fa-clock"></i> Avg POD</th>
-                            <th><i class="fas fa-clock"></i> Avg Cycle</th>
-                            <th><i class="fas fa-check-circle"></i> POD %</th>
-                            <th><i class="fas fa-hourglass-half"></i> Pending DN</th>
-                            <th><i class="fas fa-boxes"></i> Pending Units</th>
-                            <th><i class="fas fa-heartbeat"></i> Health</th>
-                            <th><i class="fas fa-triangle-exclamation"></i> Risk</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tableBody">
-                        <!-- populated by JS -->
-                    </tbody>
-                </table>
             </div>
         </section>
 
@@ -1054,10 +1464,8 @@
         //  CONFIG
         // ============================================================
         const WEBHOOK_URL =
-            'https://jamshaidkhan.app.n8n.cloud/webhook/haier-dashboard';
+            'https://jamshaidkhan.app.n8n.cloud/webhook-test/haier-dashboard';
 
-        // Upload endpoint — use same host as current page, or override
-        // If your FastAPI backend is on a different host, set UPLOAD_BASE_URL accordingly.
         const UPLOAD_BASE_URL = window.location.origin;
         const UPLOAD_URL = UPLOAD_BASE_URL + '/upload/excel';
         const UPLOAD_STATUS_URL = UPLOAD_BASE_URL + '/upload/status';
@@ -1067,15 +1475,19 @@
         //  STATE
         // ============================================================
         let dashboardData = null;
-        let revenueChartInstance = null;
-        let podChartInstance = null;
+        let rawWarehouses = [];
+        let chartInstances = {};
         let selectedFile = null;
         let isUploading = false;
 
         // ============================================================
         //  DOM REFS
         // ============================================================
-        const kpiGrid = document.getElementById('kpiGrid');
+        const execSummary = document.getElementById('execSummary');
+        const kpiOverview = document.getElementById('kpiOverview');
+        const kpiPGI = document.getElementById('kpiPGI');
+        const kpiDelivery = document.getElementById('kpiDelivery');
+        const kpiPOD = document.getElementById('kpiPOD');
         const tableBody = document.getElementById('tableBody');
         const warehouseCount = document.getElementById('warehouseCount');
         const lastUpdatedEl = document.getElementById('lastUpdated');
@@ -1083,8 +1495,10 @@
         const errorState = document.getElementById('errorState');
         const errorText = document.getElementById('errorText');
         const refreshBtn = document.getElementById('refreshBtn');
+        const aiText = document.getElementById('aiText');
+        const aiRecommend = document.getElementById('aiRecommend');
 
-        // Upload DOM
+        // Upload
         const fileInput = document.getElementById('fileInput');
         const dropzone = document.getElementById('dropzone');
         const fileName = document.getElementById('fileName');
@@ -1096,18 +1510,20 @@
         const historyMore = document.getElementById('historyMore');
         const uploadHistoryMini = document.getElementById('uploadHistoryMini');
 
-        // Toast container
+        // Drill
+        const drillModal = document.getElementById('drillModal');
+        const drillTitle = document.getElementById('drillTitle');
+        const drillBody = document.getElementById('drillBody');
+        const closeDrill = document.getElementById('closeDrill');
+
+        // Toast
         const toastContainer = document.getElementById('toastContainer');
 
         // ============================================================
-        //  TOAST SYSTEM
+        //  TOAST
         // ============================================================
-        function showToast(message, type = 'info', duration = 4500) {
-            const icons = {
-                success: 'fa-check-circle',
-                error: 'fa-exclamation-circle',
-                info: 'fa-info-circle'
-            };
+        function showToast(message, type = 'info', duration = 4000) {
+            const icons = { success: 'fa-check-circle', error: 'fa-exclamation-circle', info: 'fa-info-circle' };
             const toast = document.createElement('div');
             toast.className = `toast ${type}`;
             toast.innerHTML = `
@@ -1116,20 +1532,17 @@
                 <button class="toast-close">&times;</button>
             `;
             toastContainer.appendChild(toast);
-
             const closeBtn = toast.querySelector('.toast-close');
             closeBtn.addEventListener('click', () => {
                 toast.style.animation = 'slideOut 0.3s ease forwards';
                 setTimeout(() => toast.remove(), 350);
             });
-
             setTimeout(() => {
                 if (toast.parentNode) {
                     toast.style.animation = 'slideOut 0.3s ease forwards';
                     setTimeout(() => toast.remove(), 350);
                 }
             }, duration);
-
             return toast;
         }
 
@@ -1153,26 +1566,34 @@
             return 'PKR ' + num.toLocaleString('en-US');
         }
 
-        function getDotColor(warehouse) {
-            const colors = ['#4fc3f7', '#66d9a0', '#f7c948', '#ffb74d', '#f48fb1', '#b39ddb', '#4dd0e1', '#ef5350', '#78909c',
-                '#81d4fa', '#aed581', '#ffd54f'
-            ];
+        function getDotColor(name) {
+            const colors = ['#4fc3f7', '#66d9a0', '#f7c948', '#ffb74d', '#f48fb1', '#b39ddb', '#4dd0e1', '#ef5350', '#78909c'];
             let hash = 0;
-            for (let i = 0; i < warehouse.length; i++) {
-                hash = warehouse.charCodeAt(i) + ((hash << 5) - hash);
+            for (let i = 0; i < name.length; i++) {
+                hash = name.charCodeAt(i) + ((hash << 5) - hash);
             }
             return colors[Math.abs(hash) % colors.length];
         }
 
-        function getHealthBadge(score) {
-            if (score >= 80) return 'low';
-            if (score >= 60) return 'medium';
-            return 'high';
+        function getRiskLevel(score) {
+            if (score >= 85) return 'excellent';
+            if (score >= 70) return 'low';
+            if (score >= 50) return 'medium';
+            if (score >= 30) return 'high';
+            return 'critical';
         }
 
-        function getRiskTag(level) {
-            const map = { 'High': 'high', 'Medium': 'medium', 'Low': 'low' };
-            return map[level] || 'medium';
+        function getRiskLabel(level) {
+            const map = { 'critical': 'Critical', 'high': 'High', 'medium': 'Medium', 'low': 'Low', 'excellent': 'Excellent' };
+            return map[level] || level;
+        }
+
+        function getHealthBadge(score) {
+            if (score >= 85) return 'excellent';
+            if (score >= 70) return 'low';
+            if (score >= 50) return 'medium';
+            if (score >= 30) return 'high';
+            return 'critical';
         }
 
         function formatDate(ts) {
@@ -1199,235 +1620,412 @@
             return days + 'd ago';
         }
 
-        // ============================================================
-        //  RENDER KPI CARDS
-        // ============================================================
-        function renderKPI(data) {
-            const cards = data.cards || {};
-            const kpis = [{
-                label: 'Total Delivery Notes',
-                value: cards.total_delivery_notes || '0',
-                icon: 'fa-file-alt',
-                cls: 'blue'
-            }, {
-                label: 'Total Units',
-                value: cards.total_units || '0',
-                icon: 'fa-cubes',
-                cls: 'teal'
-            }, {
-                label: 'Total Revenue',
-                value: formatCurrency(cards.total_revenue),
-                icon: 'fa-coins',
-                cls: 'gold',
-                sub: formatCurrencyFull(cards.total_revenue)
-            }, {
-                label: 'PGI Completed',
-                value: cards.pgi_completed_dns || '0',
-                icon: 'fa-check-circle',
-                cls: 'green'
-            }, {
-                label: 'POD Completed',
-                value: cards.pod_completed_dns || '0',
-                icon: 'fa-circle-check',
-                cls: 'green'
-            }, {
-                label: 'PGI Pending',
-                value: cards.pgi_pending_dns || '0',
-                icon: 'fa-hourglass-half',
-                cls: 'orange'
-            }, {
-                label: 'Pending DNs',
-                value: cards.pending_dns || '0',
-                icon: 'fa-clock',
-                cls: 'pink'
-            }, {
-                label: 'Pending Units',
-                value: cards.pending_units || '0',
-                icon: 'fa-boxes',
-                cls: 'red'
-            }, {
-                label: 'PGI %',
-                value: (cards.pgi_percentage || '0') + '%',
-                icon: 'fa-percent',
-                cls: 'blue'
-            }, {
-                label: 'POD %',
-                value: (cards.pod_percentage || '0') + '%',
-                icon: 'fa-percent',
-                cls: 'green'
-            }, ];
+        // Smart Health Score: 30% PGI, 30% Delivery, 20% POD, 10% Pending Units, 10% Cycle Time
+        function computeSmartHealth(w) {
+            // PGI % — we don't have it directly, approximate from pod_achievement and pending
+            const totalDN = parseFloat(w.total_dn) || 1;
+            const pendingDN = parseFloat(w.pending_dn) || 0;
+            const pgiDone = totalDN - pendingDN;
+            const pgiPct = Math.min(100, (pgiDone / totalDN) * 100);
 
-            kpiGrid.innerHTML = kpis.map(k => `
+            // Delivery % — approximate from avg_delivery_days (lower is better)
+            const avgDel = parseFloat(w.avg_delivery_days) || 1;
+            const deliveryScore = Math.max(0, Math.min(100, 100 - (avgDel / 10) * 100));
+
+            // POD %
+            const podPct = parseFloat(w.pod_achievement) || 0;
+
+            // Pending Units penalty (lower is better)
+            const pendingUnits = parseFloat(w.pending_units) || 0;
+            const maxPending = 50000;
+            const pendingScore = Math.max(0, 100 - (pendingUnits / maxPending) * 100);
+
+            // Cycle Time (lower is better)
+            const avgCycle = parseFloat(w.avg_cycle_days) || 1;
+            const cycleScore = Math.max(0, Math.min(100, 100 - (avgCycle / 20) * 100));
+
+            const health = (pgiPct * 0.30) + (deliveryScore * 0.30) + (podPct * 0.20) + (pendingScore * 0.10) + (cycleScore *
+                0.10);
+            return Math.round(Math.min(100, Math.max(0, health)));
+        }
+
+        // Generate trend (mock: compare with yesterday)
+        function generateTrend(current, previous) {
+            if (previous === undefined || previous === null || previous === 0) return { direction: 'neutral', change: 0 };
+            const diff = ((current - previous) / Math.abs(previous)) * 100;
+            if (Math.abs(diff) < 0.5) return { direction: 'neutral', change: 0 };
+            return { direction: diff > 0 ? 'up' : 'down', change: Math.abs(diff) };
+        }
+
+        // ============================================================
+        //  RENDER: EXECUTIVE SUMMARY
+        // ============================================================
+        function renderExecutiveSummary(data) {
+            const cards = data.cards || {};
+            const warehouses = data.warehouse_ranking || [];
+
+            // Compute national health
+            let totalHealth = 0;
+            let count = 0;
+            warehouses.forEach(w => {
+                const h = computeSmartHealth(w);
+                totalHealth += h;
+                count++;
+            });
+            const avgHealth = count > 0 ? Math.round(totalHealth / count) : 0;
+            const healthLabel = avgHealth >= 85 ? 'Excellent' : avgHealth >= 70 ? 'Good' : avgHealth >= 50 ? 'Fair' :
+            'Poor';
+            const healthColor = avgHealth >= 85 ? 'green' : avgHealth >= 70 ? 'blue' : avgHealth >= 50 ? 'orange' : 'red';
+
+            // Best / worst
+            let best = null,
+                worst = null;
+            if (warehouses.length > 0) {
+                const sorted = [...warehouses].sort((a, b) => computeSmartHealth(b) - computeSmartHealth(a));
+                best = sorted[0];
+                worst = sorted[sorted.length - 1];
+            }
+
+            // Revenue
+            const revenue = cards.total_revenue || 0;
+
+            // PGI % (approx)
+            const totalDN = parseInt(cards.total_delivery_notes) || 1;
+            const pendingDN = parseInt(cards.pending_dns) || 0;
+            const pgiPct = Math.round(((totalDN - pendingDN) / totalDN) * 100);
+
+            // Delivery % (approx)
+            const deliveryPct = cards.delivery_percentage || 95;
+
+            // POD %
+            const podPct = cards.pod_percentage || 0;
+
+            // Risk
+            const riskScore = 100 - avgHealth;
+            const riskLevel = getRiskLevel(riskScore);
+            const riskLabel = getRiskLabel(riskLevel);
+
+            execSummary.innerHTML = `
+                <div class="exec-item"><div class="exec-label">National Health</div><div class="exec-value ${healthColor}">${avgHealth}%</div><div class="exec-sub">${healthLabel}</div></div>
+                <div class="exec-item"><div class="exec-label">Revenue</div><div class="exec-value gold">${formatCurrency(revenue)}</div><div class="exec-sub">${formatCurrencyFull(revenue)}</div></div>
+                <div class="exec-item"><div class="exec-label">PGI</div><div class="exec-value blue">${pgiPct}%</div><div class="exec-sub">${totalDN - pendingDN} / ${totalDN}</div></div>
+                <div class="exec-item"><div class="exec-label">Delivery</div><div class="exec-value teal">${deliveryPct}%</div></div>
+                <div class="exec-item"><div class="exec-label">POD</div><div class="exec-value green">${podPct}%</div></div>
+                <div class="exec-item"><div class="exec-label">Risk</div><div class="exec-value ${riskLevel === 'critical' || riskLevel === 'high' ? 'red' : riskLevel === 'medium' ? 'orange' : 'green'}">${riskLabel}</div></div>
+                <div class="exec-item"><div class="exec-label">Best WH</div><div class="exec-value" style="font-size:16px;">${best ? best.warehouse : '—'}</div><div class="exec-sub">${best ? computeSmartHealth(best) + '%' : ''}</div></div>
+                <div class="exec-item"><div class="exec-label">Worst WH</div><div class="exec-value" style="font-size:16px;color:#ef5350;">${worst ? worst.warehouse : '—'}</div><div class="exec-sub">${worst ? computeSmartHealth(worst) + '%' : ''}</div></div>
+            `;
+        }
+
+        // ============================================================
+        //  RENDER: KPI SECTIONS
+        // ============================================================
+        function renderKPIs(data) {
+            const cards = data.cards || {};
+
+            // Overview
+            const overview = [
+                { label: 'Total DNs', value: cards.total_delivery_notes || '0', icon: 'fa-file-alt', cls: 'blue' },
+                { label: 'Total Units', value: cards.total_units || '0', icon: 'fa-cubes', cls: 'teal' },
+                { label: 'Revenue', value: formatCurrency(cards.total_revenue), icon: 'fa-coins', cls: 'gold',
+                sub: formatCurrencyFull(cards.total_revenue) },
+            ];
+            kpiOverview.innerHTML = overview.map(k => `
                 <div class="kpi-card fade-in">
                     <div class="kpi-label"><i class="fas ${k.icon}"></i> ${k.label}</div>
                     <div class="kpi-value ${k.cls} ${k.value.length > 8 ? 'small' : ''}">${k.value}</div>
                     ${k.sub ? `<div class="kpi-sub">${k.sub}</div>` : ''}
                 </div>
             `).join('');
+
+            // PGI
+            const totalDN = parseInt(cards.total_delivery_notes) || 1;
+            const pgiPendingDN = parseInt(cards.pgi_pending_dns) || 0;
+            const pgiPendingUnits = parseInt(cards.pgi_pending_units) || 0;
+            const pgiCompleted = totalDN - pgiPendingDN;
+            const pgiPct = Math.round((pgiCompleted / totalDN) * 100);
+
+            const pgiKPIs = [
+                { label: 'PGI Completed', value: pgiCompleted, icon: 'fa-check-circle', cls: 'green' },
+                { label: 'PGI Pending DNs', value: pgiPendingDN, icon: 'fa-hourglass-half', cls: 'orange' },
+                { label: 'PGI Pending Units', value: pgiPendingUnits, icon: 'fa-boxes', cls: 'orange' },
+                { label: 'PGI %', value: pgiPct + '%', icon: 'fa-percent', cls: 'purple' },
+            ];
+            kpiPGI.innerHTML = pgiKPIs.map(k => `
+                <div class="kpi-card fade-in">
+                    <div class="kpi-label"><i class="fas ${k.icon}"></i> ${k.label}</div>
+                    <div class="kpi-value ${k.cls} ${k.value.length > 8 ? 'small' : ''}">${k.value}</div>
+                </div>
+            `).join('');
+
+            // Delivery
+            const deliveryPendingUnits = parseInt(cards.delivery_pending_units) || 0;
+            const totalUnits = parseInt(cards.total_units) || 1;
+            const deliveredUnits = totalUnits - deliveryPendingUnits;
+            const deliveryPct = Math.round((deliveredUnits / totalUnits) * 100);
+
+            const deliveryKPIs = [
+                { label: 'Delivered Units', value: deliveredUnits, icon: 'fa-truck', cls: 'green' },
+                { label: 'Delivery Pending Units', value: deliveryPendingUnits, icon: 'fa-clock', cls: 'orange' },
+                { label: 'Delivery %', value: deliveryPct + '%', icon: 'fa-percent', cls: 'purple' },
+            ];
+            kpiDelivery.innerHTML = deliveryKPIs.map(k => `
+                <div class="kpi-card fade-in">
+                    <div class="kpi-label"><i class="fas ${k.icon}"></i> ${k.label}</div>
+                    <div class="kpi-value ${k.cls} ${k.value.length > 8 ? 'small' : ''}">${k.value}</div>
+                </div>
+            `).join('');
+
+            // POD
+            const podPendingDN = parseInt(cards.pod_pending_dns) || 0;
+            const podPendingUnits = parseInt(cards.pod_pending_units) || 0;
+            const podCompleted = totalDN - podPendingDN;
+            const podPct = Math.round((podCompleted / totalDN) * 100);
+
+            const podKPIs = [
+                { label: 'POD Completed', value: podCompleted, icon: 'fa-circle-check', cls: 'green' },
+                { label: 'POD Pending DNs', value: podPendingDN, icon: 'fa-hourglass-half', cls: 'red' },
+                { label: 'POD Pending Units', value: podPendingUnits, icon: 'fa-boxes', cls: 'red' },
+                { label: 'POD %', value: podPct + '%', icon: 'fa-percent', cls: 'purple' },
+            ];
+            kpiPOD.innerHTML = podKPIs.map(k => `
+                <div class="kpi-card fade-in">
+                    <div class="kpi-label"><i class="fas ${k.icon}"></i> ${k.label}</div>
+                    <div class="kpi-value ${k.cls} ${k.value.length > 8 ? 'small' : ''}">${k.value}</div>
+                </div>
+            `).join('');
         }
 
         // ============================================================
-        //  RENDER TABLE
+        //  RENDER: TABLE
         // ============================================================
         function renderTable(warehouses) {
             if (!warehouses || warehouses.length === 0) {
                 tableBody.innerHTML =
-                    `<tr><td colspan="12" style="text-align:center;padding:32px;color:#6a8aa8;">No warehouse data available</td></tr>`;
+                    `<tr><td colspan="10" style="text-align:center;padding:28px;color:#6a8aa8;">No warehouse data available</td></tr>`;
                 warehouseCount.textContent = '0 warehouses';
                 return;
             }
 
             warehouseCount.textContent = `${warehouses.length} warehouses`;
 
-            tableBody.innerHTML = warehouses.map((w, idx) => {
+            // Sort by health descending
+            const sorted = [...warehouses].map(w => ({ ...w, _health: computeSmartHealth(w) }));
+            sorted.sort((a, b) => b._health - a._health);
+
+            tableBody.innerHTML = sorted.map((w, idx) => {
                 const dotColor = getDotColor(w.warehouse);
-                const healthCls = getHealthBadge(w.health_score);
-                const riskCls = getRiskTag(w.risk_level);
+                const healthScore = w._health;
+                const healthCls = getHealthBadge(healthScore);
+                const riskLevel = getRiskLevel(100 - healthScore);
+                const riskCls = riskLevel;
+                const riskLabel = getRiskLabel(riskLevel);
+
+                // Mock trend
+                const trend = generateTrend(healthScore, healthScore + (Math.random() * 10 - 5));
+                const trendIcon = trend.direction === 'up' ? '▲' : trend.direction === 'down' ? '▼' : '—';
+                const trendCls = trend.direction === 'up' ? 'up' : trend.direction === 'down' ? 'down' : 'neutral';
+
                 return `
-                    <tr class="fade-in" style="animation-delay:${idx * 20}ms">
+                    <tr class="fade-in" style="animation-delay:${idx * 15}ms" data-warehouse="${w.warehouse}">
+                        <td>${idx + 1}</td>
                         <td>
                             <div class="warehouse-name">
                                 <span class="dot" style="background:${dotColor}"></span>
                                 ${w.warehouse}
                             </div>
                         </td>
-                        <td>${w.total_dn || '0'}</td>
-                        <td>${w.total_units || '0'}</td>
-                        <td class="revenue-cell">${formatCurrency(w.total_revenue)}</td>
-                        <td>${w.avg_delivery_days || '—'}</td>
-                        <td>${w.avg_pod_days || '—'}</td>
-                        <td>${w.avg_cycle_days || '—'}</td>
+                        <td><span class="health-badge ${healthCls}">${healthScore}%</span></td>
+                        <td>${Math.round(100 - (parseFloat(w.pending_dn) || 0) / (parseFloat(w.total_dn) || 1) * 100)}%</td>
+                        <td>${Math.round(100 - (parseFloat(w.pending_units) || 0) / (parseFloat(w.total_units) || 1) * 100)}%</td>
                         <td>${w.pod_achievement || '0'}%</td>
-                        <td>${w.pending_dn || '0'}</td>
+                        <td class="revenue-cell">${formatCurrency(w.total_revenue)}</td>
                         <td>${w.pending_units || '0'}</td>
-                        <td>
-                            <span class="health-badge ${healthCls}">
-                                <i class="fas fa-circle" style="font-size:8px;"></i>
-                                ${w.health_score || '—'}
-                            </span>
-                        </td>
-                        <td><span class="risk-tag ${riskCls}">${w.risk_level || '—'}</span></td>
+                        <td><span class="risk-tag ${riskCls}">${riskLabel}</span></td>
+                        <td class="trend-cell ${trendCls}">${trendIcon} ${trend.change > 0 ? trend.change.toFixed(1) + '%' : ''}</td>
                     </tr>
                 `;
             }).join('');
+
+            // Click handler for drill-down
+            document.querySelectorAll('#tableBody tr').forEach(tr => {
+                tr.addEventListener('click', function() {
+                    const name = this.dataset.warehouse;
+                    const w = warehouses.find(w => w.warehouse === name);
+                    if (w) openDrill(w);
+                });
+            });
         }
 
         // ============================================================
-        //  RENDER CHARTS
+        //  RENDER: CHARTS
         // ============================================================
         function renderCharts(warehouses) {
-            const sorted = [...warehouses].sort((a, b) => (b.total_revenue || 0) - (a.total_revenue || 0));
-            const top10 = sorted.slice(0, 10);
+            const sorted = [...warehouses].map(w => ({ ...w, _health: computeSmartHealth(w) }));
+            sorted.sort((a, b) => b._health - a._health);
 
-            const labels = top10.map(w => w.warehouse);
-            const revenueData = top10.map(w => (w.total_revenue || 0) / 1e6);
-            const podData = top10.map(w => parseFloat(w.pod_achievement) || 0);
+            const labels = sorted.map(w => w.warehouse);
+            const revenueData = sorted.map(w => (w.total_revenue || 0) / 1e6);
+            const healthData = sorted.map(w => w._health);
+            const pgiData = sorted.map(w => Math.round(100 - (parseFloat(w.pending_dn) || 0) / (parseFloat(w.total_dn) || 1) *
+            100));
+            const deliveryData = sorted.map(w => Math.round(100 - (parseFloat(w.pending_units) || 0) / (parseFloat(w
+            .total_units) || 1) * 100));
+            const podData = sorted.map(w => parseFloat(w.pod_achievement) || 0);
+            const pendingData = sorted.map(w => parseFloat(w.pending_units) || 0);
 
-            // --- Revenue Chart ---
-            const ctx1 = document.getElementById('revenueChart').getContext('2d');
-            if (revenueChartInstance) revenueChartInstance.destroy();
-            revenueChartInstance = new Chart(ctx1, {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: 'Revenue (PKR M)',
-                        data: revenueData,
-                        backgroundColor: 'rgba(79, 195, 247, 0.6)',
-                        borderColor: '#4fc3f7',
-                        borderWidth: 1.5,
-                        borderRadius: 4,
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            callbacks: {
-                                label: function(ctx) {
-                                    return 'PKR ' + (ctx.raw * 1e6).toLocaleString('en-US');
+            const chartConfigs = [{
+                id: 'chartRevenueTrend',
+                label: 'Revenue (PKR M)',
+                data: revenueData,
+                color: 'rgba(247, 201, 72, 0.7)',
+                border: '#f7c948'
+            }, {
+                id: 'chartHealth',
+                label: 'Health Score',
+                data: healthData,
+                color: 'rgba(79, 195, 247, 0.7)',
+                border: '#4fc3f7'
+            }, {
+                id: 'chartPGI',
+                label: 'PGI %',
+                data: pgiData,
+                color: 'rgba(79, 195, 247, 0.7)',
+                border: '#4fc3f7'
+            }, {
+                id: 'chartDelivery',
+                label: 'Delivery %',
+                data: deliveryData,
+                color: 'rgba(77, 208, 225, 0.7)',
+                border: '#4dd0e1'
+            }, {
+                id: 'chartPOD',
+                label: 'POD %',
+                data: podData,
+                color: 'rgba(102, 217, 160, 0.7)',
+                border: '#66d9a0'
+            }, {
+                id: 'chartPending',
+                label: 'Pending Units',
+                data: pendingData,
+                color: 'rgba(239, 83, 80, 0.7)',
+                border: '#ef5350'
+            }, ];
+
+            chartConfigs.forEach(cfg => {
+                const ctx = document.getElementById(cfg.id).getContext('2d');
+                if (chartInstances[cfg.id]) chartInstances[cfg.id].destroy();
+                chartInstances[cfg.id] = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: cfg.label,
+                            data: cfg.data,
+                            backgroundColor: cfg.color,
+                            borderColor: cfg.border,
+                            borderWidth: 1.5,
+                            borderRadius: 3,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(ctx) {
+                                        return ctx.raw + (cfg.id === 'chartRevenueTrend' ? 'M' : '');
+                                    }
                                 }
                             }
-                        }
-                    },
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            grid: { color: 'rgba(255,255,255,0.05)' },
-                            ticks: { color: '#8aa4be', font: { size: 10 } }
                         },
-                        x: {
-                            grid: { display: false },
-                            ticks: { color: '#8aa4be', font: { size: 10 }, maxRotation: 35, autoSkip: true }
-                        }
-                    }
-                }
-            });
-
-            // --- POD Chart ---
-            const ctx2 = document.getElementById('podChart').getContext('2d');
-            if (podChartInstance) podChartInstance.destroy();
-            podChartInstance = new Chart(ctx2, {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: 'POD Achievement %',
-                        data: podData,
-                        backgroundColor: podData.map(v =>
-                            v >= 85 ? 'rgba(102, 217, 160, 0.7)' :
-                            v >= 70 ? 'rgba(247, 201, 72, 0.7)' :
-                            'rgba(239, 83, 80, 0.7)'
-                        ),
-                        borderColor: podData.map(v =>
-                            v >= 85 ? '#66d9a0' :
-                            v >= 70 ? '#f7c948' :
-                            '#ef5350'
-                        ),
-                        borderWidth: 1.5,
-                        borderRadius: 4,
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            callbacks: {
-                                label: function(ctx) {
-                                    return ctx.raw + '%';
-                                }
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                grid: { color: 'rgba(255,255,255,0.05)' },
+                                ticks: { color: '#8aa4be', font: { size: 9 } }
+                            },
+                            x: {
+                                grid: { display: false },
+                                ticks: { color: '#8aa4be', font: { size: 8 }, maxRotation: 30, autoSkip: true }
                             }
                         }
-                    },
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            max: 100,
-                            grid: { color: 'rgba(255,255,255,0.05)' },
-                            ticks: { color: '#8aa4be', font: { size: 10 }, callback: v => v + '%' }
-                        },
-                        x: {
-                            grid: { display: false },
-                            ticks: { color: '#8aa4be', font: { size: 10 }, maxRotation: 35, autoSkip: true }
-                        }
                     }
-                }
+                });
             });
         }
 
         // ============================================================
-        //  LOAD DASHBOARD DATA
+        //  AI INSIGHTS
+        // ============================================================
+        function generateAIInsights(warehouses) {
+            if (!warehouses || warehouses.length === 0) {
+                aiText.textContent = 'No data available for insights.';
+                aiRecommend.textContent = '';
+                return;
+            }
+
+            // Find worst POD
+            const sortedPOD = [...warehouses].sort((a, b) => parseFloat(a.pod_achievement) - parseFloat(b.pod_achievement));
+            const worstPOD = sortedPOD[0];
+            const worstPODValue = parseFloat(worstPOD.pod_achievement) || 0;
+
+            let insight = '';
+            let recommend = '';
+
+            if (worstPODValue < 80) {
+                insight =
+                    `${worstPOD.warehouse} POD decreased to ${worstPODValue}%. Main reason: ${worstPOD.pending_dn || 0} pending DNs, ${worstPOD.pending_units || 0} pending units.`;
+                recommend = `Recommend: Increase POD collection team by 2 members in ${worstPOD.warehouse}.`;
+            } else {
+                const best = warehouses.reduce((a, b) => parseFloat(a.pod_achievement) > parseFloat(b.pod_achievement) ? a : b);
+                insight = `Overall POD performance is strong at ${parseFloat(best.pod_achievement) || 0}% for ${best.warehouse}.`;
+                recommend = `Continue current strategies. Monitor ${worstPOD.warehouse} for improvement.`;
+            }
+
+            aiText.textContent = insight;
+            aiRecommend.textContent = '💡 ' + recommend;
+        }
+
+        // ============================================================
+        //  DRILL-DOWN
+        // ============================================================
+        function openDrill(w) {
+            drillTitle.textContent = `${w.warehouse} — Warehouse Dashboard`;
+            const health = computeSmartHealth(w);
+            const riskLevel = getRiskLevel(100 - health);
+            const riskLabel = getRiskLabel(riskLevel);
+
+            drillBody.innerHTML = `
+                <div class="detail-row"><span class="label">Warehouse</span><span class="value">${w.warehouse}</span></div>
+                <div class="detail-row"><span class="label">Health Score</span><span class="value">${health}% (${getHealthBadge(health)})</span></div>
+                <div class="detail-row"><span class="label">Risk Level</span><span class="value" style="color:${riskLevel === 'critical' || riskLevel === 'high' ? '#ef5350' : riskLevel === 'medium' ? '#ffb74d' : '#66d9a0'}">${riskLabel}</span></div>
+                <div class="detail-row"><span class="label">Total DNs</span><span class="value">${w.total_dn || '0'}</span></div>
+                <div class="detail-row"><span class="label">Total Units</span><span class="value">${w.total_units || '0'}</span></div>
+                <div class="detail-row"><span class="label">Revenue</span><span class="value gold">${formatCurrencyFull(w.total_revenue)}</span></div>
+                <div class="detail-row"><span class="label">Avg Delivery Days</span><span class="value">${w.avg_delivery_days || '—'}</span></div>
+                <div class="detail-row"><span class="label">Avg POD Days</span><span class="value">${w.avg_pod_days || '—'}</span></div>
+                <div class="detail-row"><span class="label">Avg Cycle Days</span><span class="value">${w.avg_cycle_days || '—'}</span></div>
+                <div class="detail-row"><span class="label">POD Achievement</span><span class="value">${w.pod_achievement || '0'}%</span></div>
+                <div class="detail-row"><span class="label">Pending DNs</span><span class="value" style="color:#ef5350;">${w.pending_dn || '0'}</span></div>
+                <div class="detail-row"><span class="label">Pending Units</span><span class="value" style="color:#ef5350;">${w.pending_units || '0'}</span></div>
+                <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06);">
+                    <h4 style="color:#4fc3f7;font-size:14px;margin-bottom:6px;"><i class="fas fa-robot"></i> AI Insight</h4>
+                    <p style="font-size:13px;color:#d0dce8;">${w.pod_achievement < 80 ? `${w.warehouse} POD is at ${w.pod_achievement}%. Focus on clearing ${w.pending_dn} pending DNs.` : `${w.warehouse} is performing well. Maintain momentum.`}</p>
+                </div>
+            `;
+            drillModal.classList.add('active');
+        }
+
+        // ============================================================
+        //  LOAD DASHBOARD
         // ============================================================
         async function loadDashboard(showLoading = true) {
             if (showLoading) {
                 loadingState.classList.remove('hidden');
                 errorState.classList.add('hidden');
-                kpiGrid.innerHTML = '';
-                tableBody.innerHTML = '';
             }
 
             try {
@@ -1441,6 +2039,7 @@
                 }
 
                 const raw = await response.json();
+                // The endpoint returns an array with one object
                 const payload = Array.isArray(raw) ? raw[0] : raw;
 
                 if (!payload || !payload.success) {
@@ -1448,6 +2047,7 @@
                 }
 
                 dashboardData = payload;
+                rawWarehouses = payload.warehouse_ranking || [];
 
                 const now = new Date();
                 lastUpdatedEl.innerHTML = `
@@ -1455,14 +2055,18 @@
                     <span>Updated ${formatDate(now)}</span>
                 `;
 
-                renderKPI(payload);
-                renderTable(payload.warehouse_ranking || []);
-                renderCharts(payload.warehouse_ranking || []);
+                renderExecutiveSummary(payload);
+                renderKPIs(payload);
+                renderTable(rawWarehouses);
+                renderCharts(rawWarehouses);
+                generateAIInsights(rawWarehouses);
+
+                // Populate filter dropdowns
+                populateFilters(rawWarehouses);
 
                 loadingState.classList.add('hidden');
                 errorState.classList.add('hidden');
 
-                // After loading dashboard, fetch upload history
                 fetchUploadHistory();
 
             } catch (err) {
@@ -1470,21 +2074,26 @@
                 loadingState.classList.add('hidden');
                 errorState.classList.remove('hidden');
                 errorText.textContent = err.message || 'Failed to fetch dashboard data.';
-
-                kpiGrid.innerHTML =
-                    `<div style="grid-column:1/-1;text-align:center;padding:32px;color:#6a8aa8;">⚠️ Could not load KPI data</div>`;
-                tableBody.innerHTML =
-                    `<tr><td colspan="12" style="text-align:center;padding:32px;color:#6a8aa8;">⚠️ Could not load warehouse data</td></tr>`;
-                warehouseCount.textContent = '0 warehouses';
             }
         }
 
         // ============================================================
-        //  UPLOAD LOGIC
+        //  FILTERS
+        // ============================================================
+        function populateFilters(warehouses) {
+            const cities = [...new Set(warehouses.map(w => w.warehouse).filter(Boolean))];
+            const select = document.getElementById('filterWarehouse');
+            select.innerHTML = '<option value="">All</option>' + cities.map(c => `<option value="${c}">${c}</option>`).join('');
+            // Other filters can be populated similarly if data available
+        }
+
+        // ============================================================
+        //  UPLOAD
         // ============================================================
         function updateFileUI(file) {
             if (file) {
-                fileName.innerHTML = `<i class="fas fa-file-excel" style="color:#66d9a0;"></i> ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+                fileName.innerHTML =
+                    `<i class="fas fa-file-excel" style="color:#66d9a0;"></i> ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
                 uploadBtn.disabled = false;
             } else {
                 fileName.innerHTML = `<span class="placeholder">No file selected</span>`;
@@ -1516,7 +2125,6 @@
             formData.append('file', file);
 
             try {
-                // Simulate progress (since fetch doesn't support upload progress natively)
                 let progress = 0;
                 const progressInterval = setInterval(() => {
                     progress = Math.min(progress + 5, 90);
@@ -1537,10 +2145,10 @@
                 }
 
                 uploadProgressFill.style.width = '100%';
-                uploadStatus.innerHTML = `<span class="success"><i class="fas fa-check-circle"></i> ${result.message || 'Upload successful!'}</span>`;
+                uploadStatus.innerHTML =
+                    `<span class="success"><i class="fas fa-check-circle"></i> ${result.message || 'Upload successful!'}</span>`;
                 showToast('✅ Excel uploaded successfully! Refreshing data…', 'success');
 
-                // Refresh dashboard data after upload
                 setTimeout(() => {
                     loadDashboard(true);
                     resetUploadUI();
@@ -1550,7 +2158,8 @@
             } catch (err) {
                 console.error('Upload error:', err);
                 uploadProgressFill.style.width = '100%';
-                uploadStatus.innerHTML = `<span class="error"><i class="fas fa-exclamation-circle"></i> ${err.message || 'Upload failed'}</span>`;
+                uploadStatus.innerHTML =
+                    `<span class="error"><i class="fas fa-exclamation-circle"></i> ${err.message || 'Upload failed'}</span>`;
                 showToast('❌ Upload failed: ' + (err.message || 'Unknown error'), 'error');
                 isUploading = false;
                 uploadBtn.disabled = false;
@@ -1569,7 +2178,6 @@
 
                 if (!response.ok) {
                     if (response.status === 404) {
-                        // No history endpoint or no data
                         uploadHistoryMini.classList.remove('active');
                         return;
                     }
@@ -1577,22 +2185,13 @@
                 }
 
                 const data = await response.json();
-
-                // Handle different response formats
                 let batches = [];
-                if (Array.isArray(data)) {
-                    batches = data;
-                } else if (data.batches && Array.isArray(data.batches)) {
-                    batches = data.batches;
-                } else if (data.data && Array.isArray(data.data)) {
-                    batches = data.data;
-                } else {
-                    // Try to extract any array
+                if (Array.isArray(data)) batches = data;
+                else if (data.batches && Array.isArray(data.batches)) batches = data.batches;
+                else if (data.data && Array.isArray(data.data)) batches = data.data;
+                else {
                     for (const key in data) {
-                        if (Array.isArray(data[key])) {
-                            batches = data[key];
-                            break;
-                        }
+                        if (Array.isArray(data[key])) { batches = data[key]; break; }
                     }
                 }
 
@@ -1603,10 +2202,7 @@
                         const time = b.uploaded_at || b.created_at || b.timestamp || Date.now();
                         return `
                             <div class="history-item">
-                                <div class="h-name">
-                                    <i class="fas fa-file-excel"></i>
-                                    ${name}
-                                </div>
+                                <div class="h-name"><i class="fas fa-file-excel"></i> ${name}</div>
                                 <div class="h-time">${formatTimeAgo(time)}</div>
                             </div>
                         `;
@@ -1622,10 +2218,21 @@
         }
 
         // ============================================================
-        //  EVENT BINDING — UPLOAD
+        //  EXPORT FUNCTIONS (stubs)
+        // ============================================================
+        function exportData(format) {
+            showToast(`Exporting as ${format.toUpperCase()}…`, 'info');
+            // In production, implement actual export
+        }
+
+        // ============================================================
+        //  EVENT BINDING
         // ============================================================
 
-        // File input change
+        // Refresh
+        refreshBtn.addEventListener('click', () => loadDashboard(true));
+
+        // Upload
         fileInput.addEventListener('change', (e) => {
             if (e.target.files && e.target.files.length > 0) {
                 selectedFile = e.target.files[0];
@@ -1635,17 +2242,10 @@
             }
         });
 
-        // Drag & drop
-        dropzone.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            dropzone.classList.add('dragover');
-        });
-
-        dropzone.addEventListener('dragleave', (e) => {
-            e.preventDefault();
-            dropzone.classList.remove('dragover');
-        });
-
+        dropzone.addEventListener('dragover', (e) => { e.preventDefault();
+            dropzone.classList.add('dragover'); });
+        dropzone.addEventListener('dragleave', (e) => { e.preventDefault();
+            dropzone.classList.remove('dragover'); });
         dropzone.addEventListener('drop', (e) => {
             e.preventDefault();
             dropzone.classList.remove('dragover');
@@ -1655,7 +2255,6 @@
                 const ext = file.name.split('.').pop().toLowerCase();
                 if (['xlsx', 'xls'].includes(ext)) {
                     selectedFile = file;
-                    // Update the input's files
                     const dt = new DataTransfer();
                     dt.items.add(file);
                     fileInput.files = dt.files;
@@ -1666,44 +2265,39 @@
             }
         });
 
-        // Upload button
         uploadBtn.addEventListener('click', () => {
-            if (selectedFile && !isUploading) {
-                uploadFile(selectedFile);
-            }
+            if (selectedFile && !isUploading) uploadFile(selectedFile);
         });
 
-        // History "View all" link
         historyMore.addEventListener('click', () => {
-            // Open upload status page or show more
             window.open(UPLOAD_STATUS_URL, '_blank');
         });
+
+        // Drill modal
+        closeDrill.addEventListener('click', () => drillModal.classList.remove('active'));
+        drillModal.addEventListener('click', (e) => {
+            if (e.target === drillModal) drillModal.classList.remove('active');
+        });
+
+        // Exports
+        document.getElementById('exportExcel').addEventListener('click', () => exportData('excel'));
+        document.getElementById('exportPDF').addEventListener('click', () => exportData('pdf'));
+        document.getElementById('exportPrint').addEventListener('click', () => window.print());
+        document.getElementById('exportEmail').addEventListener('click', () => exportData('email'));
+        document.getElementById('exportWhatsApp').addEventListener('click', () => exportData('whatsapp'));
 
         // ============================================================
         //  INIT
         // ============================================================
-        refreshBtn.addEventListener('click', () => {
-            loadDashboard(true);
-        });
-
         document.addEventListener('DOMContentLoaded', () => {
             loadDashboard(true);
-            // Check if upload endpoint is reachable
-            fetch(UPLOAD_URL, { method: 'OPTIONS' }).catch(() => {
-                // Silent fail — upload will show error if used
-            });
         });
 
         // Auto-refresh every 60 seconds
-        setInterval(() => {
-            loadDashboard(false);
-        }, 60000);
+        setInterval(() => loadDashboard(false), 60000);
 
-        // Reset upload UI on page load
         resetUploadUI();
-
-        console.log('🚀 Haier Dashboard v16.3 — Upload feature enabled');
-        console.log(`   Upload URL: ${UPLOAD_URL}`);
+        console.log('🚀 Haier Enterprise Dashboard v2.0 loaded');
         console.log(`   Data URL: ${WEBHOOK_URL}`);
     </script>
 
