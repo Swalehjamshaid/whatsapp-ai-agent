@@ -1,136 +1,53 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Executive Dashboard</title>
-
-<style>
-
-body{
-    margin:0;
-    background:#0f172a;
-    font-family:Arial,Helvetica,sans-serif;
-    color:white;
-}
-
-.container{
-    max-width:1400px;
-    margin:auto;
-    padding:30px;
-}
-
-h1{
-    margin-bottom:25px;
-}
-
-.cards{
-    display:grid;
-    grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
-    gap:20px;
-}
-
-.card{
-    background:#1e293b;
-    border-radius:12px;
-    padding:20px;
-    box-shadow:0 0 10px rgba(0,0,0,.25);
-}
-
-.title{
-    font-size:14px;
-    color:#94a3b8;
-    margin-bottom:10px;
-}
-
-.value{
-    font-size:34px;
-    font-weight:bold;
-    color:#38bdf8;
-}
-
-</style>
-
-</head>
-<body>
-
-<div class="container">
-
-<h1>Haier Logistics Executive Dashboard</h1>
-
-<div class="cards">
-
-<div class="card">
-<div class="title">Total DN Created</div>
-<div id="total_dn_created" class="value">0</div>
-</div>
-
-<div class="card">
-<div class="title">Total Units Created</div>
-<div id="total_units_created" class="value">0</div>
-</div>
-
-<div class="card">
-<div class="title">Total PGI Made</div>
-<div id="total_pgi_made" class="value">0</div>
-</div>
-
-<div class="card">
-<div class="title">Total DN Delivered</div>
-<div id="total_dn_delivered" class="value">0</div>
-</div>
-
-<div class="card">
-<div class="title">Pending Delivery DN</div>
-<div id="pending_delivery_dn" class="value">0</div>
-</div>
-
-<div class="card">
-<div class="title">Pending Delivery Qty</div>
-<div id="pending_delivery_qty" class="value">0</div>
-</div>
-
-<div class="card">
-<div class="title">Pending POD DN</div>
-<div id="pending_pod_dn" class="value">0</div>
-</div>
-
-<div class="card">
-<div class="title">Pending POD Qty</div>
-<div id="pending_pod_qty" class="value">0</div>
-</div>
-
-</div>
-
-</div>
-
 <script>
 
-const API="http://localhost:5678/webhook/5ccbda50-2b2f-4f46-9ddf-762e542f18f7";
+const API = "http://localhost:5678/webhook/5ccbda50-2b2f-4f46-9ddf-762e542f18f7";
 
-async function loadDashboard(){
+async function loadDashboard() {
 
-    const response=await fetch(API);
+    try {
 
-    const data=await response.json();
+        const response = await fetch(API);
 
-    const kpi=data[0];
+        if (!response.ok) {
+            throw new Error("HTTP " + response.status);
+        }
 
-    document.getElementById("total_dn_created").innerHTML=kpi.total_dn_created.toLocaleString();
+        const data = await response.json();
 
-    document.getElementById("total_units_created").innerHTML=kpi.total_units_created.toLocaleString();
+        console.log("API Response:", data);
 
-    document.getElementById("total_pgi_made").innerHTML=kpi.total_pgi_made.toLocaleString();
+        // Supports both:
+        // [{...}]
+        // {...}
+        let kpi = Array.isArray(data) ? data[0] : data;
 
-    document.getElementById("total_dn_delivered").innerHTML=kpi.total_dn_delivered.toLocaleString();
+        if (!kpi) {
+            console.error("No KPI data received");
+            return;
+        }
 
-    document.getElementById("pending_delivery_dn").innerHTML=kpi.pending_delivery_dn.toLocaleString();
+        setValue("total_dn_created", kpi.total_dn_created);
+        setValue("total_units_created", kpi.total_units_created);
+        setValue("total_pgi_made", kpi.total_pgi_made);
+        setValue("total_dn_delivered", kpi.total_dn_delivered);
+        setValue("pending_delivery_dn", kpi.pending_delivery_dn);
+        setValue("pending_delivery_qty", kpi.pending_delivery_qty);
+        setValue("pending_pod_dn", kpi.pending_pod_dn);
+        setValue("pending_pod_qty", kpi.pending_pod_qty);
 
-    document.getElementById("pending_delivery_qty").innerHTML=kpi.pending_delivery_qty.toLocaleString();
+    }
+    catch (err) {
 
-    document.getElementById("pending_pod_dn").innerHTML=kpi.pending_pod_dn.toLocaleString();
+        console.error("Dashboard Error:", err);
 
-    document.getElementById("pending_pod_qty").innerHTML=kpi.pending_pod_qty.toLocaleString();
+    }
+
+}
+
+function setValue(id, value) {
+
+    document.getElementById(id).innerHTML =
+        Number(value || 0).toLocaleString();
 
 }
 
@@ -139,6 +56,3 @@ loadDashboard();
 setInterval(loadDashboard,30000);
 
 </script>
-
-</body>
-</html>
