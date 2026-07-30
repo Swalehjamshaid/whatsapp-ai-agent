@@ -424,7 +424,9 @@
     // ============================================================
     //  CONFIG
     // ============================================================
-    const WEBHOOK_URL = 'https://jamshaidkhan.app.n8n.cloud/webhook/haier-dashboard';
+    // 🔁 Changed: now points to our FastAPI backend
+    const API_URL = '/api/dashboard/data';
+    // (The upload endpoint is kept for reference; it can be used separately)
     const UPLOAD_URL = '/webhook/upload-excel'; // adjust if needed
 
     // ============================================================
@@ -867,29 +869,17 @@
     async function loadDashboard(showLoading = true) {
         if (showLoading) { loadingState.classList.remove('hidden'); errorState.classList.add('hidden'); }
         try {
-            const response = await fetch(WEBHOOK_URL, {
+            // 🔁 Now calls our FastAPI endpoint
+            const response = await fetch(API_URL, {
                 method: 'GET',
                 headers: { 'Accept': 'application/json' }
             });
             if (!response.ok) throw new Error(`HTTP ${response.status} — ${response.statusText}`);
 
-            const raw = await response.json();
-
-            // Expected: array with one object containing 'cards' and 'warehouse_ranking'
-            let cards = null;
-            let whs = null;
-            if (Array.isArray(raw) && raw.length > 0) {
-                const first = raw[0];
-                if (first && first.cards && first.warehouse_ranking) {
-                    cards = first.cards;
-                    whs = first.warehouse_ranking;
-                }
-            }
-            // Fallback: if raw is the warehouse array directly
-            if (!whs && Array.isArray(raw) && raw.length > 0 && raw[0].warehouse) {
-                whs = raw;
-                // compute cards from whs if needed
-            }
+            const data = await response.json();
+            // Expected: { cards, warehouse_ranking }
+            const cards = data.cards;
+            const whs = data.warehouse_ranking;
 
             if (!whs || whs.length === 0) {
                 throw new Error('No warehouse data found in the response');
@@ -897,16 +887,17 @@
 
             warehouses = whs;
 
-            // If cards not provided, compute from whs
-            if (!cards) {
-                cards = computeKPIs(whs);
+            // If cards not provided, compute from whs (fallback)
+            let computedCards = cards;
+            if (!computedCards) {
+                computedCards = computeKPIs(whs);
             }
 
             const now = new Date();
             lastUpdated.innerHTML = `<i class="fas fa-clock"></i> <span>Updated ${formatDate(now)}</span>`;
 
-            renderExecutiveSummary(cards);
-            renderKPIs(cards);
+            renderExecutiveSummary(computedCards);
+            renderKPIs(computedCards);
             renderTable(whs);
             renderCharts(whs);
             generateAIInsights(whs);
@@ -1055,7 +1046,7 @@
     document.addEventListener('DOMContentLoaded', () => { loadDashboard(true); });
     setInterval(() => loadDashboard(false), 60000);
     resetUploadUI();
-    console.log('🚀 Haier Dashboard v3.0 loaded');
+    console.log('🚀 Haier Dashboard v3.0 loaded (with FastAPI backend)');
 </script>
 
 </body>
