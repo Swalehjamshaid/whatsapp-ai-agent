@@ -1,54 +1,1428 @@
-<script>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Haier Pakistan Logistics Dashboard</title>
 
-const API = "http://localhost:5678/webhook/5ccbda50-2b2f-4f46-9ddf-762e542f18f7";
+    <!-- Bootstrap 5 + Icons + Chart.js -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js">
+    </script>
 
-function setValue(id, value) {
-    document.getElementById(id).textContent =
-        value ?? 0;
-}
-
-async function loadDashboard() {
-
-    const status = document.getElementById("status");
-
-    try {
-
-        status.textContent = "Loading...";
-
-        const response = await fetch(API);
-
-        if (!response.ok) {
-            throw new Error("HTTP " + response.status);
+    <style>
+        /* ── global ── */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
 
-        const data = await response.json();
+        body {
+            background: #f0f4f9;
+            font-family: 'Segoe UI', Roboto, system-ui, sans-serif;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
 
-        console.log(data);
+        /* ── scrollbar ── */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #e9edf2;
+            border-radius: 8px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #b0c4de;
+            border-radius: 8px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #8aa9d1;
+        }
 
-        setValue("total_dn_created", data.total_dn_created);
-        setValue("total_units_created", data.total_units_created);
-        setValue("total_pgi_made", data.total_pgi_made);
-        setValue("total_dn_delivered", data.total_dn_delivered);
-        setValue("pending_delivery_dn", data.pending_delivery_dn);
-        setValue("pending_delivery_qty", data.pending_delivery_qty);
-        setValue("pending_pod_dn", data.pending_pod_dn);
-        setValue("pending_pod_qty", data.pending_pod_qty);
+        /* ── cards ── */
+        .card {
+            border: none;
+            border-radius: 18px;
+            box-shadow: 0 6px 24px rgba(0, 40, 80, 0.06);
+            transition: transform 0.25s ease, box-shadow 0.3s ease;
+            background: #ffffff;
+            height: 100%;
+        }
+        .card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 14px 36px rgba(0, 40, 80, 0.10);
+        }
 
-        status.textContent =
-            "Last Updated: " + new Date().toLocaleTimeString();
+        .card-header {
+            background: transparent;
+            border-bottom: 1px solid rgba(0, 60, 120, 0.06);
+            font-weight: 600;
+            font-size: 0.95rem;
+            letter-spacing: 0.02em;
+            color: #1a365d;
+            padding: 1rem 1.25rem;
+        }
 
-    }
-    catch (err) {
+        .card-body {
+            padding: 1.25rem;
+        }
 
-        console.error(err);
+        /* ── KPI cards ── */
+        .kpi-card {
+            background: #ffffff;
+            border-radius: 18px;
+            padding: 1.2rem 1rem;
+            box-shadow: 0 4px 16px rgba(0, 40, 80, 0.05);
+            transition: transform 0.2s ease, box-shadow 0.25s ease;
+            height: 100%;
+            border-left: 5px solid #2a6fdb;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        .kpi-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 32px rgba(0, 40, 80, 0.10);
+        }
 
-        status.innerHTML =
-            "<span class='error'>" + err.message + "</span>";
-    }
-}
+        .kpi-card .kpi-label {
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: #5e6f8d;
+            font-weight: 600;
+            margin-bottom: 0.3rem;
+        }
 
-loadDashboard();
+        .kpi-card .kpi-value {
+            font-size: 1.9rem;
+            font-weight: 700;
+            color: #0b2a4a;
+            line-height: 1.2;
+        }
 
-setInterval(loadDashboard, 30000);
+        .kpi-card .kpi-icon {
+            font-size: 1.6rem;
+            color: #2a6fdb;
+            opacity: 0.25;
+            margin-left: auto;
+        }
 
-</script>
+        .kpi-card .kpi-icon i {
+            font-size: 2rem;
+        }
+
+        /* ── header ── */
+        .dashboard-header {
+            background: linear-gradient(135deg, #0b2a4a 0%, #1a4a7a 100%);
+            border-radius: 22px;
+            padding: 1.2rem 2rem;
+            color: white;
+            box-shadow: 0 10px 30px rgba(10, 40, 80, 0.20);
+            margin-bottom: 2rem;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .dashboard-header h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .dashboard-header h1 i {
+            color: #7bb3ff;
+            font-size: 1.8rem;
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            flex-wrap: wrap;
+        }
+
+        .header-right .datetime {
+            font-size: 0.95rem;
+            font-weight: 400;
+            opacity: 0.85;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .header-right .datetime i {
+            opacity: 0.7;
+        }
+
+        .btn-refresh {
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.20);
+            color: white;
+            border-radius: 50px;
+            padding: 0.5rem 1.2rem;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            backdrop-filter: blur(4px);
+        }
+        .btn-refresh:hover {
+            background: rgba(255, 255, 255, 0.22);
+            color: white;
+            transform: scale(1.02);
+        }
+        .btn-refresh i {
+            margin-right: 6px;
+        }
+
+        .btn-refresh:disabled {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+
+        /* ── loading overlay ── */
+        #loadingOverlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(255, 255, 255, 0.75);
+            backdrop-filter: blur(6px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            flex-direction: column;
+        }
+        #loadingOverlay.show {
+            display: flex;
+        }
+        #loadingOverlay .spinner {
+            width: 58px;
+            height: 58px;
+            border: 5px solid #e2e8f0;
+            border-top-color: #2a6fdb;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        #loadingOverlay .load-text {
+            margin-top: 1.2rem;
+            font-weight: 500;
+            color: #1a365d;
+            letter-spacing: 0.03em;
+        }
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* ── error toast ── */
+        #errorToast {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            z-index: 9998;
+            min-width: 320px;
+            max-width: 440px;
+            background: #fff;
+            border-left: 6px solid #dc3545;
+            border-radius: 16px;
+            box-shadow: 0 20px 48px rgba(0, 0, 0, 0.18);
+            padding: 1rem 1.4rem;
+            display: none;
+            align-items: center;
+            gap: 14px;
+            animation: slideUp 0.35s ease;
+        }
+        #errorToast.show {
+            display: flex;
+        }
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(32px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        #errorToast .toast-icon {
+            color: #dc3545;
+            font-size: 1.6rem;
+        }
+        #errorToast .toast-msg {
+            flex: 1;
+            font-weight: 500;
+            color: #1a1f2e;
+            font-size: 0.92rem;
+        }
+        #errorToast .toast-close {
+            background: none;
+            border: none;
+            font-size: 1.3rem;
+            color: #8a9bb0;
+            cursor: pointer;
+            padding: 0 4px;
+        }
+        #errorToast .toast-close:hover {
+            color: #1a1f2e;
+        }
+
+        /* ── table wrapper ── */
+        .table-wrap {
+            position: relative;
+            border-radius: 18px;
+            overflow: hidden;
+            background: #fff;
+            box-shadow: 0 6px 24px rgba(0, 40, 80, 0.06);
+        }
+
+        .table-scroll {
+            max-height: 520px;
+            overflow-y: auto;
+            overflow-x: auto;
+        }
+
+        .table-scroll thead {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .table-scroll thead th {
+            background: #f8faff;
+            color: #1a365d;
+            font-weight: 600;
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            border-bottom: 2px solid #e2eaf5;
+            white-space: nowrap;
+            padding: 0.85rem 0.75rem;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.15s;
+        }
+        .table-scroll thead th:hover {
+            background: #eef4fc;
+        }
+        .table-scroll thead th i {
+            margin-left: 5px;
+            font-size: 0.7rem;
+            opacity: 0.5;
+        }
+
+        .table-scroll tbody td {
+            padding: 0.7rem 0.75rem;
+            font-size: 0.88rem;
+            vertical-align: middle;
+            color: #1e2f46;
+            border-bottom: 1px solid #edf2f8;
+        }
+
+        .table-scroll tbody tr:hover {
+            background: #f4f9ff;
+        }
+
+        .table-scroll tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        /* table controls */
+        .table-controls {
+            padding: 0.9rem 1.2rem;
+            background: #fafcff;
+            border-bottom: 1px solid #e6edf6;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .table-controls .search-box {
+            position: relative;
+            flex: 1 1 220px;
+            min-width: 160px;
+        }
+        .table-controls .search-box input {
+            width: 100%;
+            padding: 0.45rem 1rem 0.45rem 2.4rem;
+            border-radius: 50px;
+            border: 1px solid #dce4ef;
+            background: #fff;
+            font-size: 0.88rem;
+            transition: border 0.2s, box-shadow 0.2s;
+            outline: none;
+        }
+        .table-controls .search-box input:focus {
+            border-color: #2a6fdb;
+            box-shadow: 0 0 0 4px rgba(42, 111, 219, 0.10);
+        }
+        .table-controls .search-box i {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #8a9bb0;
+            font-size: 0.95rem;
+        }
+
+        .table-controls .btn-group-actions .btn {
+            border-radius: 50px;
+            font-size: 0.82rem;
+            padding: 0.35rem 1.1rem;
+            font-weight: 500;
+            border: 1px solid #dce4ef;
+            background: #fff;
+            color: #1a365d;
+            transition: all 0.15s;
+        }
+        .table-controls .btn-group-actions .btn:hover {
+            background: #eef4fc;
+            border-color: #b8cce0;
+        }
+        .table-controls .btn-group-actions .btn i {
+            margin-right: 4px;
+        }
+
+        .pagination-controls {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.85rem;
+            color: #1a365d;
+            flex-wrap: wrap;
+        }
+        .pagination-controls .page-info {
+            font-weight: 500;
+            margin: 0 6px;
+        }
+        .pagination-controls .btn-page {
+            border: 1px solid #dce4ef;
+            background: #fff;
+            border-radius: 8px;
+            padding: 0.2rem 0.8rem;
+            font-size: 0.82rem;
+            font-weight: 500;
+            color: #1a365d;
+            transition: all 0.15s;
+            cursor: pointer;
+        }
+        .pagination-controls .btn-page:hover:not(:disabled) {
+            background: #eef4fc;
+            border-color: #b8cce0;
+        }
+        .pagination-controls .btn-page:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        .pagination-controls .btn-page.active-page {
+            background: #2a6fdb;
+            border-color: #2a6fdb;
+            color: #fff;
+        }
+
+        /* ── charts ── */
+        .chart-container {
+            position: relative;
+            height: 220px;
+            width: 100%;
+        }
+        .chart-container.pie-chart {
+            height: 200px;
+        }
+        .chart-container.line-chart {
+            height: 200px;
+        }
+
+        .chart-card .card-body {
+            padding: 0.8rem 1rem 0.8rem 1rem;
+        }
+
+        /* ── footer ── */
+        .dashboard-footer {
+            margin-top: 2rem;
+            padding: 1rem 1.5rem;
+            background: #ffffff;
+            border-radius: 18px;
+            box-shadow: 0 4px 16px rgba(0, 40, 80, 0.04);
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            color: #5e6f8d;
+        }
+        .dashboard-footer .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .dashboard-footer .status .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #2ecc71;
+            display: inline-block;
+            animation: pulse-dot 1.8s infinite;
+        }
+        .dashboard-footer .status .dot.error {
+            background: #e74c3c;
+        }
+        @keyframes pulse-dot {
+            0%,
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+            50% {
+                opacity: 0.5;
+                transform: scale(0.85);
+            }
+        }
+
+        /* ── responsive ── */
+        @media (max-width: 768px) {
+            body {
+                padding: 12px;
+            }
+            .dashboard-header {
+                padding: 1rem 1.2rem;
+                flex-direction: column;
+                align-items: stretch;
+                gap: 12px;
+            }
+            .dashboard-header h1 {
+                font-size: 1.2rem;
+            }
+            .header-right {
+                justify-content: space-between;
+            }
+            .header-right .datetime {
+                font-size: 0.8rem;
+                gap: 6px;
+                flex-wrap: wrap;
+            }
+            .kpi-card .kpi-value {
+                font-size: 1.4rem;
+            }
+            .table-controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .table-controls .search-box {
+                flex: 1 1 auto;
+            }
+            .pagination-controls {
+                justify-content: center;
+                margin-top: 4px;
+            }
+            #errorToast {
+                left: 16px;
+                right: 16px;
+                min-width: unset;
+                max-width: unset;
+                bottom: 16px;
+            }
+            .chart-container {
+                height: 180px;
+            }
+            .chart-container.pie-chart {
+                height: 170px;
+            }
+            .chart-container.line-chart {
+                height: 170px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .dashboard-header h1 {
+                font-size: 1rem;
+            }
+            .header-right .datetime {
+                font-size: 0.7rem;
+            }
+            .btn-refresh {
+                padding: 0.3rem 0.8rem;
+                font-size: 0.75rem;
+            }
+            .kpi-card .kpi-value {
+                font-size: 1.2rem;
+            }
+            .kpi-card .kpi-label {
+                font-size: 0.65rem;
+            }
+        }
+
+        /* ── print styles ── */
+        @media print {
+            body {
+                background: #fff;
+                padding: 0.3in;
+            }
+            .dashboard-header {
+                background: #0b2a4a !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            .kpi-card {
+                border-left-color: #2a6fdb !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            .btn-refresh,
+            .table-controls .btn-group-actions .btn,
+            .pagination-controls .btn-page,
+            .no-print {
+                display: none !important;
+            }
+            .table-scroll {
+                max-height: none;
+                overflow: visible;
+            }
+            .table-scroll thead {
+                position: static;
+            }
+            .card {
+                box-shadow: none !important;
+                border: 1px solid #ddd;
+            }
+            #loadingOverlay {
+                display: none !important;
+            }
+            #errorToast {
+                display: none !important;
+            }
+            .dashboard-footer {
+                border: 1px solid #ddd;
+                box-shadow: none;
+            }
+            .chart-container {
+                height: 200px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ─── LOADING OVERLAY ─── -->
+    <div id="loadingOverlay">
+        <div class="spinner"></div>
+        <div class="load-text"><i class="fas fa-sync-alt fa-fw me-2"></i>Loading data…</div>
+    </div>
+
+    <!-- ─── ERROR TOAST ─── -->
+    <div id="errorToast">
+        <span class="toast-icon"><i class="fas fa-circle-exclamation"></i></span>
+        <span class="toast-msg" id="errorMsg">Unable to fetch data.</span>
+        <button class="toast-close" id="toastClose">&times;</button>
+    </div>
+
+    <!-- ─── MAIN WRAPPER ─── -->
+    <div class="container-fluid px-0 flex-grow-1 d-flex flex-column">
+
+        <!-- ═══ HEADER ═══ -->
+        <header class="dashboard-header">
+            <h1>
+                <i class="fas fa-truck-fast"></i>
+                Haier Pakistan Logistics Dashboard
+            </h1>
+            <div class="header-right">
+                <div class="datetime">
+                    <span><i class="far fa-calendar-alt me-1"></i><span id="currentDate"></span></span>
+                    <span><i class="far fa-clock me-1"></i><span id="currentTime"></span></span>
+                </div>
+                <button class="btn-refresh no-print" id="refreshBtn">
+                    <i class="fas fa-sync-alt"></i> Refresh
+                </button>
+            </div>
+        </header>
+
+        <!-- ═══ KPI CARDS ═══ -->
+        <section class="row g-3 mb-4" id="kpiRow">
+            <!-- 8 cards injected by JS -->
+        </section>
+
+        <!-- ═══ CHARTS ═══ -->
+        <section class="row g-3 mb-4">
+            <!-- Row 1: Bar charts -->
+            <div class="col-12 col-md-6">
+                <div class="card chart-card">
+                    <div class="card-header"><i class="fas fa-chart-bar me-2 text-primary"></i>Total Units by Warehouse</div>
+                    <div class="card-body">
+                        <div class="chart-container"><canvas id="chartUnits"></canvas></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-md-6">
+                <div class="card chart-card">
+                    <div class="card-header"><i class="fas fa-chart-bar me-2 text-primary"></i>Total DN by Warehouse</div>
+                    <div class="card-body">
+                        <div class="chart-container"><canvas id="chartDn"></canvas></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Row 2: Pie charts -->
+            <div class="col-12 col-md-6">
+                <div class="card chart-card">
+                    <div class="card-header"><i class="fas fa-chart-pie me-2 text-primary"></i>Pending POD Qty</div>
+                    <div class="card-body">
+                        <div class="chart-container pie-chart"><canvas id="chartPiePod"></canvas></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-md-6">
+                <div class="card chart-card">
+                    <div class="card-header"><i class="fas fa-chart-pie me-2 text-primary"></i>Pending PGI Qty</div>
+                    <div class="card-body">
+                        <div class="chart-container pie-chart"><canvas id="chartPiePgi"></canvas></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Row 3: Line charts -->
+            <div class="col-12 col-md-6">
+                <div class="card chart-card">
+                    <div class="card-header"><i class="fas fa-chart-line me-2 text-primary"></i>Average Delivery Days</div>
+                    <div class="card-body">
+                        <div class="chart-container line-chart"><canvas id="chartDeliveryDays"></canvas></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-md-6">
+                <div class="card chart-card">
+                    <div class="card-header"><i class="fas fa-chart-line me-2 text-primary"></i>Average POD Days</div>
+                    <div class="card-body">
+                        <div class="chart-container line-chart"><canvas id="chartPodDays"></canvas></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══ TABLE ═══ -->
+        <section class="mb-3">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <span><i class="fas fa-warehouse me-2 text-primary"></i>Warehouse Performance</span>
+                    <span class="badge bg-primary bg-opacity-10 text-primary fw-normal" id="warehouseCount">0 warehouses</span>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-wrap">
+                        <!-- controls -->
+                        <div class="table-controls no-print">
+                            <div class="search-box">
+                                <i class="fas fa-search"></i>
+                                <input type="text" id="tableSearch" placeholder="Search warehouse…" />
+                            </div>
+                            <div class="d-flex flex-wrap align-items-center gap-2">
+                                <div class="btn-group-actions">
+                                    <button class="btn" id="exportCsvBtn"><i class="fas fa-file-csv"></i> CSV</button>
+                                    <button class="btn" id="printBtn"><i class="fas fa-print"></i> Print</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- table scroll -->
+                        <div class="table-scroll" id="tableScroll">
+                            <table class="table table-hover mb-0" id="warehouseTable">
+                                <thead>
+                                    <tr>
+                                        <th data-sort="warehouse">Warehouse <i class="fas fa-sort"></i></th>
+                                        <th data-sort="total_dn" class="text-end">Total DN <i class="fas fa-sort"></i></th>
+                                        <th data-sort="total_units" class="text-end">Total Units <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_pgi_dn" class="text-end">Pending PGI DN <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_pgi_qty" class="text-end">Pending PGI Qty <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_pod_dn" class="text-end">Pending POD DN <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_pod_qty" class="text-end">Pending POD Qty <i class="fas fa-sort"></i></th>
+                                        <th data-sort="avg_delivery_days" class="text-end">Avg Delivery Days <i class="fas fa-sort"></i></th>
+                                        <th data-sort="avg_pod_days" class="text-end">Avg POD Days <i class="fas fa-sort"></i></th>
+                                        <th data-sort="avg_cycle_days" class="text-end">Avg Cycle Days <i class="fas fa-sort"></i></th>
+                                        <th data-sort="avg_pending_pgi_days" class="text-end">Avg Pending PGI Days <i class="fas fa-sort"></i></th>
+                                        <th data-sort="avg_pending_pod_days" class="text-end">Avg Pending POD Days <i class="fas fa-sort"></i></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tableBody">
+                                    <!-- rows injected by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <!-- pagination -->
+                        <div class="table-controls no-print" style="border-top:1px solid #e6edf6; border-bottom:none;">
+                            <div class="pagination-controls" id="paginationControls">
+                                <button class="btn-page" id="prevPage" disabled><i class="fas fa-chevron-left"></i></button>
+                                <span class="page-info" id="pageInfo">Page 1 of 1</span>
+                                <button class="btn-page" id="nextPage" disabled><i class="fas fa-chevron-right"></i></button>
+                                <span class="ms-2 text-secondary" style="font-size:0.8rem;" id="rowCountInfo">0 rows</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══ FOOTER ═══ -->
+        <footer class="dashboard-footer mt-auto">
+            <div class="status">
+                <span class="dot" id="statusDot"></span>
+                <span id="statusText">Connected to n8n Webhook</span>
+            </div>
+            <div>
+                <i class="far fa-clock me-1"></i>
+                Last updated: <span id="lastUpdated">—</span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- ────────────────────────────────────────────────────────── -->
+    <!-- ─── JAVASCRIPT ─── -->
+    <!-- ────────────────────────────────────────────────────────── -->
+    <script>
+        (function() {
+            'use strict';
+
+            // ─── CONFIG ───
+            const WEBHOOK_URL =
+                'http://localhost:5678/webhook/5ccbda50-2b2f-4f46-9ddf-762e542f18f7';
+            const REFRESH_INTERVAL_MS = 30000;
+            const PAGE_SIZE = 10;
+
+            // ─── STATE ───
+            let allWarehouses = [];
+            let filteredWarehouses = [];
+            let currentPage = 1;
+            let sortKey = 'warehouse';
+            let sortAsc = true;
+            let searchTerm = '';
+            let isRefreshing = false;
+
+            // chart instances
+            let chartUnits = null;
+            let chartDn = null;
+            let chartPiePod = null;
+            let chartPiePgi = null;
+            let chartDeliveryDays = null;
+            let chartPodDays = null;
+
+            // ─── DOM refs ───
+            const $ = (sel) => document.querySelector(sel);
+            const $$ = (sel) => document.querySelectorAll(sel);
+
+            const loadingOverlay = $('#loadingOverlay');
+            const errorToast = $('#errorToast');
+            const errorMsg = $('#errorMsg');
+            const toastClose = $('#toastClose');
+            const refreshBtn = $('#refreshBtn');
+            const currentDateEl = $('#currentDate');
+            const currentTimeEl = $('#currentTime');
+            const lastUpdatedEl = $('#lastUpdated');
+            const statusDot = $('#statusDot');
+            const statusText = $('#statusText');
+
+            const kpiRow = $('#kpiRow');
+            const tableBody = $('#tableBody');
+            const tableSearch = $('#tableSearch');
+            const warehouseCount = $('#warehouseCount');
+            const prevPage = $('#prevPage');
+            const nextPage = $('#nextPage');
+            const pageInfo = $('#pageInfo');
+            const rowCountInfo = $('#rowCountInfo');
+            const exportCsvBtn = $('#exportCsvBtn');
+            const printBtn = $('#printBtn');
+            const tableScroll = $('#tableScroll');
+
+            // ─── helpers ───
+            function fmt(n) {
+                if (n === undefined || n === null) return '—';
+                const num = typeof n === 'string' ? parseFloat(n) : n;
+                if (isNaN(num)) return '—';
+                return Number(num).toLocaleString('en-US', { maximumFractionDigits: 2, minimumFractionDigits: 0 });
+            }
+
+            function fmt1(n) {
+                if (n === undefined || n === null) return '—';
+                const num = typeof n === 'string' ? parseFloat(n) : n;
+                if (isNaN(num)) return '—';
+                return Number(num).toFixed(1);
+            }
+
+            function showLoading(show) {
+                loadingOverlay.classList.toggle('show', show);
+            }
+
+            function showError(msg) {
+                errorMsg.textContent = msg || 'Unable to fetch data.';
+                errorToast.classList.add('show');
+                statusDot.className = 'dot error';
+                statusText.textContent = '⚠️ Error';
+                setTimeout(() => {
+                    errorToast.classList.remove('show');
+                }, 8000);
+            }
+
+            function hideError() {
+                errorToast.classList.remove('show');
+            }
+
+            function updateClock() {
+                const now = new Date();
+                currentDateEl.textContent = now.toLocaleDateString('en-US', {
+                    weekday: 'short',
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric'
+                });
+                currentTimeEl.textContent = now.toLocaleTimeString('en-US', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+            }
+
+            function updateLastUpdated() {
+                const now = new Date();
+                lastUpdatedEl.textContent = now.toLocaleString('en-US', {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+            }
+
+            function setStatus(ok) {
+                if (ok) {
+                    statusDot.className = 'dot';
+                    statusText.textContent = 'Connected to n8n Webhook';
+                } else {
+                    statusDot.className = 'dot error';
+                    statusText.textContent = '⚠️ Disconnected';
+                }
+            }
+
+            // ─── KPI cards ───
+            function renderKpi(summary) {
+                const map = [{
+                    label: 'Total DN Created',
+                    value: summary.total_dn_created || 0,
+                    icon: 'fa-file-invoice'
+                }, {
+                    label: 'Total Units Created',
+                    value: summary.total_units_created || 0,
+                    icon: 'fa-cubes'
+                }, {
+                    label: 'Total PGI Made',
+                    value: summary.total_pgi_made || 0,
+                    icon: 'fa-check-double'
+                }, {
+                    label: 'Total DN Delivered',
+                    value: summary.total_dn_delivered || 0,
+                    icon: 'fa-truck'
+                }, {
+                    label: 'Pending Delivery DN',
+                    value: summary.pending_delivery_dn || 0,
+                    icon: 'fa-clock'
+                }, {
+                    label: 'Pending Delivery Qty',
+                    value: summary.pending_delivery_qty || 0,
+                    icon: 'fa-boxes'
+                }, {
+                    label: 'Pending POD DN',
+                    value: summary.pending_pod_dn || 0,
+                    icon: 'fa-file-signature'
+                }, {
+                    label: 'Pending POD Qty',
+                    value: summary.pending_pod_qty || 0,
+                    icon: 'fa-receipt'
+                }];
+
+                kpiRow.innerHTML = '';
+                map.forEach((item) => {
+                    const col = document.createElement('div');
+                    col.className = 'col-6 col-md-3 col-lg-3';
+                    col.innerHTML = `
+                        <div class="kpi-card">
+                            <div class="d-flex align-items-start justify-content-between">
+                                <div>
+                                    <div class="kpi-label">${item.label}</div>
+                                    <div class="kpi-value">${fmt(item.value)}</div>
+                                </div>
+                                <div class="kpi-icon"><i class="fas ${item.icon}"></i></div>
+                            </div>
+                        </div>
+                    `;
+                    kpiRow.appendChild(col);
+                });
+            }
+
+            // ─── Table ───
+            function renderTable() {
+                // filter
+                const term = searchTerm.trim().toLowerCase();
+                filteredWarehouses = allWarehouses.filter(w =>
+                    w.warehouse && w.warehouse.toLowerCase().includes(term)
+                );
+
+                // sort
+                filteredWarehouses.sort((a, b) => {
+                    let va = a[sortKey] ?? '';
+                    let vb = b[sortKey] ?? '';
+                    if (typeof va === 'string') va = va.toLowerCase();
+                    if (typeof vb === 'string') vb = vb.toLowerCase();
+                    if (va < vb) return sortAsc ? -1 : 1;
+                    if (va > vb) return sortAsc ? 1 : -1;
+                    return 0;
+                });
+
+                const total = filteredWarehouses.length;
+                const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+                if (currentPage > totalPages) currentPage = totalPages;
+                if (currentPage < 1) currentPage = 1;
+
+                const start = (currentPage - 1) * PAGE_SIZE;
+                const end = Math.min(start + PAGE_SIZE, total);
+                const pageItems = filteredWarehouses.slice(start, end);
+
+                // update count badge
+                warehouseCount.textContent = `${total} warehouse${total !== 1 ? 's' : ''}`;
+
+                // render rows
+                if (total === 0) {
+                    tableBody.innerHTML =
+                        `<tr><td colspan="12" class="text-center text-muted py-4">No warehouses found</td></tr>`;
+                } else {
+                    tableBody.innerHTML = pageItems.map(w => `
+                        <tr>
+                            <td><strong>${w.warehouse || '—'}</strong></td>
+                            <td class="text-end">${fmt(w.total_dn)}</td>
+                            <td class="text-end">${fmt(w.total_units)}</td>
+                            <td class="text-end">${fmt(w.pending_pgi_dn)}</td>
+                            <td class="text-end">${fmt(w.pending_pgi_qty)}</td>
+                            <td class="text-end">${fmt(w.pending_pod_dn)}</td>
+                            <td class="text-end">${fmt(w.pending_pod_qty)}</td>
+                            <td class="text-end">${fmt1(w.avg_delivery_days)}</td>
+                            <td class="text-end">${fmt1(w.avg_pod_days)}</td>
+                            <td class="text-end">${fmt1(w.avg_cycle_days)}</td>
+                            <td class="text-end">${fmt1(w.avg_pending_pgi_days)}</td>
+                            <td class="text-end">${fmt1(w.avg_pending_pod_days)}</td>
+                        </tr>
+                    `).join('');
+                }
+
+                // pagination UI
+                pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+                prevPage.disabled = currentPage <= 1;
+                nextPage.disabled = currentPage >= totalPages;
+                rowCountInfo.textContent = `${total} row${total !== 1 ? 's' : ''}`;
+
+                // update sort indicators
+                $$('#warehouseTable thead th').forEach(th => {
+                    const key = th.dataset.sort;
+                    const icon = th.querySelector('i');
+                    if (icon) {
+                        if (key === sortKey) {
+                            icon.className = `fas fa-sort-${sortAsc ? 'up' : 'down'}`;
+                            icon.style.opacity = '1';
+                        } else {
+                            icon.className = 'fas fa-sort';
+                            icon.style.opacity = '0.4';
+                        }
+                    }
+                });
+            }
+
+            // ─── Charts ───
+            function destroyCharts() {
+                if (chartUnits) { chartUnits.destroy();
+                    chartUnits = null; }
+                if (chartDn) { chartDn.destroy();
+                    chartDn = null; }
+                if (chartPiePod) { chartPiePod.destroy();
+                    chartPiePod = null; }
+                if (chartPiePgi) { chartPiePgi.destroy();
+                    chartPiePgi = null; }
+                if (chartDeliveryDays) { chartDeliveryDays.destroy();
+                    chartDeliveryDays = null; }
+                if (chartPodDays) { chartPodDays.destroy();
+                    chartPodDays = null; }
+            }
+
+            function renderCharts(warehouses) {
+                destroyCharts();
+
+                const labels = warehouses.map(w => w.warehouse || 'Unknown');
+                const units = warehouses.map(w => parseFloat(w.total_units) || 0);
+                const dns = warehouses.map(w => parseFloat(w.total_dn) || 0);
+                const podQty = warehouses.map(w => parseFloat(w.pending_pod_qty) || 0);
+                const pgiQty = warehouses.map(w => parseFloat(w.pending_pgi_qty) || 0);
+                const delDays = warehouses.map(w => parseFloat(w.avg_delivery_days) || 0);
+                const podDays = warehouses.map(w => parseFloat(w.avg_pod_days) || 0);
+
+                const colors = [
+                    '#2a6fdb', '#3b8cdf', '#5ba3e8', '#7bb9f0', '#9fcff7',
+                    '#b8d9f9', '#d0e6fc', '#e5f0fe', '#f0f6ff'
+                ];
+
+                function bgColors(n) {
+                    return colors.slice(0, n);
+                }
+
+                // Bar: Total Units
+                const ctxUnits = document.getElementById('chartUnits').getContext('2d');
+                chartUnits = new Chart(ctxUnits, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Total Units',
+                            data: units,
+                            backgroundColor: bgColors(units.length),
+                            borderRadius: 6,
+                            borderSkipped: false,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.04)' } },
+                            x: { grid: { display: false } }
+                        }
+                    }
+                });
+
+                // Bar: Total DN
+                const ctxDn = document.getElementById('chartDn').getContext('2d');
+                chartDn = new Chart(ctxDn, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Total DN',
+                            data: dns,
+                            backgroundColor: bgColors(dns.length),
+                            borderRadius: 6,
+                            borderSkipped: false,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.04)' } },
+                            x: { grid: { display: false } }
+                        }
+                    }
+                });
+
+                // Pie: Pending POD Qty
+                const ctxPiePod = document.getElementById('chartPiePod').getContext('2d');
+                chartPiePod = new Chart(ctxPiePod, {
+                    type: 'pie',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            data: podQty,
+                            backgroundColor: bgColors(podQty.length),
+                            borderWidth: 2,
+                            borderColor: '#fff',
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { position: 'bottom', labels: { boxWidth: 12, padding: 8, font: { size: 10 } } }
+                        }
+                    }
+                });
+
+                // Pie: Pending PGI Qty
+                const ctxPiePgi = document.getElementById('chartPiePgi').getContext('2d');
+                chartPiePgi = new Chart(ctxPiePgi, {
+                    type: 'pie',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            data: pgiQty,
+                            backgroundColor: bgColors(pgiQty.length),
+                            borderWidth: 2,
+                            borderColor: '#fff',
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { position: 'bottom', labels: { boxWidth: 12, padding: 8, font: { size: 10 } } }
+                        }
+                    }
+                });
+
+                // Line: Avg Delivery Days
+                const ctxDel = document.getElementById('chartDeliveryDays').getContext('2d');
+                chartDeliveryDays = new Chart(ctxDel, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Avg Delivery Days',
+                            data: delDays,
+                            borderColor: '#2a6fdb',
+                            backgroundColor: 'rgba(42,111,219,0.08)',
+                            fill: true,
+                            tension: 0.25,
+                            pointBackgroundColor: '#2a6fdb',
+                            pointRadius: 4,
+                            pointHoverRadius: 6,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.04)' } },
+                            x: { grid: { display: false } }
+                        }
+                    }
+                });
+
+                // Line: Avg POD Days
+                const ctxPod = document.getElementById('chartPodDays').getContext('2d');
+                chartPodDays = new Chart(ctxPod, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Avg POD Days',
+                            data: podDays,
+                            borderColor: '#e67e22',
+                            backgroundColor: 'rgba(230,126,34,0.08)',
+                            fill: true,
+                            tension: 0.25,
+                            pointBackgroundColor: '#e67e22',
+                            pointRadius: 4,
+                            pointHoverRadius: 6,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.04)' } },
+                            x: { grid: { display: false } }
+                        }
+                    }
+                });
+            }
+
+            // ─── Fetch data ───
+            async function fetchData(showLoadingIndicator = true) {
+                if (isRefreshing) return;
+                isRefreshing = true;
+                refreshBtn.disabled = true;
+
+                if (showLoadingIndicator) showLoading(true);
+                hideError();
+
+                try {
+                    const resp = await fetch(WEBHOOK_URL, {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' },
+                    });
+
+                    if (!resp.ok) {
+                        throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+                    }
+
+                    const data = await resp.json();
+
+                    if (!data || typeof data !== 'object' || !Array.isArray(data.items) || data.items.length < 2) {
+                        throw new Error('Invalid data structure: expected items array with at least 2 entries.');
+                    }
+
+                    const summary = data.items[0] || {};
+                    const warehouses = data.items.slice(1).filter(w => w.warehouse);
+
+                    if (Object.keys(summary).length === 0) {
+                        throw new Error('Summary data is empty.');
+                    }
+
+                    // update state
+                    allWarehouses = warehouses;
+
+                    // render
+                    renderKpi(summary);
+                    renderTable();
+                    renderCharts(warehouses);
+
+                    setStatus(true);
+                    updateLastUpdated();
+                    hideError();
+
+                } catch (err) {
+                    console.error('Fetch error:', err);
+                    showError(err.message || 'Failed to load data from webhook.');
+                    setStatus(false);
+                    // show empty state
+                    if (allWarehouses.length === 0) {
+                        tableBody.innerHTML =
+                            `<tr><td colspan="12" class="text-center text-muted py-4">No data available</td></tr>`;
+                        warehouseCount.textContent = '0 warehouses';
+                    }
+                } finally {
+                    if (showLoadingIndicator) showLoading(false);
+                    isRefreshing = false;
+                    refreshBtn.disabled = false;
+                }
+            }
+
+            // ─── Export CSV ───
+            function exportCsv() {
+                if (filteredWarehouses.length === 0) {
+                    alert('No data to export.');
+                    return;
+                }
+                const headers = [
+                    'Warehouse', 'Total DN', 'Total Units',
+                    'Pending PGI DN', 'Pending PGI Qty',
+                    'Pending POD DN', 'Pending POD Qty',
+                    'Avg Delivery Days', 'Avg POD Days',
+                    'Avg Cycle Days', 'Avg Pending PGI Days', 'Avg Pending POD Days'
+                ];
+                const keys = [
+                    'warehouse', 'total_dn', 'total_units',
+                    'pending_pgi_dn', 'pending_pgi_qty',
+                    'pending_pod_dn', 'pending_pod_qty',
+                    'avg_delivery_days', 'avg_pod_days',
+                    'avg_cycle_days', 'avg_pending_pgi_days', 'avg_pending_pod_days'
+                ];
+
+                let csv = headers.join(',') + '\n';
+                filteredWarehouses.forEach(w => {
+                    const row = keys.map(k => {
+                        let val = w[k] ?? '';
+                        if (typeof val === 'string' && val.includes(',')) val = `"${val}"`;
+                        return val;
+                    });
+                    csv += row.join(',') + '\n';
+                });
+
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `warehouse_export_${new Date().toISOString().slice(0,10)}.csv`;
+                link.click();
+                URL.revokeObjectURL(link.href);
+            }
+
+            // ─── Print ───
+            function printDashboard() {
+                window.print();
+            }
+
+            // ─── Table sorting ───
+            function handleSort(e) {
+                const th = e.target.closest('th');
+                if (!th || !th.dataset.sort) return;
+                const key = th.dataset.sort;
+                if (key === sortKey) {
+                    sortAsc = !sortAsc;
+                } else {
+                    sortKey = key;
+                    sortAsc = true;
+                }
+                currentPage = 1;
+                renderTable();
+            }
+
+            // ─── Pagination ───
+            function goToPage(dir) {
+                const total = filteredWarehouses.length;
+                const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+                const newPage = currentPage + dir;
+                if (newPage < 1 || newPage > totalPages) return;
+                currentPage = newPage;
+                renderTable();
+                // scroll table to top
+                tableScroll.scrollTop = 0;
+            }
+
+            // ─── Init ───
+            function init() {
+                // clock
+                updateClock();
+                setInterval(updateClock, 1000);
+
+                // load data
+                fetchData(true);
+
+                // auto refresh
+                setInterval(() => fetchData(false), REFRESH_INTERVAL_MS);
+
+                // events
+                refreshBtn.addEventListener('click', () => fetchData(true));
+
+                toastClose.addEventListener('click', () => {
+                    errorToast.classList.remove('show');
+                });
+
+                tableSearch.addEventListener('input', (e) => {
+                    searchTerm = e.target.value;
+                    currentPage = 1;
+                    renderTable();
+                });
+
+                document.querySelector('#warehouseTable thead')?.addEventListener('click', handleSort);
+
+                prevPage.addEventListener('click', () => goToPage(-1));
+                nextPage.addEventListener('click', () => goToPage(1));
+
+                exportCsvBtn.addEventListener('click', exportCsv);
+                printBtn.addEventListener('click', printDashboard);
+
+                // keyboard shortcut for refresh (Ctrl+R / Cmd+R)
+                document.addEventListener('keydown', (e) => {
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
+                        e.preventDefault();
+                        fetchData(true);
+                    }
+                });
+
+                // re-render charts on window resize (debounced)
+                let resizeTimer;
+                window.addEventListener('resize', () => {
+                    clearTimeout(resizeTimer);
+                    resizeTimer = setTimeout(() => {
+                        if (allWarehouses.length) renderCharts(allWarehouses);
+                    }, 300);
+                });
+            }
+
+            // ─── start ───
+            document.addEventListener('DOMContentLoaded', init);
+        })();
+    </script>
+
+    <!-- Bootstrap JS (for any toggles, but not strictly required) -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js">
+    </script>
+
+</body>
+</html>
