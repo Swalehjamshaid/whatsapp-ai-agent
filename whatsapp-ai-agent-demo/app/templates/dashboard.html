@@ -1,53 +1,231 @@
-<script>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-const API = "http://localhost:5678/webhook/5ccbda50-2b2f-4f46-9ddf-762e542f18f7";
+<title>Haier Logistics Executive Dashboard</title>
 
-async function loadDashboard() {
+<style>
 
-    try {
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+}
 
-        const response = await fetch(API);
+body{
 
-        if (!response.ok) {
-            throw new Error("HTTP " + response.status);
-        }
-
-        const data = await response.json();
-
-        console.log("API Response:", data);
-
-        // Supports both:
-        // [{...}]
-        // {...}
-        let kpi = Array.isArray(data) ? data[0] : data;
-
-        if (!kpi) {
-            console.error("No KPI data received");
-            return;
-        }
-
-        setValue("total_dn_created", kpi.total_dn_created);
-        setValue("total_units_created", kpi.total_units_created);
-        setValue("total_pgi_made", kpi.total_pgi_made);
-        setValue("total_dn_delivered", kpi.total_dn_delivered);
-        setValue("pending_delivery_dn", kpi.pending_delivery_dn);
-        setValue("pending_delivery_qty", kpi.pending_delivery_qty);
-        setValue("pending_pod_dn", kpi.pending_pod_dn);
-        setValue("pending_pod_qty", kpi.pending_pod_qty);
-
-    }
-    catch (err) {
-
-        console.error("Dashboard Error:", err);
-
-    }
+    font-family:Arial,Helvetica,sans-serif;
+    background:#0f172a;
+    color:#fff;
 
 }
 
-function setValue(id, value) {
+.container{
 
-    document.getElementById(id).innerHTML =
-        Number(value || 0).toLocaleString();
+    width:95%;
+    max-width:1500px;
+    margin:auto;
+    padding:30px;
+
+}
+
+h1{
+
+    margin-bottom:30px;
+
+}
+
+.status{
+
+    margin-bottom:20px;
+    color:#38bdf8;
+    font-size:14px;
+
+}
+
+.cards{
+
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+    gap:20px;
+
+}
+
+.card{
+
+    background:#1e293b;
+    border-radius:12px;
+    padding:20px;
+    box-shadow:0 0 10px rgba(0,0,0,.3);
+
+}
+
+.title{
+
+    color:#94a3b8;
+    font-size:15px;
+    margin-bottom:15px;
+
+}
+
+.value{
+
+    font-size:38px;
+    color:#38bdf8;
+    font-weight:bold;
+
+}
+
+.error{
+
+    color:#ef4444;
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>Haier Logistics Executive Dashboard</h1>
+
+<div id="status" class="status">
+Loading dashboard...
+</div>
+
+<div class="cards">
+
+<div class="card">
+<div class="title">Total DN Created</div>
+<div id="total_dn_created" class="value">0</div>
+</div>
+
+<div class="card">
+<div class="title">Total Units Created</div>
+<div id="total_units_created" class="value">0</div>
+</div>
+
+<div class="card">
+<div class="title">Total PGI Made</div>
+<div id="total_pgi_made" class="value">0</div>
+</div>
+
+<div class="card">
+<div class="title">Total DN Delivered</div>
+<div id="total_dn_delivered" class="value">0</div>
+</div>
+
+<div class="card">
+<div class="title">Pending Delivery DN</div>
+<div id="pending_delivery_dn" class="value">0</div>
+</div>
+
+<div class="card">
+<div class="title">Pending Delivery Qty</div>
+<div id="pending_delivery_qty" class="value">0</div>
+</div>
+
+<div class="card">
+<div class="title">Pending POD DN</div>
+<div id="pending_pod_dn" class="value">0</div>
+</div>
+
+<div class="card">
+<div class="title">Pending POD Qty</div>
+<div id="pending_pod_qty" class="value">0</div>
+</div>
+
+</div>
+
+</div>
+
+<script>
+
+// CHANGE THIS TO YOUR WEBHOOK URL
+const API =
+"http://localhost:5678/webhook/5ccbda50-2b2f-4f46-9ddf-762e542f18f7";
+
+function setValue(id,value){
+
+    document.getElementById(id).innerHTML=
+    Number(value||0).toLocaleString();
+
+}
+
+async function loadDashboard(){
+
+    const status=document.getElementById("status");
+
+    try{
+
+        status.innerHTML="Loading...";
+
+        const response=await fetch(API);
+
+        if(!response.ok){
+
+            throw new Error("HTTP "+response.status);
+
+        }
+
+        const data=await response.json();
+
+        console.log("API Response",data);
+
+        let kpi;
+
+        if(Array.isArray(data)){
+
+            kpi=data[0];
+
+        }else{
+
+            kpi=data;
+
+        }
+
+        if(!kpi){
+
+            throw new Error("No KPI data returned");
+
+        }
+
+        setValue("total_dn_created",kpi.total_dn_created);
+
+        setValue("total_units_created",kpi.total_units_created);
+
+        setValue("total_pgi_made",kpi.total_pgi_made);
+
+        setValue("total_dn_delivered",kpi.total_dn_delivered);
+
+        setValue("pending_delivery_dn",kpi.pending_delivery_dn);
+
+        setValue("pending_delivery_qty",kpi.pending_delivery_qty);
+
+        setValue("pending_pod_dn",kpi.pending_pod_dn);
+
+        setValue("pending_pod_qty",kpi.pending_pod_qty);
+
+        status.innerHTML="Last Updated : "+
+        new Date().toLocaleTimeString();
+
+    }
+
+    catch(error){
+
+        console.error(error);
+
+        status.innerHTML=
+        "<span class='error'>"+
+        error.message+
+        "</span>";
+
+    }
 
 }
 
@@ -56,3 +234,6 @@ loadDashboard();
 setInterval(loadDashboard,30000);
 
 </script>
+
+</body>
+</html>
