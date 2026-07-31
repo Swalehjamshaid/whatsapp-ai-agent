@@ -265,7 +265,6 @@
             font-size: 2.2rem;
         }
 
-        /* colored variants */
         .kpi-card.green::before {
             background: linear-gradient(90deg, #27ae60, #2ecc71);
         }
@@ -396,7 +395,6 @@
             color: #0b2a4a;
         }
 
-        /* table controls */
         .table-controls {
             padding: 0.8rem 1.4rem;
             background: rgba(255, 255, 255, 0.5);
@@ -972,16 +970,16 @@
                                 <thead>
                                     <tr>
                                         <th data-sort="warehouse">Warehouse <i class="fas fa-sort"></i></th>
-                                        <th data-sort="total_dn" class="text-end">Total DN <i class="fas fa-sort"></i></th>
-                                        <th data-sort="total_units" class="text-end">Total Units <i class="fas fa-sort"></i></th>
-                                        <th data-sort="pending_pgi_dn" class="text-end">PGI DN <i class="fas fa-sort"></i></th>
-                                        <th data-sort="pending_pgi_qty" class="text-end">PGI Qty <i class="fas fa-sort"></i></th>
+                                        <th data-sort="total_dn_created" class="text-end">Total DN <i class="fas fa-sort"></i></th>
+                                        <th data-sort="total_dn_quantity" class="text-end">Total Units <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_delivery_dn" class="text-end">PGI DN <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_delivery_quantity" class="text-end">PGI Qty <i class="fas fa-sort"></i></th>
                                         <th data-sort="pending_pod_dn" class="text-end">POD DN <i class="fas fa-sort"></i></th>
-                                        <th data-sort="pending_pod_qty" class="text-end">POD Qty <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_pod_quantity" class="text-end">POD Qty <i class="fas fa-sort"></i></th>
                                         <th data-sort="avg_delivery_days" class="text-end">Delivery <i class="fas fa-sort"></i></th>
                                         <th data-sort="avg_pod_days" class="text-end">POD <i class="fas fa-sort"></i></th>
-                                        <th data-sort="avg_cycle_days" class="text-end">Cycle <i class="fas fa-sort"></i></th>
-                                        <th data-sort="avg_pending_pgi_days" class="text-end">PGI Days <i class="fas fa-sort"></i></th>
+                                        <th data-sort="avg_total_cycle_days" class="text-end">Cycle <i class="fas fa-sort"></i></th>
+                                        <th data-sort="avg_pending_delivery_days" class="text-end">PGI Days <i class="fas fa-sort"></i></th>
                                         <th data-sort="avg_pending_pod_days" class="text-end">POD Days <i class="fas fa-sort"></i></th>
                                     </tr>
                                 </thead>
@@ -1026,8 +1024,9 @@
             'use strict';
 
             // ─── CONFIG ───
+            // 👇 Updated webhook URL – replace with your actual endpoint if needed
             const WEBHOOK_URL =
-                'http://localhost:5678/webhook/ddbe2493-dc73-4e7c-9dd0-6ee191907b41';
+                'http://localhost:5678/webhook/e8c63b93-4b19-4705-b8b7-09c52ee1478f';
             const REFRESH_INTERVAL_MS = 30000;
             const PAGE_SIZE = 10;
 
@@ -1149,45 +1148,56 @@
                     cls: ''
                 }, {
                     label: 'Total Units Created',
-                    value: summary.total_units_created || 0,
+                    value: summary.total_dn_quantity || 0,
                     icon: 'fa-cubes',
                     cls: 'green'
                 }, {
-                    label: 'Total PGI Made',
-                    value: summary.total_pgi_made || 0,
-                    icon: 'fa-check-double',
+                    label: 'Total Revenue',
+                    value: summary.total_revenue || 0,
+                    icon: 'fa-dollar-sign',
                     cls: 'teal'
                 }, {
-                    label: 'Total DN Delivered',
-                    value: summary.total_dn_delivered || 0,
-                    icon: 'fa-truck',
+                    label: 'Active Dealers',
+                    value: summary.active_dealers || 0,
+                    icon: 'fa-users',
                     cls: 'indigo'
+                }, {
+                    label: 'Active Warehouses',
+                    value: summary.active_warehouses || 0,
+                    icon: 'fa-warehouse',
+                    cls: 'purple'
+                }, {
+                    label: 'Cities Served',
+                    value: summary.cities_served || 0,
+                    icon: 'fa-city',
+                    cls: 'amber'
+                }, {
+                    label: 'Delivered DN',
+                    value: summary.delivered_dn || 0,
+                    icon: 'fa-truck',
+                    cls: 'green'
                 }, {
                     label: 'Pending Delivery DN',
                     value: summary.pending_delivery_dn || 0,
                     icon: 'fa-clock',
                     cls: 'orange'
                 }, {
-                    label: 'Pending Delivery Qty',
-                    value: summary.pending_delivery_qty || 0,
-                    icon: 'fa-boxes',
-                    cls: 'amber'
-                }, {
                     label: 'Pending POD DN',
                     value: summary.pending_pod_dn || 0,
                     icon: 'fa-file-signature',
                     cls: 'rose'
                 }, {
-                    label: 'Pending POD Qty',
-                    value: summary.pending_pod_qty || 0,
-                    icon: 'fa-receipt',
-                    cls: 'purple'
+                    label: 'POD Completed DN',
+                    value: summary.pod_completed_dn || 0,
+                    icon: 'fa-check-double',
+                    cls: 'teal'
                 }];
 
+                // We'll show up to 10 cards in a responsive grid
                 kpiRow.innerHTML = '';
                 items.forEach((item) => {
                     const col = document.createElement('div');
-                    col.className = 'col-6 col-md-3 col-lg-3';
+                    col.className = 'col-6 col-md-3 col-lg-2';
                     col.innerHTML = `
                         <div class="kpi-card ${item.cls}">
                             <div class="d-flex align-items-start justify-content-between">
@@ -1238,16 +1248,16 @@
                     tableBody.innerHTML = pageItems.map(w => `
                         <tr>
                             <td><strong>${w.warehouse || '—'}</strong></td>
-                            <td class="text-end">${fmt(w.total_dn)}</td>
-                            <td class="text-end">${fmt(w.total_units)}</td>
-                            <td class="text-end">${fmt(w.pending_pgi_dn)}</td>
-                            <td class="text-end">${fmt(w.pending_pgi_qty)}</td>
+                            <td class="text-end">${fmt(w.total_dn_created)}</td>
+                            <td class="text-end">${fmt(w.total_dn_quantity)}</td>
+                            <td class="text-end">${fmt(w.pending_delivery_dn)}</td>
+                            <td class="text-end">${fmt(w.pending_delivery_quantity)}</td>
                             <td class="text-end">${fmt(w.pending_pod_dn)}</td>
-                            <td class="text-end">${fmt(w.pending_pod_qty)}</td>
+                            <td class="text-end">${fmt(w.pending_pod_quantity)}</td>
                             <td class="text-end">${fmt1(w.avg_delivery_days)}</td>
                             <td class="text-end">${fmt1(w.avg_pod_days)}</td>
-                            <td class="text-end">${fmt1(w.avg_cycle_days)}</td>
-                            <td class="text-end">${fmt1(w.avg_pending_pgi_days)}</td>
+                            <td class="text-end">${fmt1(w.avg_total_cycle_days)}</td>
+                            <td class="text-end">${fmt1(w.avg_pending_delivery_days)}</td>
                             <td class="text-end">${fmt1(w.avg_pending_pod_days)}</td>
                         </tr>
                     `).join('');
@@ -1293,10 +1303,10 @@
                 destroyCharts();
 
                 const labels = warehouses.map(w => w.warehouse || 'Unknown');
-                const units = warehouses.map(w => parseFloat(w.total_units) || 0);
-                const dns = warehouses.map(w => parseFloat(w.total_dn) || 0);
-                const podQty = warehouses.map(w => parseFloat(w.pending_pod_qty) || 0);
-                const pgiQty = warehouses.map(w => parseFloat(w.pending_pgi_qty) || 0);
+                const units = warehouses.map(w => parseFloat(w.total_dn_quantity) || 0);
+                const dns = warehouses.map(w => parseFloat(w.total_dn_created) || 0);
+                const podQty = warehouses.map(w => parseFloat(w.pending_pod_quantity) || 0);
+                const pgiQty = warehouses.map(w => parseFloat(w.pending_delivery_quantity) || 0);
                 const delDays = warehouses.map(w => parseFloat(w.avg_delivery_days) || 0);
                 const podDays = warehouses.map(w => parseFloat(w.avg_pod_days) || 0);
 
@@ -1497,13 +1507,15 @@
 
                     const data = await resp.json();
 
-                    if (!data || typeof data !== 'object' || !Array.isArray(data.items) || data.items.length < 2) {
-                        throw new Error('Invalid data structure: expected items array with at least 2 entries.');
+                    // Validate structure
+                    if (!data || typeof data !== 'object' || !data.summary || !Array.isArray(data.warehouses)) {
+                        throw new Error('Invalid data structure: expected "summary" and "warehouses" array.');
                     }
 
-                    const summary = data.items[0] || {};
-                    const warehouses = data.items.slice(1).filter(w => w.warehouse);
+                    const summary = data.summary;
+                    const warehouses = data.warehouses || [];
 
+                    // Ensure we have at least some data
                     if (Object.keys(summary).length === 0) throw new Error('Summary data is empty.');
 
                     allWarehouses = warehouses;
@@ -1546,11 +1558,11 @@
                     'Avg Cycle Days', 'Avg Pending PGI Days', 'Avg Pending POD Days'
                 ];
                 const keys = [
-                    'warehouse', 'total_dn', 'total_units',
-                    'pending_pgi_dn', 'pending_pgi_qty',
-                    'pending_pod_dn', 'pending_pod_qty',
+                    'warehouse', 'total_dn_created', 'total_dn_quantity',
+                    'pending_delivery_dn', 'pending_delivery_quantity',
+                    'pending_pod_dn', 'pending_pod_quantity',
                     'avg_delivery_days', 'avg_pod_days',
-                    'avg_cycle_days', 'avg_pending_pgi_days', 'avg_pending_pod_days'
+                    'avg_total_cycle_days', 'avg_pending_delivery_days', 'avg_pending_pod_days'
                 ];
 
                 let csv = headers.join(',') + '\n';
