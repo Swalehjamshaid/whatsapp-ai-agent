@@ -1,6 +1,7 @@
 # ==========================================================
-# FILE: app/services/excel_import_service.py (v4.1 - SAFE OPTIONAL COLUMN ACCESS)
-# PURPOSE: Maps ALL available Excel columns to ALL database fields.
+# FILE: app/services/excel_import_service.py (v5.0 - SELF-CONTAINED REPLACE)
+# PURPOSE: Maps ALL Excel columns, replaces all existing data if replace_mode=True,
+#          and inserts new rows in batches of 1000.
 # ==========================================================
 
 import logging
@@ -9,6 +10,7 @@ from typing import Dict, Any, List, Optional
 
 from openpyxl import load_workbook
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from app.models import DeliveryReport
 
@@ -76,7 +78,7 @@ def _parse_date_from_excel(value: Any) -> Optional[date]:
     return None
 
 # ==========================================================
-# CORE IMPORT FUNCTION (BATCH + FULL MAPPING + SAFE ACCESS)
+# CORE IMPORT FUNCTION (WITH SELF-CONTAINED REPLACE)
 # ==========================================================
 
 def import_delivery_excel(
@@ -88,9 +90,8 @@ def import_delivery_excel(
     replace_mode: bool = False
 ) -> Dict[str, Any]:
     """
-    Reads Haier Excel file, maps ALL available columns to the DeliveryReport model,
-    and bulk inserts in batches of 1000.
-    Missing columns are logged but not fatal (except for dn_no).
+    Reads Haier Excel file, maps all columns, and bulk inserts in batches of 1000.
+    If replace_mode is True, the entire table is TRUNCATED before inserting new rows.
     """
     logger.info(f"Starting import for batch: {upload_batch_id}, file: {source_filename}")
     
@@ -102,6 +103,19 @@ def import_delivery_excel(
         "batch_id": upload_batch_id,
         "errors": []
     }
+
+    # ----------------------------------------------------------
+    # STEP 0: REPLACE EXISTING DATA (if requested)
+    # ----------------------------------------------------------
+    if replace_mode:
+        try:
+            # Truncate the table instantly and reset the ID sequence
+            db.execute(text("TRUNCATE TABLE delivery_reports RESTART IDENTITY CASCADE"))
+            db.flush()
+            logger.info("✅ Existing data truncated successfully (replace_mode=True).")
+        except Exception as e:
+            logger.exception("Failed to truncate delivery_reports table.")
+            raise ExcelImportServiceError(f"Truncation failed: {str(e)}")
 
     # ----------------------------------------------------------
     # STEP 1: LOAD EXCEL WORKBOOK
@@ -167,7 +181,6 @@ def import_delivery_excel(
                 missing_columns.append(expected_upper)
                 logger.warning(f"Optional column '{expected_upper}' not found in Excel, will leave field as NULL.")
 
-    # If many columns are missing, log a summary
     if missing_columns:
         logger.info(f"The following columns were not found and will be left NULL: {', '.join(missing_columns)}")
 
@@ -236,7 +249,6 @@ def import_delivery_excel(
     # ----------------------------------------------------------
     if records_to_insert:
         try:
-            # Prepare dictionaries for bulk insert
             records_dict = [
                 {
                     "order_type": r.order_type,
