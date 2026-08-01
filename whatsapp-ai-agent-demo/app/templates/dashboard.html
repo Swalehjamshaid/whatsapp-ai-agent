@@ -12,7 +12,6 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <!-- NEW: Chart.js DataLabels Plugin for showing numbers on the graphs -->
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 
     <!-- Google Fonts -->
@@ -933,17 +932,16 @@
                                 <thead>
                                     <tr>
                                         <th data-sort="warehouse">Warehouse <i class="fas fa-sort"></i></th>
-                                        <th data-sort="total_dn_created" class="text-end">Total DN <i class="fas fa-sort"></i></th>
-                                        <th data-sort="total_dn_quantity" class="text-end">Total Units <i class="fas fa-sort"></i></th>
-                                        <th data-sort="pending_delivery_dn" class="text-end">PGI DN <i class="fas fa-sort"></i></th>
-                                        <th data-sort="pending_delivery_quantity" class="text-end">PGI Qty <i class="fas fa-sort"></i></th>
-                                        <th data-sort="pending_pod_dn" class="text-end">POD DN <i class="fas fa-sort"></i></th>
-                                        <th data-sort="pending_pod_quantity" class="text-end">POD Qty <i class="fas fa-sort"></i></th>
+                                        <th data-sort="total_delivery_notes" class="text-end">Total DN <i class="fas fa-sort"></i></th>
+                                        <th data-sort="total_units" class="text-end">Total Units <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_pgi_dns" class="text-end">PGI DN <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_pgi_units" class="text-end">PGI Qty <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_delivery_dns" class="text-end">Pending DN <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_delivery_units" class="text-end">Pending Qty <i class="fas fa-sort"></i></th>
                                         <th data-sort="avg_delivery_days" class="text-end">Delivery <i class="fas fa-sort"></i></th>
                                         <th data-sort="avg_pod_days" class="text-end">POD <i class="fas fa-sort"></i></th>
                                         <th data-sort="avg_total_cycle_days" class="text-end">Cycle <i class="fas fa-sort"></i></th>
-                                        <th data-sort="avg_pending_delivery_days" class="text-end">PGI Days <i class="fas fa-sort"></i></th>
-                                        <th data-sort="avg_pending_pod_days" class="text-end">POD Days <i class="fas fa-sort"></i></th>
+                                        <th data-sort="rank" class="text-end">Rank <i class="fas fa-sort"></i></th>
                                     </tr>
                                 </thead>
                                 <tbody id="tableBody"></tbody>
@@ -1016,7 +1014,7 @@
             'use strict';
 
             // ─── CONFIG ───
-            const WEBHOOK_URL = 'http://localhost:5678/webhook/e8c63b93-4b19-4705-b8b7-09c52ee1478f';
+            const WEBHOOK_URL = 'http://localhost:5678/webhook/b8501db8-e0ec-4bcd-8e0c-b2d3ebe87a8c';
             const REFRESH_INTERVAL_MS = 30000;
             const PAGE_SIZE = 10;
 
@@ -1140,18 +1138,18 @@
             }
 
             // ─── KPI ───
-            function renderKpi(summary) {
+            function renderKpi(executive) {
                 const items = [
-                    { label: 'Total DN Created', value: summary.total_dn_created || 0, icon: 'fa-file-invoice', cls: '' },
-                    { label: 'Total Units Created', value: summary.total_dn_quantity || 0, icon: 'fa-cubes', cls: 'green' },
-                    { label: 'Total Revenue', value: summary.total_revenue || 0, icon: 'fa-dollar-sign', cls: 'teal' },
-                    { label: 'Active Dealers', value: summary.active_dealers || 0, icon: 'fa-users', cls: 'indigo' },
-                    { label: 'Active Warehouses', value: summary.active_warehouses || 0, icon: 'fa-warehouse', cls: 'purple' },
-                    { label: 'Cities Served', value: summary.cities_served || 0, icon: 'fa-city', cls: 'amber' },
-                    { label: 'Delivered DN', value: summary.delivered_dn || 0, icon: 'fa-truck', cls: 'green' },
-                    { label: 'Pending Delivery DN', value: summary.pending_delivery_dn || 0, icon: 'fa-clock', cls: 'orange' },
-                    { label: 'Pending POD DN', value: summary.pending_pod_dn || 0, icon: 'fa-file-signature', cls: 'rose' },
-                    { label: 'POD Completed DN', value: summary.pod_completed_dn || 0, icon: 'fa-check-double', cls: 'teal' }
+                    { label: 'Total DN Created', value: executive.total_delivery_notes || 0, icon: 'fa-file-invoice', cls: '' },
+                    { label: 'Total Units Created', value: executive.total_dn_units || 0, icon: 'fa-cubes', cls: 'green' },
+                    { label: 'Total Revenue', value: executive.total_revenue || 0, icon: 'fa-dollar-sign', cls: 'teal' },
+                    { label: 'Active Dealers', value: executive.total_dealers || 0, icon: 'fa-users', cls: 'indigo' },
+                    { label: 'Active Warehouses', value: executive.total_warehouses || 0, icon: 'fa-warehouse', cls: 'purple' },
+                    { label: 'Cities Served', value: executive.total_cities || 0, icon: 'fa-city', cls: 'amber' },
+                    { label: 'Total Products', value: executive.total_products || 0, icon: 'fa-cubes', cls: 'teal' },
+                    { label: 'Logistics Health', value: executive.logistics_health_score || 0, icon: 'fa-heartbeat', cls: 'rose' },
+                    { label: 'Pending Delivery DN', value: executive.pending_delivery_dns || 0, icon: 'fa-clock', cls: 'orange' },
+                    { label: 'Pending POD DN', value: executive.pending_pod_dns || 0, icon: 'fa-file-signature', cls: 'rose' }
                 ];
 
                 kpiRow.innerHTML = '';
@@ -1163,7 +1161,7 @@
                             <div class="d-flex align-items-start justify-content-between">
                                 <div>
                                     <div class="kpi-label">${item.label}</div>
-                                    <div class="kpi-value">${fmt(item.value)}</div>
+                                    <div class="kpi-value">${item.label === 'Logistics Health' ? fmt1(item.value) + '%' : fmt(item.value)}</div>
                                 </div>
                                 <div class="kpi-icon"><i class="fas ${item.icon}"></i></div>
                             </div>
@@ -1202,7 +1200,7 @@
                 const end = Math.min(start + PAGE_SIZE, total);
                 const pageItems = filteredWarehouses.slice(start, end);
 
-                warehouseCount.textContent = `${total} warehouse${total !== 1 ? 's' : ''}`;
+                warehouseCount.textContent = `${executive.total_warehouses} warehouses`;
 
                 if (total === 0) {
                     tableBody.innerHTML = `<tr><td colspan="12" class="text-center text-muted py-4" style="font-size:0.9rem;">No warehouses found</td></tr>`;
@@ -1210,17 +1208,16 @@
                     tableBody.innerHTML = pageItems.map(w => `
                         <tr>
                             <td><strong>${w.warehouse || '—'}</strong></td>
-                            <td class="text-end">${fmt(w.total_dn_created)}</td>
-                            <td class="text-end">${fmt(w.total_dn_quantity)}</td>
-                            <td class="text-end">${fmt(w.pending_delivery_dn)}</td>
-                            <td class="text-end">${fmt(w.pending_delivery_quantity)}</td>
-                            <td class="text-end">${fmt(w.pending_pod_dn)}</td>
-                            <td class="text-end">${fmt(w.pending_pod_quantity)}</td>
+                            <td class="text-end">${fmt(w.total_delivery_notes)}</td>
+                            <td class="text-end">${fmt(w.total_units)}</td>
+                            <td class="text-end">${fmt(w.pending_pgi_dns)}</td>
+                            <td class="text-end">${fmt(w.pending_pgi_units)}</td>
+                            <td class="text-end">${fmt(w.pending_delivery_dns)}</td>
+                            <td class="text-end">${fmt(w.pending_delivery_units)}</td>
                             <td class="text-end">${fmt1(w.avg_delivery_days)}</td>
                             <td class="text-end">${fmt1(w.avg_pod_days)}</td>
                             <td class="text-end">${fmt1(w.avg_total_cycle_days)}</td>
-                            <td class="text-end">${fmt1(w.avg_pending_delivery_days)}</td>
-                            <td class="text-end">${fmt1(w.avg_pending_pod_days)}</td>
+                            <td class="text-end">${w.rank || '—'}</td>
                         </tr>
                     `).join('');
                 }
@@ -1440,10 +1437,10 @@
                 destroyCharts();
 
                 const labels = warehouses.map(w => w.warehouse || 'Unknown');
-                const units = warehouses.map(w => parseFloat(w.total_dn_quantity) || 0);
-                const dns = warehouses.map(w => parseFloat(w.total_dn_created) || 0);
-                const podQty = warehouses.map(w => parseFloat(w.pending_pod_quantity) || 0);
-                const pgiQty = warehouses.map(w => parseFloat(w.pending_delivery_quantity) || 0);
+                const units = warehouses.map(w => parseFloat(w.total_units) || 0);
+                const dns = warehouses.map(w => parseFloat(w.total_delivery_notes) || 0);
+                const podQty = warehouses.map(w => parseFloat(w.pending_pod_units) || 0);
+                const pgiQty = warehouses.map(w => parseFloat(w.pending_pgi_units) || 0);
                 const delDays = warehouses.map(w => parseFloat(w.avg_delivery_days) || 0);
                 const podDays = warehouses.map(w => parseFloat(w.avg_pod_days) || 0);
 
@@ -1618,6 +1615,8 @@
             }
 
             // ─── Fetch ───
+            let executive = {};
+
             async function fetchData(showLoadingIndicator = true) {
                 if (isRefreshing) return;
                 isRefreshing = true;
@@ -1636,18 +1635,18 @@
 
                     const data = await resp.json();
 
-                    if (!data || typeof data !== 'object' || !data.summary || !Array.isArray(data.warehouses)) {
-                        throw new Error('Invalid data structure: expected "summary" and "warehouses" array.');
+                    if (!data || typeof data !== 'object' || !data.executive || !Array.isArray(data.warehouses)) {
+                        throw new Error('Invalid data structure: expected "executive" and "warehouses" array.');
                     }
 
-                    const summary = data.summary;
+                    executive = data.executive;
                     const warehouses = data.warehouses || [];
 
-                    if (Object.keys(summary).length === 0) throw new Error('Summary data is empty.');
+                    if (Object.keys(executive).length === 0) throw new Error('Executive data is empty.');
 
                     allWarehouses = warehouses;
 
-                    renderKpi(summary);
+                    renderKpi(executive);
                     renderTable();
                     renderCharts(warehouses);
 
@@ -1678,17 +1677,15 @@
                 }
                 const headers = [
                     'Warehouse', 'Total DN', 'Total Units',
-                    'Pending PGI DN', 'Pending PGI Qty',
-                    'Pending POD DN', 'Pending POD Qty',
-                    'Avg Delivery Days', 'Avg POD Days',
-                    'Avg Cycle Days', 'Avg Pending PGI Days', 'Avg Pending POD Days'
+                    'PGI DN', 'PGI Qty',
+                    'Pending DN', 'Pending Qty',
+                    'Avg Delivery', 'Avg POD', 'Cycle', 'Rank'
                 ];
                 const keys = [
-                    'warehouse', 'total_dn_created', 'total_dn_quantity',
-                    'pending_delivery_dn', 'pending_delivery_quantity',
-                    'pending_pod_dn', 'pending_pod_quantity',
-                    'avg_delivery_days', 'avg_pod_days',
-                    'avg_total_cycle_days', 'avg_pending_delivery_days', 'avg_pending_pod_days'
+                    'warehouse', 'total_delivery_notes', 'total_units',
+                    'pending_pgi_dns', 'pending_pgi_units',
+                    'pending_delivery_dns', 'pending_delivery_units',
+                    'avg_delivery_days', 'avg_pod_days', 'avg_total_cycle_days', 'rank'
                 ];
 
                 let csv = headers.join(',') + '\n';
@@ -1802,7 +1799,6 @@
                     fileInput.value = '';
                     selectedFile = null;
                     fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
-                    // FIXED: Removed the conflicting uploadBtn.disabled = true; line here
                     setTimeout(() => { uploadStatus.style.display = 'none'; }, 5000);
                 }
             }
