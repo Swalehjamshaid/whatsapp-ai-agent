@@ -1,7 +1,5 @@
 # ==========================================================
 # FILE: app/services/excel_import_service.py (v5.0 - SELF-CONTAINED REPLACE)
-# PURPOSE: Maps ALL Excel columns, replaces all existing data if replace_mode=True,
-#          and inserts new rows in batches of 1000.
 # ==========================================================
 
 import logging
@@ -16,21 +14,11 @@ from app.models import DeliveryReport
 
 logger = logging.getLogger(__name__)
 
-# ==========================================================
-# CUSTOM EXCEPTIONS
-# ==========================================================
-
 class ExcelImportServiceError(Exception):
-    """Base exception for Excel import service errors."""
     pass
 
 class VerificationError(Exception):
-    """Raised only when critical columns are missing."""
     pass
-
-# ==========================================================
-# HELPER FUNCTIONS
-# ==========================================================
 
 def _clean_string(value: Any) -> Optional[str]:
     if value is None:
@@ -77,10 +65,6 @@ def _parse_date_from_excel(value: Any) -> Optional[date]:
             pass
     return None
 
-# ==========================================================
-# CORE IMPORT FUNCTION (WITH SELF-CONTAINED REPLACE)
-# ==========================================================
-
 def import_delivery_excel(
     db: Session,
     file_path: str,
@@ -89,10 +73,6 @@ def import_delivery_excel(
     batch_size: int = 1000,
     replace_mode: bool = False
 ) -> Dict[str, Any]:
-    """
-    Reads Haier Excel file, maps all columns, and bulk inserts in batches of 1000.
-    If replace_mode is True, the entire table is TRUNCATED before inserting new rows.
-    """
     logger.info(f"Starting import for batch: {upload_batch_id}, file: {source_filename}")
     
     metrics = {
@@ -105,16 +85,15 @@ def import_delivery_excel(
     }
 
     # ----------------------------------------------------------
-    # STEP 0: REPLACE EXISTING DATA (if requested)
+    # STEP 0: REPLACE MODE – TRUNCATE TABLE
     # ----------------------------------------------------------
     if replace_mode:
         try:
-            # Truncate the table instantly and reset the ID sequence
             db.execute(text("TRUNCATE TABLE delivery_reports RESTART IDENTITY CASCADE"))
             db.flush()
-            logger.info("✅ Existing data truncated successfully (replace_mode=True).")
+            logger.info("✅ Existing data truncated (replace_mode=True). All old rows removed.")
         except Exception as e:
-            logger.exception("Failed to truncate delivery_reports table.")
+            logger.exception("Truncation failed")
             raise ExcelImportServiceError(f"Truncation failed: {str(e)}")
 
     # ----------------------------------------------------------
@@ -128,15 +107,13 @@ def import_delivery_excel(
         raise ExcelImportServiceError(f"Failed to read Excel file: {str(e)}")
 
     # ----------------------------------------------------------
-    # STEP 2: EXTRACT HEADERS (Case‑insensitive)
+    # STEP 2: EXTRACT HEADERS & COLUMN MAPPING
     # ----------------------------------------------------------
     headers = []
     for cell in ws[1]:
         header_val = _clean_string(cell.value)
         headers.append(header_val.upper() if header_val else None)
 
-    # Define a comprehensive mapping of possible Excel column names to model fields.
-    # All columns are optional EXCEPT "DN NO" – if that's missing we raise an error.
     expected_headers = {
         "ORDER TYPE": "order_type",
         "DN NO": "dn_no",                  # REQUIRED
@@ -162,7 +139,6 @@ def import_delivery_excel(
         "REMARKS": "remarks",
     }
 
-    # Build column map, and warn if a column is missing (except for required ones)
     column_map = {}
     missing_columns = []
     for expected_upper, model_field in expected_headers.items():
@@ -174,18 +150,16 @@ def import_delivery_excel(
                 break
         if not found:
             if model_field == "dn_no":
-                # DN NO is mandatory – raise an error if missing
                 raise VerificationError(f"Required column '{expected_upper}' (DN NO) not found in Excel header.")
             else:
-                # Optional columns – just log a warning and skip mapping
                 missing_columns.append(expected_upper)
-                logger.warning(f"Optional column '{expected_upper}' not found in Excel, will leave field as NULL.")
+                logger.warning(f"Optional column '{expected_upper}' not found, will leave NULL.")
 
     if missing_columns:
-        logger.info(f"The following columns were not found and will be left NULL: {', '.join(missing_columns)}")
+        logger.info(f"Optional columns not found: {', '.join(missing_columns)}")
 
     # ----------------------------------------------------------
-    # STEP 3: PARSE ROWS INTO OBJECTS (SAFE ACCESS FOR OPTIONAL COLUMNS)
+    # STEP 3: PARSE ROWS
     # ----------------------------------------------------------
     records_to_insert = []
     errors = []
@@ -194,17 +168,14 @@ def import_delivery_excel(
         metrics["rows_read"] += 1
         
         try:
-            # Mandatory field
             dn_no = _clean_string(row[column_map["dn_no"]])
             if not dn_no:
                 raise ValueError("DN No is empty or missing")
 
-            # Helper to safely get column value
             def _get_cell(model_field):
                 idx = column_map.get(model_field)
                 return row[idx] if idx is not None else None
 
-            # Optional fields – safe access with _get_cell()
             report = DeliveryReport(
                 order_type=_clean_string(_get_cell("order_type")),
                 dn_no=dn_no,
@@ -240,7 +211,7 @@ def import_delivery_excel(
             metrics["rows_valid"] += 1
 
         except Exception as e:
-            logger.warning(f"Row {row_idx} failed validation: {e}")
+            logger.warning(f"Row {row_idx} failed: {e}")
             errors.append({"row": row_idx, "error": str(e)})
             metrics["rows_failed"] += 1
 
@@ -292,20 +263,15 @@ def import_delivery_excel(
                 logger.info(f"Inserted batch of {len(batch)} records. Total so far: {total_batches}")
 
             metrics["rows_upserted"] = len(records_to_insert)
-            logger.info(f"✅ Successfully inserted {metrics['rows_upserted']} records into delivery_reports.")
+            logger.info(f"✅ Inserted {metrics['rows_upserted']} records into delivery_reports.")
 
         except Exception as e:
-            logger.exception("Failed to bulk insert records.")
+            logger.exception("Bulk insert failed")
             db.rollback()
             raise ExcelImportServiceError(f"Database insert failed: {str(e)}")
     else:
-        logger.info("No valid records found to insert.")
+        logger.info("No valid records to insert.")
 
     metrics["errors"] = [f"Row {err['row']}: {err['error']}" for err in errors]
-    
-    logger.info(f"Import completed for batch {upload_batch_id}. "
-                f"Read: {metrics['rows_read']}, "
-                f"Inserted: {metrics['rows_upserted']}, "
-                f"Failed: {metrics['rows_failed']}")
-
+    logger.info(f"Import completed. Read: {metrics['rows_read']}, Inserted: {metrics['rows_upserted']}, Failed: {metrics['rows_failed']}")
     return metrics
