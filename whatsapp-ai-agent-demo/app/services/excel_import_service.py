@@ -1730,7 +1730,7 @@
                     fileInput.value = '';
                     selectedFile = null;
                     fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
-                    uploadBtn.disabled = true;
+                    // FIXED: Removed the conflicting uploadBtn.disabled = true; line here
                     setTimeout(() => { uploadStatus.style.display = 'none'; }, 5000);
                 }
             }
