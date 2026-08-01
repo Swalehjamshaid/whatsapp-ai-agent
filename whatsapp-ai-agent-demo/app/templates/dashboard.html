@@ -1,5 +1,5 @@
 <!-- ========================================================== -->
-<!-- BLOCK 1: DOCUMENT TYPE, HEADER, AND ALL CSS STYLES         -->
+<!-- BLOCK 1: DOCUMENT TYPE, HTML OPEN, HEAD, META & IMPORTS   -->
 <!-- ========================================================== -->
 <!DOCTYPE html>
 <html lang="en">
@@ -16,6 +16,9 @@
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet" />
 
+<!-- ========================================================== -->
+<!-- BLOCK 2: CSS RESET, BASE, SCROLLBARS, GLASS CARD & HEADER  -->
+<!-- ========================================================== -->
     <style>
         /* ─── RESET & BASE ─── */
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -173,6 +176,9 @@
         .btn-refresh:disabled { opacity: 0.5; pointer-events: none; }
         .btn-refresh i { font-size: 0.9rem; }
 
+<!-- ========================================================== -->
+<!-- BLOCK 3: CSS UPLOAD CARD & KPI CARDS                       -->
+<!-- ========================================================== -->
         /* ─── UPLOAD CARD ─── */
         .upload-area {
             display: flex;
@@ -302,6 +308,9 @@
         .kpi-card.amber::before { background: linear-gradient(90deg, #f39c12, #f7dc6f); }
         .kpi-card.amber .kpi-icon { color: #f39c12; }
 
+<!-- ========================================================== -->
+<!-- BLOCK 4: CSS CHART CONTAINERS, DOWNLOAD BTN & TABLE START -->
+<!-- ========================================================== -->
         /* ─── CHART CONTAINERS ─── */
         .chart-container {
             position: relative;
@@ -384,6 +393,9 @@
         .table-scroll tbody tr:last-child td { border-bottom: none; }
         .table-scroll tbody td:first-child { font-weight: 600; color: #0b2a4a; }
 
+<!-- ========================================================== -->
+<!-- BLOCK 5: CSS TABLE CONTROLS, PAGINATION & LOADING OVERLAY  -->
+<!-- ========================================================== -->
         .table-controls {
             padding: 0.8rem 1.4rem;
             background: rgba(255, 255, 255, 0.5);
@@ -538,6 +550,9 @@
         }
         #errorToast .toast-close:hover { color: #1a1f2e; }
 
+<!-- ========================================================== -->
+<!-- BLOCK 6: CSS UPLOAD TOAST, FOOTER, BADGE, MEDIA & PRINT    -->
+<!-- ========================================================== -->
         /* ─── UPLOAD TOAST ─── */
         #uploadToast {
             position: fixed;
@@ -742,7 +757,7 @@
 </head>
 
 <!-- ========================================================== -->
-<!-- BLOCK 2: BODY AND DASHBOARD LAYOUT STRUCTURE              -->
+<!-- BLOCK 7: BODY START, LOADING OVERLAY, ERROR & UPLOAD TOAST -->
 <!-- ========================================================== -->
 <body>
 
@@ -766,7 +781,9 @@
         <button class="toast-close" id="uploadToastClose">&times;</button>
     </div>
 
-    <!-- ─── MAIN ─── -->
+<!-- ========================================================== -->
+<!-- BLOCK 8: MAIN CONTAINER & DASHBOARD HEADER HTML            -->
+<!-- ========================================================== -->
     <div class="container-fluid px-0 flex-grow-1 d-flex flex-column">
 
         <!-- ═══ HEADER ═══ -->
@@ -788,6 +805,9 @@
             </div>
         </header>
 
+<!-- ========================================================== -->
+<!-- BLOCK 9: KPI ROW, BAR CHARTS HTML                          -->
+<!-- ========================================================== -->
         <!-- ═══ KPI ROW ═══ -->
         <section class="row g-3 mb-4" id="kpiRow">
             <!-- injected by JS -->
@@ -822,6 +842,9 @@
                 </div>
             </div>
 
+<!-- ========================================================== -->
+<!-- BLOCK 10: PIE & LINE CHARTS HTML                           -->
+<!-- ========================================================== -->
             <div class="col-12 col-md-6">
                 <div class="glass-card chart-card">
                     <div class="card-header">
@@ -877,6 +900,9 @@
             </div>
         </section>
 
+<!-- ========================================================== -->
+<!-- BLOCK 11: TABLE SECTION HTML                               -->
+<!-- ========================================================== -->
         <!-- ═══ TABLE ═══ -->
         <section class="mb-4">
             <div class="glass-card" style="padding:0;">
@@ -935,6 +961,9 @@
             </div>
         </section>
 
+<!-- ========================================================== -->
+<!-- BLOCK 12: UPLOAD CARD, FOOTER, & BODY CLOSE                -->
+<!-- ========================================================== -->
         <!-- ═══ UPLOAD CARD (AT THE END) ═══ -->
         <section class="row g-3 mb-4">
             <div class="col-12">
@@ -978,7 +1007,7 @@
     </div>
 
 <!-- ========================================================== -->
-<!-- BLOCK 3: JAVASCRIPT CONFIGURATION, STATE, AND HELPERS     -->
+<!-- BLOCK 13: JAVASCRIPT CONFIG, STATE, HELPERS & KPI          -->
 <!-- ========================================================== -->
     <script>
         (function () {
@@ -1108,10 +1137,6 @@
                 }
             }
 
-// ========================================================== -->
-// BLOCK 4: JAVASCRIPT KPI, TABLE, CHART, AND FETCH LOGIC     -->
-// ========================================================== -->
-
             // ─── KPI ───
             function renderKpi(summary) {
                 const items = [
@@ -1146,6 +1171,9 @@
                 });
             }
 
+<!-- ========================================================== -->
+<!-- BLOCK 14: JAVASCRIPT TABLE, CHART, & FETCH LOGIC           -->
+<!-- ========================================================== -->
             // ─── Table ───
             function renderTable() {
                 const term = searchTerm.trim().toLowerCase();
@@ -1678,90 +1706,139 @@
             }
 
 <!-- ========================================================== -->
-<!-- BLOCK 5: JAVASCRIPT UPLOAD LOGIC AND INITIALIZATION        -->
+<!-- BLOCK 15: JAVASCRIPT UPLOAD LOGIC, INIT, & FINAL SCRIPTS   -->
 <!-- ========================================================== -->
-async function uploadFile() {
-    if (!selectedFile) {
-        showUploadToast("Please select an Excel file first.", false);
-        return;
-    }
+            // ─── Upload logic ───
+            let selectedFile = null;
 
-    uploadBtn.disabled = true;
-    uploadStatus.style.display = "flex";
-    uploadStatusText.textContent = "Uploading...";
-
-    const formData = new FormData();
-    formData.append("file", selectedFile);
-
-    const API_URL = `${window.location.origin}/upload/excel`;
-
-    console.log("Uploading to:", API_URL);
-
-    try {
-
-        const response = await fetch(API_URL, {
-            method: "POST",
-            body: formData,
-            headers: {
-                "Accept": "application/json"
+            function handleFileSelect(event) {
+                const file = event.target.files[0];
+                if (!file) {
+                    selectedFile = null;
+                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
+                    uploadBtn.disabled = true;
+                    return;
+                }
+                const ext = file.name.split('.').pop().toLowerCase();
+                if (!['xlsx', 'xls'].includes(ext)) {
+                    showUploadToast('Please select an Excel file (.xlsx or .xls)', false);
+                    fileInput.value = '';
+                    selectedFile = null;
+                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
+                    uploadBtn.disabled = true;
+                    return;
+                }
+                selectedFile = file;
+                fileInfo.innerHTML = `<i class="fas fa-file-excel"></i> ${file.name} (${(file.size / 1024).toFixed(0)} KB)`;
+                uploadBtn.disabled = false;
+                uploadStatus.style.display = 'none';
             }
-        });
 
-        console.log("HTTP Status:", response.status);
+            async function uploadFile() {
+                if (!selectedFile) return;
 
-        let result;
+                uploadBtn.disabled = true;
+                uploadStatus.style.display = 'flex';
+                uploadStatusText.textContent = 'Uploading…';
 
-        try {
-            result = await response.json();
-        } catch {
-            const txt = await response.text();
-            throw new Error(txt || "Server returned an invalid response.");
-        }
+                const formData = new FormData();
+                formData.append('file', selectedFile);
 
-        if (!response.ok) {
-            throw new Error(
-                result.detail ||
-                result.message ||
-                `HTTP ${response.status}`
-            );
-        }
+                try {
+                    const response = await fetch('/upload/excel', {
+                        method: 'POST',
+                        body: formData
+                    });
 
-        uploadStatusText.textContent = "Upload Successful";
+                    const result = await response.json();
 
-        showUploadToast(
-            `✅ Upload completed successfully.
-Rows Imported: ${result.rows_inserted ?? result.metrics?.rows_upserted ?? 0}`,
-            true
-        );
+                    if (!response.ok) {
+                        throw new Error(result.detail || result.message || 'Upload failed');
+                    }
 
-        console.log(result);
+                    uploadStatusText.textContent = '✅ Upload successful!';
+                    uploadStatus.style.display = 'none';
+                    showUploadToast(
+                        `✅ Import complete! Batch: ${result.batch_id || 'N/A'}, Rows: ${result.metrics?.rows_upserted || 0}`,
+                        true
+                    );
 
-        fetchData(true);
+                    fetchData(true);
 
-    } catch (err) {
+                } catch (err) {
+                    console.error('Upload error:', err);
+                    uploadStatusText.textContent = '❌ ' + (err.message || 'Upload failed');
+                    setTimeout(() => { uploadStatus.style.display = 'none'; }, 3000);
+                    showUploadToast('Upload failed: ' + (err.message || 'Unknown error'), false);
+                } finally {
+                    uploadBtn.disabled = false;
+                    fileInput.value = '';
+                    selectedFile = null;
+                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
+                    // FIXED: Removed the conflicting uploadBtn.disabled = true; line here
+                    setTimeout(() => { uploadStatus.style.display = 'none'; }, 5000);
+                }
+            }
 
-        console.error(err);
+            // ─── Init ───
+            function init() {
+                updateClock();
+                setInterval(updateClock, 1000);
 
-        uploadStatusText.textContent = "Upload Failed";
+                fetchData(true);
+                setInterval(() => fetchData(false), REFRESH_INTERVAL_MS);
 
-        showUploadToast(
-            err.message,
-            false
-        );
+                refreshBtn.addEventListener('click', () => fetchData(true));
+                toastClose.addEventListener('click', () => errorToast.classList.remove('show'));
+                uploadToastClose.addEventListener('click', () => uploadToast.classList.remove('show'));
 
-    } finally {
+                tableSearch.addEventListener('input', (e) => {
+                    searchTerm = e.target.value;
+                    currentPage = 1;
+                    renderTable();
+                });
 
-        uploadBtn.disabled = false;
+                document.querySelector('#warehouseTable thead')?.addEventListener('click', handleSort);
 
-        fileInput.value = "";
+                prevPage.addEventListener('click', () => goToPage(-1));
+                nextPage.addEventListener('click', () => goToPage(1));
 
-        selectedFile = null;
+                exportCsvBtn.addEventListener('click', exportCsv);
+                printBtn.addEventListener('click', printDashboard);
 
-        fileInfo.innerHTML =
-            '<i class="fas fa-file-excel"></i> No file selected';
+                // Upload events
+                chooseFileBtn.addEventListener('click', () => fileInput.click());
+                fileInput.addEventListener('change', handleFileSelect);
+                uploadBtn.addEventListener('click', uploadFile);
 
-        setTimeout(() => {
-            uploadStatus.style.display = "none";
-        }, 3000);
-    }
-}
+                // Chart download buttons
+                $$('.btn-download-chart').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const chartId = btn.getAttribute('data-chart');
+                        downloadChart(chartId);
+                    });
+                });
+
+                document.addEventListener('keydown', (e) => {
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
+                        e.preventDefault();
+                        fetchData(true);
+                    }
+                });
+
+                let resizeTimer;
+                window.addEventListener('resize', () => {
+                    clearTimeout(resizeTimer);
+                    resizeTimer = setTimeout(() => {
+                        if (allWarehouses.length) renderCharts(allWarehouses);
+                    }, 300);
+                });
+            }
+
+            document.addEventListener('DOMContentLoaded', init);
+        })();
+    </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
