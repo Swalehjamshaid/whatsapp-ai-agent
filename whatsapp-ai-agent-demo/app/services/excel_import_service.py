@@ -1,1799 +1,261 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Haier Logistics · Premium Dashboard</title>
+# ==========================================================
+# FILE: app/services/excel_import_service.py (PRODUCTION v1.0)
+# PURPOSE: Production-grade Excel parsing and database import service
+# ==========================================================
 
-    <!-- Bootstrap 5 + Icons + Chart.js -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+import logging
+from datetime import datetime, date
+from typing import Dict, Any, List, Optional
 
-    <!-- Google Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet" />
+from openpyxl import load_workbook
+from sqlalchemy.orm import Session
 
-    <style>
-        /* ─── RESET & BASE ─── */
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+from app.models import DeliveryReport
 
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: #f0f5fe;
-            padding: 24px;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            background-image:
-                radial-gradient(ellipse at 10% 20%, rgba(42, 111, 219, 0.04) 0%, transparent 60%),
-                radial-gradient(ellipse at 90% 80%, rgba(42, 111, 219, 0.04) 0%, transparent 60%);
-        }
+# Initialize logger
+logger = logging.getLogger(__name__)
 
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: #e9eef6; border-radius: 12px; }
-        ::-webkit-scrollbar-thumb { background: #b8cce0; border-radius: 12px; }
-        ::-webkit-scrollbar-thumb:hover { background: #8aa9d1; }
+# ==========================================================
+# CUSTOM EXCEPTIONS
+# ==========================================================
 
-        /* ─── GLASS CARD ─── */
-        .glass-card {
-            background: rgba(255, 255, 255, 0.75);
-            backdrop-filter: blur(16px) saturate(180%);
-            -webkit-backdrop-filter: blur(16px) saturate(180%);
-            border: 1px solid rgba(255, 255, 255, 0.5);
-            border-radius: 24px;
-            box-shadow: 0 8px 40px rgba(10, 40, 80, 0.06), 0 2px 8px rgba(10, 40, 80, 0.02);
-            transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.4s ease;
-            height: 100%;
-        }
-        .glass-card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 20px 60px rgba(10, 40, 80, 0.10), 0 4px 16px rgba(10, 40, 80, 0.04);
-        }
-        .glass-card .card-header {
-            background: transparent;
-            border-bottom: 1px solid rgba(10, 40, 80, 0.05);
-            font-weight: 600;
-            font-size: 0.85rem;
-            letter-spacing: 0.03em;
-            color: #1a365d;
-            padding: 1.1rem 1.4rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-        }
-        .glass-card .card-header .header-left {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .glass-card .card-header i { color: #2a6fdb; font-size: 1.1rem; opacity: 0.8; }
-        .glass-card .card-body { padding: 1.2rem 1.4rem; }
+class ExcelImportServiceError(Exception):
+    """Base exception for Excel import service errors."""
+    pass
 
-        /* ─── HEADER ─── */
-        .dashboard-header {
-            background: linear-gradient(145deg, #0b2a4a 0%, #1a4a7a 100%);
-            border-radius: 28px;
-            padding: 1.4rem 2.2rem;
-            color: #fff;
-            box-shadow: 0 16px 48px rgba(10, 40, 80, 0.20);
-            margin-bottom: 2rem;
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            justify-content: space-between;
-            position: relative;
-            overflow: hidden;
-        }
-        .dashboard-header::after {
-            content: '';
-            position: absolute;
-            top: -40%; right: -10%;
-            width: 300px; height: 300px;
-            background: radial-gradient(circle, rgba(255, 255, 255, 0.04) 0%, transparent 70%);
-            border-radius: 50%;
-            pointer-events: none;
-        }
-        .dashboard-header::before {
-            content: '';
-            position: absolute;
-            bottom: -50%; left: 20%;
-            width: 400px; height: 400px;
-            background: radial-gradient(circle, rgba(42, 111, 219, 0.08) 0%, transparent 70%);
-            border-radius: 50%;
-            pointer-events: none;
-        }
-        .dashboard-header h1 {
-            font-size: 1.6rem;
-            font-weight: 800;
-            letter-spacing: -0.02em;
-            margin: 0;
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            position: relative;
-            z-index: 1;
-        }
-        .dashboard-header h1 i {
-            color: #7bb3ff;
-            font-size: 2rem;
-            filter: drop-shadow(0 2px 8px rgba(42, 111, 219, 0.3));
-        }
-        .dashboard-header h1 span {
-            background: linear-gradient(135deg, #fff 60%, #7bb3ff);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-        .header-right {
-            display: flex;
-            align-items: center;
-            gap: 20px;
-            flex-wrap: wrap;
-            position: relative;
-            z-index: 1;
-        }
-        .header-right .datetime {
-            font-size: 0.9rem;
-            font-weight: 400;
-            opacity: 0.85;
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            background: rgba(255, 255, 255, 0.07);
-            padding: 0.4rem 1.2rem;
-            border-radius: 100px;
-            backdrop-filter: blur(4px);
-            border: 1px solid rgba(255, 255, 255, 0.06);
-        }
-        .header-right .datetime i { opacity: 0.6; }
-        .btn-refresh {
-            background: rgba(255, 255, 255, 0.10);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            color: #fff;
-            border-radius: 100px;
-            padding: 0.5rem 1.4rem;
-            font-size: 0.85rem;
-            font-weight: 500;
-            transition: all 0.25s ease;
-            backdrop-filter: blur(4px);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .btn-refresh:hover {
-            background: rgba(255, 255, 255, 0.20);
-            color: #fff;
-            transform: scale(1.03);
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-        }
-        .btn-refresh:disabled { opacity: 0.5; pointer-events: none; }
-        .btn-refresh i { font-size: 0.9rem; }
+class VerificationError(Exception):
+    """Raised when the Excel file fails verification (e.g., missing columns)."""
+    pass
 
-        /* ─── UPLOAD CARD ─── */
-        .upload-area {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 12px;
-        }
-        .upload-area .file-info {
-            font-size: 0.85rem;
-            color: #1a365d;
-            background: rgba(255,255,255,0.6);
-            padding: 0.3rem 1rem;
-            border-radius: 100px;
-            border: 1px solid rgba(10,40,80,0.06);
-            flex: 1;
-            min-width: 140px;
-        }
-        .upload-area .file-info i { margin-right: 8px; color: #2a6fdb; }
-        .upload-area .btn-upload {
-            border-radius: 100px;
-            font-weight: 500;
-            padding: 0.4rem 1.4rem;
-            font-size: 0.85rem;
-            border: none;
-            transition: all 0.2s ease;
-        }
-        .upload-area .btn-upload.primary {
-            background: #2a6fdb;
-            color: #fff;
-        }
-        .upload-area .btn-upload.primary:hover {
-            background: #1a5abf;
-            transform: scale(1.02);
-            box-shadow: 0 4px 16px rgba(42,111,219,0.25);
-        }
-        .upload-area .btn-upload.primary:disabled { opacity: 0.5; pointer-events: none; }
-        .upload-area .btn-upload.outline {
-            background: transparent;
-            border: 1px solid rgba(10,40,80,0.12);
-            color: #1a365d;
-        }
-        .upload-area .btn-upload.outline:hover {
-            background: rgba(42,111,219,0.04);
-            border-color: rgba(42,111,219,0.3);
-        }
-        .upload-status {
-            margin-top: 10px;
-            font-size: 0.85rem;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-        .upload-status .spinner-border-sm {
-            width: 1.2rem; height: 1.2rem; border-width: 0.15rem;
-        }
-        .upload-status .text-success { color: #27ae60 !important; }
-        .upload-status .text-danger { color: #e74c3c !important; }
+# ==========================================================
+# HELPER FUNCTIONS
+# ==========================================================
 
-        /* ─── KPI CARDS ─── */
-        .kpi-card {
-            background: rgba(255, 255, 255, 0.8);
-            backdrop-filter: blur(12px) saturate(180%);
-            -webkit-backdrop-filter: blur(12px) saturate(180%);
-            border: 1px solid rgba(255, 255, 255, 0.6);
-            border-radius: 20px;
-            padding: 1.3rem 1.2rem;
-            box-shadow: 0 4px 20px rgba(10, 40, 80, 0.04);
-            transition: all 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            position: relative;
-            overflow: hidden;
-        }
-        .kpi-card::before {
-            content: '';
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 3px;
-            background: linear-gradient(90deg, #2a6fdb, #7bb3ff);
-            border-radius: 20px 20px 0 0;
-            opacity: 0.6;
-        }
-        .kpi-card:hover {
-            transform: translateY(-6px) scale(1.01);
-            box-shadow: 0 16px 48px rgba(10, 40, 80, 0.10);
-            border-color: rgba(42, 111, 219, 0.15);
-        }
-        .kpi-card .kpi-label {
-            font-size: 0.7rem;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            color: #5e6f8d;
-            font-weight: 600;
-            margin-bottom: 0.4rem;
-        }
-        .kpi-card .kpi-value {
-            font-size: 1.8rem;
-            font-weight: 800;
-            color: #0b2a4a;
-            line-height: 1.15;
-            letter-spacing: -0.02em;
-        }
-        .kpi-card .kpi-icon {
-            font-size: 1.8rem;
-            color: #2a6fdb;
-            opacity: 0.12;
-            transition: opacity 0.3s ease;
-        }
-        .kpi-card:hover .kpi-icon { opacity: 0.25; }
-        .kpi-card .kpi-icon i { font-size: 2.2rem; }
+def _clean_string(value: Any) -> Optional[str]:
+    """Clean and strip string values."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned if cleaned else None
+    return str(value)
 
-        .kpi-card.green::before { background: linear-gradient(90deg, #27ae60, #2ecc71); }
-        .kpi-card.green .kpi-icon { color: #27ae60; }
-        .kpi-card.orange::before { background: linear-gradient(90deg, #e67e22, #f39c12); }
-        .kpi-card.orange .kpi-icon { color: #e67e22; }
-        .kpi-card.purple::before { background: linear-gradient(90deg, #8e44ad, #9b59b6); }
-        .kpi-card.purple .kpi-icon { color: #8e44ad; }
-        .kpi-card.teal::before { background: linear-gradient(90deg, #1abc9c, #2ecc71); }
-        .kpi-card.teal .kpi-icon { color: #1abc9c; }
-        .kpi-card.rose::before { background: linear-gradient(90deg, #e74c3c, #f1948a); }
-        .kpi-card.rose .kpi-icon { color: #e74c3c; }
-        .kpi-card.indigo::before { background: linear-gradient(90deg, #3f51b5, #7986cb); }
-        .kpi-card.indigo .kpi-icon { color: #3f51b5; }
-        .kpi-card.amber::before { background: linear-gradient(90deg, #f39c12, #f7dc6f); }
-        .kpi-card.amber .kpi-icon { color: #f39c12; }
+def _safe_float(value: Any) -> Optional[float]:
+    """Safely convert a value to float."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
 
-        /* ─── CHART CONTAINERS ─── */
-        .chart-container {
-            position: relative;
-            height: 240px;
-            width: 100%;
-        }
-        .chart-container.pie-chart { height: 220px; }
-        .chart-container.line-chart { height: 220px; }
+def _safe_int(value: Any) -> Optional[int]:
+    """Safely convert a value to integer."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
 
-        .btn-download-chart {
-            background: rgba(42, 111, 219, 0.08);
-            border: 1px solid rgba(42, 111, 219, 0.15);
-            color: #2a6fdb;
-            border-radius: 100px;
-            padding: 0.25rem 0.85rem;
-            font-size: 0.72rem;
-            font-weight: 500;
-            transition: all 0.2s ease;
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            cursor: pointer;
-        }
-        .btn-download-chart:hover {
-            background: #2a6fdb;
-            color: #fff;
-            border-color: #2a6fdb;
-            box-shadow: 0 4px 12px rgba(42, 111, 219, 0.25);
-        }
-        .btn-download-chart i { font-size: 0.75rem; }
+def _parse_date_from_excel(value: Any) -> Optional[date]:
+    """
+    Parse date from Excel. Handles strings, datetime objects, and Excel date floats.
+    """
+    if value is None or value == "":
+        return None
+    
+    # If it's already a datetime or date object
+    if isinstance(value, (datetime, date)):
+        return value.date() if isinstance(value, datetime) else value
 
-        /* ─── TABLE ─── */
-        .table-wrap {
-            border-radius: 24px;
-            overflow: hidden;
-            background: rgba(255, 255, 255, 0.7);
-            backdrop-filter: blur(12px) saturate(180%);
-            -webkit-backdrop-filter: blur(12px) saturate(180%);
-            border: 1px solid rgba(255, 255, 255, 0.5);
-            box-shadow: 0 8px 40px rgba(10, 40, 80, 0.05);
-        }
-        .table-scroll {
-            max-height: 520px;
-            overflow-y: auto;
-            overflow-x: auto;
-        }
-        .table-scroll thead { position: sticky; top: 0; z-index: 10; }
-        .table-scroll thead th {
-            background: #f8fbff;
-            color: #1a365d;
-            font-weight: 600;
-            font-size: 0.72rem;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            border-bottom: 2px solid rgba(42, 111, 219, 0.08);
-            white-space: nowrap;
-            padding: 0.9rem 0.9rem;
-            cursor: pointer;
-            user-select: none;
-            transition: background 0.15s;
-        }
-        .table-scroll thead th:hover { background: #eef4fc; }
-        .table-scroll thead th i {
-            margin-left: 6px;
-            font-size: 0.65rem;
-            opacity: 0.4;
-            transition: opacity 0.2s;
-        }
-        .table-scroll thead th:hover i { opacity: 0.8; }
-        .table-scroll tbody td {
-            padding: 0.7rem 0.9rem;
-            font-size: 0.85rem;
-            vertical-align: middle;
-            color: #1e2f46;
-            border-bottom: 1px solid rgba(10, 40, 80, 0.04);
-            background: transparent;
-        }
-        .table-scroll tbody tr { transition: background 0.15s; }
-        .table-scroll tbody tr:hover { background: rgba(42, 111, 219, 0.03); }
-        .table-scroll tbody tr:last-child td { border-bottom: none; }
-        .table-scroll tbody td:first-child { font-weight: 600; color: #0b2a4a; }
+    # If it's a string, attempt to parse it (YYYY-MM-DD, MM/DD/YYYY, etc.)
+    if isinstance(value, str):
+        value = value.strip()
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y%m%d"):
+            try:
+                return datetime.strptime(value, fmt).date()
+            except ValueError:
+                continue
+        # If parsing fails, log warning
+        logger.warning(f"Could not parse date from string: {value}")
 
-        .table-controls {
-            padding: 0.8rem 1.4rem;
-            background: rgba(255, 255, 255, 0.5);
-            backdrop-filter: blur(8px);
-            border-bottom: 1px solid rgba(10, 40, 80, 0.04);
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-        }
-        .table-controls .search-box {
-            position: relative;
-            flex: 1 1 220px;
-            min-width: 160px;
-        }
-        .table-controls .search-box input {
-            width: 100%;
-            padding: 0.5rem 1rem 0.5rem 2.6rem;
-            border-radius: 100px;
-            border: 1px solid rgba(10, 40, 80, 0.08);
-            background: rgba(255, 255, 255, 0.8);
-            font-size: 0.85rem;
-            font-weight: 450;
-            transition: all 0.25s ease;
-            outline: none;
-            font-family: 'Inter', sans-serif;
-        }
-        .table-controls .search-box input:focus {
-            border-color: #2a6fdb;
-            box-shadow: 0 0 0 4px rgba(42, 111, 219, 0.08);
-            background: #fff;
-        }
-        .table-controls .search-box i {
-            position: absolute;
-            left: 16px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: #8a9bb0;
-            font-size: 0.95rem;
-        }
-        .table-controls .btn-group-actions .btn {
-            border-radius: 100px;
-            font-size: 0.8rem;
-            padding: 0.4rem 1.2rem;
-            font-weight: 500;
-            border: 1px solid rgba(10, 40, 80, 0.06);
-            background: rgba(255, 255, 255, 0.7);
-            color: #1a365d;
-            transition: all 0.2s ease;
-            backdrop-filter: blur(4px);
-        }
-        .table-controls .btn-group-actions .btn:hover {
-            background: #fff;
-            border-color: rgba(42, 111, 219, 0.2);
-            box-shadow: 0 4px 12px rgba(42, 111, 219, 0.06);
-        }
-        .table-controls .btn-group-actions .btn i { margin-right: 6px; }
+    # Excel dates are sometimes stored as floats
+    if isinstance(value, (int, float)):
+        try:
+            # Excel date serial number (days since 1899-12-30)
+            from datetime import timedelta
+            return (datetime(1899, 12, 30) + timedelta(days=float(value))).date()
+        except Exception:
+            pass
 
-        .pagination-controls {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 0.85rem;
-            color: #1a365d;
-            flex-wrap: wrap;
-        }
-        .pagination-controls .page-info {
-            font-weight: 600;
-            margin: 0 6px;
-            font-size: 0.8rem;
-        }
-        .pagination-controls .btn-page {
-            border: 1px solid rgba(10, 40, 80, 0.06);
-            background: rgba(255, 255, 255, 0.6);
-            border-radius: 10px;
-            padding: 0.25rem 0.85rem;
-            font-size: 0.8rem;
-            font-weight: 500;
-            color: #1a365d;
-            transition: all 0.2s ease;
-            cursor: pointer;
-            backdrop-filter: blur(4px);
-        }
-        .pagination-controls .btn-page:hover:not(:disabled) {
-            background: #fff;
-            border-color: rgba(42, 111, 219, 0.2);
-            box-shadow: 0 2px 8px rgba(42, 111, 219, 0.06);
-        }
-        .pagination-controls .btn-page:disabled { opacity: 0.3; cursor: not-allowed; }
+    return None
 
-        /* ─── LOADING ─── */
-        #loadingOverlay {
-            position: fixed;
-            inset: 0;
-            background: rgba(255, 255, 255, 0.7);
-            backdrop-filter: blur(16px) saturate(180%);
-            -webkit-backdrop-filter: blur(16px) saturate(180%);
-            display: none;
-            align-items: center;
-            justify-content: center;
-            z-index: 9999;
-            flex-direction: column;
-        }
-        #loadingOverlay.show { display: flex; }
-        #loadingOverlay .spinner {
-            width: 56px; height: 56px;
-            border: 4px solid rgba(42, 111, 219, 0.10);
-            border-top-color: #2a6fdb;
-            border-radius: 50%;
-            animation: spin 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
-        }
-        #loadingOverlay .load-text {
-            margin-top: 1.2rem;
-            font-weight: 500;
-            color: #1a365d;
-            letter-spacing: 0.03em;
-            font-size: 0.95rem;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
+# ==========================================================
+# CORE IMPORT FUNCTION
+# ==========================================================
 
-        /* ─── ERROR TOAST ─── */
-        #errorToast {
-            position: fixed;
-            bottom: 30px; right: 30px;
-            z-index: 9998;
-            min-width: 320px; max-width: 440px;
-            background: rgba(255, 255, 255, 0.9);
-            backdrop-filter: blur(16px) saturate(180%);
-            -webkit-backdrop-filter: blur(16px) saturate(180%);
-            border-left: 5px solid #e74c3c;
-            border-radius: 18px;
-            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.12);
-            padding: 1rem 1.4rem;
-            display: none;
-            align-items: center;
-            gap: 14px;
-            animation: slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-        }
-        #errorToast.show { display: flex; }
-        @keyframes slideUp {
-            from { opacity: 0; transform: translateY(40px) scale(0.96); }
-            to { opacity: 1; transform: translateY(0) scale(1); }
-        }
-        #errorToast .toast-icon { color: #e74c3c; font-size: 1.6rem; }
-        #errorToast .toast-msg { flex: 1; font-weight: 500; color: #1a1f2e; font-size: 0.9rem; }
-        #errorToast .toast-close {
-            background: none; border: none;
-            font-size: 1.4rem; color: #8a9bb0;
-            cursor: pointer; padding: 0 4px;
-            transition: color 0.2s; line-height: 1;
-        }
-        #errorToast .toast-close:hover { color: #1a1f2e; }
+def import_delivery_excel(
+    db: Session,
+    file_path: str,
+    source_filename: str,
+    upload_batch_id: str,
+    batch_size: int = 1000
+) -> Dict[str, Any]:
+    """
+    Reads an Excel file, validates data, and bulk inserts valid rows
+    into the DeliveryReport table.
+    
+    Args:
+        db: SQLAlchemy database session.
+        file_path: Absolute path to the uploaded Excel file.
+        source_filename: Original name of the uploaded file.
+        upload_batch_id: Unique batch ID generated by the upload router.
+        batch_size: Number of records to commit per batch.
+    
+    Returns:
+        Dictionary containing import metrics.
+    """
+    logger.info(f"Starting import for batch: {upload_batch_id}, file: {source_filename}")
+    
+    metrics = {
+        "rows_read": 0,
+        "rows_upserted": 0,
+        "rows_failed": 0,
+        "rows_valid": 0,
+        "batch_id": upload_batch_id,
+        "errors": []
+    }
 
-        /* ─── UPLOAD TOAST ─── */
-        #uploadToast {
-            position: fixed;
-            bottom: 30px; right: 30px;
-            z-index: 9998;
-            min-width: 320px; max-width: 440px;
-            background: rgba(255, 255, 255, 0.9);
-            backdrop-filter: blur(16px) saturate(180%);
-            -webkit-backdrop-filter: blur(16px) saturate(180%);
-            border-left: 5px solid #27ae60;
-            border-radius: 18px;
-            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.12);
-            padding: 1rem 1.4rem;
-            display: none;
-            align-items: center;
-            gap: 14px;
-            animation: slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-        }
-        #uploadToast.show { display: flex; }
-        #uploadToast .toast-icon { color: #27ae60; font-size: 1.6rem; }
-        #uploadToast .toast-msg { flex: 1; font-weight: 500; color: #1a1f2e; font-size: 0.9rem; }
-        #uploadToast .toast-close {
-            background: none; border: none;
-            font-size: 1.4rem; color: #8a9bb0;
-            cursor: pointer; padding: 0 4px;
-            transition: color 0.2s; line-height: 1;
-        }
-        #uploadToast .toast-close:hover { color: #1a1f2e; }
+    try:
+        # Load workbook with data_only=True to get calculated values instead of formulas
+        wb = load_workbook(file_path, data_only=True)
+        ws = wb.active
+    except Exception as e:
+        logger.exception(f"Failed to load Excel file: {file_path}")
+        raise ExcelImportServiceError(f"Failed to read Excel file: {str(e)}")
 
-        /* ─── FOOTER ─── */
-        .dashboard-footer {
-            margin-top: 2rem;
-            padding: 1rem 1.8rem;
-            background: rgba(255, 255, 255, 0.6);
-            backdrop-filter: blur(12px) saturate(180%);
-            -webkit-backdrop-filter: blur(12px) saturate(180%);
-            border-radius: 24px;
-            border: 1px solid rgba(255, 255, 255, 0.4);
-            box-shadow: 0 4px 20px rgba(10, 40, 80, 0.03);
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            justify-content: space-between;
-            font-size: 0.82rem;
-            color: #5e6f8d;
-        }
-        .dashboard-footer .status {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .dashboard-footer .status .dot {
-            width: 10px; height: 10px;
-            border-radius: 50%;
-            background: #2ecc71;
-            display: inline-block;
-            animation: pulse-dot 2s ease-in-out infinite;
-            box-shadow: 0 0 12px rgba(46, 204, 113, 0.25);
-        }
-        .dashboard-footer .status .dot.error {
-            background: #e74c3c;
-            box-shadow: 0 0 12px rgba(231, 76, 60, 0.25);
-        }
-        @keyframes pulse-dot {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.5; transform: scale(0.8); }
-        }
-        .dashboard-footer .footer-right {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-        }
+    # Extract headers (assumes first row is headers)
+    headers = []
+    for cell in ws[1]:
+        if cell.value is not None:
+            headers.append(_clean_string(cell.value).upper())
+        else:
+            headers.append(None)
 
-        .badge-soft {
-            background: rgba(42, 111, 219, 0.08);
-            color: #2a6fdb;
-            font-weight: 500;
-            padding: 0.35rem 0.9rem;
-            border-radius: 100px;
-            font-size: 0.75rem;
-            border: 1px solid rgba(42, 111, 219, 0.06);
-        }
+    # Map expected headers to column indices (case-insensitive)
+    column_map = {}
+    for expected in ["DN NO", "MATERIAL NO", "CUSTOMER NAME", "DN CREATE DATE", 
+                     "GOOD ISSUE DATE", "POD DATE", "DN QTY", "DN AMOUNT", "WAREHOUSE"]:
+        # Try to find exact or partial match
+        found = False
+        for i, h in enumerate(headers):
+            if h and expected in h:
+                column_map[expected] = i
+                found = True
+                break
+        if not found:
+            raise VerificationError(f"Required column '{expected}' not found in Excel file header.")
 
-        /* ─── RESPONSIVE ─── */
-        @media (max-width: 768px) {
-            body { padding: 14px; }
-            .dashboard-header {
-                padding: 1rem 1.2rem;
-                flex-direction: column;
-                align-items: stretch;
-                gap: 12px;
-                border-radius: 20px;
-            }
-            .dashboard-header h1 { font-size: 1.2rem; }
-            .dashboard-header h1 i { font-size: 1.4rem; }
-            .header-right { justify-content: space-between; gap: 10px; }
-            .header-right .datetime {
-                font-size: 0.75rem;
-                padding: 0.3rem 1rem;
-                gap: 8px;
-                flex-wrap: wrap;
-            }
-            .btn-refresh { padding: 0.4rem 1rem; font-size: 0.75rem; }
-            .upload-area { flex-direction: column; align-items: stretch; }
-            .upload-area .file-info { width: 100%; }
-            .kpi-card .kpi-value { font-size: 1.3rem; }
-            .kpi-card .kpi-label { font-size: 0.6rem; }
-            .kpi-card { padding: 1rem 0.9rem; }
-            .table-controls {
-                flex-direction: column;
-                align-items: stretch;
-                padding: 0.8rem 1rem;
-            }
-            .table-controls .search-box { flex: 1 1 auto; }
-            .pagination-controls { justify-content: center; margin-top: 4px; }
-            #errorToast, #uploadToast {
-                left: 16px; right: 16px;
-                min-width: unset; max-width: unset;
-                bottom: 16px;
-            }
-            .chart-container { height: 190px; }
-            .chart-container.pie-chart { height: 180px; }
-            .chart-container.line-chart { height: 180px; }
-            .glass-card .card-body { padding: 0.8rem 1rem; }
-            .glass-card .card-header { padding: 0.8rem 1rem; font-size: 0.75rem; }
-            .dashboard-footer {
-                flex-direction: column;
-                gap: 8px;
-                text-align: center;
-                padding: 0.8rem 1.2rem;
-            }
-            .dashboard-footer .footer-right { flex-wrap: wrap; justify-content: center; }
-        }
+    # Initialize records list
+    records_to_insert = []
+    errors = []
 
-        @media (max-width: 480px) {
-            .dashboard-header h1 { font-size: 1rem; }
-            .header-right .datetime { font-size: 0.65rem; }
-            .btn-refresh { padding: 0.3rem 0.8rem; font-size: 0.7rem; }
-            .kpi-card .kpi-value { font-size: 1.1rem; }
-            .kpi-card { padding: 0.8rem 0.7rem; }
-            .table-scroll thead th { font-size: 0.6rem; padding: 0.6rem 0.5rem; }
-            .table-scroll tbody td { font-size: 0.75rem; padding: 0.5rem 0.5rem; }
-        }
+    # Iterate through data rows (starting from row 2)
+    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        metrics["rows_read"] += 1
+        
+        try:
+            # Safely extract data using column_map
+            dn_no = _clean_string(row[column_map["DN NO"]])
+            if not dn_no:
+                raise ValueError("DN No is empty or missing")
 
-        /* ─── PRINT ─── */
-        @media print {
-            body { background: #fff !important; padding: 0.3in !important; }
-            .dashboard-header {
-                background: #0b2a4a !important;
-                -webkit-print-color-adjust: exact;
-                print-color-adjust: exact;
-                border-radius: 16px !important;
-            }
-            .kpi-card {
-                background: #f8faff !important;
-                border: 1px solid #e2eaf5 !important;
-                -webkit-print-color-adjust: exact;
-                print-color-adjust: exact;
-            }
-            .kpi-card::before { display: none !important; }
-            .glass-card {
-                background: #fff !important;
-                backdrop-filter: none !important;
-                border: 1px solid #e2eaf5 !important;
-                box-shadow: none !important;
-            }
-            .table-wrap {
-                background: #fff !important;
-                backdrop-filter: none !important;
-                border: 1px solid #e2eaf5 !important;
-                box-shadow: none !important;
-            }
-            .table-scroll thead th {
-                background: #f0f4f9 !important;
-                -webkit-print-color-adjust: exact;
-                print-color-adjust: exact;
-            }
-            .btn-refresh,
-            .table-controls .btn-group-actions .btn,
-            .pagination-controls .btn-page,
-            .no-print,
-            .upload-area .btn-upload,
-            .upload-status,
-            .btn-download-chart {
-                display: none !important;
-            }
-            .table-scroll { max-height: none !important; overflow: visible !important; }
-            .table-scroll thead { position: static !important; }
-            #loadingOverlay { display: none !important; }
-            #errorToast, #uploadToast { display: none !important; }
-            .dashboard-footer {
-                background: #f8faff !important;
-                border: 1px solid #e2eaf5 !important;
-                box-shadow: none !important;
-                backdrop-filter: none !important;
-            }
-            .chart-container { height: 200px !important; }
-            .kpi-card:hover, .glass-card:hover { transform: none !important; }
-            .dashboard-header::after, .dashboard-header::before { display: none !important; }
-        }
-    </style>
-</head>
-<body>
+            material_no = _clean_string(row[column_map["MATERIAL NO"]])
+            customer_name = _clean_string(row[column_map["CUSTOMER NAME"]])
+            warehouse = _clean_string(row[column_map["WAREHOUSE"]])
+            
+            dn_create_date = _parse_date_from_excel(row[column_map["DN CREATE DATE"]])
+            good_issue_date = _parse_date_from_excel(row[column_map["GOOD ISSUE DATE"]])
+            pod_date = _parse_date_from_excel(row[column_map["POD DATE"]])
 
-    <!-- ─── LOADING ─── -->
-    <div id="loadingOverlay">
-        <div class="spinner"></div>
-        <div class="load-text"><i class="fas fa-sync-alt fa-fw me-2" style="opacity:0.5;"></i>Loading dashboard…</div>
-    </div>
+            dn_qty = _safe_int(row[column_map["DN QTY"]])
+            dn_amount = _safe_float(row[column_map["DN AMOUNT"]])
 
-    <!-- ─── ERROR TOAST ─── -->
-    <div id="errorToast">
-        <span class="toast-icon"><i class="fas fa-circle-exclamation"></i></span>
-        <span class="toast-msg" id="errorMsg">Unable to fetch data.</span>
-        <button class="toast-close" id="toastClose">&times;</button>
-    </div>
+            # Create the DeliveryReport instance
+            report = DeliveryReport(
+                dn_no=dn_no,
+                material_no=material_no,
+                customer_name=customer_name,
+                warehouse=warehouse,
+                dn_create_date=dn_create_date,
+                good_issue_date=good_issue_date,
+                pod_date=pod_date,
+                dn_qty=dn_qty,
+                dn_amount=dn_amount,
+                source_file=source_filename,
+                upload_batch_id=upload_batch_id,
+                # Default statuses as per the model
+                delivery_status="Pending",
+                pgi_status="Pending" if not good_issue_date else "Completed",
+                pod_status="Pending" if not pod_date else "Completed",
+                pending_flag=True if not pod_date else False
+            )
 
-    <!-- ─── UPLOAD TOAST ─── -->
-    <div id="uploadToast">
-        <span class="toast-icon"><i class="fas fa-check-circle"></i></span>
-        <span class="toast-msg" id="uploadMsg">Upload successful.</span>
-        <button class="toast-close" id="uploadToastClose">&times;</button>
-    </div>
+            records_to_insert.append(report)
+            metrics["rows_valid"] += 1
 
-    <!-- ─── MAIN ─── -->
-    <div class="container-fluid px-0 flex-grow-1 d-flex flex-column">
+        except Exception as e:
+            logger.warning(f"Row {row_idx} failed validation: {e}")
+            errors.append({"row": row_idx, "error": str(e)})
+            metrics["rows_failed"] += 1
 
-        <!-- ═══ HEADER ═══ -->
-        <header class="dashboard-header">
-            <h1>
-                <i class="fas fa-truck-fast"></i>
-                <span>Haier Logistics</span>
-                <span style="font-size:0.6rem; font-weight:400; opacity:0.5; -webkit-text-fill-color:rgba(255,255,255,0.4); letter-spacing:0.1em; background:none;">· PAKISTAN</span>
-            </h1>
-            <div class="header-right">
-                <div class="datetime">
-                    <span><i class="far fa-calendar-alt me-1"></i><span id="currentDate"></span></span>
-                    <span style="opacity:0.3;">|</span>
-                    <span><i class="far fa-clock me-1"></i><span id="currentTime"></span></span>
-                </div>
-                <button class="btn-refresh no-print" id="refreshBtn">
-                    <i class="fas fa-sync-alt"></i> Refresh
-                </button>
-            </div>
-        </header>
-
-        <!-- ═══ KPI ROW ═══ -->
-        <section class="row g-3 mb-4" id="kpiRow">
-            <!-- injected by JS -->
-        </section>
-
-        <!-- ═══ CHARTS ═══ -->
-        <section class="row g-3 mb-4">
-            <div class="col-12 col-md-6">
-                <div class="glass-card chart-card">
-                    <div class="card-header">
-                        <div class="header-left"><i class="fas fa-chart-bar"></i>Total Units by Warehouse</div>
-                        <button class="btn-download-chart no-print" data-chart="chartUnits" title="Download chart">
-                            <i class="fas fa-download"></i> PNG
-                        </button>
-                    </div>
-                    <div class="card-body">
-                        <div class="chart-container"><canvas id="chartUnits"></canvas></div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-12 col-md-6">
-                <div class="glass-card chart-card">
-                    <div class="card-header">
-                        <div class="header-left"><i class="fas fa-chart-bar"></i>Total DN by Warehouse</div>
-                        <button class="btn-download-chart no-print" data-chart="chartDn" title="Download chart">
-                            <i class="fas fa-download"></i> PNG
-                        </button>
-                    </div>
-                    <div class="card-body">
-                        <div class="chart-container"><canvas id="chartDn"></canvas></div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-12 col-md-6">
-                <div class="glass-card chart-card">
-                    <div class="card-header">
-                        <div class="header-left"><i class="fas fa-chart-pie"></i>Pending POD Qty</div>
-                        <button class="btn-download-chart no-print" data-chart="chartPiePod" title="Download chart">
-                            <i class="fas fa-download"></i> PNG
-                        </button>
-                    </div>
-                    <div class="card-body">
-                        <div class="chart-container pie-chart"><canvas id="chartPiePod"></canvas></div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-12 col-md-6">
-                <div class="glass-card chart-card">
-                    <div class="card-header">
-                        <div class="header-left"><i class="fas fa-chart-pie"></i>Pending PGI Qty</div>
-                        <button class="btn-download-chart no-print" data-chart="chartPiePgi" title="Download chart">
-                            <i class="fas fa-download"></i> PNG
-                        </button>
-                    </div>
-                    <div class="card-body">
-                        <div class="chart-container pie-chart"><canvas id="chartPiePgi"></canvas></div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-12 col-md-6">
-                <div class="glass-card chart-card">
-                    <div class="card-header">
-                        <div class="header-left"><i class="fas fa-chart-line"></i>Average Delivery Days</div>
-                        <button class="btn-download-chart no-print" data-chart="chartDeliveryDays" title="Download chart">
-                            <i class="fas fa-download"></i> PNG
-                        </button>
-                    </div>
-                    <div class="card-body">
-                        <div class="chart-container line-chart"><canvas id="chartDeliveryDays"></canvas></div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-12 col-md-6">
-                <div class="glass-card chart-card">
-                    <div class="card-header">
-                        <div class="header-left"><i class="fas fa-chart-line"></i>Average POD Days</div>
-                        <button class="btn-download-chart no-print" data-chart="chartPodDays" title="Download chart">
-                            <i class="fas fa-download"></i> PNG
-                        </button>
-                    </div>
-                    <div class="card-body">
-                        <div class="chart-container line-chart"><canvas id="chartPodDays"></canvas></div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- ═══ TABLE ═══ -->
-        <section class="mb-4">
-            <div class="glass-card" style="padding:0;">
-                <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2" style="border-bottom:1px solid rgba(10,40,80,0.04);">
-                    <span><i class="fas fa-warehouse"></i>Warehouse Performance</span>
-                    <span class="badge-soft" id="warehouseCount">0 warehouses</span>
-                </div>
-                <div class="card-body p-0">
-                    <div class="table-wrap" style="border-radius:0 0 24px 24px;">
-
-                        <div class="table-controls no-print">
-                            <div class="search-box">
-                                <i class="fas fa-search"></i>
-                                <input type="text" id="tableSearch" placeholder="Search warehouse…" />
-                            </div>
-                            <div class="d-flex flex-wrap align-items-center gap-2">
-                                <div class="btn-group-actions">
-                                    <button class="btn" id="exportCsvBtn"><i class="fas fa-file-csv"></i> CSV</button>
-                                    <button class="btn" id="printBtn"><i class="fas fa-print"></i> Print</button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="table-scroll" id="tableScroll">
-                            <table class="table table-hover mb-0" id="warehouseTable">
-                                <thead>
-                                    <tr>
-                                        <th data-sort="warehouse">Warehouse <i class="fas fa-sort"></i></th>
-                                        <th data-sort="total_dn_created" class="text-end">Total DN <i class="fas fa-sort"></i></th>
-                                        <th data-sort="total_dn_quantity" class="text-end">Total Units <i class="fas fa-sort"></i></th>
-                                        <th data-sort="pending_delivery_dn" class="text-end">PGI DN <i class="fas fa-sort"></i></th>
-                                        <th data-sort="pending_delivery_quantity" class="text-end">PGI Qty <i class="fas fa-sort"></i></th>
-                                        <th data-sort="pending_pod_dn" class="text-end">POD DN <i class="fas fa-sort"></i></th>
-                                        <th data-sort="pending_pod_quantity" class="text-end">POD Qty <i class="fas fa-sort"></i></th>
-                                        <th data-sort="avg_delivery_days" class="text-end">Delivery <i class="fas fa-sort"></i></th>
-                                        <th data-sort="avg_pod_days" class="text-end">POD <i class="fas fa-sort"></i></th>
-                                        <th data-sort="avg_total_cycle_days" class="text-end">Cycle <i class="fas fa-sort"></i></th>
-                                        <th data-sort="avg_pending_delivery_days" class="text-end">PGI Days <i class="fas fa-sort"></i></th>
-                                        <th data-sort="avg_pending_pod_days" class="text-end">POD Days <i class="fas fa-sort"></i></th>
-                                    </tr>
-                                </thead>
-                                <tbody id="tableBody"></tbody>
-                            </table>
-                        </div>
-
-                        <div class="table-controls no-print" style="border-top:1px solid rgba(10,40,80,0.04); border-bottom:none;">
-                            <div class="pagination-controls" id="paginationControls">
-                                <button class="btn-page" id="prevPage" disabled><i class="fas fa-chevron-left"></i></button>
-                                <span class="page-info" id="pageInfo">Page 1 of 1</span>
-                                <button class="btn-page" id="nextPage" disabled><i class="fas fa-chevron-right"></i></button>
-                                <span class="ms-2 text-secondary" style="font-size:0.75rem; opacity:0.6;" id="rowCountInfo">0 rows</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- ═══ UPLOAD CARD (AT THE END) ═══ -->
-        <section class="row g-3 mb-4">
-            <div class="col-12">
-                <div class="glass-card">
-                    <div class="card-header">
-                        <div class="header-left"><i class="fas fa-upload"></i>Import Excel Data</div>
-                    </div>
-                    <div class="card-body">
-                        <div class="upload-area">
-                            <input type="file" id="fileInput" accept=".xlsx,.xls" style="display:none;" />
-                            <button class="btn-upload outline" id="chooseFileBtn">
-                                <i class="fas fa-folder-open"></i> Choose File
-                            </button>
-                            <span class="file-info" id="fileInfo"><i class="fas fa-file-excel"></i> No file selected</span>
-                            <button class="btn-upload primary" id="uploadBtn" disabled>
-                                <i class="fas fa-cloud-upload-alt"></i> Upload
-                            </button>
-                            <span class="badge-soft" style="font-size:0.7rem;">Supports .xlsx, .xls</span>
-                        </div>
-                        <div class="upload-status" id="uploadStatus" style="display:none;">
-                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                            <span id="uploadStatusText">Uploading…</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- ═══ FOOTER ═══ -->
-        <footer class="dashboard-footer mt-auto">
-            <div class="status">
-                <span class="dot" id="statusDot"></span>
-                <span id="statusText">Connected to n8n</span>
-            </div>
-            <div class="footer-right">
-                <span><i class="far fa-clock me-1"></i>Updated: <span id="lastUpdated">—</span></span>
-                <span style="opacity:0.2;">|</span>
-                <span><i class="fas fa-code-branch me-1" style="opacity:0.4;"></i>v2.0</span>
-            </div>
-        </footer>
-    </div>
-
-    <script>
-        (function () {
-            'use strict';
-
-            // ─── CONFIG ───
-            const WEBHOOK_URL = 'http://localhost:5678/webhook/e8c63b93-4b19-4705-b8b7-09c52ee1478f';
-            const REFRESH_INTERVAL_MS = 30000;
-            const PAGE_SIZE = 10;
-
-            // ─── STATE ───
-            let allWarehouses = [];
-            let filteredWarehouses = [];
-            let currentPage = 1;
-            let sortKey = 'warehouse';
-            let sortAsc = true;
-            let searchTerm = '';
-            let isRefreshing = false;
-
-            // chart instances
-            let chartUnits = null;
-            let chartDn = null;
-            let chartPiePod = null;
-            let chartPiePgi = null;
-            let chartDeliveryDays = null;
-            let chartPodDays = null;
-
-            // ─── DOM refs ───
-            const $ = (sel) => document.querySelector(sel);
-            const $$ = (sel) => document.querySelectorAll(sel);
-
-            const loadingOverlay = $('#loadingOverlay');
-            const errorToast = $('#errorToast');
-            const errorMsg = $('#errorMsg');
-            const toastClose = $('#toastClose');
-            const refreshBtn = $('#refreshBtn');
-            const currentDateEl = $('#currentDate');
-            const currentTimeEl = $('#currentTime');
-            const lastUpdatedEl = $('#lastUpdated');
-            const statusDot = $('#statusDot');
-            const statusText = $('#statusText');
-
-            const kpiRow = $('#kpiRow');
-            const tableBody = $('#tableBody');
-            const tableSearch = $('#tableSearch');
-            const warehouseCount = $('#warehouseCount');
-            const prevPage = $('#prevPage');
-            const nextPage = $('#nextPage');
-            const pageInfo = $('#pageInfo');
-            const rowCountInfo = $('#rowCountInfo');
-            const exportCsvBtn = $('#exportCsvBtn');
-            const printBtn = $('#printBtn');
-            const tableScroll = $('#tableScroll');
-
-            // Upload elements
-            const fileInput = $('#fileInput');
-            const chooseFileBtn = $('#chooseFileBtn');
-            const fileInfo = $('#fileInfo');
-            const uploadBtn = $('#uploadBtn');
-            const uploadStatus = $('#uploadStatus');
-            const uploadStatusText = $('#uploadStatusText');
-            const uploadToast = $('#uploadToast');
-            const uploadMsg = $('#uploadMsg');
-            const uploadToastClose = $('#uploadToastClose');
-
-            // ─── Helpers ───
-            function fmt(n) {
-                if (n === undefined || n === null) return '—';
-                const num = typeof n === 'string' ? parseFloat(n) : n;
-                if (isNaN(num)) return '—';
-                return Number(num).toLocaleString('en-US', { maximumFractionDigits: 0, minimumFractionDigits: 0 });
-            }
-
-            function fmt1(n) {
-                if (n === undefined || n === null) return '—';
-                const num = typeof n === 'string' ? parseFloat(n) : n;
-                if (isNaN(num)) return '—';
-                return Number(num).toFixed(1);
-            }
-
-            function showLoading(show) {
-                loadingOverlay.classList.toggle('show', show);
-            }
-
-            function showError(msg) {
-                errorMsg.textContent = msg || 'Unable to fetch data.';
-                errorToast.classList.add('show');
-                statusDot.className = 'dot error';
-                statusText.textContent = '⚠️ Error';
-                setTimeout(() => { errorToast.classList.remove('show'); }, 8000);
-            }
-
-            function hideError() { errorToast.classList.remove('show'); }
-
-            function showUploadToast(msg, isSuccess = true) {
-                uploadMsg.textContent = msg;
-                uploadToast.classList.add('show');
-                uploadToast.style.borderLeftColor = isSuccess ? '#27ae60' : '#e74c3c';
-                uploadToast.querySelector('.toast-icon i').className = isSuccess ? 'fas fa-check-circle' : 'fas fa-circle-exclamation';
-                setTimeout(() => { uploadToast.classList.remove('show'); }, 8000);
-            }
-
-            function updateClock() {
-                const now = new Date();
-                currentDateEl.textContent = now.toLocaleDateString('en-US', {
-                    weekday: 'short', year: 'numeric', month: 'short', day: 'numeric'
-                });
-                currentTimeEl.textContent = now.toLocaleTimeString('en-US', {
-                    hour: '2-digit', minute: '2-digit', second: '2-digit'
-                });
-            }
-
-            function updateLastUpdated() {
-                const now = new Date();
-                lastUpdatedEl.textContent = now.toLocaleString('en-US', {
-                    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
-                });
-            }
-
-            function setStatus(ok) {
-                if (ok) {
-                    statusDot.className = 'dot';
-                    statusText.textContent = 'Connected to n8n';
-                } else {
-                    statusDot.className = 'dot error';
-                    statusText.textContent = '⚠️ Disconnected';
+    # Perform bulk insert in batches to manage memory
+    if records_to_insert:
+        try:
+            # Convert objects to dictionaries for bulk_insert_mappings
+            records_dict = [
+                {
+                    "dn_no": r.dn_no,
+                    "material_no": r.material_no,
+                    "customer_name": r.customer_name,
+                    "warehouse": r.warehouse,
+                    "dn_create_date": r.dn_create_date,
+                    "good_issue_date": r.good_issue_date,
+                    "pod_date": r.pod_date,
+                    "dn_qty": r.dn_qty,
+                    "dn_amount": r.dn_amount,
+                    "source_file": r.source_file,
+                    "upload_batch_id": r.upload_batch_id,
+                    "delivery_status": r.delivery_status,
+                    "pgi_status": r.pgi_status,
+                    "pod_status": r.pod_status,
+                    "pending_flag": r.pending_flag
                 }
-            }
-
-            // ─── KPI ───
-            function renderKpi(summary) {
-                const items = [
-                    { label: 'Total DN Created', value: summary.total_dn_created || 0, icon: 'fa-file-invoice', cls: '' },
-                    { label: 'Total Units Created', value: summary.total_dn_quantity || 0, icon: 'fa-cubes', cls: 'green' },
-                    { label: 'Total Revenue', value: summary.total_revenue || 0, icon: 'fa-dollar-sign', cls: 'teal' },
-                    { label: 'Active Dealers', value: summary.active_dealers || 0, icon: 'fa-users', cls: 'indigo' },
-                    { label: 'Active Warehouses', value: summary.active_warehouses || 0, icon: 'fa-warehouse', cls: 'purple' },
-                    { label: 'Cities Served', value: summary.cities_served || 0, icon: 'fa-city', cls: 'amber' },
-                    { label: 'Delivered DN', value: summary.delivered_dn || 0, icon: 'fa-truck', cls: 'green' },
-                    { label: 'Pending Delivery DN', value: summary.pending_delivery_dn || 0, icon: 'fa-clock', cls: 'orange' },
-                    { label: 'Pending POD DN', value: summary.pending_pod_dn || 0, icon: 'fa-file-signature', cls: 'rose' },
-                    { label: 'POD Completed DN', value: summary.pod_completed_dn || 0, icon: 'fa-check-double', cls: 'teal' }
-                ];
-
-                kpiRow.innerHTML = '';
-                items.forEach((item) => {
-                    const col = document.createElement('div');
-                    col.className = 'col-6 col-md-3 col-lg-2';
-                    col.innerHTML = `
-                        <div class="kpi-card ${item.cls}">
-                            <div class="d-flex align-items-start justify-content-between">
-                                <div>
-                                    <div class="kpi-label">${item.label}</div>
-                                    <div class="kpi-value">${fmt(item.value)}</div>
-                                </div>
-                                <div class="kpi-icon"><i class="fas ${item.icon}"></i></div>
-                            </div>
-                        </div>
-                    `;
-                    kpiRow.appendChild(col);
-                });
-            }
-
-            // ─── Table ───
-            function renderTable() {
-                const term = searchTerm.trim().toLowerCase();
-                filteredWarehouses = allWarehouses.filter(w =>
-                    w.warehouse && w.warehouse.toLowerCase().includes(term)
-                );
-
-                filteredWarehouses.sort((a, b) => {
-                    let va = a[sortKey] ?? '';
-                    let vb = b[sortKey] ?? '';
-                    if (typeof va === 'string') va = va.toLowerCase();
-                    if (typeof vb === 'string') vb = vb.toLowerCase();
-                    if (va < vb) return sortAsc ? -1 : 1;
-                    if (va > vb) return sortAsc ? 1 : -1;
-                    return 0;
-                });
-
-                const total = filteredWarehouses.length;
-                const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-                if (currentPage > totalPages) currentPage = totalPages;
-                if (currentPage < 1) currentPage = 1;
-
-                const start = (currentPage - 1) * PAGE_SIZE;
-                const end = Math.min(start + PAGE_SIZE, total);
-                const pageItems = filteredWarehouses.slice(start, end);
-
-                warehouseCount.textContent = `${total} warehouse${total !== 1 ? 's' : ''}`;
-
-                if (total === 0) {
-                    tableBody.innerHTML = `<tr><td colspan="12" class="text-center text-muted py-4" style="font-size:0.9rem;">No warehouses found</td></tr>`;
-                } else {
-                    tableBody.innerHTML = pageItems.map(w => `
-                        <tr>
-                            <td><strong>${w.warehouse || '—'}</strong></td>
-                            <td class="text-end">${fmt(w.total_dn_created)}</td>
-                            <td class="text-end">${fmt(w.total_dn_quantity)}</td>
-                            <td class="text-end">${fmt(w.pending_delivery_dn)}</td>
-                            <td class="text-end">${fmt(w.pending_delivery_quantity)}</td>
-                            <td class="text-end">${fmt(w.pending_pod_dn)}</td>
-                            <td class="text-end">${fmt(w.pending_pod_quantity)}</td>
-                            <td class="text-end">${fmt1(w.avg_delivery_days)}</td>
-                            <td class="text-end">${fmt1(w.avg_pod_days)}</td>
-                            <td class="text-end">${fmt1(w.avg_total_cycle_days)}</td>
-                            <td class="text-end">${fmt1(w.avg_pending_delivery_days)}</td>
-                            <td class="text-end">${fmt1(w.avg_pending_pod_days)}</td>
-                        </tr>
-                    `).join('');
-                }
-
-                pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
-                prevPage.disabled = currentPage <= 1;
-                nextPage.disabled = currentPage >= totalPages;
-                rowCountInfo.textContent = `${total} row${total !== 1 ? 's' : ''}`;
-
-                $$('#warehouseTable thead th').forEach(th => {
-                    const key = th.dataset.sort;
-                    const icon = th.querySelector('i');
-                    if (icon) {
-                        if (key === sortKey) {
-                            icon.className = `fas fa-sort-${sortAsc ? 'up' : 'down'}`;
-                            icon.style.opacity = '1';
-                        } else {
-                            icon.className = 'fas fa-sort';
-                            icon.style.opacity = '0.3';
-                        }
-                    }
-                });
-            }
-
-            // ─── Professional Chart Palette & Options ───
-            const PROFESSIONAL_PALETTE = [
-                '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd',
-                '#0ea5e9', '#38bdf8', '#7dd3fc', '#bae6fd',
-                '#6366f1', '#818cf8', '#a5b4fc', '#c7d2fe'
-            ];
-
-            function createGradient(ctx, colorStart, colorEnd) {
-                const gradient = ctx.createLinearGradient(0, 0, 0, 280);
-                gradient.addColorStop(0, colorStart);
-                gradient.addColorStop(1, colorEnd);
-                return gradient;
-            }
-
-            function getProfessionalBarOptions() {
-                return {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    animation: {
-                        duration: 900,
-                        easing: 'easeOutQuart'
-                    },
-                    interaction: {
-                        mode: 'index',
-                        intersect: false
-                    },
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            backgroundColor: 'rgba(15, 23, 42, 0.92)',
-                            titleFont: { family: 'Inter', size: 12, weight: '600' },
-                            bodyFont: { family: 'Inter', size: 12 },
-                            padding: 12,
-                            cornerRadius: 10,
-                            displayColors: true,
-                            boxPadding: 4,
-                            borderColor: 'rgba(255,255,255,0.08)',
-                            borderWidth: 1
-                        }
-                    },
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            grid: {
-                                color: 'rgba(15, 23, 42, 0.04)',
-                                drawBorder: false
-                            },
-                            ticks: {
-                                font: { family: 'Inter', size: 11 },
-                                color: '#64748b',
-                                padding: 8
-                            },
-                            border: { display: false }
-                        },
-                        x: {
-                            grid: { display: false },
-                            ticks: {
-                                font: { family: 'Inter', size: 11 },
-                                color: '#64748b',
-                                maxRotation: 45,
-                                minRotation: 0
-                            },
-                            border: { display: false }
-                        }
-                    },
-                    layout: { padding: { top: 8, bottom: 4 } }
-                };
-            }
-
-            function getProfessionalPieOptions() {
-                return {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    animation: {
-                        duration: 1000,
-                        easing: 'easeOutQuart'
-                    },
-                    plugins: {
-                        legend: {
-                            position: 'bottom',
-                            labels: {
-                                boxWidth: 12,
-                                boxHeight: 12,
-                                padding: 14,
-                                font: { family: 'Inter', size: 11 },
-                                color: '#475569',
-                                usePointStyle: true,
-                                pointStyle: 'circle'
-                            }
-                        },
-                        tooltip: {
-                            backgroundColor: 'rgba(15, 23, 42, 0.92)',
-                            titleFont: { family: 'Inter', size: 12, weight: '600' },
-                            bodyFont: { family: 'Inter', size: 12 },
-                            padding: 12,
-                            cornerRadius: 10,
-                            displayColors: true,
-                            boxPadding: 4
-                        }
-                    },
-                    layout: { padding: 8 }
-                };
-            }
-
-            function getProfessionalLineOptions() {
-                return {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    animation: {
-                        duration: 1000,
-                        easing: 'easeOutQuart'
-                    },
-                    interaction: {
-                        mode: 'index',
-                        intersect: false
-                    },
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            backgroundColor: 'rgba(15, 23, 42, 0.92)',
-                            titleFont: { family: 'Inter', size: 12, weight: '600' },
-                            bodyFont: { family: 'Inter', size: 12 },
-                            padding: 12,
-                            cornerRadius: 10,
-                            displayColors: true,
-                            boxPadding: 4
-                        }
-                    },
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            grid: {
-                                color: 'rgba(15, 23, 42, 0.04)',
-                                drawBorder: false
-                            },
-                            ticks: {
-                                font: { family: 'Inter', size: 11 },
-                                color: '#64748b',
-                                padding: 8
-                            },
-                            border: { display: false }
-                        },
-                        x: {
-                            grid: { display: false },
-                            ticks: {
-                                font: { family: 'Inter', size: 11 },
-                                color: '#64748b',
-                                maxRotation: 45
-                            },
-                            border: { display: false }
-                        }
-                    },
-                    layout: { padding: { top: 8, bottom: 4 } }
-                };
-            }
-
-            // ─── Charts ───
-            function destroyCharts() {
-                if (chartUnits) { chartUnits.destroy(); chartUnits = null; }
-                if (chartDn) { chartDn.destroy(); chartDn = null; }
-                if (chartPiePod) { chartPiePod.destroy(); chartPiePod = null; }
-                if (chartPiePgi) { chartPiePgi.destroy(); chartPiePgi = null; }
-                if (chartDeliveryDays) { chartDeliveryDays.destroy(); chartDeliveryDays = null; }
-                if (chartPodDays) { chartPodDays.destroy(); chartPodDays = null; }
-            }
-
-            function renderCharts(warehouses) {
-                destroyCharts();
-
-                const labels = warehouses.map(w => w.warehouse || 'Unknown');
-                const units = warehouses.map(w => parseFloat(w.total_dn_quantity) || 0);
-                const dns = warehouses.map(w => parseFloat(w.total_dn_created) || 0);
-                const podQty = warehouses.map(w => parseFloat(w.pending_pod_quantity) || 0);
-                const pgiQty = warehouses.map(w => parseFloat(w.pending_delivery_quantity) || 0);
-                const delDays = warehouses.map(w => parseFloat(w.avg_delivery_days) || 0);
-                const podDays = warehouses.map(w => parseFloat(w.avg_pod_days) || 0);
-
-                function bgColors(n) {
-                    const c = [];
-                    for (let i = 0; i < n; i++) c.push(PROFESSIONAL_PALETTE[i % PROFESSIONAL_PALETTE.length]);
-                    return c;
-                }
-
-                // Bar: Units
-                const ctxUnits = document.getElementById('chartUnits').getContext('2d');
-                chartUnits = new Chart(ctxUnits, {
-                    type: 'bar',
-                    data: {
-                        labels,
-                        datasets: [{
-                            label: 'Total Units',
-                            data: units,
-                            backgroundColor: bgColors(units.length).map(c => c + 'cc'),
-                            borderColor: bgColors(units.length),
-                            borderWidth: 1.5,
-                            borderRadius: 8,
-                            borderSkipped: false,
-                            hoverBackgroundColor: PROFESSIONAL_PALETTE[0],
-                            maxBarThickness: 42
-                        }]
-                    },
-                    options: getProfessionalBarOptions()
-                });
-
-                // Bar: DN
-                const ctxDn = document.getElementById('chartDn').getContext('2d');
-                chartDn = new Chart(ctxDn, {
-                    type: 'bar',
-                    data: {
-                        labels,
-                        datasets: [{
-                            label: 'Total DN',
-                            data: dns,
-                            backgroundColor: bgColors(dns.length).map(c => c + 'cc'),
-                            borderColor: bgColors(dns.length),
-                            borderWidth: 1.5,
-                            borderRadius: 8,
-                            borderSkipped: false,
-                            hoverBackgroundColor: PROFESSIONAL_PALETTE[0],
-                            maxBarThickness: 42
-                        }]
-                    },
-                    options: getProfessionalBarOptions()
-                });
-
-                // Pie: POD
-                const ctxPiePod = document.getElementById('chartPiePod').getContext('2d');
-                chartPiePod = new Chart(ctxPiePod, {
-                    type: 'doughnut',
-                    data: {
-                        labels,
-                        datasets: [{
-                            data: podQty,
-                            backgroundColor: bgColors(podQty.length),
-                            borderWidth: 3,
-                            borderColor: '#ffffff',
-                            hoverOffset: 12,
-                            hoverBorderWidth: 0
-                        }]
-                    },
-                    options: {
-                        ...getProfessionalPieOptions(),
-                        cutout: '58%'
-                    }
-                });
-
-                // Pie: PGI
-                const ctxPiePgi = document.getElementById('chartPiePgi').getContext('2d');
-                chartPiePgi = new Chart(ctxPiePgi, {
-                    type: 'doughnut',
-                    data: {
-                        labels,
-                        datasets: [{
-                            data: pgiQty,
-                            backgroundColor: bgColors(pgiQty.length),
-                            borderWidth: 3,
-                            borderColor: '#ffffff',
-                            hoverOffset: 12,
-                            hoverBorderWidth: 0
-                        }]
-                    },
-                    options: {
-                        ...getProfessionalPieOptions(),
-                        cutout: '58%'
-                    }
-                });
-
-                // Line: Delivery Days
-                const ctxDel = document.getElementById('chartDeliveryDays').getContext('2d');
-                chartDeliveryDays = new Chart(ctxDel, {
-                    type: 'line',
-                    data: {
-                        labels,
-                        datasets: [{
-                            label: 'Avg Delivery Days',
-                            data: delDays,
-                            borderColor: '#2563eb',
-                            backgroundColor: (ctx) => {
-                                const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 240);
-                                g.addColorStop(0, 'rgba(37, 99, 235, 0.22)');
-                                g.addColorStop(1, 'rgba(37, 99, 235, 0.01)');
-                                return g;
-                            },
-                            fill: true,
-                            tension: 0.4,
-                            pointBackgroundColor: '#2563eb',
-                            pointBorderColor: '#ffffff',
-                            pointBorderWidth: 2.5,
-                            pointRadius: 5,
-                            pointHoverRadius: 8,
-                            pointHoverBackgroundColor: '#1d4ed8',
-                            borderWidth: 2.8
-                        }]
-                    },
-                    options: getProfessionalLineOptions()
-                });
-
-                // Line: POD Days
-                const ctxPod = document.getElementById('chartPodDays').getContext('2d');
-                chartPodDays = new Chart(ctxPod, {
-                    type: 'line',
-                    data: {
-                        labels,
-                        datasets: [{
-                            label: 'Avg POD Days',
-                            data: podDays,
-                            borderColor: '#ea580c',
-                            backgroundColor: (ctx) => {
-                                const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 240);
-                                g.addColorStop(0, 'rgba(234, 88, 12, 0.22)');
-                                g.addColorStop(1, 'rgba(234, 88, 12, 0.01)');
-                                return g;
-                            },
-                            fill: true,
-                            tension: 0.4,
-                            pointBackgroundColor: '#ea580c',
-                            pointBorderColor: '#ffffff',
-                            pointBorderWidth: 2.5,
-                            pointRadius: 5,
-                            pointHoverRadius: 8,
-                            pointHoverBackgroundColor: '#c2410c',
-                            borderWidth: 2.8
-                        }]
-                    },
-                    options: getProfessionalLineOptions()
-                });
-            }
-
-            // ─── Download Chart as PNG ───
-            function downloadChart(chartId) {
-                const chartMap = {
-                    chartUnits,
-                    chartDn,
-                    chartPiePod,
-                    chartPiePgi,
-                    chartDeliveryDays,
-                    chartPodDays
-                };
-                const chart = chartMap[chartId];
-                if (!chart) return;
-
-                const link = document.createElement('a');
-                link.download = `haier_${chartId}_${new Date().toISOString().slice(0, 10)}.png`;
-                link.href = chart.toBase64Image('image/png', 1.0);
-                link.click();
-            }
-
-            // ─── Fetch ───
-            async function fetchData(showLoadingIndicator = true) {
-                if (isRefreshing) return;
-                isRefreshing = true;
-                refreshBtn.disabled = true;
-
-                if (showLoadingIndicator) showLoading(true);
-                hideError();
-
-                try {
-                    const resp = await fetch(WEBHOOK_URL, {
-                        method: 'GET',
-                        headers: { 'Accept': 'application/json' }
-                    });
-
-                    if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
-
-                    const data = await resp.json();
-
-                    if (!data || typeof data !== 'object' || !data.summary || !Array.isArray(data.warehouses)) {
-                        throw new Error('Invalid data structure: expected "summary" and "warehouses" array.');
-                    }
-
-                    const summary = data.summary;
-                    const warehouses = data.warehouses || [];
-
-                    if (Object.keys(summary).length === 0) throw new Error('Summary data is empty.');
-
-                    allWarehouses = warehouses;
-
-                    renderKpi(summary);
-                    renderTable();
-                    renderCharts(warehouses);
-
-                    setStatus(true);
-                    updateLastUpdated();
-                    hideError();
-
-                } catch (err) {
-                    console.error('Fetch error:', err);
-                    showError(err.message || 'Failed to load data from webhook.');
-                    setStatus(false);
-                    if (allWarehouses.length === 0) {
-                        tableBody.innerHTML = `<tr><td colspan="12" class="text-center text-muted py-4" style="font-size:0.9rem;">No data available</td></tr>`;
-                        warehouseCount.textContent = '0 warehouses';
-                    }
-                } finally {
-                    if (showLoadingIndicator) showLoading(false);
-                    isRefreshing = false;
-                    refreshBtn.disabled = false;
-                }
-            }
-
-            // ─── Export CSV ───
-            function exportCsv() {
-                if (filteredWarehouses.length === 0) {
-                    alert('No data to export.');
-                    return;
-                }
-                const headers = [
-                    'Warehouse', 'Total DN', 'Total Units',
-                    'Pending PGI DN', 'Pending PGI Qty',
-                    'Pending POD DN', 'Pending POD Qty',
-                    'Avg Delivery Days', 'Avg POD Days',
-                    'Avg Cycle Days', 'Avg Pending PGI Days', 'Avg Pending POD Days'
-                ];
-                const keys = [
-                    'warehouse', 'total_dn_created', 'total_dn_quantity',
-                    'pending_delivery_dn', 'pending_delivery_quantity',
-                    'pending_pod_dn', 'pending_pod_quantity',
-                    'avg_delivery_days', 'avg_pod_days',
-                    'avg_total_cycle_days', 'avg_pending_delivery_days', 'avg_pending_pod_days'
-                ];
-
-                let csv = headers.join(',') + '\n';
-                filteredWarehouses.forEach(w => {
-                    const row = keys.map(k => {
-                        let val = w[k] ?? '';
-                        if (typeof val === 'string' && val.includes(',')) val = `"${val}"`;
-                        return val;
-                    });
-                    csv += row.join(',') + '\n';
-                });
-
-                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(blob);
-                link.download = `warehouse_export_${new Date().toISOString().slice(0, 10)}.csv`;
-                link.click();
-                URL.revokeObjectURL(link.href);
-            }
-
-            function printDashboard() { window.print(); }
-
-            // ─── Sorting ───
-            function handleSort(e) {
-                const th = e.target.closest('th');
-                if (!th || !th.dataset.sort) return;
-                const key = th.dataset.sort;
-                if (key === sortKey) sortAsc = !sortAsc;
-                else { sortKey = key; sortAsc = true; }
-                currentPage = 1;
-                renderTable();
-            }
-
-            function goToPage(dir) {
-                const total = filteredWarehouses.length;
-                const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-                const newPage = currentPage + dir;
-                if (newPage < 1 || newPage > totalPages) return;
-                currentPage = newPage;
-                renderTable();
-                tableScroll.scrollTop = 0;
-            }
-
-            // ─── Upload logic ───
-            let selectedFile = null;
-
-            function handleFileSelect(event) {
-                const file = event.target.files[0];
-                if (!file) {
-                    selectedFile = null;
-                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
-                    uploadBtn.disabled = true;
-                    return;
-                }
-                const ext = file.name.split('.').pop().toLowerCase();
-                if (!['xlsx', 'xls'].includes(ext)) {
-                    showUploadToast('Please select an Excel file (.xlsx or .xls)', false);
-                    fileInput.value = '';
-                    selectedFile = null;
-                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
-                    uploadBtn.disabled = true;
-                    return;
-                }
-                selectedFile = file;
-                fileInfo.innerHTML = `<i class="fas fa-file-excel"></i> ${file.name} (${(file.size / 1024).toFixed(0)} KB)`;
-                uploadBtn.disabled = false;
-                uploadStatus.style.display = 'none';
-            }
-
-            async function uploadFile() {
-                if (!selectedFile) return;
-
-                uploadBtn.disabled = true;
-                uploadStatus.style.display = 'flex';
-                uploadStatusText.textContent = 'Uploading…';
-
-                const formData = new FormData();
-                formData.append('file', selectedFile);
-
-                try {
-                    const response = await fetch('/upload/excel', {
-                        method: 'POST',
-                        body: formData
-                    });
-
-                    const result = await response.json();
-
-                    if (!response.ok) {
-                        throw new Error(result.detail || result.message || 'Upload failed');
-                    }
-
-                    uploadStatusText.textContent = '✅ Upload successful!';
-                    uploadStatus.style.display = 'none';
-                    showUploadToast(
-                        `✅ Import complete! Batch: ${result.batch_id || 'N/A'}, Rows: ${result.metrics?.rows_upserted || 0}`,
-                        true
-                    );
-
-                    fetchData(true);
-
-                } catch (err) {
-                    console.error('Upload error:', err);
-                    uploadStatusText.textContent = '❌ ' + (err.message || 'Upload failed');
-                    setTimeout(() => { uploadStatus.style.display = 'none'; }, 3000);
-                    showUploadToast('Upload failed: ' + (err.message || 'Unknown error'), false);
-                } finally {
-                    uploadBtn.disabled = false;
-                    fileInput.value = '';
-                    selectedFile = null;
-                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
-                    // FIXED: Removed the conflicting uploadBtn.disabled = true; line here
-                    setTimeout(() => { uploadStatus.style.display = 'none'; }, 5000);
-                }
-            }
-
-            // ─── Init ───
-            function init() {
-                updateClock();
-                setInterval(updateClock, 1000);
-
-                fetchData(true);
-                setInterval(() => fetchData(false), REFRESH_INTERVAL_MS);
-
-                refreshBtn.addEventListener('click', () => fetchData(true));
-                toastClose.addEventListener('click', () => errorToast.classList.remove('show'));
-                uploadToastClose.addEventListener('click', () => uploadToast.classList.remove('show'));
-
-                tableSearch.addEventListener('input', (e) => {
-                    searchTerm = e.target.value;
-                    currentPage = 1;
-                    renderTable();
-                });
-
-                document.querySelector('#warehouseTable thead')?.addEventListener('click', handleSort);
-
-                prevPage.addEventListener('click', () => goToPage(-1));
-                nextPage.addEventListener('click', () => goToPage(1));
-
-                exportCsvBtn.addEventListener('click', exportCsv);
-                printBtn.addEventListener('click', printDashboard);
-
-                // Upload events
-                chooseFileBtn.addEventListener('click', () => fileInput.click());
-                fileInput.addEventListener('change', handleFileSelect);
-                uploadBtn.addEventListener('click', uploadFile);
-
-                // Chart download buttons
-                $$('.btn-download-chart').forEach(btn => {
-                    btn.addEventListener('click', () => {
-                        const chartId = btn.getAttribute('data-chart');
-                        downloadChart(chartId);
-                    });
-                });
-
-                document.addEventListener('keydown', (e) => {
-                    if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
-                        e.preventDefault();
-                        fetchData(true);
-                    }
-                });
-
-                let resizeTimer;
-                window.addEventListener('resize', () => {
-                    clearTimeout(resizeTimer);
-                    resizeTimer = setTimeout(() => {
-                        if (allWarehouses.length) renderCharts(allWarehouses);
-                    }, 300);
-                });
-            }
-
-            document.addEventListener('DOMContentLoaded', init);
-        })();
-    </script>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
+                for r in records_to_insert
+            ]
+
+            # Bulk insert mapping
+            db.bulk_insert_mappings(DeliveryReport, records_dict)
+            db.flush()
+            
+            metrics["rows_upserted"] = len(records_to_insert)
+            logger.info(f"Successfully inserted {metrics['rows_upserted']} records into delivery_reports.")
+
+        except Exception as e:
+            logger.exception("Failed to bulk insert records.")
+            db.rollback()
+            raise ExcelImportServiceError(f"Database insert failed: {str(e)}")
+
+    else:
+        logger.info("No valid records found to insert.")
+
+    # Append simplified errors to the metrics
+    metrics["errors"] = [f"Row {err['row']}: {err['error']}" for err in errors]
+    
+    logger.info(f"Import completed for batch {upload_batch_id}. "
+                f"Read: {metrics['rows_read']}, "
+                f"Inserted: {metrics['rows_upserted']}, "
+                f"Failed: {metrics['rows_failed']}")
+
+    return metrics
