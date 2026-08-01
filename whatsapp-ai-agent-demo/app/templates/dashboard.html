@@ -8,12 +8,12 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet" />
 
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             background: #f0f5fe;
@@ -25,6 +25,7 @@
                 radial-gradient(ellipse at 10% 20%, rgba(42, 111, 219, 0.05) 0%, transparent 60%),
                 radial-gradient(ellipse at 90% 80%, rgba(42, 111, 219, 0.05) 0%, transparent 60%);
         }
+
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: #e9eef6; border-radius: 12px; }
         ::-webkit-scrollbar-thumb { background: #b8cce0; border-radius: 12px; }
@@ -643,7 +644,7 @@
             'use strict';
 
             // ─── CONFIG ───
-            // Change this to your public n8n webhook if needed
+            // Change this to your public n8n webhook URL if needed
             const WEBHOOK_URL = 'http://localhost:5678/webhook/e8c63b93-4b19-4705-b8b7-09c52ee1478f';
             const REFRESH_INTERVAL_MS = 30000;
             const PAGE_SIZE = 10;
@@ -893,8 +894,7 @@
                                 titleFont: { family: 'Inter', size: 12, weight: '600' },
                                 bodyFont: { family: 'Inter', size: 12 },
                                 padding: 12, cornerRadius: 10
-                            },
-                            datalabels: { display: false }
+                            }
                         },
                         scales: {
                             y: { beginAtZero: true, grid: { color: 'rgba(15,23,42,0.04)', drawBorder: false }, ticks: { font: { family: 'Inter', size: 11 }, color: '#64748b' }, border: { display: false } },
@@ -929,8 +929,7 @@
                                 titleFont: { family: 'Inter', size: 12, weight: '600' },
                                 bodyFont: { family: 'Inter', size: 12 },
                                 padding: 12, cornerRadius: 10
-                            },
-                            datalabels: { display: false }
+                            }
                         },
                         scales: {
                             y: { beginAtZero: true, grid: { color: 'rgba(15,23,42,0.04)', drawBorder: false }, ticks: { font: { family: 'Inter', size: 11 }, color: '#64748b' }, border: { display: false } },
@@ -966,8 +965,7 @@
                                 titleFont: { family: 'Inter', size: 12, weight: '600' },
                                 bodyFont: { family: 'Inter', size: 12 },
                                 padding: 12, cornerRadius: 10
-                            },
-                            datalabels: { display: false }
+                            }
                         }
                     }
                 });
@@ -999,8 +997,7 @@
                                 titleFont: { family: 'Inter', size: 12, weight: '600' },
                                 bodyFont: { family: 'Inter', size: 12 },
                                 padding: 12, cornerRadius: 10
-                            },
-                            datalabels: { display: false }
+                            }
                         }
                     }
                 });
@@ -1040,8 +1037,7 @@
                                 titleFont: { family: 'Inter', size: 12, weight: '600' },
                                 bodyFont: { family: 'Inter', size: 12 },
                                 padding: 12, cornerRadius: 10
-                            },
-                            datalabels: { display: false }
+                            }
                         },
                         scales: {
                             y: { beginAtZero: true, grid: { color: 'rgba(15,23,42,0.04)', drawBorder: false }, ticks: { font: { family: 'Inter', size: 11 }, color: '#64748b' }, border: { display: false } },
@@ -1085,8 +1081,7 @@
                                 titleFont: { family: 'Inter', size: 12, weight: '600' },
                                 bodyFont: { family: 'Inter', size: 12 },
                                 padding: 12, cornerRadius: 10
-                            },
-                            datalabels: { display: false }
+                            }
                         },
                         scales: {
                             y: { beginAtZero: true, grid: { color: 'rgba(15,23,42,0.04)', drawBorder: false }, ticks: { font: { family: 'Inter', size: 11 }, color: '#64748b' }, border: { display: false } },
@@ -1229,12 +1224,13 @@
                     uploadStatusText.textContent = '❌ ' + (err.message || 'Failed');
                     setTimeout(() => uploadStatus.style.display = 'none', 3000);
                     showUploadToast('Upload failed: ' + (err.message || 'Unknown error'), false);
-                       } finally {
-            uploadBtn.disabled = false;
-            fileInput.value = '';
-            selectedFile = null;
-            fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
-        }
+                } finally {
+                    uploadBtn.disabled = false;
+                    fileInput.value = '';
+                    selectedFile = null;
+                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
+                    uploadBtn.disabled = true;
+                }
             }
 
             // ─── INIT ───
