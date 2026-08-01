@@ -1,84 +1,209 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+
 <meta charset="UTF-8">
-<title>n8n API Test</title>
+
+<title>Haier n8n Integration Test</title>
 
 <style>
+
 body{
-    font-family:Arial;
-    background:#f4f7fb;
-    padding:30px;
+font-family:Arial;
+background:#f4f6fa;
+padding:30px;
+}
+
+h1{
+color:#0056a6;
 }
 
 button{
-    padding:12px 30px;
-    font-size:18px;
-    cursor:pointer;
+padding:12px 30px;
+font-size:18px;
+cursor:pointer;
+background:#0056a6;
+color:white;
+border:none;
+border-radius:5px;
 }
 
 .card{
-    background:white;
-    padding:15px;
-    margin:10px 0;
-    border-radius:8px;
-    box-shadow:0 0 10px rgba(0,0,0,.1);
+
+background:white;
+margin-top:20px;
+padding:20px;
+border-radius:10px;
+box-shadow:0 0 10px rgba(0,0,0,.1);
+
+}
+
+.success{
+color:green;
+font-weight:bold;
+}
+
+.error{
+color:red;
+font-weight:bold;
+}
+
+table{
+
+width:100%;
+border-collapse:collapse;
+margin-top:20px;
+
+}
+
+th{
+background:#0056a6;
+color:white;
+padding:10px;
+}
+
+td{
+
+padding:10px;
+border:1px solid #ddd;
+
 }
 
 pre{
-    background:#111;
-    color:#00ff88;
-    padding:15px;
-    overflow:auto;
-    height:450px;
+
+background:#111;
+color:#00ff99;
+padding:20px;
+overflow:auto;
+height:400px;
+
 }
+
 </style>
 
 </head>
 
 <body>
 
-<h1>n8n Dashboard Integration Test</h1>
+<h1>Haier Logistics Dashboard Integration Test</h1>
 
-<button onclick="loadData()">Load Data</button>
+<button onclick="testAPI()">Test n8n Connection</button>
 
 <div class="card">
-<h2>Executive KPI</h2>
 
-<p>Total DN :
-<span id="dn">0</span></p>
+<h2>Status</h2>
 
-<p>Total Revenue :
-<span id="revenue">0</span></p>
+<p id="status">Waiting...</p>
 
-<p>Total Units :
-<span id="units">0</span></p>
+<p id="http"></p>
 
-<p>Total Warehouses :
-<span id="warehouse">0</span></p>
+<p id="time"></p>
 
 </div>
+
+<div class="card">
+
+<h2>Executive KPI</h2>
+
+<table>
+
+<tr><td>Total DN</td><td id="dn">-</td></tr>
+
+<tr><td>Total Revenue</td><td id="revenue">-</td></tr>
+
+<tr><td>Total Units</td><td id="units">-</td></tr>
+
+<tr><td>Total Warehouses</td><td id="warehouse">-</td></tr>
+
+<tr><td>Health Score</td><td id="health">-</td></tr>
+
+<tr><td>Risk Level</td><td id="risk">-</td></tr>
+
+</table>
+
+</div>
+
+<div class="card">
+
+<h2>Warehouse Summary</h2>
+
+<p>Total Warehouse Records:
+<span id="warehouseCount">0</span></p>
+
+<table id="warehouseTable">
+
+<thead>
+
+<tr>
+
+<th>Rank</th>
+
+<th>Warehouse</th>
+
+<th>Revenue</th>
+
+<th>DN</th>
+
+<th>Units</th>
+
+<th>Delivery %</th>
+
+<th>POD %</th>
+
+</tr>
+
+</thead>
+
+<tbody>
+
+</tbody>
+
+</table>
+
+</div>
+
+<div class="card">
 
 <h2>Raw JSON</h2>
 
 <pre id="json"></pre>
 
+</div>
+
 <script>
 
-const WEBHOOK =
-"http://127.0.0.1:5678/webhook/b8501db8-e0ec-4bcd-8e0c-b2d3ebe87a8c";
+const WEBHOOK_URL="YOUR_WEBHOOK_URL";
 
-async function loadData(){
+async function testAPI(){
+
+const start=performance.now();
+
+document.getElementById("status").innerHTML="Connecting...";
 
 try{
 
-const response = await fetch(WEBHOOK);
+const response=await fetch(WEBHOOK_URL);
 
-const data = await response.json();
+const end=performance.now();
 
-console.log(data);
+document.getElementById("http").innerHTML=
+"HTTP Status : "+response.status;
 
-document.getElementById("json").textContent =
+document.getElementById("time").innerHTML=
+"Response Time : "+Math.round(end-start)+" ms";
+
+if(!response.ok){
+
+throw new Error("HTTP "+response.status);
+
+}
+
+const data=await response.json();
+
+document.getElementById("status").innerHTML=
+'<span class="success">CONNECTED SUCCESSFULLY</span>';
+
+document.getElementById("json").textContent=
 JSON.stringify(data,null,2);
 
 const executive=data.executive;
@@ -95,20 +220,67 @@ Number(executive.total_dn_units).toLocaleString();
 document.getElementById("warehouse").innerHTML=
 executive.total_warehouses;
 
+document.getElementById("health").innerHTML=
+executive["logistics_health_score"];
+
+document.getElementById("risk").innerHTML=
+executive.risk_level;
+
+const warehouses=data.warehouses;
+
+document.getElementById("warehouseCount").innerHTML=
+warehouses.length;
+
+const tbody=document.querySelector("#warehouseTable tbody");
+
+tbody.innerHTML="";
+
+warehouses.forEach(w=>{
+
+tbody.innerHTML+=`
+
+<tr>
+
+<td>${w.rank}</td>
+
+<td>${w.warehouse}</td>
+
+<td>${Number(w.total_revenue).toLocaleString()}</td>
+
+<td>${w.total_delivery_notes}</td>
+
+<td>${w.total_units}</td>
+
+<td>${w.delivery_achievement_pct}%</td>
+
+<td>${w.pod_achievement_pct}%</td>
+
+</tr>
+
+`;
+
+});
+
 }
-catch(err){
 
-alert(err);
+catch(error){
 
-console.log(err);
+document.getElementById("status").innerHTML=
+'<span class="error">FAILED</span>';
+
+document.getElementById("json").textContent=
+error;
+
+console.log(error);
 
 }
 
 }
 
-loadData();
+window.onload=testAPI;
 
 </script>
 
 </body>
+
 </html>
