@@ -1014,7 +1014,8 @@
             'use strict';
 
             // ─── CONFIG ───
-            const WEBHOOK_URL = 'http://localhost:5678/webhook/b8501db8-e0ec-4bcd-8e0c-b2d3ebe87a8c';
+            // ⚠️ IMPORTANT: Replace 'YOUR_PUBLIC_WEBHOOK_DOMAIN' with your actual deployed domain!
+            const WEBHOOK_URL = 'https://YOUR_PUBLIC_WEBHOOK_DOMAIN/webhook/b8501db8-e0ec-4bcd-8e0c-b2d3ebe87a8c';
             const REFRESH_INTERVAL_MS = 30000;
             const PAGE_SIZE = 10;
 
@@ -1200,7 +1201,7 @@
                 const end = Math.min(start + PAGE_SIZE, total);
                 const pageItems = filteredWarehouses.slice(start, end);
 
-                warehouseCount.textContent = `${executive.total_warehouses} warehouses`;
+                warehouseCount.textContent = `${total} warehouse${total !== 1 ? 's' : ''}`;
 
                 if (total === 0) {
                     tableBody.innerHTML = `<tr><td colspan="12" class="text-center text-muted py-4" style="font-size:0.9rem;">No warehouses found</td></tr>`;
