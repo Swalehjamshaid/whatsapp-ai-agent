@@ -1,5 +1,7 @@
 # ==========================================================
-# FILE: app/services/excel_import_service.py (v5.0 - SELF-CONTAINED REPLACE)
+# FILE: app/services/excel_import_service.py (v5.0 - EXTREMELY COMPREHENSIVE)
+# PURPOSE: Maps ALL Excel columns, replaces old data when requested,
+#          and inserts new rows in batches of 1000.
 # ==========================================================
 
 import logging
@@ -12,15 +14,29 @@ from sqlalchemy import text
 
 from app.models import DeliveryReport
 
+# Configure logger
 logger = logging.getLogger(__name__)
 
+# ==========================================================
+# CUSTOM EXCEPTIONS
+# ==========================================================
+
 class ExcelImportServiceError(Exception):
+    """Base exception for Excel import service errors."""
     pass
 
 class VerificationError(Exception):
+    """Raised when a critical column (like DN NO) is missing."""
     pass
 
+# ==========================================================
+# HELPER FUNCTIONS
+# ==========================================================
+
 def _clean_string(value: Any) -> Optional[str]:
+    """
+    Safely convert a value to a stripped string or None.
+    """
     if value is None:
         return None
     if isinstance(value, str):
@@ -29,14 +45,21 @@ def _clean_string(value: Any) -> Optional[str]:
     return str(value)
 
 def _safe_int(value: Any) -> Optional[int]:
+    """
+    Safely convert a value to an integer, handling comma thousand separators.
+    """
     if value is None or str(value).strip() == "":
         return None
     try:
+        # Remove commas and convert to float first (handles decimals like 2.5)
         return int(float(str(value).strip().replace(',', '')))
     except (ValueError, TypeError):
         return None
 
 def _safe_float(value: Any) -> Optional[float]:
+    """
+    Safely convert a value to a float, handling comma thousand separators.
+    """
     if value is None or str(value).strip() == "":
         return None
     try:
@@ -45,10 +68,18 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
 
 def _parse_date_from_excel(value: Any) -> Optional[date]:
+    """
+    Parse a date from Excel values. Supports:
+    - datetime/date objects
+    - strings in DD.MM.YYYY, YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY, YYYYMMDD
+    - Excel serial numbers (floats)
+    """
     if value is None or str(value).strip() == "":
         return None
+    # If already a datetime or date object
     if isinstance(value, (datetime, date)):
         return value.date() if isinstance(value, datetime) else value
+    # If string, try common formats
     if isinstance(value, str):
         value = value.strip()
         for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y%m%d"):
@@ -57,6 +88,7 @@ def _parse_date_from_excel(value: Any) -> Optional[date]:
             except ValueError:
                 continue
         logger.warning(f"Could not parse date from string: {value}")
+    # If number, treat as Excel serial date (days since 1899-12-30)
     if isinstance(value, (int, float)):
         try:
             from datetime import timedelta
@@ -64,6 +96,10 @@ def _parse_date_from_excel(value: Any) -> Optional[date]:
         except Exception:
             pass
     return None
+
+# ==========================================================
+# MAIN IMPORT FUNCTION
+# ==========================================================
 
 def import_delivery_excel(
     db: Session,
@@ -73,8 +109,17 @@ def import_delivery_excel(
     batch_size: int = 1000,
     replace_mode: bool = False
 ) -> Dict[str, Any]:
-    logger.info(f"Starting import for batch: {upload_batch_id}, file: {source_filename}")
+    """
+    Reads an Excel file, maps all columns to the DeliveryReport model,
+    and inserts the data in batches of `batch_size` (default 1000).
     
+    If `replace_mode` is True, the entire delivery_reports table is
+    truncated before insertion, effectively replacing all old data.
+    
+    Returns a dictionary containing import metrics.
+    """
+    logger.info(f"Starting import for batch: {upload_batch_id}, file: {source_filename}")
+
     metrics = {
         "rows_read": 0,
         "rows_upserted": 0,
@@ -84,9 +129,12 @@ def import_delivery_excel(
         "errors": []
     }
 
-    # ------- STEP 0: REPLACE MODE (TRUNCATE) -------
+    # ----------------------------------------------------------
+    # STEP 0: REPLACE MODE – TRUNCATE TABLE IF REQUESTED
+    # ----------------------------------------------------------
     if replace_mode:
         try:
+            # TRUNCATE is faster than DELETE and resets the auto-increment ID
             db.execute(text("TRUNCATE TABLE delivery_reports RESTART IDENTITY CASCADE"))
             db.flush()
             logger.info("✅ Existing data truncated (replace_mode=True).")
@@ -94,7 +142,9 @@ def import_delivery_excel(
             logger.exception("Truncation failed")
             raise ExcelImportServiceError(f"Truncation failed: {str(e)}")
 
-    # ------- STEP 1: LOAD EXCEL -------
+    # ----------------------------------------------------------
+    # STEP 1: LOAD THE EXCEL WORKBOOK
+    # ----------------------------------------------------------
     try:
         wb = load_workbook(file_path, data_only=True)
         ws = wb.active
@@ -102,15 +152,18 @@ def import_delivery_excel(
         logger.exception(f"Failed to load Excel file: {file_path}")
         raise ExcelImportServiceError(f"Failed to read Excel file: {str(e)}")
 
-    # ------- STEP 2: EXTRACT HEADERS & COLUMN MAPPING -------
+    # ----------------------------------------------------------
+    # STEP 2: EXTRACT HEADERS AND BUILD COLUMN MAPPING
+    # ----------------------------------------------------------
     headers = []
     for cell in ws[1]:
         header_val = _clean_string(cell.value)
         headers.append(header_val.upper() if header_val else None)
 
+    # Map of expected Excel column names (uppercase) to model fields
     expected_headers = {
         "ORDER TYPE": "order_type",
-        "DN NO": "dn_no",
+        "DN NO": "dn_no",                     # REQUIRED – if missing, raise error
         "DN AMOUNT": "dn_amount",
         "DN QTY": "dn_qty",
         "DN WORK": "dn_work",
@@ -144,29 +197,37 @@ def import_delivery_excel(
                 break
         if not found:
             if model_field == "dn_no":
-                raise VerificationError(f"Required column '{expected_upper}' (DN NO) not found.")
+                # DN NO is mandatory – if not found, stop the import
+                raise VerificationError(f"Required column '{expected_upper}' (DN NO) not found in Excel header.")
             else:
+                # Optional column – log a warning and skip mapping
                 missing_columns.append(expected_upper)
-                logger.warning(f"Optional column '{expected_upper}' not found.")
+                logger.warning(f"Optional column '{expected_upper}' not found, will leave field as NULL.")
 
     if missing_columns:
-        logger.info(f"Optional columns not found: {', '.join(missing_columns)}")
+        logger.info(f"The following optional columns were not found and will be left NULL: {', '.join(missing_columns)}")
 
-    # ------- STEP 3: PARSE ROWS -------
+    # ----------------------------------------------------------
+    # STEP 3: PARSE ROWS AND BUILD OBJECTS
+    # ----------------------------------------------------------
     records_to_insert = []
     errors = []
 
+    # Helper to safely retrieve a cell value from the current row
+    def _get_cell(model_field):
+        idx = column_map.get(model_field)
+        return row[idx] if idx is not None else None
+
     for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         metrics["rows_read"] += 1
+
         try:
+            # Mandatory field: DN NO
             dn_no = _clean_string(row[column_map["dn_no"]])
             if not dn_no:
                 raise ValueError("DN No is empty or missing")
 
-            def _get_cell(model_field):
-                idx = column_map.get(model_field)
-                return row[idx] if idx is not None else None
-
+            # Build the DeliveryReport instance using safe getters
             report = DeliveryReport(
                 order_type=_clean_string(_get_cell("order_type")),
                 dn_no=dn_no,
@@ -190,6 +251,7 @@ def import_delivery_excel(
                 pod_date=_parse_date_from_excel(_get_cell("pod_date")),
                 sales_manager=_clean_string(_get_cell("sales_manager")),
                 remarks=_clean_string(_get_cell("remarks")),
+                # Derive statuses from dates
                 delivery_status="Delivered" if _parse_date_from_excel(_get_cell("pod_date")) else "Pending",
                 pgi_status="Completed" if _parse_date_from_excel(_get_cell("good_issue_date")) else "Pending",
                 pod_status="Completed" if _parse_date_from_excel(_get_cell("pod_date")) else "Pending",
@@ -197,17 +259,21 @@ def import_delivery_excel(
                 source_file=source_filename,
                 upload_batch_id=upload_batch_id
             )
+
             records_to_insert.append(report)
             metrics["rows_valid"] += 1
 
         except Exception as e:
-            logger.warning(f"Row {row_idx} failed: {e}")
+            logger.warning(f"Row {row_idx} failed validation: {e}")
             errors.append({"row": row_idx, "error": str(e)})
             metrics["rows_failed"] += 1
 
-    # ------- STEP 4: BULK INSERT -------
+    # ----------------------------------------------------------
+    # STEP 4: BULK INSERT IN BATCHES OF 1000
+    # ----------------------------------------------------------
     if records_to_insert:
         try:
+            # Convert SQLAlchemy objects to dictionaries for bulk_insert_mappings
             records_dict = [
                 {
                     "order_type": r.order_type,
@@ -238,24 +304,34 @@ def import_delivery_excel(
                     "pending_flag": r.pending_flag,
                     "source_file": r.source_file,
                     "upload_batch_id": r.upload_batch_id
-                } for r in records_to_insert
+                }
+                for r in records_to_insert
             ]
 
+            total_inserted = 0
             for i in range(0, len(records_dict), batch_size):
                 batch = records_dict[i:i + batch_size]
                 db.bulk_insert_mappings(DeliveryReport, batch)
                 db.flush()
-                logger.info(f"Inserted batch of {len(batch)} records.")
+                total_inserted += len(batch)
+                logger.info(f"Inserted batch of {len(batch)} records. Total so far: {total_inserted}")
 
             metrics["rows_upserted"] = len(records_to_insert)
-            logger.info(f"✅ Inserted {metrics['rows_upserted']} records into delivery_reports.")
+            logger.info(f"✅ Successfully inserted {metrics['rows_upserted']} records into delivery_reports.")
 
         except Exception as e:
             logger.exception("Bulk insert failed")
             db.rollback()
             raise ExcelImportServiceError(f"Database insert failed: {str(e)}")
     else:
-        logger.info("No valid records to insert.")
+        logger.info("No valid records found to insert.")
 
+    # ----------------------------------------------------------
+    # STEP 5: RETURN METRICS
+    # ----------------------------------------------------------
     metrics["errors"] = [f"Row {err['row']}: {err['error']}" for err in errors]
+    logger.info(f"Import completed for batch {upload_batch_id}. "
+                f"Read: {metrics['rows_read']}, "
+                f"Inserted: {metrics['rows_upserted']}, "
+                f"Failed: {metrics['rows_failed']}")
     return metrics
