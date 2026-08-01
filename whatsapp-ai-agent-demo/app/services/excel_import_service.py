@@ -1,9 +1,6 @@
 # ==========================================================
 # FILE: app/services/excel_import_service.py (v10.0 - ATOMIC STAGING)
 # ==========================================================
-# PURPOSE: Finishes existing data first. Validates new file into a staging
-#          table, performs an atomic swap, and backs up the old data.
-# ==========================================================
 
 import logging
 import os
@@ -18,7 +15,6 @@ import pandas as pd
 from sqlalchemy.orm import Session
 from sqlalchemy import text, Column, Integer, String, DateTime, Float, Text
 
-# CORRECT FIX: Import the main app Base from database.py instead of creating a new one
 from app.database import Base
 from app.models import DeliveryReport
 
@@ -38,7 +34,7 @@ class ImportConfig:
     CHUNK_SIZE = int(os.getenv("IMPORT_CHUNK_SIZE", "0"))
 
 # ==========================================================
-# IMPORT HISTORY MODEL (Uses the shared app.database Base)
+# IMPORT HISTORY MODEL
 # ==========================================================
 
 class ImportHistory(Base):
@@ -60,7 +56,6 @@ class ImportHistory(Base):
 
 def ensure_import_history_table(db: Session):
     try:
-        # Use raw SQL to avoid ORM conflicts
         db.execute(
             text("""
             CREATE TABLE IF NOT EXISTS import_history (
@@ -320,18 +315,16 @@ class ExcelImportEngine:
 
         staging_table = f"delivery_reports_staging_{self.upload_batch_id}"
         try:
-            # Create staging table with same structure as live table
             self.db.execute(text(f"CREATE TABLE {staging_table} (LIKE delivery_reports INCLUDING DEFAULTS)"))
             
             batch_size, total_inserted = ImportConfig.BATCH_SIZE, 0
             for i in range(0, len(self.records), batch_size):
                 batch = self.records[i:i+batch_size]
-                self.db.bulk_insert_mappings(DeliveryReport, batch, render_nulls=True) # render_nulls ensures None maps to NULL
+                self.db.bulk_insert_mappings(DeliveryReport, batch, render_nulls=True)
                 self.db.flush()
                 total_inserted += len(batch)
                 self._progress(f"Staged {total_inserted} records...", 80 + int((i+batch_size)/len(self.records)*15))
             
-            # Verify staging table count
             count = self.db.execute(text(f"SELECT COUNT(*) FROM {staging_table}")).scalar()
             if count != total_inserted:
                 raise VerificationError("Staging table row count mismatch after insert.")
@@ -346,15 +339,10 @@ class ExcelImportEngine:
     def _swap_live_tables(self, staging_table: str):
         self._progress("Swapping staging table with live table...", 95)
         try:
-            # 1. Backup the existing live table (finishes existing data safely)
             backup_timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             backup_table = f"delivery_reports_backup_{backup_timestamp}_{self.upload_batch_id[:8]}"
             self.db.execute(text(f"ALTER TABLE delivery_reports RENAME TO {backup_table}"))
-            
-            # 2. Swap the staging table into the live table's place
             self.db.execute(text(f"ALTER TABLE {staging_table} RENAME TO delivery_reports"))
-            
-            # 3. Commit the swap
             self.db.commit()
             logger.info(f"✅ Atomic swap complete! Old data backed up to {backup_table}, new data is now live.")
             self.metrics["backup_table"] = backup_table
@@ -390,7 +378,6 @@ class ExcelImportEngine:
             self._check_duplicates()
             self._transform_data()
 
-            # ----------------- PREVIEW MODE -----------------
             if self.preview:
                 self._progress("Preview mode - skipping insert", 100)
                 return {
@@ -402,12 +389,7 @@ class ExcelImportEngine:
                     "execution_time_seconds": round(time.time() - start_time, 2)
                 }
 
-            # ----------------- STAGING INSERT -----------------
-            # Existing PostgreSQL data remains perfectly untouched during this process
-            self._progress("Inserting new data into isolated staging table...", 80)
             staging_table = self._insert_into_staging()
-
-            # ----------------- ATOMIC SWAP (Finish existing data, then swap) -----------------
             self._swap_live_tables(staging_table)
 
             self.metrics["rows_inserted"] = self.metrics["rows_valid"]
