@@ -5,22 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Haier Logistics · Premium Dashboard</title>
 
-    <!-- Bootstrap 5 + Icons + Chart.js + XLSX -->
+    <!-- Bootstrap 5 + Icons + Chart.js -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet" />
 
     <style>
         /* ─── RESET & BASE ─── */
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -29,7 +24,8 @@
             min-height: 100vh;
             display: flex;
             flex-direction: column;
-            background-image: radial-gradient(ellipse at 10% 20%, rgba(42, 111, 219, 0.04) 0%, transparent 60%),
+            background-image:
+                radial-gradient(ellipse at 10% 20%, rgba(42, 111, 219, 0.04) 0%, transparent 60%),
                 radial-gradient(ellipse at 90% 80%, rgba(42, 111, 219, 0.04) 0%, transparent 60%);
         }
 
@@ -53,7 +49,6 @@
             transform: translateY(-4px);
             box-shadow: 0 20px 60px rgba(10, 40, 80, 0.10), 0 4px 16px rgba(10, 40, 80, 0.04);
         }
-
         .glass-card .card-header {
             background: transparent;
             border-bottom: 1px solid rgba(10, 40, 80, 0.05);
@@ -64,16 +59,16 @@
             padding: 1.1rem 1.4rem;
             display: flex;
             align-items: center;
+            justify-content: space-between;
             gap: 10px;
         }
-        .glass-card .card-header i {
-            color: #2a6fdb;
-            font-size: 1.1rem;
-            opacity: 0.8;
+        .glass-card .card-header .header-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
-        .glass-card .card-body {
-            padding: 1.2rem 1.4rem;
-        }
+        .glass-card .card-header i { color: #2a6fdb; font-size: 1.1rem; opacity: 0.8; }
+        .glass-card .card-body { padding: 1.2rem 1.4rem; }
 
         /* ─── HEADER ─── */
         .dashboard-header {
@@ -93,10 +88,8 @@
         .dashboard-header::after {
             content: '';
             position: absolute;
-            top: -40%;
-            right: -10%;
-            width: 300px;
-            height: 300px;
+            top: -40%; right: -10%;
+            width: 300px; height: 300px;
             background: radial-gradient(circle, rgba(255, 255, 255, 0.04) 0%, transparent 70%);
             border-radius: 50%;
             pointer-events: none;
@@ -104,15 +97,12 @@
         .dashboard-header::before {
             content: '';
             position: absolute;
-            bottom: -50%;
-            left: 20%;
-            width: 400px;
-            height: 400px;
+            bottom: -50%; left: 20%;
+            width: 400px; height: 400px;
             background: radial-gradient(circle, rgba(42, 111, 219, 0.08) 0%, transparent 70%);
             border-radius: 50%;
             pointer-events: none;
         }
-
         .dashboard-header h1 {
             font-size: 1.6rem;
             font-weight: 800;
@@ -135,7 +125,6 @@
             -webkit-text-fill-color: transparent;
             background-clip: text;
         }
-
         .header-right {
             display: flex;
             align-items: center;
@@ -144,7 +133,6 @@
             position: relative;
             z-index: 1;
         }
-
         .header-right .datetime {
             font-size: 0.9rem;
             font-weight: 400;
@@ -158,10 +146,7 @@
             backdrop-filter: blur(4px);
             border: 1px solid rgba(255, 255, 255, 0.06);
         }
-        .header-right .datetime i {
-            opacity: 0.6;
-        }
-
+        .header-right .datetime i { opacity: 0.6; }
         .btn-refresh {
             background: rgba(255, 255, 255, 0.10);
             border: 1px solid rgba(255, 255, 255, 0.15);
@@ -182,13 +167,8 @@
             transform: scale(1.03);
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
         }
-        .btn-refresh:disabled {
-            opacity: 0.5;
-            pointer-events: none;
-        }
-        .btn-refresh i {
-            font-size: 0.9rem;
-        }
+        .btn-refresh:disabled { opacity: 0.5; pointer-events: none; }
+        .btn-refresh i { font-size: 0.9rem; }
 
         /* ─── UPLOAD CARD ─── */
         .upload-area {
@@ -207,10 +187,7 @@
             flex: 1;
             min-width: 140px;
         }
-        .upload-area .file-info i {
-            margin-right: 8px;
-            color: #2a6fdb;
-        }
+        .upload-area .file-info i { margin-right: 8px; color: #2a6fdb; }
         .upload-area .btn-upload {
             border-radius: 100px;
             font-weight: 500;
@@ -228,10 +205,7 @@
             transform: scale(1.02);
             box-shadow: 0 4px 16px rgba(42,111,219,0.25);
         }
-        .upload-area .btn-upload.primary:disabled {
-            opacity: 0.5;
-            pointer-events: none;
-        }
+        .upload-area .btn-upload.primary:disabled { opacity: 0.5; pointer-events: none; }
         .upload-area .btn-upload.outline {
             background: transparent;
             border: 1px solid rgba(10,40,80,0.12);
@@ -250,10 +224,10 @@
             flex-wrap: wrap;
         }
         .upload-status .spinner-border-sm {
-            width: 1.2rem;
-            height: 1.2rem;
-            border-width: 0.15rem;
+            width: 1.2rem; height: 1.2rem; border-width: 0.15rem;
         }
+        .upload-status .text-success { color: #27ae60 !important; }
+        .upload-status .text-danger { color: #e74c3c !important; }
 
         /* ─── KPI CARDS ─── */
         .kpi-card {
@@ -275,9 +249,7 @@
         .kpi-card::before {
             content: '';
             position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
+            top: 0; left: 0; right: 0;
             height: 3px;
             background: linear-gradient(90deg, #2a6fdb, #7bb3ff);
             border-radius: 20px 20px 0 0;
@@ -288,7 +260,6 @@
             box-shadow: 0 16px 48px rgba(10, 40, 80, 0.10);
             border-color: rgba(42, 111, 219, 0.15);
         }
-
         .kpi-card .kpi-label {
             font-size: 0.7rem;
             text-transform: uppercase;
@@ -297,7 +268,6 @@
             font-weight: 600;
             margin-bottom: 0.4rem;
         }
-
         .kpi-card .kpi-value {
             font-size: 1.8rem;
             font-weight: 800;
@@ -305,19 +275,14 @@
             line-height: 1.15;
             letter-spacing: -0.02em;
         }
-
         .kpi-card .kpi-icon {
             font-size: 1.8rem;
             color: #2a6fdb;
             opacity: 0.12;
             transition: opacity 0.3s ease;
         }
-        .kpi-card:hover .kpi-icon {
-            opacity: 0.25;
-        }
-        .kpi-card .kpi-icon i {
-            font-size: 2.2rem;
-        }
+        .kpi-card:hover .kpi-icon { opacity: 0.25; }
+        .kpi-card .kpi-icon i { font-size: 2.2rem; }
 
         .kpi-card.green::before { background: linear-gradient(90deg, #27ae60, #2ecc71); }
         .kpi-card.green .kpi-icon { color: #27ae60; }
@@ -335,9 +300,35 @@
         .kpi-card.amber .kpi-icon { color: #f39c12; }
 
         /* ─── CHART CONTAINERS ─── */
-        .chart-container { position: relative; height: 210px; width: 100%; }
-        .chart-container.pie-chart { height: 190px; }
-        .chart-container.line-chart { height: 190px; }
+        .chart-container {
+            position: relative;
+            height: 240px;
+            width: 100%;
+        }
+        .chart-container.pie-chart { height: 220px; }
+        .chart-container.line-chart { height: 220px; }
+
+        .btn-download-chart {
+            background: rgba(42, 111, 219, 0.08);
+            border: 1px solid rgba(42, 111, 219, 0.15);
+            color: #2a6fdb;
+            border-radius: 100px;
+            padding: 0.25rem 0.85rem;
+            font-size: 0.72rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            cursor: pointer;
+        }
+        .btn-download-chart:hover {
+            background: #2a6fdb;
+            color: #fff;
+            border-color: #2a6fdb;
+            box-shadow: 0 4px 12px rgba(42, 111, 219, 0.25);
+        }
+        .btn-download-chart i { font-size: 0.75rem; }
 
         /* ─── TABLE ─── */
         .table-wrap {
@@ -349,19 +340,12 @@
             border: 1px solid rgba(255, 255, 255, 0.5);
             box-shadow: 0 8px 40px rgba(10, 40, 80, 0.05);
         }
-
         .table-scroll {
             max-height: 520px;
             overflow-y: auto;
             overflow-x: auto;
         }
-
-        .table-scroll thead {
-            position: sticky;
-            top: 0;
-            z-index: 10;
-        }
-
+        .table-scroll thead { position: sticky; top: 0; z-index: 10; }
         .table-scroll thead th {
             background: #f8fbff;
             color: #1a365d;
@@ -377,9 +361,13 @@
             transition: background 0.15s;
         }
         .table-scroll thead th:hover { background: #eef4fc; }
-        .table-scroll thead th i { margin-left: 6px; font-size: 0.65rem; opacity: 0.4; transition: opacity 0.2s; }
+        .table-scroll thead th i {
+            margin-left: 6px;
+            font-size: 0.65rem;
+            opacity: 0.4;
+            transition: opacity 0.2s;
+        }
         .table-scroll thead th:hover i { opacity: 0.8; }
-
         .table-scroll tbody td {
             padding: 0.7rem 0.9rem;
             font-size: 0.85rem;
@@ -388,7 +376,6 @@
             border-bottom: 1px solid rgba(10, 40, 80, 0.04);
             background: transparent;
         }
-
         .table-scroll tbody tr { transition: background 0.15s; }
         .table-scroll tbody tr:hover { background: rgba(42, 111, 219, 0.03); }
         .table-scroll tbody tr:last-child td { border-bottom: none; }
@@ -405,7 +392,6 @@
             justify-content: space-between;
             gap: 12px;
         }
-
         .table-controls .search-box {
             position: relative;
             flex: 1 1 220px;
@@ -436,7 +422,6 @@
             color: #8a9bb0;
             font-size: 0.95rem;
         }
-
         .table-controls .btn-group-actions .btn {
             border-radius: 100px;
             font-size: 0.8rem;
@@ -463,7 +448,11 @@
             color: #1a365d;
             flex-wrap: wrap;
         }
-        .pagination-controls .page-info { font-weight: 600; margin: 0 6px; font-size: 0.8rem; }
+        .pagination-controls .page-info {
+            font-weight: 600;
+            margin: 0 6px;
+            font-size: 0.8rem;
+        }
         .pagination-controls .btn-page {
             border: 1px solid rgba(10, 40, 80, 0.06);
             background: rgba(255, 255, 255, 0.6);
@@ -483,7 +472,7 @@
         }
         .pagination-controls .btn-page:disabled { opacity: 0.3; cursor: not-allowed; }
 
-        /* ─── 0-100% LOADING OVERLAY ─── */
+        /* ─── LOADING ─── */
         #loadingOverlay {
             position: fixed;
             inset: 0;
@@ -497,36 +486,38 @@
             flex-direction: column;
         }
         #loadingOverlay.show { display: flex; }
-        #loadingOverlay .loader-container {
-            display: flex; flex-direction: column; align-items: center;
-        }
-        #loadingOverlay .progress-ring {
-            width: 100px; height: 100px; border-radius: 50%;
-            background: conic-gradient(#2a6fdb 0%, #eef4fc 0%);
-            display: flex; align-items: center; justify-content: center;
-            position: relative; margin-bottom: 20px;
-            transition: background 0.15s ease-out;
-        }
-        #loadingOverlay .progress-ring::before {
-            content: ''; position: absolute; width: 80px; height: 80px;
-            background: #ffffff; border-radius: 50%; box-shadow: 0 8px 32px rgba(0,0,0,0.04);
-        }
-        #loadingOverlay #progressPercent {
-            position: relative; z-index: 10; font-weight: 700; font-size: 1.4rem; color: #1a365d;
+        #loadingOverlay .spinner {
+            width: 56px; height: 56px;
+            border: 4px solid rgba(42, 111, 219, 0.10);
+            border-top-color: #2a6fdb;
+            border-radius: 50%;
+            animation: spin 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
         }
         #loadingOverlay .load-text {
-            font-weight: 500; color: #1a365d; letter-spacing: 0.03em; font-size: 0.95rem; opacity: 0.7;
+            margin-top: 1.2rem;
+            font-weight: 500;
+            color: #1a365d;
+            letter-spacing: 0.03em;
+            font-size: 0.95rem;
         }
+        @keyframes spin { to { transform: rotate(360deg); } }
 
         /* ─── ERROR TOAST ─── */
         #errorToast {
-            position: fixed; bottom: 30px; right: 30px; z-index: 9998;
+            position: fixed;
+            bottom: 30px; right: 30px;
+            z-index: 9998;
             min-width: 320px; max-width: 440px;
-            background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(16px) saturate(180%);
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(16px) saturate(180%);
             -webkit-backdrop-filter: blur(16px) saturate(180%);
-            border-left: 5px solid #e74c3c; border-radius: 18px;
+            border-left: 5px solid #e74c3c;
+            border-radius: 18px;
             box-shadow: 0 24px 64px rgba(0, 0, 0, 0.12);
-            padding: 1rem 1.4rem; display: none; align-items: center; gap: 14px;
+            padding: 1rem 1.4rem;
+            display: none;
+            align-items: center;
+            gap: 14px;
             animation: slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
         }
         #errorToast.show { display: flex; }
@@ -536,85 +527,222 @@
         }
         #errorToast .toast-icon { color: #e74c3c; font-size: 1.6rem; }
         #errorToast .toast-msg { flex: 1; font-weight: 500; color: #1a1f2e; font-size: 0.9rem; }
-        #errorToast .toast-close { background: none; border: none; font-size: 1.4rem; color: #8a9bb0; cursor: pointer; padding: 0 4px; transition: color 0.2s; line-height: 1; }
+        #errorToast .toast-close {
+            background: none; border: none;
+            font-size: 1.4rem; color: #8a9bb0;
+            cursor: pointer; padding: 0 4px;
+            transition: color 0.2s; line-height: 1;
+        }
         #errorToast .toast-close:hover { color: #1a1f2e; }
+
+        /* ─── UPLOAD TOAST ─── */
+        #uploadToast {
+            position: fixed;
+            bottom: 30px; right: 30px;
+            z-index: 9998;
+            min-width: 320px; max-width: 440px;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(16px) saturate(180%);
+            -webkit-backdrop-filter: blur(16px) saturate(180%);
+            border-left: 5px solid #27ae60;
+            border-radius: 18px;
+            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.12);
+            padding: 1rem 1.4rem;
+            display: none;
+            align-items: center;
+            gap: 14px;
+            animation: slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        #uploadToast.show { display: flex; }
+        #uploadToast .toast-icon { color: #27ae60; font-size: 1.6rem; }
+        #uploadToast .toast-msg { flex: 1; font-weight: 500; color: #1a1f2e; font-size: 0.9rem; }
+        #uploadToast .toast-close {
+            background: none; border: none;
+            font-size: 1.4rem; color: #8a9bb0;
+            cursor: pointer; padding: 0 4px;
+            transition: color 0.2s; line-height: 1;
+        }
+        #uploadToast .toast-close:hover { color: #1a1f2e; }
 
         /* ─── FOOTER ─── */
         .dashboard-footer {
-            margin-top: 2rem; padding: 1rem 1.8rem;
-            background: rgba(255, 255, 255, 0.6); backdrop-filter: blur(12px) saturate(180%);
+            margin-top: 2rem;
+            padding: 1rem 1.8rem;
+            background: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(12px) saturate(180%);
             -webkit-backdrop-filter: blur(12px) saturate(180%);
-            border-radius: 24px; border: 1px solid rgba(255, 255, 255, 0.4);
+            border-radius: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.4);
             box-shadow: 0 4px 20px rgba(10, 40, 80, 0.03);
-            display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
-            font-size: 0.82rem; color: #5e6f8d;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.82rem;
+            color: #5e6f8d;
         }
-        .dashboard-footer .status { display: flex; align-items: center; gap: 10px; }
-        .dashboard-footer .status .dot { width: 10px; height: 10px; border-radius: 50%; background: #2ecc71; display: inline-block; animation: pulse-dot 2s ease-in-out infinite; box-shadow: 0 0 12px rgba(46, 204, 113, 0.25); }
-        .dashboard-footer .status .dot.error { background: #e74c3c; box-shadow: 0 0 12px rgba(231, 76, 60, 0.25); }
-        @keyframes pulse-dot { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.8); } }
-        .dashboard-footer .footer-right { display: flex; align-items: center; gap: 16px; }
-        .badge-soft { background: rgba(42, 111, 219, 0.08); color: #2a6fdb; font-weight: 500; padding: 0.35rem 0.9rem; border-radius: 100px; font-size: 0.75rem; border: 1px solid rgba(42, 111, 219, 0.06); }
+        .dashboard-footer .status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .dashboard-footer .status .dot {
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            background: #2ecc71;
+            display: inline-block;
+            animation: pulse-dot 2s ease-in-out infinite;
+            box-shadow: 0 0 12px rgba(46, 204, 113, 0.25);
+        }
+        .dashboard-footer .status .dot.error {
+            background: #e74c3c;
+            box-shadow: 0 0 12px rgba(231, 76, 60, 0.25);
+        }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(0.8); }
+        }
+        .dashboard-footer .footer-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
 
+        .badge-soft {
+            background: rgba(42, 111, 219, 0.08);
+            color: #2a6fdb;
+            font-weight: 500;
+            padding: 0.35rem 0.9rem;
+            border-radius: 100px;
+            font-size: 0.75rem;
+            border: 1px solid rgba(42, 111, 219, 0.06);
+        }
+
+        /* ─── RESPONSIVE ─── */
         @media (max-width: 768px) {
             body { padding: 14px; }
-            .dashboard-header { padding: 1rem 1.2rem; flex-direction: column; align-items: stretch; gap: 12px; border-radius: 20px; }
-            .dashboard-header h1 { font-size: 1.2rem; } .dashboard-header h1 i { font-size: 1.4rem; }
+            .dashboard-header {
+                padding: 1rem 1.2rem;
+                flex-direction: column;
+                align-items: stretch;
+                gap: 12px;
+                border-radius: 20px;
+            }
+            .dashboard-header h1 { font-size: 1.2rem; }
+            .dashboard-header h1 i { font-size: 1.4rem; }
             .header-right { justify-content: space-between; gap: 10px; }
-            .header-right .datetime { font-size: 0.75rem; padding: 0.3rem 1rem; gap: 8px; flex-wrap: wrap; }
+            .header-right .datetime {
+                font-size: 0.75rem;
+                padding: 0.3rem 1rem;
+                gap: 8px;
+                flex-wrap: wrap;
+            }
             .btn-refresh { padding: 0.4rem 1rem; font-size: 0.75rem; }
             .upload-area { flex-direction: column; align-items: stretch; }
             .upload-area .file-info { width: 100%; }
             .kpi-card .kpi-value { font-size: 1.3rem; }
-            .kpi-card .kpi-label { font-size: 0.6rem; } .kpi-card { padding: 1rem 0.9rem; }
-            .table-controls { flex-direction: column; align-items: stretch; padding: 0.8rem 1rem; }
+            .kpi-card .kpi-label { font-size: 0.6rem; }
+            .kpi-card { padding: 1rem 0.9rem; }
+            .table-controls {
+                flex-direction: column;
+                align-items: stretch;
+                padding: 0.8rem 1rem;
+            }
             .table-controls .search-box { flex: 1 1 auto; }
             .pagination-controls { justify-content: center; margin-top: 4px; }
-            #errorToast { left: 16px; right: 16px; min-width: unset; max-width: unset; bottom: 16px; }
-            .chart-container { height: 170px; }
-            .chart-container.pie-chart { height: 160px; }
-            .chart-container.line-chart { height: 160px; }
+            #errorToast, #uploadToast {
+                left: 16px; right: 16px;
+                min-width: unset; max-width: unset;
+                bottom: 16px;
+            }
+            .chart-container { height: 190px; }
+            .chart-container.pie-chart { height: 180px; }
+            .chart-container.line-chart { height: 180px; }
             .glass-card .card-body { padding: 0.8rem 1rem; }
             .glass-card .card-header { padding: 0.8rem 1rem; font-size: 0.75rem; }
-            .dashboard-footer { flex-direction: column; gap: 8px; text-align: center; padding: 0.8rem 1.2rem; }
+            .dashboard-footer {
+                flex-direction: column;
+                gap: 8px;
+                text-align: center;
+                padding: 0.8rem 1.2rem;
+            }
             .dashboard-footer .footer-right { flex-wrap: wrap; justify-content: center; }
         }
+
         @media (max-width: 480px) {
             .dashboard-header h1 { font-size: 1rem; }
             .header-right .datetime { font-size: 0.65rem; }
             .btn-refresh { padding: 0.3rem 0.8rem; font-size: 0.7rem; }
-            .kpi-card .kpi-value { font-size: 1.1rem; } .kpi-card { padding: 0.8rem 0.7rem; }
+            .kpi-card .kpi-value { font-size: 1.1rem; }
+            .kpi-card { padding: 0.8rem 0.7rem; }
             .table-scroll thead th { font-size: 0.6rem; padding: 0.6rem 0.5rem; }
             .table-scroll tbody td { font-size: 0.75rem; padding: 0.5rem 0.5rem; }
         }
+
+        /* ─── PRINT ─── */
         @media print {
             body { background: #fff !important; padding: 0.3in !important; }
-            .dashboard-header { background: #0b2a4a !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; border-radius: 16px !important; }
-            .kpi-card { background: #f8faff !important; border: 1px solid #e2eaf5 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .dashboard-header {
+                background: #0b2a4a !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+                border-radius: 16px !important;
+            }
+            .kpi-card {
+                background: #f8faff !important;
+                border: 1px solid #e2eaf5 !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
             .kpi-card::before { display: none !important; }
-            .glass-card { background: #fff !important; backdrop-filter: none !important; border: 1px solid #e2eaf5 !important; box-shadow: none !important; }
-            .table-wrap { background: #fff !important; backdrop-filter: none !important; border: 1px solid #e2eaf5 !important; box-shadow: none !important; }
-            .table-scroll thead th { background: #f0f4f9 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .btn-refresh, .table-controls .btn-group-actions .btn, .pagination-controls .btn-page, .no-print { display: none !important; }
+            .glass-card {
+                background: #fff !important;
+                backdrop-filter: none !important;
+                border: 1px solid #e2eaf5 !important;
+                box-shadow: none !important;
+            }
+            .table-wrap {
+                background: #fff !important;
+                backdrop-filter: none !important;
+                border: 1px solid #e2eaf5 !important;
+                box-shadow: none !important;
+            }
+            .table-scroll thead th {
+                background: #f0f4f9 !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            .btn-refresh,
+            .table-controls .btn-group-actions .btn,
+            .pagination-controls .btn-page,
+            .no-print,
+            .upload-area .btn-upload,
+            .upload-status,
+            .btn-download-chart {
+                display: none !important;
+            }
             .table-scroll { max-height: none !important; overflow: visible !important; }
             .table-scroll thead { position: static !important; }
-            #loadingOverlay, #errorToast { display: none !important; }
-            .dashboard-footer { background: #f8faff !important; border: 1px solid #e2eaf5 !important; box-shadow: none !important; backdrop-filter: none !important; }
-            .chart-container { height: 180px !important; }
+            #loadingOverlay { display: none !important; }
+            #errorToast, #uploadToast { display: none !important; }
+            .dashboard-footer {
+                background: #f8faff !important;
+                border: 1px solid #e2eaf5 !important;
+                box-shadow: none !important;
+                backdrop-filter: none !important;
+            }
+            .chart-container { height: 200px !important; }
             .kpi-card:hover, .glass-card:hover { transform: none !important; }
+            .dashboard-header::after, .dashboard-header::before { display: none !important; }
         }
     </style>
 </head>
 <body>
 
-    <!-- ─── 0-100% LOADING OVERLAY ─── -->
+    <!-- ─── LOADING ─── -->
     <div id="loadingOverlay">
-        <div class="loader-container">
-            <div class="progress-ring" id="progressRing">
-                <span id="progressPercent">0%</span>
-            </div>
-            <div class="load-text"><i class="fas fa-spinner fa-fw me-2 fa-spin"></i> Uploading and parsing file...</div>
-        </div>
+        <div class="spinner"></div>
+        <div class="load-text"><i class="fas fa-sync-alt fa-fw me-2" style="opacity:0.5;"></i>Loading dashboard…</div>
     </div>
 
     <!-- ─── ERROR TOAST ─── -->
@@ -622,6 +750,13 @@
         <span class="toast-icon"><i class="fas fa-circle-exclamation"></i></span>
         <span class="toast-msg" id="errorMsg">Unable to fetch data.</span>
         <button class="toast-close" id="toastClose">&times;</button>
+    </div>
+
+    <!-- ─── UPLOAD TOAST ─── -->
+    <div id="uploadToast">
+        <span class="toast-icon"><i class="fas fa-check-circle"></i></span>
+        <span class="toast-msg" id="uploadMsg">Upload successful.</span>
+        <button class="toast-close" id="uploadToastClose">&times;</button>
     </div>
 
     <!-- ─── MAIN ─── -->
@@ -646,29 +781,6 @@
             </div>
         </header>
 
-        <!-- ═══ UPLOAD CARD ═══ -->
-        <section class="row g-3 mb-4">
-            <div class="col-12">
-                <div class="glass-card">
-                    <div class="card-header"><i class="fas fa-upload"></i>Import Excel Data</div>
-                    <div class="card-body">
-                        <div class="upload-area">
-                            <input type="file" id="fileInput" accept=".xlsx,.xls" style="display:none;" />
-                            <button class="btn-upload outline" id="chooseFileBtn"><i class="fas fa-folder-open"></i> Choose File</button>
-                            <span class="file-info" id="fileInfo"><i class="fas fa-file-excel"></i> No file selected</span>
-                            <button class="btn-upload primary" id="uploadBtn" disabled><i class="fas fa-cloud-upload-alt"></i> Upload</button>
-                            <span class="badge-soft" style="font-size:0.7rem;">Supports .xlsx, .xls</span>
-                        </div>
-                        <!-- Kept original upload-status container -->
-                        <div class="upload-status" id="uploadStatus" style="display:none;">
-                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                            <span id="uploadStatusText">Uploading…</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
         <!-- ═══ KPI ROW ═══ -->
         <section class="row g-3 mb-4" id="kpiRow">
             <!-- injected by JS -->
@@ -678,7 +790,12 @@
         <section class="row g-3 mb-4">
             <div class="col-12 col-md-6">
                 <div class="glass-card chart-card">
-                    <div class="card-header"><i class="fas fa-chart-bar"></i>Total Units by Warehouse</div>
+                    <div class="card-header">
+                        <div class="header-left"><i class="fas fa-chart-bar"></i>Total Units by Warehouse</div>
+                        <button class="btn-download-chart no-print" data-chart="chartUnits" title="Download chart">
+                            <i class="fas fa-download"></i> PNG
+                        </button>
+                    </div>
                     <div class="card-body">
                         <div class="chart-container"><canvas id="chartUnits"></canvas></div>
                     </div>
@@ -686,7 +803,12 @@
             </div>
             <div class="col-12 col-md-6">
                 <div class="glass-card chart-card">
-                    <div class="card-header"><i class="fas fa-chart-bar"></i>Total DN by Warehouse</div>
+                    <div class="card-header">
+                        <div class="header-left"><i class="fas fa-chart-bar"></i>Total DN by Warehouse</div>
+                        <button class="btn-download-chart no-print" data-chart="chartDn" title="Download chart">
+                            <i class="fas fa-download"></i> PNG
+                        </button>
+                    </div>
                     <div class="card-body">
                         <div class="chart-container"><canvas id="chartDn"></canvas></div>
                     </div>
@@ -695,7 +817,12 @@
 
             <div class="col-12 col-md-6">
                 <div class="glass-card chart-card">
-                    <div class="card-header"><i class="fas fa-chart-pie"></i>Pending POD Qty</div>
+                    <div class="card-header">
+                        <div class="header-left"><i class="fas fa-chart-pie"></i>Pending POD Qty</div>
+                        <button class="btn-download-chart no-print" data-chart="chartPiePod" title="Download chart">
+                            <i class="fas fa-download"></i> PNG
+                        </button>
+                    </div>
                     <div class="card-body">
                         <div class="chart-container pie-chart"><canvas id="chartPiePod"></canvas></div>
                     </div>
@@ -703,7 +830,12 @@
             </div>
             <div class="col-12 col-md-6">
                 <div class="glass-card chart-card">
-                    <div class="card-header"><i class="fas fa-chart-pie"></i>Pending PGI Qty</div>
+                    <div class="card-header">
+                        <div class="header-left"><i class="fas fa-chart-pie"></i>Pending PGI Qty</div>
+                        <button class="btn-download-chart no-print" data-chart="chartPiePgi" title="Download chart">
+                            <i class="fas fa-download"></i> PNG
+                        </button>
+                    </div>
                     <div class="card-body">
                         <div class="chart-container pie-chart"><canvas id="chartPiePgi"></canvas></div>
                     </div>
@@ -712,7 +844,12 @@
 
             <div class="col-12 col-md-6">
                 <div class="glass-card chart-card">
-                    <div class="card-header"><i class="fas fa-chart-line"></i>Average Delivery Days</div>
+                    <div class="card-header">
+                        <div class="header-left"><i class="fas fa-chart-line"></i>Average Delivery Days</div>
+                        <button class="btn-download-chart no-print" data-chart="chartDeliveryDays" title="Download chart">
+                            <i class="fas fa-download"></i> PNG
+                        </button>
+                    </div>
                     <div class="card-body">
                         <div class="chart-container line-chart"><canvas id="chartDeliveryDays"></canvas></div>
                     </div>
@@ -720,7 +857,12 @@
             </div>
             <div class="col-12 col-md-6">
                 <div class="glass-card chart-card">
-                    <div class="card-header"><i class="fas fa-chart-line"></i>Average POD Days</div>
+                    <div class="card-header">
+                        <div class="header-left"><i class="fas fa-chart-line"></i>Average POD Days</div>
+                        <button class="btn-download-chart no-print" data-chart="chartPodDays" title="Download chart">
+                            <i class="fas fa-download"></i> PNG
+                        </button>
+                    </div>
                     <div class="card-body">
                         <div class="chart-container line-chart"><canvas id="chartPodDays"></canvas></div>
                     </div>
@@ -729,7 +871,7 @@
         </section>
 
         <!-- ═══ TABLE ═══ -->
-        <section class="mb-3">
+        <section class="mb-4">
             <div class="glass-card" style="padding:0;">
                 <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2" style="border-bottom:1px solid rgba(10,40,80,0.04);">
                     <span><i class="fas fa-warehouse"></i>Warehouse Performance</span>
@@ -738,7 +880,6 @@
                 <div class="card-body p-0">
                     <div class="table-wrap" style="border-radius:0 0 24px 24px;">
 
-                        <!-- controls -->
                         <div class="table-controls no-print">
                             <div class="search-box">
                                 <i class="fas fa-search"></i>
@@ -752,7 +893,6 @@
                             </div>
                         </div>
 
-                        <!-- table -->
                         <div class="table-scroll" id="tableScroll">
                             <table class="table table-hover mb-0" id="warehouseTable">
                                 <thead>
@@ -771,12 +911,10 @@
                                         <th data-sort="avg_pending_pod_days" class="text-end">POD Days <i class="fas fa-sort"></i></th>
                                     </tr>
                                 </thead>
-                                <tbody id="tableBody">
-                                </tbody>
+                                <tbody id="tableBody"></tbody>
                             </table>
                         </div>
 
-                        <!-- pagination -->
                         <div class="table-controls no-print" style="border-top:1px solid rgba(10,40,80,0.04); border-bottom:none;">
                             <div class="pagination-controls" id="paginationControls">
                                 <button class="btn-page" id="prevPage" disabled><i class="fas fa-chevron-left"></i></button>
@@ -784,6 +922,34 @@
                                 <button class="btn-page" id="nextPage" disabled><i class="fas fa-chevron-right"></i></button>
                                 <span class="ms-2 text-secondary" style="font-size:0.75rem; opacity:0.6;" id="rowCountInfo">0 rows</span>
                             </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══ UPLOAD CARD (AT THE END) ═══ -->
+        <section class="row g-3 mb-4">
+            <div class="col-12">
+                <div class="glass-card">
+                    <div class="card-header">
+                        <div class="header-left"><i class="fas fa-upload"></i>Import Excel Data</div>
+                    </div>
+                    <div class="card-body">
+                        <div class="upload-area">
+                            <input type="file" id="fileInput" accept=".xlsx,.xls" style="display:none;" />
+                            <button class="btn-upload outline" id="chooseFileBtn">
+                                <i class="fas fa-folder-open"></i> Choose File
+                            </button>
+                            <span class="file-info" id="fileInfo"><i class="fas fa-file-excel"></i> No file selected</span>
+                            <button class="btn-upload primary" id="uploadBtn" disabled>
+                                <i class="fas fa-cloud-upload-alt"></i> Upload
+                            </button>
+                            <span class="badge-soft" style="font-size:0.7rem;">Supports .xlsx, .xls</span>
+                        </div>
+                        <div class="upload-status" id="uploadStatus" style="display:none;">
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                            <span id="uploadStatusText">Uploading…</span>
                         </div>
                     </div>
                 </div>
@@ -804,9 +970,8 @@
         </footer>
     </div>
 
-    <!-- ─── JAVASCRIPT ─── -->
     <script>
-        (function() {
+        (function () {
             'use strict';
 
             // ─── CONFIG ───
@@ -822,7 +987,6 @@
             let sortAsc = true;
             let searchTerm = '';
             let isRefreshing = false;
-            let selectedFile = null;
 
             // chart instances
             let chartUnits = null;
@@ -837,8 +1001,6 @@
             const $$ = (sel) => document.querySelectorAll(sel);
 
             const loadingOverlay = $('#loadingOverlay');
-            const progressRing = $('#progressRing');
-            const progressPercent = $('#progressPercent');
             const errorToast = $('#errorToast');
             const errorMsg = $('#errorMsg');
             const toastClose = $('#toastClose');
@@ -861,12 +1023,16 @@
             const printBtn = $('#printBtn');
             const tableScroll = $('#tableScroll');
 
+            // Upload elements
             const fileInput = $('#fileInput');
             const chooseFileBtn = $('#chooseFileBtn');
             const fileInfo = $('#fileInfo');
             const uploadBtn = $('#uploadBtn');
             const uploadStatus = $('#uploadStatus');
             const uploadStatusText = $('#uploadStatusText');
+            const uploadToast = $('#uploadToast');
+            const uploadMsg = $('#uploadMsg');
+            const uploadToastClose = $('#uploadToastClose');
 
             // ─── Helpers ───
             function fmt(n) {
@@ -885,13 +1051,6 @@
 
             function showLoading(show) {
                 loadingOverlay.classList.toggle('show', show);
-                if (show) setProgress(0);
-            }
-
-            function setProgress(percent) {
-                const p = Math.min(100, Math.max(0, percent));
-                progressRing.style.background = `conic-gradient(#2a6fdb ${p}%, #eef4fc ${p}%)`;
-                progressPercent.textContent = `${Math.round(p)}%`;
             }
 
             function showError(msg) {
@@ -903,6 +1062,14 @@
             }
 
             function hideError() { errorToast.classList.remove('show'); }
+
+            function showUploadToast(msg, isSuccess = true) {
+                uploadMsg.textContent = msg;
+                uploadToast.classList.add('show');
+                uploadToast.style.borderLeftColor = isSuccess ? '#27ae60' : '#e74c3c';
+                uploadToast.querySelector('.toast-icon i').className = isSuccess ? 'fas fa-check-circle' : 'fas fa-circle-exclamation';
+                setTimeout(() => { uploadToast.classList.remove('show'); }, 8000);
+            }
 
             function updateClock() {
                 const now = new Date();
@@ -933,57 +1100,18 @@
 
             // ─── KPI ───
             function renderKpi(summary) {
-                const items = [{
-                    label: 'Total DN Created',
-                    value: summary.total_dn_created || 0,
-                    icon: 'fa-file-invoice',
-                    cls: ''
-                }, {
-                    label: 'Total Units Created',
-                    value: summary.total_dn_quantity || 0,
-                    icon: 'fa-cubes',
-                    cls: 'green'
-                }, {
-                    label: 'Total Revenue',
-                    value: summary.total_revenue || 0,
-                    icon: 'fa-dollar-sign',
-                    cls: 'teal'
-                }, {
-                    label: 'Active Dealers',
-                    value: summary.active_dealers || 0,
-                    icon: 'fa-users',
-                    cls: 'indigo'
-                }, {
-                    label: 'Active Warehouses',
-                    value: summary.active_warehouses || 0,
-                    icon: 'fa-warehouse',
-                    cls: 'purple'
-                }, {
-                    label: 'Cities Served',
-                    value: summary.cities_served || 0,
-                    icon: 'fa-city',
-                    cls: 'amber'
-                }, {
-                    label: 'Delivered DN',
-                    value: summary.delivered_dn || 0,
-                    icon: 'fa-truck',
-                    cls: 'green'
-                }, {
-                    label: 'Pending Delivery DN',
-                    value: summary.pending_delivery_dn || 0,
-                    icon: 'fa-clock',
-                    cls: 'orange'
-                }, {
-                    label: 'Pending POD DN',
-                    value: summary.pending_pod_dn || 0,
-                    icon: 'fa-file-signature',
-                    cls: 'rose'
-                }, {
-                    label: 'POD Completed DN',
-                    value: summary.pod_completed_dn || 0,
-                    icon: 'fa-check-double',
-                    cls: 'teal'
-                }];
+                const items = [
+                    { label: 'Total DN Created', value: summary.total_dn_created || 0, icon: 'fa-file-invoice', cls: '' },
+                    { label: 'Total Units Created', value: summary.total_dn_quantity || 0, icon: 'fa-cubes', cls: 'green' },
+                    { label: 'Total Revenue', value: summary.total_revenue || 0, icon: 'fa-dollar-sign', cls: 'teal' },
+                    { label: 'Active Dealers', value: summary.active_dealers || 0, icon: 'fa-users', cls: 'indigo' },
+                    { label: 'Active Warehouses', value: summary.active_warehouses || 0, icon: 'fa-warehouse', cls: 'purple' },
+                    { label: 'Cities Served', value: summary.cities_served || 0, icon: 'fa-city', cls: 'amber' },
+                    { label: 'Delivered DN', value: summary.delivered_dn || 0, icon: 'fa-truck', cls: 'green' },
+                    { label: 'Pending Delivery DN', value: summary.pending_delivery_dn || 0, icon: 'fa-clock', cls: 'orange' },
+                    { label: 'Pending POD DN', value: summary.pending_pod_dn || 0, icon: 'fa-file-signature', cls: 'rose' },
+                    { label: 'POD Completed DN', value: summary.pod_completed_dn || 0, icon: 'fa-check-double', cls: 'teal' }
+                ];
 
                 kpiRow.innerHTML = '';
                 items.forEach((item) => {
@@ -1073,7 +1201,163 @@
                 });
             }
 
-            // ─── Charts (Upgraded for beauty) ───
+            // ─── Professional Chart Palette & Options ───
+            const PROFESSIONAL_PALETTE = [
+                '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd',
+                '#0ea5e9', '#38bdf8', '#7dd3fc', '#bae6fd',
+                '#6366f1', '#818cf8', '#a5b4fc', '#c7d2fe'
+            ];
+
+            function createGradient(ctx, colorStart, colorEnd) {
+                const gradient = ctx.createLinearGradient(0, 0, 0, 280);
+                gradient.addColorStop(0, colorStart);
+                gradient.addColorStop(1, colorEnd);
+                return gradient;
+            }
+
+            function getProfessionalBarOptions() {
+                return {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: {
+                        duration: 900,
+                        easing: 'easeOutQuart'
+                    },
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: 'rgba(15, 23, 42, 0.92)',
+                            titleFont: { family: 'Inter', size: 12, weight: '600' },
+                            bodyFont: { family: 'Inter', size: 12 },
+                            padding: 12,
+                            cornerRadius: 10,
+                            displayColors: true,
+                            boxPadding: 4,
+                            borderColor: 'rgba(255,255,255,0.08)',
+                            borderWidth: 1
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            grid: {
+                                color: 'rgba(15, 23, 42, 0.04)',
+                                drawBorder: false
+                            },
+                            ticks: {
+                                font: { family: 'Inter', size: 11 },
+                                color: '#64748b',
+                                padding: 8
+                            },
+                            border: { display: false }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: {
+                                font: { family: 'Inter', size: 11 },
+                                color: '#64748b',
+                                maxRotation: 45,
+                                minRotation: 0
+                            },
+                            border: { display: false }
+                        }
+                    },
+                    layout: { padding: { top: 8, bottom: 4 } }
+                };
+            }
+
+            function getProfessionalPieOptions() {
+                return {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: {
+                        duration: 1000,
+                        easing: 'easeOutQuart'
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                boxWidth: 12,
+                                boxHeight: 12,
+                                padding: 14,
+                                font: { family: 'Inter', size: 11 },
+                                color: '#475569',
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: 'rgba(15, 23, 42, 0.92)',
+                            titleFont: { family: 'Inter', size: 12, weight: '600' },
+                            bodyFont: { family: 'Inter', size: 12 },
+                            padding: 12,
+                            cornerRadius: 10,
+                            displayColors: true,
+                            boxPadding: 4
+                        }
+                    },
+                    layout: { padding: 8 }
+                };
+            }
+
+            function getProfessionalLineOptions() {
+                return {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: {
+                        duration: 1000,
+                        easing: 'easeOutQuart'
+                    },
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: 'rgba(15, 23, 42, 0.92)',
+                            titleFont: { family: 'Inter', size: 12, weight: '600' },
+                            bodyFont: { family: 'Inter', size: 12 },
+                            padding: 12,
+                            cornerRadius: 10,
+                            displayColors: true,
+                            boxPadding: 4
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            grid: {
+                                color: 'rgba(15, 23, 42, 0.04)',
+                                drawBorder: false
+                            },
+                            ticks: {
+                                font: { family: 'Inter', size: 11 },
+                                color: '#64748b',
+                                padding: 8
+                            },
+                            border: { display: false }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: {
+                                font: { family: 'Inter', size: 11 },
+                                color: '#64748b',
+                                maxRotation: 45
+                            },
+                            border: { display: false }
+                        }
+                    },
+                    layout: { padding: { top: 8, bottom: 4 } }
+                };
+            }
+
+            // ─── Charts ───
             function destroyCharts() {
                 if (chartUnits) { chartUnits.destroy(); chartUnits = null; }
                 if (chartDn) { chartDn.destroy(); chartDn = null; }
@@ -1094,160 +1378,177 @@
                 const delDays = warehouses.map(w => parseFloat(w.avg_delivery_days) || 0);
                 const podDays = warehouses.map(w => parseFloat(w.avg_pod_days) || 0);
 
-                // Vibrant, high-contrast palette
-                const palette = [
-                    '#2563eb', '#7c3aed', '#0ea5e9', '#06b6d4', '#10b981', '#8b5cf6',
-                    '#3b82f6', '#14b8a6', '#6366f1', '#0d9488', '#4f46e5', '#0891b2'
-                ];
-
                 function bgColors(n) {
                     const c = [];
-                    for (let i = 0; i < n; i++) {
-                        c.push(palette[i % palette.length]);
-                    }
+                    for (let i = 0; i < n; i++) c.push(PROFESSIONAL_PALETTE[i % PROFESSIONAL_PALETTE.length]);
                     return c;
                 }
 
-                const commonOpts = {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { labels: { font: { family: 'Inter', size: 10 }, boxWidth: 12, padding: 8 } } },
-                    scales: {
-                        y: { beginAtZero: true, grid: { color: 'rgba(10,40,80,0.04)', drawBorder: false } },
-                        x: { grid: { display: false } }
-                    }
-                };
-
+                // Bar: Units
                 const ctxUnits = document.getElementById('chartUnits').getContext('2d');
                 chartUnits = new Chart(ctxUnits, {
                     type: 'bar',
                     data: {
-                        labels: labels,
+                        labels,
                         datasets: [{
                             label: 'Total Units',
                             data: units,
-                            backgroundColor: bgColors(units.length),
-                            borderRadius: 6,
+                            backgroundColor: bgColors(units.length).map(c => c + 'cc'),
+                            borderColor: bgColors(units.length),
+                            borderWidth: 1.5,
+                            borderRadius: 8,
                             borderSkipped: false,
-                            hoverBackgroundColor: '#2563eb',
+                            hoverBackgroundColor: PROFESSIONAL_PALETTE[0],
+                            maxBarThickness: 42
                         }]
                     },
-                    options: { ...commonOpts, plugins: { legend: { display: false } } }
+                    options: getProfessionalBarOptions()
                 });
 
+                // Bar: DN
                 const ctxDn = document.getElementById('chartDn').getContext('2d');
                 chartDn = new Chart(ctxDn, {
                     type: 'bar',
                     data: {
-                        labels: labels,
+                        labels,
                         datasets: [{
                             label: 'Total DN',
                             data: dns,
-                            backgroundColor: bgColors(dns.length),
-                            borderRadius: 6,
+                            backgroundColor: bgColors(dns.length).map(c => c + 'cc'),
+                            borderColor: bgColors(dns.length),
+                            borderWidth: 1.5,
+                            borderRadius: 8,
                             borderSkipped: false,
-                            hoverBackgroundColor: '#2563eb',
+                            hoverBackgroundColor: PROFESSIONAL_PALETTE[0],
+                            maxBarThickness: 42
                         }]
                     },
-                    options: { ...commonOpts, plugins: { legend: { display: false } } }
+                    options: getProfessionalBarOptions()
                 });
 
+                // Pie: POD
                 const ctxPiePod = document.getElementById('chartPiePod').getContext('2d');
                 chartPiePod = new Chart(ctxPiePod, {
-                    type: 'pie',
+                    type: 'doughnut',
                     data: {
-                        labels: labels,
+                        labels,
                         datasets: [{
                             data: podQty,
                             backgroundColor: bgColors(podQty.length),
-                            borderWidth: 2,
-                            borderColor: 'rgba(255,255,255,0.8)',
-                            hoverOffset: 8,
+                            borderWidth: 3,
+                            borderColor: '#ffffff',
+                            hoverOffset: 12,
+                            hoverBorderWidth: 0
                         }]
                     },
                     options: {
-                        responsive: true, maintainAspectRatio: false,
-                        plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, padding: 8, font: { family: 'Inter', size: 9 } } } }
+                        ...getProfessionalPieOptions(),
+                        cutout: '58%'
                     }
                 });
 
+                // Pie: PGI
                 const ctxPiePgi = document.getElementById('chartPiePgi').getContext('2d');
                 chartPiePgi = new Chart(ctxPiePgi, {
-                    type: 'pie',
+                    type: 'doughnut',
                     data: {
-                        labels: labels,
+                        labels,
                         datasets: [{
                             data: pgiQty,
                             backgroundColor: bgColors(pgiQty.length),
-                            borderWidth: 2,
-                            borderColor: 'rgba(255,255,255,0.8)',
-                            hoverOffset: 8,
+                            borderWidth: 3,
+                            borderColor: '#ffffff',
+                            hoverOffset: 12,
+                            hoverBorderWidth: 0
                         }]
                     },
                     options: {
-                        responsive: true, maintainAspectRatio: false,
-                        plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, padding: 8, font: { family: 'Inter', size: 9 } } } }
+                        ...getProfessionalPieOptions(),
+                        cutout: '58%'
                     }
                 });
 
+                // Line: Delivery Days
                 const ctxDel = document.getElementById('chartDeliveryDays').getContext('2d');
                 chartDeliveryDays = new Chart(ctxDel, {
                     type: 'line',
                     data: {
-                        labels: labels,
+                        labels,
                         datasets: [{
                             label: 'Avg Delivery Days',
                             data: delDays,
                             borderColor: '#2563eb',
                             backgroundColor: (ctx) => {
-                                const gradient = ctx.chart.ctx.createLinearGradient(0, 0, 0, 200);
-                                gradient.addColorStop(0, 'rgba(37,99,235,0.25)');
-                                gradient.addColorStop(1, 'rgba(37,99,235,0.02)');
-                                return gradient;
+                                const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 240);
+                                g.addColorStop(0, 'rgba(37, 99, 235, 0.22)');
+                                g.addColorStop(1, 'rgba(37, 99, 235, 0.01)');
+                                return g;
                             },
                             fill: true,
-                            tension: 0.3,
+                            tension: 0.4,
                             pointBackgroundColor: '#2563eb',
-                            pointBorderColor: '#fff',
-                            pointBorderWidth: 2,
-                            pointRadius: 4,
-                            pointHoverRadius: 7,
-                            borderWidth: 2.5,
+                            pointBorderColor: '#ffffff',
+                            pointBorderWidth: 2.5,
+                            pointRadius: 5,
+                            pointHoverRadius: 8,
+                            pointHoverBackgroundColor: '#1d4ed8',
+                            borderWidth: 2.8
                         }]
                     },
-                    options: { ...commonOpts, plugins: { legend: { display: false } } }
+                    options: getProfessionalLineOptions()
                 });
 
+                // Line: POD Days
                 const ctxPod = document.getElementById('chartPodDays').getContext('2d');
                 chartPodDays = new Chart(ctxPod, {
                     type: 'line',
                     data: {
-                        labels: labels,
+                        labels,
                         datasets: [{
                             label: 'Avg POD Days',
                             data: podDays,
                             borderColor: '#ea580c',
                             backgroundColor: (ctx) => {
-                                const gradient = ctx.chart.ctx.createLinearGradient(0, 0, 0, 200);
-                                gradient.addColorStop(0, 'rgba(234,88,12,0.25)');
-                                gradient.addColorStop(1, 'rgba(234,88,12,0.02)');
-                                return gradient;
+                                const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 240);
+                                g.addColorStop(0, 'rgba(234, 88, 12, 0.22)');
+                                g.addColorStop(1, 'rgba(234, 88, 12, 0.01)');
+                                return g;
                             },
                             fill: true,
-                            tension: 0.3,
+                            tension: 0.4,
                             pointBackgroundColor: '#ea580c',
-                            pointBorderColor: '#fff',
-                            pointBorderWidth: 2,
-                            pointRadius: 4,
-                            pointHoverRadius: 7,
-                            borderWidth: 2.5,
+                            pointBorderColor: '#ffffff',
+                            pointBorderWidth: 2.5,
+                            pointRadius: 5,
+                            pointHoverRadius: 8,
+                            pointHoverBackgroundColor: '#c2410c',
+                            borderWidth: 2.8
                         }]
                     },
-                    options: { ...commonOpts, plugins: { legend: { display: false } } }
+                    options: getProfessionalLineOptions()
                 });
             }
 
-            // ─── Fetch Data ───
+            // ─── Download Chart as PNG ───
+            function downloadChart(chartId) {
+                const chartMap = {
+                    chartUnits,
+                    chartDn,
+                    chartPiePod,
+                    chartPiePgi,
+                    chartDeliveryDays,
+                    chartPodDays
+                };
+                const chart = chartMap[chartId];
+                if (!chart) return;
+
+                const link = document.createElement('a');
+                link.download = `haier_${chartId}_${new Date().toISOString().slice(0, 10)}.png`;
+                link.href = chart.toBase64Image('image/png', 1.0);
+                link.click();
+            }
+
+            // ─── Fetch ───
             async function fetchData(showLoadingIndicator = true) {
                 if (isRefreshing) return;
                 isRefreshing = true;
@@ -1257,10 +1558,15 @@
                 hideError();
 
                 try {
-                    const resp = await fetch(WEBHOOK_URL, { method: 'GET', headers: { 'Accept': 'application/json' } });
+                    const resp = await fetch(WEBHOOK_URL, {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' }
+                    });
+
                     if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
 
                     const data = await resp.json();
+
                     if (!data || typeof data !== 'object' || !data.summary || !Array.isArray(data.warehouses)) {
                         throw new Error('Invalid data structure: expected "summary" and "warehouses" array.');
                     }
@@ -1271,6 +1577,7 @@
                     if (Object.keys(summary).length === 0) throw new Error('Summary data is empty.');
 
                     allWarehouses = warehouses;
+
                     renderKpi(summary);
                     renderTable();
                     renderCharts(warehouses);
@@ -1294,143 +1601,41 @@
                 }
             }
 
-            // ─── Process Excel Data & Refresh Dashboard (0-100% Animation) ───
-            function handleExcelData(jsonData) {
-                const warehouses = jsonData.map(row => ({
-                    warehouse: row['Warehouse'] || row['warehouse'] || 'Unknown',
-                    total_dn_created: Number(row['Total DN'] || row['total_dn_created'] || 0),
-                    total_dn_quantity: Number(row['Total Units'] || row['total_dn_quantity'] || 0),
-                    pending_delivery_dn: Number(row['Pending PGI DN'] || row['pending_delivery_dn'] || 0),
-                    pending_delivery_quantity: Number(row['Pending PGI Qty'] || row['pending_delivery_quantity'] || 0),
-                    pending_pod_dn: Number(row['Pending POD DN'] || row['pending_pod_dn'] || 0),
-                    pending_pod_quantity: Number(row['Pending POD Qty'] || row['pending_pod_quantity'] || 0),
-                    avg_delivery_days: Number(row['Avg Delivery Days'] || row['avg_delivery_days'] || 0),
-                    avg_pod_days: Number(row['Avg POD Days'] || row['avg_pod_days'] || 0),
-                    avg_total_cycle_days: Number(row['Avg Cycle Days'] || row['avg_total_cycle_days'] || 0),
-                    avg_pending_delivery_days: Number(row['Avg Pending PGI Days'] || row['avg_pending_delivery_days'] || 0),
-                    avg_pending_pod_days: Number(row['Avg Pending POD Days'] || row['avg_pending_pod_days'] || 0),
-                }));
-
-                // Calculate fallback summary for the KPI cards
-                const summary = {
-                    total_dn_created: warehouses.reduce((a,b) => a + b.total_dn_created, 0),
-                    total_dn_quantity: warehouses.reduce((a,b) => a + b.total_dn_quantity, 0),
-                    total_revenue: warehouses.reduce((a,b) => a + b.total_dn_quantity, 0) * 250,
-                    active_dealers: 234,
-                    active_warehouses: warehouses.length,
-                    cities_served: 12,
-                    delivered_dn: 0,
-                    pending_delivery_dn: warehouses.reduce((a,b) => a + b.pending_delivery_dn, 0),
-                    pending_pod_dn: warehouses.reduce((a,b) => a + b.pending_pod_dn, 0),
-                    pod_completed_dn: 0
-                };
-
-                allWarehouses = warehouses;
-                renderKpi(summary);
-                renderTable();
-                renderCharts(warehouses);
-                updateLastUpdated();
-                
-                // Show success toast
-                const msg = `✅ Success! Imported ${warehouses.length} warehouses.`;
-                const toast = document.getElementById('uploadToast');
-                if(toast) {
-                    toast.querySelector('.toast-msg').textContent = msg;
-                    toast.classList.add('show');
-                    setTimeout(() => toast.classList.remove('show'), 8000);
-                } else {
-                    alert(msg); // Fallback
-                }
-            }
-
-            // ─── UPLOAD BUTTON ACTION (0-100% animation trigger) ───
-            async function uploadFile() {
-                if (!selectedFile) return;
-                uploadBtn.disabled = true;
-
-                // Show the 0-100% Overlay
-                showLoading(true);
-                let progress = 0;
-
-                // Hide the old upload status spinner
-                uploadStatus.style.display = 'none';
-
-                // Animate progress
-                const interval = setInterval(() => {
-                    progress += Math.floor(Math.random() * 15) + 5;
-                    if (progress >= 100) {
-                        progress = 100;
-                        clearInterval(interval);
-                        setProgress(100);
-
-                        // Parse file after animation
-                        const reader = new FileReader();
-                        reader.onload = (e) => {
-                            try {
-                                const data = new Uint8Array(e.target.result);
-                                const workbook = XLSX.read(data, { type: 'array' });
-                                const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-                                const jsonData = XLSX.utils.sheet_to_json(firstSheet);
-                                
-                                if (!jsonData || jsonData.length === 0) {
-                                    throw new Error("File is empty or has no valid rows.");
-                                }
-
-                                // Update dashboard with parsed data
-                                handleExcelData(jsonData);
-                            } catch (err) {
-                                console.error(err);
-                                showError('Failed to parse Excel: ' + err.message);
-                            } finally {
-                                showLoading(false);
-                            }
-                        };
-                        reader.readAsArrayBuffer(selectedFile);
-
-                    } else {
-                        setProgress(progress);
-                    }
-                }, 150);
-            }
-
-            // ─── File Selection ───
-            function handleFileSelect(event) {
-                const file = event.target.files[0];
-                if (!file) {
-                    selectedFile = null;
-                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
-                    uploadBtn.disabled = true;
-                    return;
-                }
-                const ext = file.name.split('.').pop().toLowerCase();
-                if (!['xlsx', 'xls'].includes(ext)) {
-                    showError('Please select an Excel file (.xlsx or .xls)');
-                    fileInput.value = '';
-                    selectedFile = null;
-                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
-                    uploadBtn.disabled = true;
-                    return;
-                }
-                selectedFile = file;
-                fileInfo.innerHTML = `<i class="fas fa-file-excel"></i> ${file.name} (${(file.size / 1024).toFixed(0)} KB)`;
-                uploadBtn.disabled = false;
-            }
-
             // ─── Export CSV ───
             function exportCsv() {
-                if (filteredWarehouses.length === 0) { alert('No data to export.'); return; }
-                const headers = ['Warehouse', 'Total DN', 'Total Units','Pending PGI DN', 'Pending PGI Qty','Pending POD DN', 'Pending POD Qty','Avg Delivery Days', 'Avg POD Days','Avg Cycle Days', 'Avg Pending PGI Days', 'Avg Pending POD Days'];
-                const keys = ['warehouse', 'total_dn_created', 'total_dn_quantity','pending_delivery_dn', 'pending_delivery_quantity','pending_pod_dn', 'pending_pod_quantity','avg_delivery_days', 'avg_pod_days','avg_total_cycle_days', 'avg_pending_delivery_days', 'avg_pending_pod_days'];
+                if (filteredWarehouses.length === 0) {
+                    alert('No data to export.');
+                    return;
+                }
+                const headers = [
+                    'Warehouse', 'Total DN', 'Total Units',
+                    'Pending PGI DN', 'Pending PGI Qty',
+                    'Pending POD DN', 'Pending POD Qty',
+                    'Avg Delivery Days', 'Avg POD Days',
+                    'Avg Cycle Days', 'Avg Pending PGI Days', 'Avg Pending POD Days'
+                ];
+                const keys = [
+                    'warehouse', 'total_dn_created', 'total_dn_quantity',
+                    'pending_delivery_dn', 'pending_delivery_quantity',
+                    'pending_pod_dn', 'pending_pod_quantity',
+                    'avg_delivery_days', 'avg_pod_days',
+                    'avg_total_cycle_days', 'avg_pending_delivery_days', 'avg_pending_pod_days'
+                ];
 
                 let csv = headers.join(',') + '\n';
                 filteredWarehouses.forEach(w => {
-                    const row = keys.map(k => { let val = w[k] ?? ''; if (typeof val === 'string' && val.includes(',')) val = `"${val}"`; return val; });
+                    const row = keys.map(k => {
+                        let val = w[k] ?? '';
+                        if (typeof val === 'string' && val.includes(',')) val = `"${val}"`;
+                        return val;
+                    });
                     csv += row.join(',') + '\n';
                 });
+
                 const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
                 const link = document.createElement('a');
                 link.href = URL.createObjectURL(blob);
-                link.download = `warehouse_export_${new Date().toISOString().slice(0,10)}.csv`;
+                link.download = `warehouse_export_${new Date().toISOString().slice(0, 10)}.csv`;
                 link.click();
                 URL.revokeObjectURL(link.href);
             }
@@ -1458,6 +1663,78 @@
                 tableScroll.scrollTop = 0;
             }
 
+            // ─── Upload logic ───
+            let selectedFile = null;
+
+            function handleFileSelect(event) {
+                const file = event.target.files[0];
+                if (!file) {
+                    selectedFile = null;
+                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
+                    uploadBtn.disabled = true;
+                    return;
+                }
+                const ext = file.name.split('.').pop().toLowerCase();
+                if (!['xlsx', 'xls'].includes(ext)) {
+                    showUploadToast('Please select an Excel file (.xlsx or .xls)', false);
+                    fileInput.value = '';
+                    selectedFile = null;
+                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
+                    uploadBtn.disabled = true;
+                    return;
+                }
+                selectedFile = file;
+                fileInfo.innerHTML = `<i class="fas fa-file-excel"></i> ${file.name} (${(file.size / 1024).toFixed(0)} KB)`;
+                uploadBtn.disabled = false;
+                uploadStatus.style.display = 'none';
+            }
+
+            async function uploadFile() {
+                if (!selectedFile) return;
+
+                uploadBtn.disabled = true;
+                uploadStatus.style.display = 'flex';
+                uploadStatusText.textContent = 'Uploading…';
+
+                const formData = new FormData();
+                formData.append('file', selectedFile);
+
+                try {
+                    const response = await fetch('/upload/excel', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const result = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(result.detail || result.message || 'Upload failed');
+                    }
+
+                    uploadStatusText.textContent = '✅ Upload successful!';
+                    uploadStatus.style.display = 'none';
+                    showUploadToast(
+                        `✅ Import complete! Batch: ${result.batch_id || 'N/A'}, Rows: ${result.metrics?.rows_upserted || 0}`,
+                        true
+                    );
+
+                    fetchData(true);
+
+                } catch (err) {
+                    console.error('Upload error:', err);
+                    uploadStatusText.textContent = '❌ ' + (err.message || 'Upload failed');
+                    setTimeout(() => { uploadStatus.style.display = 'none'; }, 3000);
+                    showUploadToast('Upload failed: ' + (err.message || 'Unknown error'), false);
+                } finally {
+                    uploadBtn.disabled = false;
+                    fileInput.value = '';
+                    selectedFile = null;
+                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
+                    uploadBtn.disabled = true;
+                    setTimeout(() => { uploadStatus.style.display = 'none'; }, 5000);
+                }
+            }
+
             // ─── Init ───
             function init() {
                 updateClock();
@@ -1468,6 +1745,7 @@
 
                 refreshBtn.addEventListener('click', () => fetchData(true));
                 toastClose.addEventListener('click', () => errorToast.classList.remove('show'));
+                uploadToastClose.addEventListener('click', () => uploadToast.classList.remove('show'));
 
                 tableSearch.addEventListener('input', (e) => {
                     searchTerm = e.target.value;
@@ -1487,6 +1765,14 @@
                 chooseFileBtn.addEventListener('click', () => fileInput.click());
                 fileInput.addEventListener('change', handleFileSelect);
                 uploadBtn.addEventListener('click', uploadFile);
+
+                // Chart download buttons
+                $$('.btn-download-chart').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const chartId = btn.getAttribute('data-chart');
+                        downloadChart(chartId);
+                    });
+                });
 
                 document.addEventListener('keydown', (e) => {
                     if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
@@ -1508,8 +1794,6 @@
         })();
     </script>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js">
-    </script>
-
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
