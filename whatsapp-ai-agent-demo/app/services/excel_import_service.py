@@ -84,21 +84,17 @@ def import_delivery_excel(
         "errors": []
     }
 
-    # ----------------------------------------------------------
-    # STEP 0: REPLACE MODE – TRUNCATE TABLE
-    # ----------------------------------------------------------
+    # ------- STEP 0: REPLACE MODE (TRUNCATE) -------
     if replace_mode:
         try:
             db.execute(text("TRUNCATE TABLE delivery_reports RESTART IDENTITY CASCADE"))
             db.flush()
-            logger.info("✅ Existing data truncated (replace_mode=True). All old rows removed.")
+            logger.info("✅ Existing data truncated (replace_mode=True).")
         except Exception as e:
             logger.exception("Truncation failed")
             raise ExcelImportServiceError(f"Truncation failed: {str(e)}")
 
-    # ----------------------------------------------------------
-    # STEP 1: LOAD EXCEL WORKBOOK
-    # ----------------------------------------------------------
+    # ------- STEP 1: LOAD EXCEL -------
     try:
         wb = load_workbook(file_path, data_only=True)
         ws = wb.active
@@ -106,9 +102,7 @@ def import_delivery_excel(
         logger.exception(f"Failed to load Excel file: {file_path}")
         raise ExcelImportServiceError(f"Failed to read Excel file: {str(e)}")
 
-    # ----------------------------------------------------------
-    # STEP 2: EXTRACT HEADERS & COLUMN MAPPING
-    # ----------------------------------------------------------
+    # ------- STEP 2: EXTRACT HEADERS & COLUMN MAPPING -------
     headers = []
     for cell in ws[1]:
         header_val = _clean_string(cell.value)
@@ -116,7 +110,7 @@ def import_delivery_excel(
 
     expected_headers = {
         "ORDER TYPE": "order_type",
-        "DN NO": "dn_no",                  # REQUIRED
+        "DN NO": "dn_no",
         "DN AMOUNT": "dn_amount",
         "DN QTY": "dn_qty",
         "DN WORK": "dn_work",
@@ -150,23 +144,20 @@ def import_delivery_excel(
                 break
         if not found:
             if model_field == "dn_no":
-                raise VerificationError(f"Required column '{expected_upper}' (DN NO) not found in Excel header.")
+                raise VerificationError(f"Required column '{expected_upper}' (DN NO) not found.")
             else:
                 missing_columns.append(expected_upper)
-                logger.warning(f"Optional column '{expected_upper}' not found, will leave NULL.")
+                logger.warning(f"Optional column '{expected_upper}' not found.")
 
     if missing_columns:
         logger.info(f"Optional columns not found: {', '.join(missing_columns)}")
 
-    # ----------------------------------------------------------
-    # STEP 3: PARSE ROWS
-    # ----------------------------------------------------------
+    # ------- STEP 3: PARSE ROWS -------
     records_to_insert = []
     errors = []
 
     for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         metrics["rows_read"] += 1
-        
         try:
             dn_no = _clean_string(row[column_map["dn_no"]])
             if not dn_no:
@@ -206,7 +197,6 @@ def import_delivery_excel(
                 source_file=source_filename,
                 upload_batch_id=upload_batch_id
             )
-
             records_to_insert.append(report)
             metrics["rows_valid"] += 1
 
@@ -215,9 +205,7 @@ def import_delivery_excel(
             errors.append({"row": row_idx, "error": str(e)})
             metrics["rows_failed"] += 1
 
-    # ----------------------------------------------------------
-    # STEP 4: BULK INSERT IN BATCHES OF 1000
-    # ----------------------------------------------------------
+    # ------- STEP 4: BULK INSERT -------
     if records_to_insert:
         try:
             records_dict = [
@@ -250,17 +238,14 @@ def import_delivery_excel(
                     "pending_flag": r.pending_flag,
                     "source_file": r.source_file,
                     "upload_batch_id": r.upload_batch_id
-                }
-                for r in records_to_insert
+                } for r in records_to_insert
             ]
 
-            total_batches = 0
             for i in range(0, len(records_dict), batch_size):
                 batch = records_dict[i:i + batch_size]
                 db.bulk_insert_mappings(DeliveryReport, batch)
                 db.flush()
-                total_batches += len(batch)
-                logger.info(f"Inserted batch of {len(batch)} records. Total so far: {total_batches}")
+                logger.info(f"Inserted batch of {len(batch)} records.")
 
             metrics["rows_upserted"] = len(records_to_insert)
             logger.info(f"✅ Inserted {metrics['rows_upserted']} records into delivery_reports.")
@@ -273,5 +258,4 @@ def import_delivery_excel(
         logger.info("No valid records to insert.")
 
     metrics["errors"] = [f"Row {err['row']}: {err['error']}" for err in errors]
-    logger.info(f"Import completed. Read: {metrics['rows_read']}, Inserted: {metrics['rows_upserted']}, Failed: {metrics['rows_failed']}")
     return metrics
