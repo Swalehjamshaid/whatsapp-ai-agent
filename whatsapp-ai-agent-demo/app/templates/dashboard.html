@@ -1229,13 +1229,12 @@
                     uploadStatusText.textContent = '❌ ' + (err.message || 'Failed');
                     setTimeout(() => uploadStatus.style.display = 'none', 3000);
                     showUploadToast('Upload failed: ' + (err.message || 'Unknown error'), false);
-                } finally {
-                    uploadBtn.disabled = false;
-                    fileInput.value = '';
-                    selectedFile = null;
-                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
-                    uploadBtn.disabled = true;
-                }
+                       } finally {
+            uploadBtn.disabled = false;
+            fileInput.value = '';
+            selectedFile = null;
+            fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
+        }
             }
 
             // ─── INIT ───
