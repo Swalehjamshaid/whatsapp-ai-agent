@@ -34,7 +34,7 @@ class ImportConfig:
     CHUNK_SIZE = int(os.getenv("IMPORT_CHUNK_SIZE", "0"))
 
 # ==========================================================
-# IMPORT HISTORY MODEL
+# IMPORT HISTORY MODEL (uses main app Base)
 # ==========================================================
 
 class ImportHistory(Base):
@@ -99,16 +99,28 @@ def normalize_header(header: str) -> str:
 # ==========================================================
 
 BASE_COLUMN_MAP = {
-    "ORDER_TYPE": "order_type", "DN_NO": "dn_no", "DN_AMOUNT": "dn_amount",
-    "DN_QTY": "dn_qty", "DN_WORK": "dn_work", "DIVISION": "division",
-    "MATERIAL_NO": "material_no", "CUSTOMER_MODEL": "customer_model",
-    "SALES_OFFICE": "sales_office", "SOLD_TO_PARTY_NAME": "customer_name",
-    "SHIP_TO_CITY": "ship_to_city", "STORAGE": "storage_location",
-    "WAREHOUSE": "warehouse", "DN_CREATE_DATE": "dn_create_date",
-    "GOOD_ISSUE_DATE": "good_issue_date", "POD_DATE": "pod_date",
-    "SALES_MANAGER": "sales_manager", "CUSTOMER_CODE": "customer_code",
-    "DEALER_CODE": "dealer_code", "WAREHOUSE_CODE": "warehouse_code",
-    "DELIVERY_LOCATION": "delivery_location", "REMARKS": "remarks",
+    "ORDER_TYPE": "order_type",
+    "DN_NO": "dn_no",
+    "DN_AMOUNT": "dn_amount",
+    "DN_QTY": "dn_qty",
+    "DN_WORK": "dn_work",
+    "DIVISION": "division",
+    "MATERIAL_NO": "material_no",
+    "CUSTOMER_MODEL": "customer_model",
+    "SALES_OFFICE": "sales_office",
+    "SOLD_TO_PARTY_NAME": "customer_name",
+    "SHIP_TO_CITY": "ship_to_city",
+    "STORAGE": "storage_location",
+    "WAREHOUSE": "warehouse",
+    "DN_CREATE_DATE": "dn_create_date",
+    "GOOD_ISSUE_DATE": "good_issue_date",
+    "POD_DATE": "pod_date",
+    "SALES_MANAGER": "sales_manager",
+    "CUSTOMER_CODE": "customer_code",
+    "DEALER_CODE": "dealer_code",
+    "WAREHOUSE_CODE": "warehouse_code",
+    "DELIVERY_LOCATION": "delivery_location",
+    "REMARKS": "remarks",
 }
 
 REQUIRED_COLUMNS = [
