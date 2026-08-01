@@ -12,6 +12,8 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <!-- NEW: Chart.js DataLabels Plugin for showing numbers on the graphs -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet" />
@@ -314,11 +316,11 @@
         /* ─── CHART CONTAINERS ─── */
         .chart-container {
             position: relative;
-            height: 240px;
+            height: 280px;
             width: 100%;
         }
-        .chart-container.pie-chart { height: 220px; }
-        .chart-container.line-chart { height: 220px; }
+        .chart-container.pie-chart { height: 260px; }
+        .chart-container.line-chart { height: 260px; }
 
         .btn-download-chart {
             background: rgba(42, 111, 219, 0.08);
@@ -673,9 +675,9 @@
                 min-width: unset; max-width: unset;
                 bottom: 16px;
             }
-            .chart-container { height: 190px; }
-            .chart-container.pie-chart { height: 180px; }
-            .chart-container.line-chart { height: 180px; }
+            .chart-container { height: 200px; }
+            .chart-container.pie-chart { height: 190px; }
+            .chart-container.line-chart { height: 190px; }
             .glass-card .card-body { padding: 0.8rem 1rem; }
             .glass-card .card-header { padding: 0.8rem 1rem; font-size: 0.75rem; }
             .dashboard-footer {
@@ -749,7 +751,7 @@
                 box-shadow: none !important;
                 backdrop-filter: none !important;
             }
-            .chart-container { height: 200px !important; }
+            .chart-container { height: 220px !important; }
             .kpi-card:hover, .glass-card:hover { transform: none !important; }
             .dashboard-header::after, .dashboard-header::before { display: none !important; }
         }
@@ -1243,6 +1245,9 @@
                 });
             }
 
+            // ─── Register DataLabels Plugin for beautiful charts ───
+            Chart.register(ChartDataLabels);
+
             // ─── Professional Chart Palette & Options ───
             const PROFESSIONAL_PALETTE = [
                 '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd',
@@ -1281,6 +1286,13 @@
                             boxPadding: 4,
                             borderColor: 'rgba(255,255,255,0.08)',
                             borderWidth: 1
+                        },
+                        datalabels: {
+                            anchor: 'end',
+                            align: 'end',
+                            color: '#1e293b',
+                            font: { family: 'Inter', weight: 'bold', size: 10 },
+                            formatter: (v) => v >= 1000 ? (v/1000).toFixed(0)+'k' : v
                         }
                     },
                     scales: {
@@ -1300,7 +1312,7 @@
                         x: {
                             grid: { display: false },
                             ticks: {
-                                font: { family: 'Inter', size: 11 },
+                                font: { family: 'Inter', size: 10 },
                                 color: '#64748b',
                                 maxRotation: 45,
                                 minRotation: 0
@@ -1308,7 +1320,7 @@
                             border: { display: false }
                         }
                     },
-                    layout: { padding: { top: 8, bottom: 4 } }
+                    layout: { padding: { top: 25, bottom: 4 } }
                 };
             }
 
@@ -1327,7 +1339,7 @@
                                 boxWidth: 12,
                                 boxHeight: 12,
                                 padding: 14,
-                                font: { family: 'Inter', size: 11 },
+                                font: { family: 'Inter', size: 10 },
                                 color: '#475569',
                                 usePointStyle: true,
                                 pointStyle: 'circle'
@@ -1341,6 +1353,15 @@
                             cornerRadius: 10,
                             displayColors: true,
                             boxPadding: 4
+                        },
+                        datalabels: {
+                            color: '#ffffff',
+                            font: { family: 'Inter', weight: 'bold', size: 10 },
+                            formatter: (value, ctx) => {
+                                let sum = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                                let percentage = (value / sum * 100).toFixed(0) + '%';
+                                return percentage;
+                            }
                         }
                     },
                     layout: { padding: 8 }
@@ -1369,6 +1390,12 @@
                             cornerRadius: 10,
                             displayColors: true,
                             boxPadding: 4
+                        },
+                        datalabels: {
+                            display: 'auto',
+                            align: 'top',
+                            color: '#2563eb',
+                            font: { family: 'Inter', weight: 'bold', size: 10 }
                         }
                     },
                     scales: {
@@ -1388,14 +1415,14 @@
                         x: {
                             grid: { display: false },
                             ticks: {
-                                font: { family: 'Inter', size: 11 },
+                                font: { family: 'Inter', size: 10 },
                                 color: '#64748b',
                                 maxRotation: 45
                             },
                             border: { display: false }
                         }
                     },
-                    layout: { padding: { top: 8, bottom: 4 } }
+                    layout: { padding: { top: 25, bottom: 4 } }
                 };
             }
 
@@ -1521,7 +1548,7 @@
                             data: delDays,
                             borderColor: '#2563eb',
                             backgroundColor: (ctx) => {
-                                const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 240);
+                                const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 260);
                                 g.addColorStop(0, 'rgba(37, 99, 235, 0.22)');
                                 g.addColorStop(1, 'rgba(37, 99, 235, 0.01)');
                                 return g;
@@ -1551,7 +1578,7 @@
                             data: podDays,
                             borderColor: '#ea580c',
                             backgroundColor: (ctx) => {
-                                const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 240);
+                                const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 260);
                                 g.addColorStop(0, 'rgba(234, 88, 12, 0.22)');
                                 g.addColorStop(1, 'rgba(234, 88, 12, 0.01)');
                                 return g;
