@@ -1,1129 +1,1495 @@
-# =====================================================================================================
-# FILE: whatsapp-ai-agent-demo/app/services/excel_import_service.py
-# VERSION: v3.7 - FIXED JHELUM WAREHOUSE MAPPING
-# PURPOSE: High-performance Excel import with proper Jhelum mapping
-# =====================================================================================================
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Haier Logistics · Premium Dashboard</title>
 
-from __future__ import annotations
+    <!-- Bootstrap 5 + Icons + Chart.js -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
-import logging
-import os
-import re
-import uuid
-import time
-import json
-from datetime import date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List, Optional, Tuple, Set, Union
-from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import multiprocessing
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet" />
 
-import pandas as pd
-import numpy as np
-from sqlalchemy import text, inspect
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import SQLAlchemyError, ProgrammingError
-from sqlalchemy.orm import Session
-from sqlalchemy import event
-
-from app.models import DeliveryReport
-
-logger = logging.getLogger(__name__)
-
-# =====================================================================================================
-# BLOCK 1: CONSTANTS
-# =====================================================================================================
-
-HEADER_SCAN_ROWS = 25
-DEFAULT_BATCH_SIZE = 30000
-SAFE_INSERT_BATCH_SIZE = 30000
-SAFE_DELETE_CHUNK_SIZE = 5000
-EXCEL_EPOCH = "1899-12-30"
-PROGRESS_LOG_INTERVAL = 10000
-MAX_WORKERS = multiprocessing.cpu_count() * 2
-USE_POLARS = True
-
-try:
-    import polars as pl
-    HAS_POLARS = True
-except ImportError:
-    HAS_POLARS = False
-    logger.warning("Polars not available, falling back to pandas")
-
-# =====================================================================================================
-# BLOCK 2: WAREHOUSE MAPPING - WITH JHELUM FIX
-# =====================================================================================================
-
-CITY_TO_WAREHOUSE_MAP = {
-    # Punjab - Existing
-    "gujrat": "Gujrat",
-    "gujrat office": "Gujrat",
-    "gujrat warehouse": "Gujrat",
-    "kharian": "Gujrat",
-    "lahore": "Lahore",
-    "lahore office": "Lahore",
-    "lahore warehouse": "Lahore",
-    "faisalabad": "Faisalabad",
-    "faisalabad office": "Faisalabad",
-    "faisalabad warehouse": "Faisalabad",
-    "multan": "Multan",
-    "multan office": "Multan",
-    "multan warehouse": "Multan",
-    "rawalpindi": "Rawalpindi",
-    "rawalpindi office": "Rawalpindi",
-    "rawalpindi warehouse": "Rawalpindi",
-    "islamabad": "Islamabad",
-    "islamabad office": "Islamabad",
-    "islamabad warehouse": "Islamabad",
-    "sialkot": "Sialkot",
-    "sialkot office": "Sialkot",
-    "sialkot warehouse": "Sialkot",
-    "gujranwala": "Gujranwala",
-    "gujranwala office": "Gujranwala",
-    "gujranwala warehouse": "Gujranwala",
-    "sargodha": "Sargodha",
-    "sargodha office": "Sargodha",
-    "sargodha warehouse": "Sargodha",
-    "sahiwal": "Sahiwal",
-    "sahiwal office": "Sahiwal",
-    "sahiwal warehouse": "Sahiwal",
-    "bahawalpur": "Bahawalpur",
-    "bahawalpur office": "Bahawalpur",
-    "bahawalpur warehouse": "Bahawalpur",
-    
-    # ============================================================
-    # 🆕 JHELUM FIX - ADD THESE MAPPINGS
-    # ============================================================
-    "jhelum": "Jhelum",
-    "jhelum office": "Jhelum",
-    "jhelum warehouse": "Jhelum",
-    "jehlum": "Jhelum",
-    "jehlum office": "Jhelum",
-    "jehlum warehouse": "Jhelum",
-    
-    # Sindh
-    "karachi": "Karachi",
-    "karachi office": "Karachi",
-    "karachi warehouse": "Karachi",
-    "hyderabad": "Hyderabad",
-    "hyderabad office": "Hyderabad",
-    "hyderabad warehouse": "Hyderabad",
-    "sukkur": "Sukkur",
-    "sukkur office": "Sukkur",
-    "sukkur warehouse": "Sukkur",
-    
-    # KPK
-    "peshawar": "Peshawar",
-    "peshawar office": "Peshawar",
-    "peshawar warehouse": "Peshawar",
-    "abbottabad": "Abbottabad",
-    "abbottabad office": "Abbottabad",
-    "abbottabad warehouse": "Abbottabad",
-    
-    # Balochistan
-    "quetta": "Quetta",
-    "quetta office": "Quetta",
-    "quetta warehouse": "Quetta",
-    
-    # AJK
-    "muzaffarabad": "Muzaffarabad",
-    "muzaffarabad office": "Muzaffarabad",
-    "muzaffarabad warehouse": "Muzaffarabad",
-}
-
-WAREHOUSE_CODE_MAP = {
-    "lahore": "LHE",
-    "karachi": "KHI",
-    "rawalpindi": "RWP",
-    "islamabad": "ISB",
-    "multan": "MUX",
-    "peshawar": "PEW",
-    "quetta": "QTA",
-    "hyderabad": "HYD",
-    "faisalabad": "FSD",
-    "sialkot": "SKT",
-    "gujranwala": "GJW",
-    "gujrat": "GJT",
-    "bahawalpur": "BWP",
-    "sukkur": "SKR",
-    "sahiwal": "SWL",
-    "sargodha": "SGD",
-    "abbottabad": "ABT",
-    "muzaffarabad": "MZD",
-    "jhelum": "JHM",      # 🆕 Added Jhelum code
-}
-
-# =====================================================================================================
-# BLOCK 3: CUSTOM EXCEPTIONS
-# =====================================================================================================
-
-class ExcelImportServiceError(Exception):
-    pass
-
-class WorksheetNotFoundError(ExcelImportServiceError):
-    pass
-
-class ColumnMappingError(ExcelImportServiceError):
-    pass
-
-class VerificationError(ExcelImportServiceError):
-    pass
-
-class ValidationError(ExcelImportServiceError):
-    pass
-
-# =====================================================================================================
-# BLOCK 4: NORMALIZATION HELPERS
-# =====================================================================================================
-
-_REMOVE_NON_DIGIT = re.compile(r"[^0-9]")
-_REMOVE_SPECIAL = re.compile(r"[^a-zA-Z0-9]")
-_REMOVE_AMOUNT_SPECIAL = re.compile(r"[^\d.\-()]")
-_WHITESPACE_CLEAN = re.compile(r"\s+")
-
-def normalize_header(value: Any) -> str:
-    if value is None:
-        return ""
-    text = str(value).strip()
-    text = re.sub(r"[_\-./\\#·•:;|]", " ", text)
-    text = text.replace("\u00a0", " ")
-    text = text.replace("\t", " ")
-    text = text.replace("\r", " ")
-    text = text.replace("\n", " ")
-    text = _WHITESPACE_CLEAN.sub(" ", text).strip()
-    return text.lower()
-
-def normalize_string(value: Any) -> Optional[str]:
-    if value is None or pd.isna(value):
-        return None
-    if isinstance(value, str):
-        cleaned = " ".join(value.split())
-        return cleaned or None
-    return str(value).strip() or None
-
-def normalize_string_fast(value: Any) -> Optional[str]:
-    if value is None or pd.isna(value):
-        return None
-    if isinstance(value, str):
-        cleaned = value.strip()
-        return cleaned or None
-    return str(value).strip() or None
-
-def normalize_dn(value: Any) -> str:
-    text = normalize_string_fast(value)
-    if not text:
-        return ""
-    return _REMOVE_NON_DIGIT.sub("", text)
-
-def normalize_city(value: Any) -> Optional[str]:
-    city = normalize_string_fast(value)
-    if not city:
-        return None
-    city_map = {
-        "lhr": "Lahore", "isb": "Islamabad", "rwp": "Rawalpindi",
-        "khi": "Karachi", "fsd": "Faisalabad", "mux": "Multan",
-        "pew": "Peshawar", "qta": "Quetta", "gjw": "Gujranwala",
-        "skt": "Sialkot", "gjt": "Gujrat", "jhm": "Jhelum",
-    }
-    return city_map.get(city.lower().strip(), city)
-
-def map_city_to_warehouse(city: Optional[str]) -> Optional[str]:
-    if not city:
-        return None
-    city_lower = city.lower().strip()
-    # Check exact match first
-    if city_lower in CITY_TO_WAREHOUSE_MAP:
-        return CITY_TO_WAREHOUSE_MAP[city_lower]
-    # Check partial match
-    for key, warehouse in CITY_TO_WAREHOUSE_MAP.items():
-        if key in city_lower or city_lower in key:
-            logger.info(f"📍 Mapped city '{city}' to warehouse '{warehouse}'")
-            return warehouse
-    return None
-
-def get_warehouse_code(warehouse: Optional[str]) -> Optional[str]:
-    if not warehouse:
-        return None
-    warehouse_lower = warehouse.lower().strip()
-    if warehouse_lower in WAREHOUSE_CODE_MAP:
-        return WAREHOUSE_CODE_MAP[warehouse_lower]
-    for key, code in WAREHOUSE_CODE_MAP.items():
-        if key in warehouse_lower or warehouse_lower in key:
-            return code
-    return None
-
-def derive_customer_code(customer_name: Optional[str]) -> Optional[str]:
-    if not customer_name:
-        return None
-    code = _REMOVE_SPECIAL.sub("_", customer_name[:15].upper()).strip("_")
-    return f"CUST_{code}" if code else None
-
-def derive_dealer_code(customer_name: Optional[str]) -> Optional[str]:
-    if not customer_name:
-        return None
-    code = _REMOVE_SPECIAL.sub("_", customer_name[:15].upper()).strip("_")
-    return f"DEAL_{code}" if code else None
-
-def get_delivery_location(ship_to_city: Optional[str]) -> Optional[str]:
-    return normalize_city(ship_to_city)
-
-def generate_batch_id() -> str:
-    return f"BATCH_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-
-# =====================================================================================================
-# BLOCK 5: PARSING HELPERS
-# =====================================================================================================
-
-def parse_amount(value: Any) -> Optional[Decimal]:
-    if value is None or pd.isna(value):
-        return None
-    if isinstance(value, Decimal):
-        return value
-    if isinstance(value, (int, float)):
-        try:
-            return Decimal(str(value))
-        except (InvalidOperation, ValueError, TypeError):
-            return None
-    if isinstance(value, str):
-        cleaned = value.strip().replace(",", "")
-        cleaned = _REMOVE_AMOUNT_SPECIAL.sub("", cleaned)
-        if not cleaned:
-            return None
-        if cleaned.startswith("(") and cleaned.endswith(")"):
-            cleaned = f"-{cleaned[1:-1]}"
-        try:
-            return Decimal(cleaned)
-        except (InvalidOperation, ValueError):
-            return None
-    return None
-
-def parse_quantity(value: Any) -> Optional[int]:
-    if value is None or pd.isna(value):
-        return None
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value) if value.is_integer() else None
-    if isinstance(value, Decimal):
-        return int(value) if value == value.to_integral_value() else None
-    if isinstance(value, str):
-        cleaned = value.strip().replace(",", "")
-        if not re.fullmatch(r"-?\d+", cleaned):
-            return None
-        try:
-            return int(cleaned)
-        except ValueError:
-            return None
-    return None
-
-def parse_date(value: Any) -> Optional[date]:
-    if value is None or pd.isna(value):
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, pd.Timestamp):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if isinstance(value, (int, float)):
-        try:
-            if float(value) > 59:
-                return (pd.Timestamp(EXCEL_EPOCH) + pd.Timedelta(days=float(value))).date()
-        except (ValueError, OverflowError):
-            return None
-        return None
-    if isinstance(value, str):
-        raw = value.strip()
-        if not raw:
-            return None
-        formats = (
-            "%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y",
-            "%d-%m-%Y", "%m-%d-%Y", "%d-%b-%Y", "%b %d %Y",
-            "%Y/%m/%d", "%Y%m%d", "%d %b %Y", "%b %d, %Y", "%d %B %Y"
-        )
-        for fmt in formats:
-            try:
-                return datetime.strptime(raw, fmt).date()
-            except ValueError:
-                continue
-        try:
-            serial = float(raw)
-            if serial > 59:
-                return (pd.Timestamp(EXCEL_EPOCH) + pd.Timedelta(days=serial)).date()
-        except ValueError:
-            pass
-        return None
-    return None
-
-# =====================================================================================================
-# BLOCK 6: BUSINESS VALIDATION
-# =====================================================================================================
-
-class BusinessValidator:
-    VALID_WAREHOUSES = {
-        "rawalpindi", "islamabad", "lahore", "karachi", "faisalabad",
-        "multan", "peshawar", "quetta", "gujranwala", "sialkot",
-        "gujrat", "bahawalpur", "sukkur", "sahiwal", "sargodha",
-        "hyderabad", "abbottabad", "muzaffarabad", "jhelum",
-    }
-
-    @classmethod
-    def validate_record(cls, record: Dict[str, Any]) -> List[str]:
-        errors = []
-        dn_no = record.get("dn_no")
-        if not dn_no:
-            errors.append("DN NO is missing")
-        elif len(dn_no) < 10:
-            errors.append(f"DN NO '{dn_no}' is too short")
-        material_no = record.get("material_no")
-        if not material_no:
-            errors.append("Material NO is missing")
-        elif len(material_no) < 4:
-            errors.append(f"Material NO '{material_no}' is too short")
-        warehouse = record.get("warehouse")
-        if warehouse and warehouse.lower().strip() not in cls.VALID_WAREHOUSES:
-            errors.append(f"Unknown warehouse: '{warehouse}'")
-        dn_qty = record.get("dn_qty")
-        if dn_qty is not None and (not isinstance(dn_qty, int) or dn_qty <= 0):
-            errors.append(f"Invalid quantity: {dn_qty}")
-        dn_amount = record.get("dn_amount")
-        if dn_amount is not None:
-            try:
-                if Decimal(str(dn_amount)) <= 0:
-                    errors.append(f"Invalid amount: {dn_amount}")
-            except:
-                errors.append(f"Invalid amount format: {dn_amount}")
-        return errors
-
-# =====================================================================================================
-# BLOCK 7: COLUMN MAP
-# =====================================================================================================
-
-class ColumnMap:
-    HEADER_ALIASES = {
-        "order_type": {"order type", "order-type", "order_type", "order", "ordertype", "so no"},
-        "dn_no": {"dn no", "dn", "dn_no", "delivery note", "delivery note no", "delivery number", "dn#"},
-        "dn_amount": {"dn amount", "dn_amount", "amount", "amt", "total", "net amount", "order amount", "value", "dn value"},
-        "dn_qty": {"dn qty", "dn_qty", "qty", "quantity", "units", "pcs"},
-        "dn_work": {"dn work", "dn_work", "work", "status", "dn status", "delivery status", "work order"},
-        "division": {"division", "div", "department", "business unit", "product division"},
-        "material_no": {"material no", "material", "material_no", "material number", "material code", "sku"},
-        "customer_model": {"customer model", "customer_model", "model", "product model", "description"},
-        "sales_office": {"sales office", "sales_office", "office", "sales", "branch"},
-        "customer_name": {"customer name", "customer_name", "sold to party name", "sold-to-party name", "sold to party", "dealer name", "customer"},
-        "ship_to_city": {"ship to city", "ship-to city", "ship_to_city", "city", "destination city", "delivery city"},
-        "storage_location": {"storage", "storage_location", "storage location", "bin", "location"},
-        "warehouse": {"warehouse", "ware house", "wh", "plant", "facility"},
-        "dn_create_date": {"dn create date", "dn_create_date", "create date", "created date", "dn created", "order date"},
-        "good_issue_date": {"good issue date", "good_issue_date", "pgi", "pgi date", "goods issue", "dispatch date", "shipped date"},
-        "pod_date": {"pod date", "pod_date", "pod", "proof of delivery", "received date", "confirmation date"},
-        "sales_manager": {"sales manager", "sales_manager", "manager", "sales rep", "representative"},
-    }
-
-    MANDATORY_COLUMNS = {"dn_no", "material_no"}
-
-    @classmethod
-    def build_mapping(cls, headers: List[Any], use_fuzzy: bool = True) -> Dict[str, Any]:
-        alias_to_field = {}
-        for field, aliases in cls.HEADER_ALIASES.items():
-            for alias in aliases:
-                alias_to_field[normalize_header(alias)] = field
-
-        mapping = {}
-        for header in headers:
-            if header is None:
-                continue
-            normalized = normalize_header(header)
-            field = alias_to_field.get(normalized)
-            if field and field not in mapping:
-                mapping[field] = header
-                continue
-            if use_fuzzy:
-                best_match = None
-                best_score = 0
-                header_words = set(normalized.split())
-                for alias, field_name in alias_to_field.items():
-                    if field_name in mapping:
-                        continue
-                    alias_words = set(alias.split())
-                    overlap = len(alias_words & header_words)
-                    if overlap > 0 and overlap > best_score:
-                        best_score = overlap
-                        best_match = (field_name, alias)
-                if best_match and best_score >= 1:
-                    mapping[best_match[0]] = header
-                    continue
-
-        missing = sorted(cls.MANDATORY_COLUMNS - set(mapping))
-        if missing:
-            raise ColumnMappingError(f"Mandatory columns not found: {missing}")
-        
-        return mapping
-
-# =====================================================================================================
-# BLOCK 8: WORKSHEET DETECTION
-# =====================================================================================================
-
-def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tuple[int, int]:
-    header_keywords = {
-        "dn": 10, "material": 10, "qty": 5, "amount": 5,
-        "warehouse": 4, "city": 3, "model": 3, "office": 3,
-        "storage": 3, "date": 2, "manager": 2, "work": 3,
-    }
-    best_row = 0
-    best_score = 0
-    for row_idx in range(min(max_rows, len(df))):
-        score = 0
-        for value in df.iloc[row_idx].tolist():
-            normalized = normalize_header(value)
-            if not normalized:
-                continue
-            for keyword, weight in header_keywords.items():
-                if keyword in normalized:
-                    score += weight
-                    break
-        if score > best_score:
-            best_row = row_idx
-            best_score = score
-    return best_row, best_score
-
-def detect_worksheet_fast(file_path: str) -> Tuple[str, int]:
-    if HAS_POLARS:
-        try:
-            import openpyxl
-            wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-            sheet_names = wb.sheetnames
-            wb.close()
-            for sheet_name in sheet_names:
-                if sheet_name.startswith(("_", "$")):
-                    continue
-                if any(word in sheet_name.lower() for word in ("summary", "sum", "total")):
-                    continue
-                try:
-                    df = pl.read_excel(file_path, sheet_name=sheet_name, header_row=0, engine='calamine', infer_schema_length=100)
-                    if df.height > 0:
-                        return sheet_name, 0
-                except:
-                    pass
-        except:
-            pass
-    return detect_worksheet(file_path)
-
-def detect_worksheet(file_path: str) -> Tuple[str, int]:
-    excel_file = pd.ExcelFile(file_path, engine="openpyxl")
-    best_sheet = None
-    best_header_row = 0
-    best_score = 0
-    for sheet_name in excel_file.sheet_names:
-        if sheet_name.startswith(("_", "$")):
-            continue
-        if any(word in sheet_name.lower() for word in ("summary", "sum", "total")):
-            continue
-        sample = pd.read_excel(file_path, sheet_name=sheet_name, header=None, nrows=HEADER_SCAN_ROWS, engine="openpyxl")
-        if sample.empty:
-            continue
-        header_row, score = detect_header_row(sample)
-        if score > best_score:
-            best_sheet = sheet_name
-            best_header_row = header_row
-            best_score = score
-    if not best_sheet:
-        raise WorksheetNotFoundError("No worksheet with delivery data was found.")
-    return best_sheet, best_header_row
-
-def read_excel_fast(file_path: str, sheet_name: str, header_row: int) -> pd.DataFrame:
-    if HAS_POLARS:
-        try:
-            df = pl.read_excel(file_path, sheet_name=sheet_name, header_row=header_row, engine='calamine', infer_schema_length=1000)
-            logger.info("⚡ Used Polars with calamine engine")
-            return df.to_pandas()
-        except Exception as e:
-            logger.warning(f"Polars read failed: {e}, falling back to pandas")
-    logger.info("📖 Using pandas")
-    df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, engine='openpyxl')
-    logger.info(f"✅ Read {len(df)} rows with pandas")
-    return df
-
-# =====================================================================================================
-# BLOCK 9: STATUS DERIVATION
-# =====================================================================================================
-
-def derive_status(good_issue_date: Optional[date], pod_date: Optional[date],
-                  dn_work: Optional[str] = None) -> Dict[str, Any]:
-    has_pgi = good_issue_date is not None
-    has_pod = pod_date is not None
-    if has_pgi and has_pod:
-        return {"delivery_status": "Delivered", "pgi_status": "Completed", "pod_status": "Completed", "pending_flag": False}
-    if has_pgi:
-        return {"delivery_status": "In Transit", "pgi_status": "Completed", "pod_status": "Pending", "pending_flag": True}
-    if dn_work and "invoiced" in dn_work.lower():
-        return {"delivery_status": "Pending Dispatch", "pgi_status": "Pending", "pod_status": "Pending", "pending_flag": True}
-    return {"delivery_status": "Pending Dispatch", "pgi_status": "Pending", "pod_status": "Pending", "pending_flag": True}
-
-# =====================================================================================================
-# BLOCK 10: DATABASE CONSTRAINT CHECKER
-# =====================================================================================================
-
-def check_unique_constraint_exists(db: Session, table_name: str) -> bool:
-    try:
-        result = db.execute(
-            text("SELECT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name = :table_name AND constraint_type = 'UNIQUE')"),
-            {"table_name": table_name}
-        )
-        return result.scalar() or False
-    except Exception as e:
-        logger.warning(f"Could not check for unique constraint: {e}")
-        return False
-
-def create_unique_constraint_if_missing(db: Session, table_name: str, columns: List[str]) -> bool:
-    try:
-        exists = db.execute(
-            text("SELECT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name = :table_name AND constraint_type = 'UNIQUE')"),
-            {"table_name": table_name}
-        ).scalar()
-        if exists:
-            logger.info(f"✅ Unique constraint already exists on {table_name}")
-            return True
-        constraint_name = f"uq_{table_name}_{'_'.join(columns)}"
-        columns_str = ", ".join(columns)
-        try:
-            db.execute(text(f"ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name} UNIQUE ({columns_str})"))
-            db.commit()
-            logger.info(f"✅ Created unique constraint {constraint_name} on ({columns_str})")
-            return True
-        except Exception as e:
-            db.rollback()
-            logger.error(f"Failed to create unique constraint: {e}")
-            return False
-    except Exception as e:
-        logger.error(f"Failed to create unique constraint: {e}")
-        db.rollback()
-        return False
-
-# =====================================================================================================
-# BLOCK 11: MAIN SERVICE - WITH JHELUM FIX
-# =====================================================================================================
-
-class ExcelImportService:
-    def __init__(
-        self,
-        db: Session,
-        batch_size: int = DEFAULT_BATCH_SIZE,
-        auto_create_constraint: bool = True,
-        validate_business_rules: bool = True,
-        conflict_strategy: str = "upsert",
-        use_vectorization: bool = True,
-    ):
-        self.db = db
-        self.batch_size = min(batch_size, SAFE_INSERT_BATCH_SIZE)
-        self.auto_create_constraint = auto_create_constraint
-        self.validate_business_rules = validate_business_rules
-        self.conflict_strategy = conflict_strategy
-        self.use_vectorization = use_vectorization
-        self.table = DeliveryReport.__table__
-        self.table_columns = set(self.table.columns.keys())
-        self._unique_constraint_exists = None
-        self.metrics = {
-            "import_start": None, "import_end": None, "database_time": 0,
-            "parse_time": 0, "rows_read": 0, "rows_valid": 0,
-            "rows_upserted": 0, "rows_duplicate": 0, "rows_skipped": 0,
-            "rows_invalid": 0, "invalid_dates": 0, "invalid_amounts": 0,
-            "validation_errors": [], "duplicate_rows": [], "batch_count": 0,
+    <style>
+        /* ─── RESET & BASE ─── */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
 
-    def _ensure_unique_constraint(self) -> bool:
-        if self._unique_constraint_exists is not None:
-            return self._unique_constraint_exists
-        table_name = DeliveryReport.__tablename__
-        columns = ["dn_no", "material_no"]
-        self._unique_constraint_exists = check_unique_constraint_exists(self.db, table_name)
-        if not self._unique_constraint_exists and self.auto_create_constraint:
-            self._unique_constraint_exists = create_unique_constraint_if_missing(self.db, table_name, columns)
-        if not self._unique_constraint_exists:
-            logger.warning(f"⚠️ No unique constraint on ({', '.join(columns)}) in {table_name}. Using {self.conflict_strategy} strategy.")
-        return self._unique_constraint_exists
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #f0f5fe;
+            padding: 24px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            background-image:
+                radial-gradient(ellipse at 10% 20%, rgba(42, 111, 219, 0.04) 0%, transparent 60%),
+                radial-gradient(ellipse at 90% 80%, rgba(42, 111, 219, 0.04) 0%, transparent 60%);
+        }
 
-    def _deduplicate_records(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Deduplicate records by (dn_no, material_no) combination."""
-        seen = set()
-        deduplicated = []
-        duplicate_count = 0
-        
-        for record in records:
-            key = (record.get("dn_no"), record.get("material_no"))
-            if key not in seen:
-                seen.add(key)
-                deduplicated.append(record)
-            else:
-                duplicate_count += 1
-        
-        if duplicate_count > 0:
-            logger.warning(f"⚠️ Removed {duplicate_count} duplicate (dn_no, material_no) combinations")
-        
-        return deduplicated
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #e9eef6;
+            border-radius: 12px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #b8cce0;
+            border-radius: 12px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #8aa9d1;
+        }
 
-    def import_file(
-        self,
-        file_path: str,
-        source_filename: Optional[str] = None,
-        sheet_name: Optional[str] = None,
-        upload_batch_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        import_start = time.time()
-        self.metrics["import_start"] = datetime.utcnow().isoformat()
-        
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(file_path)
-        
-        batch_id = upload_batch_id or generate_batch_id()
-        
-        try:
-            if sheet_name is None:
-                sheet_name, header_row = detect_worksheet_fast(file_path)
-            else:
-                preview = pd.read_excel(file_path, sheet_name=sheet_name, header=None, nrows=HEADER_SCAN_ROWS, engine="openpyxl")
-                header_row, _ = detect_header_row(preview)
-            
-            logger.info(f"📄 Importing Excel file {file_path} from sheet '{sheet_name}'")
-            
-            df = read_excel_fast(file_path, sheet_name, header_row)
-            if df.empty:
-                return self._build_response(sheet_name=sheet_name, batch_id=batch_id, success=True)
-            
-            mapping = ColumnMap.build_mapping(df.columns.tolist())
-            self._ensure_unique_constraint()
-            
-            parse_start = time.time()
-            records, errors = self._process_records(df, mapping, source_filename, batch_id, header_row)
-            self.metrics["parse_time"] = time.time() - parse_start
-            
-            # Deduplicate
-            original_count = len(records)
-            records = self._deduplicate_records(records)
-            self.metrics["rows_duplicate"] = original_count - len(records)
-            
-            if not records:
-                logger.warning("⚠️ No valid records to import after deduplication")
-                return self._build_response(sheet_name=sheet_name, batch_id=batch_id, success=True, errors=errors[:50])
-            
-            database_start = time.time()
-            rows_upserted, batch_count = self._upsert_records_with_safe_batches(records)
-            self.metrics["database_time"] = time.time() - database_start
-            self.metrics["rows_upserted"] = rows_upserted
-            self.metrics["batch_count"] = batch_count
-            self.metrics["rows_read"] = int(len(df))
-            self.metrics["rows_valid"] = len(records)
-            self.metrics["validation_errors"] = errors[:50]
-            self.metrics["import_end"] = datetime.utcnow().isoformat()
-            
-            logger.info(f"✅ Import completed: {rows_upserted} rows upserted in {batch_count} batches")
-            return self._build_response(sheet_name=sheet_name, batch_id=batch_id, success=True, errors=errors[:50])
-            
-        except Exception as e:
-            self.db.rollback()
-            logger.error(f"❌ Import failed: {e}")
-            raise ExcelImportServiceError(str(e)) from e
+        /* ─── GLASS CARD ─── */
+        .glass-card {
+            background: rgba(255, 255, 255, 0.75);
+            backdrop-filter: blur(16px) saturate(180%);
+            -webkit-backdrop-filter: blur(16px) saturate(180%);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            border-radius: 24px;
+            box-shadow: 0 8px 40px rgba(10, 40, 80, 0.06), 0 2px 8px rgba(10, 40, 80, 0.02);
+            transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.4s ease;
+            height: 100%;
+        }
+        .glass-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 20px 60px rgba(10, 40, 80, 0.10), 0 4px 16px rgba(10, 40, 80, 0.04);
+        }
 
-    def _process_records(
-        self,
-        df: pd.DataFrame,
-        mapping: Dict[str, Any],
-        source_filename: Optional[str],
-        batch_id: str,
-        header_row: int
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Process records from DataFrame."""
-        records = []
-        errors = []
-        
-        col_dn_no = mapping.get("dn_no")
-        col_material_no = mapping.get("material_no")
-        col_customer_name = mapping.get("customer_name")
-        col_ship_to_city = mapping.get("ship_to_city")
-        col_warehouse = mapping.get("warehouse")
-        col_dn_amount = mapping.get("dn_amount")
-        col_dn_qty = mapping.get("dn_qty")
-        col_dn_work = mapping.get("dn_work")
-        col_order_type = mapping.get("order_type")
-        col_division = mapping.get("division")
-        col_customer_model = mapping.get("customer_model")
-        col_sales_office = mapping.get("sales_office")
-        col_storage_location = mapping.get("storage_location")
-        col_sales_manager = mapping.get("sales_manager")
-        col_dn_create_date = mapping.get("dn_create_date")
-        col_good_issue_date = mapping.get("good_issue_date")
-        col_pod_date = mapping.get("pod_date")
+        .glass-card .card-header {
+            background: transparent;
+            border-bottom: 1px solid rgba(10, 40, 80, 0.05);
+            font-weight: 600;
+            font-size: 0.85rem;
+            letter-spacing: 0.03em;
+            color: #1a365d;
+            padding: 1.1rem 1.4rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .glass-card .card-header i {
+            color: #2a6fdb;
+            font-size: 1.1rem;
+            opacity: 0.8;
+        }
+        .glass-card .card-body {
+            padding: 1.2rem 1.4rem;
+        }
 
-        for idx, row in df.iterrows():
-            excel_row_number = header_row + idx + 2
-            try:
-                dn_no = normalize_dn(row.get(col_dn_no))
-                material_no = normalize_string(row.get(col_material_no))
-                
-                if not dn_no or not material_no:
-                    errors.append({
-                        "row": excel_row_number,
-                        "dn": dn_no,
-                        "material": material_no,
-                        "errors": ["DN NO and Material NO are required"],
-                        "type": "validation"
-                    })
-                    continue
+        /* ─── HEADER ─── */
+        .dashboard-header {
+            background: linear-gradient(145deg, #0b2a4a 0%, #1a4a7a 100%);
+            border-radius: 28px;
+            padding: 1.4rem 2.2rem;
+            color: #fff;
+            box-shadow: 0 16px 48px rgba(10, 40, 80, 0.20);
+            margin-bottom: 2rem;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            position: relative;
+            overflow: hidden;
+        }
+        .dashboard-header::after {
+            content: '';
+            position: absolute;
+            top: -40%;
+            right: -10%;
+            width: 300px;
+            height: 300px;
+            background: radial-gradient(circle, rgba(255, 255, 255, 0.04) 0%, transparent 70%);
+            border-radius: 50%;
+            pointer-events: none;
+        }
+        .dashboard-header::before {
+            content: '';
+            position: absolute;
+            bottom: -50%;
+            left: 20%;
+            width: 400px;
+            height: 400px;
+            background: radial-gradient(circle, rgba(42, 111, 219, 0.08) 0%, transparent 70%);
+            border-radius: 50%;
+            pointer-events: none;
+        }
 
-                customer_name = normalize_string(row.get(col_customer_name))
-                ship_to_city = normalize_city(row.get(col_ship_to_city))
-                warehouse = normalize_string(row.get(col_warehouse))
-                
-                # 🆕 CRITICAL: Map warehouse from ship_to_city if warehouse is empty or is "Jhelum Office"
-                if not warehouse:
-                    warehouse = map_city_to_warehouse(ship_to_city)
-                elif "jhelum" in warehouse.lower() or "jehlum" in warehouse.lower():
-                    warehouse = "Jhelum"  # Normalize to "Jhelum"
-                
-                amount_decimal = parse_amount(row.get(col_dn_amount))
-                dn_work = normalize_string(row.get(col_dn_work))
-                dn_create_date = parse_date(row.get(col_dn_create_date))
-                good_issue_date = parse_date(row.get(col_good_issue_date))
-                pod_date = parse_date(row.get(col_pod_date))
+        .dashboard-header h1 {
+            font-size: 1.6rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            position: relative;
+            z-index: 1;
+        }
+        .dashboard-header h1 i {
+            color: #7bb3ff;
+            font-size: 2rem;
+            filter: drop-shadow(0 2px 8px rgba(42, 111, 219, 0.3));
+        }
+        .dashboard-header h1 span {
+            background: linear-gradient(135deg, #fff 60%, #7bb3ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
 
-                if not dn_create_date and row.get(col_dn_create_date) is not None:
-                    self.metrics["invalid_dates"] += 1
-                if amount_decimal is None and row.get(col_dn_amount) is not None:
-                    self.metrics["invalid_amounts"] += 1
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+            position: relative;
+            z-index: 1;
+        }
 
-                record = {
-                    "order_type": normalize_string(row.get(col_order_type)),
-                    "dn_no": dn_no,
-                    "dn_amount": float(amount_decimal) if amount_decimal is not None else None,
-                    "dn_qty": parse_quantity(row.get(col_dn_qty)),
-                    "dn_work": dn_work,
-                    "division": normalize_string(row.get(col_division)),
-                    "material_no": material_no,
-                    "customer_model": normalize_string(row.get(col_customer_model)),
-                    "sales_office": normalize_string(row.get(col_sales_office)),
-                    "customer_name": customer_name,
-                    "customer_code": derive_customer_code(customer_name),
-                    "dealer_code": derive_dealer_code(customer_name),
-                    "ship_to_city": ship_to_city,
-                    "storage_location": normalize_string(row.get(col_storage_location)),
-                    "warehouse": warehouse,
-                    "warehouse_code": get_warehouse_code(warehouse),
-                    "delivery_location": get_delivery_location(ship_to_city),
-                    "dn_create_date": dn_create_date,
-                    "good_issue_date": good_issue_date,
-                    "pod_date": pod_date,
-                    "sales_manager": normalize_string(row.get(col_sales_manager)),
-                    "remarks": None,
-                    "source_file": source_filename or os.path.basename(file_path),
-                    "upload_batch_id": batch_id,
-                    "imported_at": datetime.utcnow(),
-                    "updated_at": datetime.utcnow(),
+        .header-right .datetime {
+            font-size: 0.9rem;
+            font-weight: 400;
+            opacity: 0.85;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            background: rgba(255, 255, 255, 0.07);
+            padding: 0.4rem 1.2rem;
+            border-radius: 100px;
+            backdrop-filter: blur(4px);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .header-right .datetime i {
+            opacity: 0.6;
+        }
+
+        .btn-refresh {
+            background: rgba(255, 255, 255, 0.10);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #fff;
+            border-radius: 100px;
+            padding: 0.5rem 1.4rem;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: all 0.25s ease;
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .btn-refresh:hover {
+            background: rgba(255, 255, 255, 0.20);
+            color: #fff;
+            transform: scale(1.03);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+        }
+        .btn-refresh:disabled {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+        .btn-refresh i {
+            font-size: 0.9rem;
+        }
+
+        /* ─── KPI CARDS ─── */
+        .kpi-card {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(12px) saturate(180%);
+            -webkit-backdrop-filter: blur(12px) saturate(180%);
+            border: 1px solid rgba(255, 255, 255, 0.6);
+            border-radius: 20px;
+            padding: 1.3rem 1.2rem;
+            box-shadow: 0 4px 20px rgba(10, 40, 80, 0.04);
+            transition: all 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }
+        .kpi-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #2a6fdb, #7bb3ff);
+            border-radius: 20px 20px 0 0;
+            opacity: 0.6;
+        }
+        .kpi-card:hover {
+            transform: translateY(-6px) scale(1.01);
+            box-shadow: 0 16px 48px rgba(10, 40, 80, 0.10);
+            border-color: rgba(42, 111, 219, 0.15);
+        }
+
+        .kpi-card .kpi-label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #5e6f8d;
+            font-weight: 600;
+            margin-bottom: 0.4rem;
+        }
+
+        .kpi-card .kpi-value {
+            font-size: 1.8rem;
+            font-weight: 800;
+            color: #0b2a4a;
+            line-height: 1.15;
+            letter-spacing: -0.02em;
+        }
+
+        .kpi-card .kpi-icon {
+            font-size: 1.8rem;
+            color: #2a6fdb;
+            opacity: 0.12;
+            transition: opacity 0.3s ease;
+        }
+        .kpi-card:hover .kpi-icon {
+            opacity: 0.25;
+        }
+        .kpi-card .kpi-icon i {
+            font-size: 2.2rem;
+        }
+
+        .kpi-card.green::before { background: linear-gradient(90deg, #27ae60, #2ecc71); }
+        .kpi-card.green .kpi-icon { color: #27ae60; }
+        .kpi-card.orange::before { background: linear-gradient(90deg, #e67e22, #f39c12); }
+        .kpi-card.orange .kpi-icon { color: #e67e22; }
+        .kpi-card.purple::before { background: linear-gradient(90deg, #8e44ad, #9b59b6); }
+        .kpi-card.purple .kpi-icon { color: #8e44ad; }
+        .kpi-card.teal::before { background: linear-gradient(90deg, #1abc9c, #2ecc71); }
+        .kpi-card.teal .kpi-icon { color: #1abc9c; }
+        .kpi-card.rose::before { background: linear-gradient(90deg, #e74c3c, #f1948a); }
+        .kpi-card.rose .kpi-icon { color: #e74c3c; }
+        .kpi-card.indigo::before { background: linear-gradient(90deg, #3f51b5, #7986cb); }
+        .kpi-card.indigo .kpi-icon { color: #3f51b5; }
+        .kpi-card.amber::before { background: linear-gradient(90deg, #f39c12, #f7dc6f); }
+        .kpi-card.amber .kpi-icon { color: #f39c12; }
+
+        /* ─── CHART CONTAINERS ─── */
+        .chart-container {
+            position: relative;
+            height: 210px;
+            width: 100%;
+        }
+        .chart-container.pie-chart { height: 190px; }
+        .chart-container.line-chart { height: 190px; }
+
+        /* ─── TABLE ─── */
+        .table-wrap {
+            border-radius: 24px;
+            overflow: hidden;
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(12px) saturate(180%);
+            -webkit-backdrop-filter: blur(12px) saturate(180%);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            box-shadow: 0 8px 40px rgba(10, 40, 80, 0.05);
+        }
+
+        .table-scroll {
+            max-height: 520px;
+            overflow-y: auto;
+            overflow-x: auto;
+        }
+
+        .table-scroll thead {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .table-scroll thead th {
+            background: #f8fbff;
+            color: #1a365d;
+            font-weight: 600;
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            border-bottom: 2px solid rgba(42, 111, 219, 0.08);
+            white-space: nowrap;
+            padding: 0.9rem 0.9rem;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.15s;
+        }
+        .table-scroll thead th:hover { background: #eef4fc; }
+        .table-scroll thead th i {
+            margin-left: 6px;
+            font-size: 0.65rem;
+            opacity: 0.4;
+            transition: opacity 0.2s;
+        }
+        .table-scroll thead th:hover i { opacity: 0.8; }
+
+        .table-scroll tbody td {
+            padding: 0.7rem 0.9rem;
+            font-size: 0.85rem;
+            vertical-align: middle;
+            color: #1e2f46;
+            border-bottom: 1px solid rgba(10, 40, 80, 0.04);
+            background: transparent;
+        }
+
+        .table-scroll tbody tr { transition: background 0.15s; }
+        .table-scroll tbody tr:hover { background: rgba(42, 111, 219, 0.03); }
+        .table-scroll tbody tr:last-child td { border-bottom: none; }
+
+        .table-scroll tbody td:first-child {
+            font-weight: 600;
+            color: #0b2a4a;
+        }
+
+        .table-controls {
+            padding: 0.8rem 1.4rem;
+            background: rgba(255, 255, 255, 0.5);
+            backdrop-filter: blur(8px);
+            border-bottom: 1px solid rgba(10, 40, 80, 0.04);
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .table-controls .search-box {
+            position: relative;
+            flex: 1 1 220px;
+            min-width: 160px;
+        }
+        .table-controls .search-box input {
+            width: 100%;
+            padding: 0.5rem 1rem 0.5rem 2.6rem;
+            border-radius: 100px;
+            border: 1px solid rgba(10, 40, 80, 0.08);
+            background: rgba(255, 255, 255, 0.8);
+            font-size: 0.85rem;
+            font-weight: 450;
+            transition: all 0.25s ease;
+            outline: none;
+            font-family: 'Inter', sans-serif;
+        }
+        .table-controls .search-box input:focus {
+            border-color: #2a6fdb;
+            box-shadow: 0 0 0 4px rgba(42, 111, 219, 0.08);
+            background: #fff;
+        }
+        .table-controls .search-box i {
+            position: absolute;
+            left: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #8a9bb0;
+            font-size: 0.95rem;
+        }
+
+        .table-controls .btn-group-actions .btn {
+            border-radius: 100px;
+            font-size: 0.8rem;
+            padding: 0.4rem 1.2rem;
+            font-weight: 500;
+            border: 1px solid rgba(10, 40, 80, 0.06);
+            background: rgba(255, 255, 255, 0.7);
+            color: #1a365d;
+            transition: all 0.2s ease;
+            backdrop-filter: blur(4px);
+        }
+        .table-controls .btn-group-actions .btn:hover {
+            background: #fff;
+            border-color: rgba(42, 111, 219, 0.2);
+            box-shadow: 0 4px 12px rgba(42, 111, 219, 0.06);
+        }
+        .table-controls .btn-group-actions .btn i { margin-right: 6px; }
+
+        .pagination-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+            color: #1a365d;
+            flex-wrap: wrap;
+        }
+        .pagination-controls .page-info {
+            font-weight: 600;
+            margin: 0 6px;
+            font-size: 0.8rem;
+        }
+        .pagination-controls .btn-page {
+            border: 1px solid rgba(10, 40, 80, 0.06);
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 10px;
+            padding: 0.25rem 0.85rem;
+            font-size: 0.8rem;
+            font-weight: 500;
+            color: #1a365d;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            backdrop-filter: blur(4px);
+        }
+        .pagination-controls .btn-page:hover:not(:disabled) {
+            background: #fff;
+            border-color: rgba(42, 111, 219, 0.2);
+            box-shadow: 0 2px 8px rgba(42, 111, 219, 0.06);
+        }
+        .pagination-controls .btn-page:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        /* ─── LOADING ─── */
+        #loadingOverlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(16px) saturate(180%);
+            -webkit-backdrop-filter: blur(16px) saturate(180%);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            flex-direction: column;
+        }
+        #loadingOverlay.show { display: flex; }
+        #loadingOverlay .spinner {
+            width: 56px;
+            height: 56px;
+            border: 4px solid rgba(42, 111, 219, 0.10);
+            border-top-color: #2a6fdb;
+            border-radius: 50%;
+            animation: spin 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
+        }
+        #loadingOverlay .load-text {
+            margin-top: 1.2rem;
+            font-weight: 500;
+            color: #1a365d;
+            letter-spacing: 0.03em;
+            font-size: 0.95rem;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* ─── ERROR TOAST ─── */
+        #errorToast {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            z-index: 9998;
+            min-width: 320px;
+            max-width: 440px;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(16px) saturate(180%);
+            -webkit-backdrop-filter: blur(16px) saturate(180%);
+            border-left: 5px solid #e74c3c;
+            border-radius: 18px;
+            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.12);
+            padding: 1rem 1.4rem;
+            display: none;
+            align-items: center;
+            gap: 14px;
+            animation: slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        #errorToast.show { display: flex; }
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(40px) scale(0.96);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+        #errorToast .toast-icon {
+            color: #e74c3c;
+            font-size: 1.6rem;
+        }
+        #errorToast .toast-msg {
+            flex: 1;
+            font-weight: 500;
+            color: #1a1f2e;
+            font-size: 0.9rem;
+        }
+        #errorToast .toast-close {
+            background: none;
+            border: none;
+            font-size: 1.4rem;
+            color: #8a9bb0;
+            cursor: pointer;
+            padding: 0 4px;
+            transition: color 0.2s;
+            line-height: 1;
+        }
+        #errorToast .toast-close:hover { color: #1a1f2e; }
+
+        /* ─── FOOTER ─── */
+        .dashboard-footer {
+            margin-top: 2rem;
+            padding: 1rem 1.8rem;
+            background: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(12px) saturate(180%);
+            -webkit-backdrop-filter: blur(12px) saturate(180%);
+            border-radius: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            box-shadow: 0 4px 20px rgba(10, 40, 80, 0.03);
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.82rem;
+            color: #5e6f8d;
+        }
+        .dashboard-footer .status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .dashboard-footer .status .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #2ecc71;
+            display: inline-block;
+            animation: pulse-dot 2s ease-in-out infinite;
+            box-shadow: 0 0 12px rgba(46, 204, 113, 0.25);
+        }
+        .dashboard-footer .status .dot.error {
+            background: #e74c3c;
+            box-shadow: 0 0 12px rgba(231, 76, 60, 0.25);
+        }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(0.8); }
+        }
+        .dashboard-footer .footer-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        /* ─── BADGE ─── */
+        .badge-soft {
+            background: rgba(42, 111, 219, 0.08);
+            color: #2a6fdb;
+            font-weight: 500;
+            padding: 0.35rem 0.9rem;
+            border-radius: 100px;
+            font-size: 0.75rem;
+            border: 1px solid rgba(42, 111, 219, 0.06);
+        }
+
+        /* ─── RESPONSIVE ─── */
+        @media (max-width: 768px) {
+            body { padding: 14px; }
+            .dashboard-header {
+                padding: 1rem 1.2rem;
+                flex-direction: column;
+                align-items: stretch;
+                gap: 12px;
+                border-radius: 20px;
+            }
+            .dashboard-header h1 { font-size: 1.2rem; }
+            .dashboard-header h1 i { font-size: 1.4rem; }
+            .header-right {
+                justify-content: space-between;
+                gap: 10px;
+            }
+            .header-right .datetime {
+                font-size: 0.75rem;
+                padding: 0.3rem 1rem;
+                gap: 8px;
+                flex-wrap: wrap;
+            }
+            .btn-refresh {
+                padding: 0.4rem 1rem;
+                font-size: 0.75rem;
+            }
+            .kpi-card .kpi-value { font-size: 1.3rem; }
+            .kpi-card .kpi-label { font-size: 0.6rem; }
+            .kpi-card { padding: 1rem 0.9rem; }
+            .table-controls {
+                flex-direction: column;
+                align-items: stretch;
+                padding: 0.8rem 1rem;
+            }
+            .table-controls .search-box { flex: 1 1 auto; }
+            .pagination-controls {
+                justify-content: center;
+                margin-top: 4px;
+            }
+            #errorToast {
+                left: 16px;
+                right: 16px;
+                min-width: unset;
+                max-width: unset;
+                bottom: 16px;
+            }
+            .chart-container { height: 170px; }
+            .chart-container.pie-chart { height: 160px; }
+            .chart-container.line-chart { height: 160px; }
+            .glass-card .card-body { padding: 0.8rem 1rem; }
+            .glass-card .card-header {
+                padding: 0.8rem 1rem;
+                font-size: 0.75rem;
+            }
+            .dashboard-footer {
+                flex-direction: column;
+                gap: 8px;
+                text-align: center;
+                padding: 0.8rem 1.2rem;
+            }
+            .dashboard-footer .footer-right {
+                flex-wrap: wrap;
+                justify-content: center;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .dashboard-header h1 { font-size: 1rem; }
+            .header-right .datetime { font-size: 0.65rem; }
+            .btn-refresh {
+                padding: 0.3rem 0.8rem;
+                font-size: 0.7rem;
+            }
+            .kpi-card .kpi-value { font-size: 1.1rem; }
+            .kpi-card { padding: 0.8rem 0.7rem; }
+            .table-scroll thead th {
+                font-size: 0.6rem;
+                padding: 0.6rem 0.5rem;
+            }
+            .table-scroll tbody td {
+                font-size: 0.75rem;
+                padding: 0.5rem 0.5rem;
+            }
+        }
+
+        /* ─── PRINT ─── */
+        @media print {
+            body {
+                background: #fff !important;
+                padding: 0.3in !important;
+            }
+            .dashboard-header {
+                background: #0b2a4a !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+                border-radius: 16px !important;
+            }
+            .kpi-card {
+                background: #f8faff !important;
+                border: 1px solid #e2eaf5 !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            .kpi-card::before { display: none !important; }
+            .glass-card {
+                background: #fff !important;
+                backdrop-filter: none !important;
+                border: 1px solid #e2eaf5 !important;
+                box-shadow: none !important;
+            }
+            .table-wrap {
+                background: #fff !important;
+                backdrop-filter: none !important;
+                border: 1px solid #e2eaf5 !important;
+                box-shadow: none !important;
+            }
+            .table-scroll thead th {
+                background: #f0f4f9 !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            .btn-refresh,
+            .table-controls .btn-group-actions .btn,
+            .pagination-controls .btn-page,
+            .no-print {
+                display: none !important;
+            }
+            .table-scroll {
+                max-height: none !important;
+                overflow: visible !important;
+            }
+            .table-scroll thead { position: static !important; }
+            #loadingOverlay { display: none !important; }
+            #errorToast { display: none !important; }
+            .dashboard-footer {
+                background: #f8faff !important;
+                border: 1px solid #e2eaf5 !important;
+                box-shadow: none !important;
+                backdrop-filter: none !important;
+            }
+            .chart-container { height: 180px !important; }
+            .kpi-card:hover { transform: none !important; }
+            .glass-card:hover { transform: none !important; }
+            .dashboard-header::after,
+            .dashboard-header::before { display: none !important; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ─── LOADING ─── -->
+    <div id="loadingOverlay">
+        <div class="spinner"></div>
+        <div class="load-text"><i class="fas fa-sync-alt fa-fw me-2" style="opacity:0.5;"></i>Loading dashboard…</div>
+    </div>
+
+    <!-- ─── ERROR TOAST ─── -->
+    <div id="errorToast">
+        <span class="toast-icon"><i class="fas fa-circle-exclamation"></i></span>
+        <span class="toast-msg" id="errorMsg">Unable to fetch data.</span>
+        <button class="toast-close" id="toastClose">&times;</button>
+    </div>
+
+    <!-- ─── MAIN ─── -->
+    <div class="container-fluid px-0 flex-grow-1 d-flex flex-column">
+
+        <!-- ═══ HEADER ═══ -->
+        <header class="dashboard-header">
+            <h1>
+                <i class="fas fa-truck-fast"></i>
+                <span>Haier Logistics</span>
+                <span style="font-size:0.6rem; font-weight:400; opacity:0.5; -webkit-text-fill-color:rgba(255,255,255,0.4); letter-spacing:0.1em; background:none;">· PAKISTAN</span>
+            </h1>
+            <div class="header-right">
+                <div class="datetime">
+                    <span><i class="far fa-calendar-alt me-1"></i><span id="currentDate"></span></span>
+                    <span style="opacity:0.3;">|</span>
+                    <span><i class="far fa-clock me-1"></i><span id="currentTime"></span></span>
+                </div>
+                <button class="btn-refresh no-print" id="refreshBtn">
+                    <i class="fas fa-sync-alt"></i> Refresh
+                </button>
+            </div>
+        </header>
+
+        <!-- ═══ KPI ROW ═══ -->
+        <section class="row g-3 mb-4" id="kpiRow">
+            <!-- injected by JS -->
+        </section>
+
+        <!-- ═══ CHARTS ═══ -->
+        <section class="row g-3 mb-4">
+            <div class="col-12 col-md-6">
+                <div class="glass-card chart-card">
+                    <div class="card-header"><i class="fas fa-chart-bar"></i>Total Units by Warehouse</div>
+                    <div class="card-body">
+                        <div class="chart-container"><canvas id="chartUnits"></canvas></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-md-6">
+                <div class="glass-card chart-card">
+                    <div class="card-header"><i class="fas fa-chart-bar"></i>Total DN by Warehouse</div>
+                    <div class="card-body">
+                        <div class="chart-container"><canvas id="chartDn"></canvas></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-12 col-md-6">
+                <div class="glass-card chart-card">
+                    <div class="card-header"><i class="fas fa-chart-pie"></i>Pending POD Qty</div>
+                    <div class="card-body">
+                        <div class="chart-container pie-chart"><canvas id="chartPiePod"></canvas></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-md-6">
+                <div class="glass-card chart-card">
+                    <div class="card-header"><i class="fas fa-chart-pie"></i>Pending PGI Qty</div>
+                    <div class="card-body">
+                        <div class="chart-container pie-chart"><canvas id="chartPiePgi"></canvas></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-12 col-md-6">
+                <div class="glass-card chart-card">
+                    <div class="card-header"><i class="fas fa-chart-line"></i>Average Delivery Days</div>
+                    <div class="card-body">
+                        <div class="chart-container line-chart"><canvas id="chartDeliveryDays"></canvas></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-md-6">
+                <div class="glass-card chart-card">
+                    <div class="card-header"><i class="fas fa-chart-line"></i>Average POD Days</div>
+                    <div class="card-body">
+                        <div class="chart-container line-chart"><canvas id="chartPodDays"></canvas></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══ TABLE ═══ -->
+        <section class="mb-3">
+            <div class="glass-card" style="padding:0;">
+                <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2" style="border-bottom:1px solid rgba(10,40,80,0.04);">
+                    <span><i class="fas fa-warehouse"></i>Warehouse Performance</span>
+                    <span class="badge-soft" id="warehouseCount">0 warehouses</span>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-wrap" style="border-radius:0 0 24px 24px;">
+
+                        <!-- controls -->
+                        <div class="table-controls no-print">
+                            <div class="search-box">
+                                <i class="fas fa-search"></i>
+                                <input type="text" id="tableSearch" placeholder="Search warehouse…" />
+                            </div>
+                            <div class="d-flex flex-wrap align-items-center gap-2">
+                                <div class="btn-group-actions">
+                                    <button class="btn" id="exportCsvBtn"><i class="fas fa-file-csv"></i> CSV</button>
+                                    <button class="btn" id="printBtn"><i class="fas fa-print"></i> Print</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- table -->
+                        <div class="table-scroll" id="tableScroll">
+                            <table class="table table-hover mb-0" id="warehouseTable">
+                                <thead>
+                                    <tr>
+                                        <th data-sort="warehouse">Warehouse <i class="fas fa-sort"></i></th>
+                                        <th data-sort="total_dn_created" class="text-end">Total DN <i class="fas fa-sort"></i></th>
+                                        <th data-sort="total_dn_quantity" class="text-end">Total Units <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_delivery_dn" class="text-end">PGI DN <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_delivery_quantity" class="text-end">PGI Qty <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_pod_dn" class="text-end">POD DN <i class="fas fa-sort"></i></th>
+                                        <th data-sort="pending_pod_quantity" class="text-end">POD Qty <i class="fas fa-sort"></i></th>
+                                        <th data-sort="avg_delivery_days" class="text-end">Delivery <i class="fas fa-sort"></i></th>
+                                        <th data-sort="avg_pod_days" class="text-end">POD <i class="fas fa-sort"></i></th>
+                                        <th data-sort="avg_total_cycle_days" class="text-end">Cycle <i class="fas fa-sort"></i></th>
+                                        <th data-sort="avg_pending_delivery_days" class="text-end">PGI Days <i class="fas fa-sort"></i></th>
+                                        <th data-sort="avg_pending_pod_days" class="text-end">POD Days <i class="fas fa-sort"></i></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tableBody"></tbody>
+                            </table>
+                        </div>
+
+                        <!-- pagination -->
+                        <div class="table-controls no-print" style="border-top:1px solid rgba(10,40,80,0.04); border-bottom:none;">
+                            <div class="pagination-controls" id="paginationControls">
+                                <button class="btn-page" id="prevPage" disabled><i class="fas fa-chevron-left"></i></button>
+                                <span class="page-info" id="pageInfo">Page 1 of 1</span>
+                                <button class="btn-page" id="nextPage" disabled><i class="fas fa-chevron-right"></i></button>
+                                <span class="ms-2 text-secondary" style="font-size:0.75rem; opacity:0.6;" id="rowCountInfo">0 rows</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══ FOOTER ═══ -->
+        <footer class="dashboard-footer mt-auto">
+            <div class="status">
+                <span class="dot" id="statusDot"></span>
+                <span id="statusText">Connected to n8n</span>
+            </div>
+            <div class="footer-right">
+                <span><i class="far fa-clock me-1"></i>Updated: <span id="lastUpdated">—</span></span>
+                <span style="opacity:0.2;">|</span>
+                <span><i class="fas fa-code-branch me-1" style="opacity:0.4;"></i>v2.0</span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- ────────────────────────────────────────────────────────── -->
+    <!-- ─── JAVASCRIPT ─── -->
+    <!-- ────────────────────────────────────────────────────────── -->
+    <script>
+        (function () {
+            'use strict';
+
+            // ─── CONFIG ───
+            const WEBHOOK_URL = 'http://localhost:5678/webhook/e8c63b93-4b19-4705-b8b7-09c52ee1478f';
+            const REFRESH_INTERVAL_MS = 30000;
+            const PAGE_SIZE = 10;
+
+            // ─── STATE ───
+            let allWarehouses = [];
+            let filteredWarehouses = [];
+            let currentPage = 1;
+            let sortKey = 'warehouse';
+            let sortAsc = true;
+            let searchTerm = '';
+            let isRefreshing = false;
+
+            // chart instances
+            let chartUnits = null;
+            let chartDn = null;
+            let chartPiePod = null;
+            let chartPiePgi = null;
+            let chartDeliveryDays = null;
+            let chartPodDays = null;
+
+            // ─── DOM refs ───
+            const $ = (sel) => document.querySelector(sel);
+            const $$ = (sel) => document.querySelectorAll(sel);
+
+            const loadingOverlay = $('#loadingOverlay');
+            const errorToast = $('#errorToast');
+            const errorMsg = $('#errorMsg');
+            const toastClose = $('#toastClose');
+            const refreshBtn = $('#refreshBtn');
+            const currentDateEl = $('#currentDate');
+            const currentTimeEl = $('#currentTime');
+            const lastUpdatedEl = $('#lastUpdated');
+            const statusDot = $('#statusDot');
+            const statusText = $('#statusText');
+
+            const kpiRow = $('#kpiRow');
+            const tableBody = $('#tableBody');
+            const tableSearch = $('#tableSearch');
+            const warehouseCount = $('#warehouseCount');
+            const prevPage = $('#prevPage');
+            const nextPage = $('#nextPage');
+            const pageInfo = $('#pageInfo');
+            const rowCountInfo = $('#rowCountInfo');
+            const exportCsvBtn = $('#exportCsvBtn');
+            const printBtn = $('#printBtn');
+            const tableScroll = $('#tableScroll');
+
+            // ─── Helpers ───
+            function fmt(n) {
+                if (n === undefined || n === null) return '—';
+                const num = typeof n === 'string' ? parseFloat(n) : n;
+                if (isNaN(num)) return '—';
+                return Number(num).toLocaleString('en-US', { maximumFractionDigits: 0, minimumFractionDigits: 0 });
+            }
+
+            function fmt1(n) {
+                if (n === undefined || n === null) return '—';
+                const num = typeof n === 'string' ? parseFloat(n) : n;
+                if (isNaN(num)) return '—';
+                return Number(num).toFixed(1);
+            }
+
+            function showLoading(show) {
+                loadingOverlay.classList.toggle('show', show);
+            }
+
+            function showError(msg) {
+                errorMsg.textContent = msg || 'Unable to fetch data.';
+                errorToast.classList.add('show');
+                statusDot.className = 'dot error';
+                statusText.textContent = '⚠️ Error';
+                setTimeout(() => { errorToast.classList.remove('show'); }, 8000);
+            }
+
+            function hideError() {
+                errorToast.classList.remove('show');
+            }
+
+            function updateClock() {
+                const now = new Date();
+                currentDateEl.textContent = now.toLocaleDateString('en-US', {
+                    weekday: 'short',
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric'
+                });
+                currentTimeEl.textContent = now.toLocaleTimeString('en-US', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+            }
+
+            function updateLastUpdated() {
+                const now = new Date();
+                lastUpdatedEl.textContent = now.toLocaleString('en-US', {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+            }
+
+            function setStatus(ok) {
+                if (ok) {
+                    statusDot.className = 'dot';
+                    statusText.textContent = 'Connected to n8n';
+                } else {
+                    statusDot.className = 'dot error';
+                    statusText.textContent = '⚠️ Disconnected';
                 }
-                
-                status = derive_status(good_issue_date, pod_date, dn_work)
-                record.update(status)
-                
-                if "created_at" in self.table_columns:
-                    record["created_at"] = datetime.utcnow()
+            }
 
-                if self.validate_business_rules:
-                    val_errors = BusinessValidator.validate_record(record)
-                    if val_errors:
-                        errors.append({
-                            "row": excel_row_number,
-                            "dn": dn_no,
-                            "material": material_no,
-                            "errors": val_errors,
-                            "type": "validation"
-                        })
-                        continue
+            // ─── KPI ───
+            function renderKpi(summary) {
+                const items = [
+                    { label: 'Total DN Created', value: summary.total_dn_created || 0, icon: 'fa-file-invoice', cls: '' },
+                    { label: 'Total Units Created', value: summary.total_dn_quantity || 0, icon: 'fa-cubes', cls: 'green' },
+                    { label: 'Total Revenue', value: summary.total_revenue || 0, icon: 'fa-dollar-sign', cls: 'teal' },
+                    { label: 'Active Dealers', value: summary.active_dealers || 0, icon: 'fa-users', cls: 'indigo' },
+                    { label: 'Active Warehouses', value: summary.active_warehouses || 0, icon: 'fa-warehouse', cls: 'purple' },
+                    { label: 'Cities Served', value: summary.cities_served || 0, icon: 'fa-city', cls: 'amber' },
+                    { label: 'Delivered DN', value: summary.delivered_dn || 0, icon: 'fa-truck', cls: 'green' },
+                    { label: 'Pending Delivery DN', value: summary.pending_delivery_dn || 0, icon: 'fa-clock', cls: 'orange' },
+                    { label: 'Pending POD DN', value: summary.pending_pod_dn || 0, icon: 'fa-file-signature', cls: 'rose' },
+                    { label: 'POD Completed DN', value: summary.pod_completed_dn || 0, icon: 'fa-check-double', cls: 'teal' }
+                ];
 
-                filtered_record = {k: v for k, v in record.items() if k in self.table_columns}
-                records.append(filtered_record)
-                
-            except Exception as e:
-                errors.append({
-                    "row": excel_row_number,
-                    "dn": row.get(col_dn_no),
-                    "material": row.get(col_material_no),
-                    "errors": [str(e)],
-                    "type": "error"
-                })
-                logger.error(f"Error at row {excel_row_number}: {e}")
+                kpiRow.innerHTML = '';
+                items.forEach((item) => {
+                    const col = document.createElement('div');
+                    col.className = 'col-6 col-md-3 col-lg-2';
+                    col.innerHTML = `
+                        <div class="kpi-card ${item.cls}">
+                            <div class="d-flex align-items-start justify-content-between">
+                                <div>
+                                    <div class="kpi-label">${item.label}</div>
+                                    <div class="kpi-value">${fmt(item.value)}</div>
+                                </div>
+                                <div class="kpi-icon"><i class="fas ${item.icon}"></i></div>
+                            </div>
+                        </div>
+                    `;
+                    kpiRow.appendChild(col);
+                });
+            }
 
-        return records, errors
+            // ─── Table ───
+            function renderTable() {
+                const term = searchTerm.trim().toLowerCase();
+                filteredWarehouses = allWarehouses.filter(w =>
+                    w.warehouse && w.warehouse.toLowerCase().includes(term)
+                );
 
-    def _upsert_records_with_safe_batches(self, records: List[Dict[str, Any]]) -> Tuple[int, int]:
-        """Upsert records with safe batch mechanism."""
-        if not records:
-            return 0, 0
-        
-        total = 0
-        batch_count = 0
-        protected_fields = {"id", "created_at"}
-        has_constraint = self._unique_constraint_exists
-        safe_batch_size = min(self.batch_size, SAFE_INSERT_BATCH_SIZE)
-        
-        logger.info(f"📊 Starting upsert with batch size: {safe_batch_size} rows")
-        
-        try:
-            for start in range(0, len(records), safe_batch_size):
-                batch = records[start:start + safe_batch_size]
-                batch_count += 1
-                
-                # Remove any duplicates within batch
-                seen_in_batch = set()
-                unique_batch = []
-                for record in batch:
-                    key = (record.get("dn_no"), record.get("material_no"))
-                    if key not in seen_in_batch:
-                        seen_in_batch.add(key)
-                        unique_batch.append(record)
-                
-                if len(unique_batch) < len(batch):
-                    logger.warning(f"⚠️ Removed {len(batch) - len(unique_batch)} duplicates in batch {batch_count}")
-                    batch = unique_batch
-                
-                if not batch:
-                    logger.info(f"⏭️ Skipping empty batch {batch_count}")
-                    continue
-                
-                logger.info(f"📦 Batch {batch_count}: {len(batch)} records")
-                
-                try:
-                    if has_constraint and self.conflict_strategy == "upsert":
-                        stmt = insert(self.table).values(batch)
-                        update_fields = {
-                            column.name: getattr(stmt.excluded, column.name)
-                            for column in self.table.columns
-                            if column.name not in ({"dn_no", "material_no"} | protected_fields)
+                filteredWarehouses.sort((a, b) => {
+                    let va = a[sortKey] ?? '';
+                    let vb = b[sortKey] ?? '';
+                    if (typeof va === 'string') va = va.toLowerCase();
+                    if (typeof vb === 'string') vb = vb.toLowerCase();
+                    if (va < vb) return sortAsc ? -1 : 1;
+                    if (va > vb) return sortAsc ? 1 : -1;
+                    return 0;
+                });
+
+                const total = filteredWarehouses.length;
+                const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+                if (currentPage > totalPages) currentPage = totalPages;
+                if (currentPage < 1) currentPage = 1;
+
+                const start = (currentPage - 1) * PAGE_SIZE;
+                const end = Math.min(start + PAGE_SIZE, total);
+                const pageItems = filteredWarehouses.slice(start, end);
+
+                warehouseCount.textContent = `${total} warehouse${total !== 1 ? 's' : ''}`;
+
+                if (total === 0) {
+                    tableBody.innerHTML = `<tr><td colspan="12" class="text-center text-muted py-4" style="font-size:0.9rem;">No warehouses found</td></tr>`;
+                } else {
+                    tableBody.innerHTML = pageItems.map(w => `
+                        <tr>
+                            <td><strong>${w.warehouse || '—'}</strong></td>
+                            <td class="text-end">${fmt(w.total_dn_created)}</td>
+                            <td class="text-end">${fmt(w.total_dn_quantity)}</td>
+                            <td class="text-end">${fmt(w.pending_delivery_dn)}</td>
+                            <td class="text-end">${fmt(w.pending_delivery_quantity)}</td>
+                            <td class="text-end">${fmt(w.pending_pod_dn)}</td>
+                            <td class="text-end">${fmt(w.pending_pod_quantity)}</td>
+                            <td class="text-end">${fmt1(w.avg_delivery_days)}</td>
+                            <td class="text-end">${fmt1(w.avg_pod_days)}</td>
+                            <td class="text-end">${fmt1(w.avg_total_cycle_days)}</td>
+                            <td class="text-end">${fmt1(w.avg_pending_delivery_days)}</td>
+                            <td class="text-end">${fmt1(w.avg_pending_pod_days)}</td>
+                        </tr>
+                    `).join('');
+                }
+
+                pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+                prevPage.disabled = currentPage <= 1;
+                nextPage.disabled = currentPage >= totalPages;
+                rowCountInfo.textContent = `${total} row${total !== 1 ? 's' : ''}`;
+
+                $$('#warehouseTable thead th').forEach(th => {
+                    const key = th.dataset.sort;
+                    const icon = th.querySelector('i');
+                    if (icon) {
+                        if (key === sortKey) {
+                            icon.className = `fas fa-sort-${sortAsc ? 'up' : 'down'}`;
+                            icon.style.opacity = '1';
+                        } else {
+                            icon.className = 'fas fa-sort';
+                            icon.style.opacity = '0.3';
                         }
-                        stmt = stmt.on_conflict_do_update(
-                            index_elements=["dn_no", "material_no"],
-                            set_=update_fields
-                        )
-                        result = self.db.execute(stmt)
-                        total += result.rowcount or 0
-                        
-                    elif has_constraint and self.conflict_strategy == "skip":
-                        stmt = insert(self.table).values(batch).on_conflict_do_nothing(
-                            index_elements=["dn_no", "material_no"]
-                        )
-                        result = self.db.execute(stmt)
-                        total += result.rowcount or 0
-                        
-                    else:
-                        # Delete-insert strategy
-                        pairs = [(r["dn_no"], r["material_no"]) for r in batch]
-                        for i in range(0, len(pairs), SAFE_DELETE_CHUNK_SIZE):
-                            chunk = pairs[i:i+SAFE_DELETE_CHUNK_SIZE]
-                            placeholders = []
-                            params = {}
-                            for idx, (dn, mat) in enumerate(chunk):
-                                placeholders.append(f"(:dn_{idx}, :mat_{idx})")
-                                params[f"dn_{idx}"] = dn
-                                params[f"mat_{idx}"] = mat
-                            if placeholders:
-                                sql = f"DELETE FROM delivery_reports WHERE (dn_no, material_no) IN ({', '.join(placeholders)})"
-                                self.db.execute(text(sql), params)
-                        
-                        self.db.execute(insert(self.table).values(batch))
-                        total += len(batch)
-                    
-                    self.db.commit()
-                    logger.info(f"✅ Batch {batch_count} committed: {len(batch)} records")
-                    
-                except Exception as e:
-                    self.db.rollback()
-                    logger.error(f"❌ Batch {batch_count} failed: {e}")
-                    # Try one more time with smaller batch
-                    if len(batch) > 100:
-                        logger.warning(f"Retrying batch {batch_count} with smaller chunks")
-                        for i in range(0, len(batch), 100):
-                            chunk = batch[i:i+100]
-                            try:
-                                stmt = insert(self.table).values(chunk)
-                                if has_constraint and self.conflict_strategy == "upsert":
-                                    stmt = stmt.on_conflict_do_update(
-                                        index_elements=["dn_no", "material_no"],
-                                        set_={col.name: getattr(stmt.excluded, col.name) for col in self.table.columns if col.name not in ({"dn_no", "material_no"} | protected_fields)}
-                                    )
-                                result = self.db.execute(stmt)
-                                self.db.commit()
-                                total += result.rowcount or 0
-                                logger.info(f"  └── Chunk {i//100 + 1} committed: {len(chunk)} records")
-                            except Exception as chunk_error:
-                                self.db.rollback()
-                                logger.error(f"  └── Chunk {i//100 + 1} failed: {chunk_error}")
-                    else:
-                        raise
-            
-            logger.info(f"✅ All batches completed: {total} rows upserted in {batch_count} batches")
-            return total, batch_count
-            
-        except Exception as exc:
-            self.db.rollback()
-            logger.error(f"❌ Database error: {exc}")
-            raise ExcelImportServiceError(f"Database upsert failed: {str(exc)}") from exc
-
-    def _build_response(
-        self,
-        sheet_name: str,
-        batch_id: str,
-        success: bool,
-        errors: Optional[List[Dict]] = None,
-    ) -> Dict[str, Any]:
-        import_duration = 0
-        if self.metrics["import_start"] and self.metrics["import_end"]:
-            start = datetime.fromisoformat(self.metrics["import_start"])
-            end = datetime.fromisoformat(self.metrics["import_end"])
-            import_duration = (end - start).total_seconds()
-        
-        return {
-            "success": success,
-            "sheet_name": sheet_name,
-            "batch_id": batch_id,
-            "metrics": {
-                "rows_read": self.metrics["rows_read"],
-                "rows_valid": self.metrics["rows_valid"],
-                "rows_upserted": self.metrics["rows_upserted"],
-                "rows_duplicate": self.metrics["rows_duplicate"],
-                "rows_invalid": self.metrics["rows_invalid"],
-                "rows_skipped": self.metrics["rows_skipped"],
-                "invalid_dates": self.metrics["invalid_dates"],
-                "invalid_amounts": self.metrics["invalid_amounts"],
-                "parse_duration_seconds": round(self.metrics["parse_time"], 2),
-                "database_duration_seconds": round(self.metrics["database_time"], 2),
-                "import_duration_seconds": round(import_duration, 2),
-                "rows_per_second": round(self.metrics["rows_read"] / import_duration if import_duration > 0 else 0, 2),
-                "batch_count": self.metrics["batch_count"],
-                "batch_size": self.batch_size,
-            },
-            "validation_errors": errors or [],
-            "duplicate_rows": self.metrics["duplicate_rows"][:50],
-        }
-
-# =====================================================================================================
-# BLOCK 12: PUBLIC ENTRY POINT
-# =====================================================================================================
-
-def import_delivery_excel(
-    db: Session,
-    file_path: str,
-    source_filename: Optional[str] = None,
-    sheet_name: Optional[str] = None,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-    upload_batch_id: Optional[str] = None,
-    auto_create_constraint: bool = True,
-    validate_business_rules: bool = True,
-    conflict_strategy: str = "upsert",
-    use_vectorization: bool = True,
-) -> Dict[str, Any]:
-    service = ExcelImportService(
-        db=db,
-        batch_size=batch_size,
-        auto_create_constraint=auto_create_constraint,
-        validate_business_rules=validate_business_rules,
-        conflict_strategy=conflict_strategy,
-        use_vectorization=use_vectorization,
-    )
-    return service.import_file(
-        file_path=file_path,
-        source_filename=source_filename,
-        sheet_name=sheet_name,
-        upload_batch_id=upload_batch_id,
-    )
-
-# =====================================================================================================
-# BLOCK 13: FIX MISSING WAREHOUSE DATA
-# =====================================================================================================
-
-def fix_missing_warehouse_data(db: Session) -> Dict[str, Any]:
-    try:
-        result = db.execute(
-            text("""
-                SELECT id, dn_no, ship_to_city, warehouse
-                FROM delivery_reports
-                WHERE (warehouse IS NULL OR TRIM(warehouse) = '')
-                AND ship_to_city IS NOT NULL
-                AND TRIM(ship_to_city) != ''
-            """)
-        ).fetchall()
-        
-        if not result:
-            return {"success": True, "message": "No records with missing warehouse found", "updated_count": 0}
-        
-        updated_count = 0
-        for row in result:
-            record_id, dn_no, ship_to_city, warehouse = row
-            mapped_warehouse = map_city_to_warehouse(ship_to_city)
-            if mapped_warehouse:
-                db.execute(
-                    text("""
-                        UPDATE delivery_reports
-                        SET warehouse = :warehouse,
-                            warehouse_code = :warehouse_code,
-                            updated_at = :updated_at
-                        WHERE id = :id
-                    """),
-                    {
-                        "id": record_id,
-                        "warehouse": mapped_warehouse,
-                        "warehouse_code": get_warehouse_code(mapped_warehouse),
-                        "updated_at": datetime.utcnow()
                     }
-                )
-                updated_count += 1
-        
-        db.commit()
-        logger.info(f"✅ Fixed {updated_count} records with missing warehouse data")
-        return {"success": True, "message": f"Fixed {updated_count} records", "updated_count": updated_count}
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"❌ Failed to fix missing warehouse data: {e}")
-        return {"success": False, "message": str(e), "updated_count": 0}
+                });
+            }
 
-# =====================================================================================================
-# BLOCK 14: EXPORTED SYMBOLS
-# =====================================================================================================
+            // ─── Charts ───
+            function destroyCharts() {
+                if (chartUnits) { chartUnits.destroy(); chartUnits = null; }
+                if (chartDn) { chartDn.destroy(); chartDn = null; }
+                if (chartPiePod) { chartPiePod.destroy(); chartPiePod = null; }
+                if (chartPiePgi) { chartPiePgi.destroy(); chartPiePgi = null; }
+                if (chartDeliveryDays) { chartDeliveryDays.destroy(); chartDeliveryDays = null; }
+                if (chartPodDays) { chartPodDays.destroy(); chartPodDays = null; }
+            }
 
-__all__ = [
-    "ExcelImportService",
-    "ExcelImportServiceError",
-    "WorksheetNotFoundError",
-    "ColumnMappingError",
-    "VerificationError",
-    "ValidationError",
-    "import_delivery_excel",
-    "fix_missing_warehouse_data",
-    "check_unique_constraint_exists",
-    "create_unique_constraint_if_missing",
-    "BusinessValidator",
-    "map_city_to_warehouse",
-    "CITY_TO_WAREHOUSE_MAP",
-    "DEFAULT_BATCH_SIZE",
-]
+            function renderCharts(warehouses) {
+                destroyCharts();
 
-# =====================================================================================================
-# MODULE INITIALIZATION LOGGING
-# =====================================================================================================
+                const labels = warehouses.map(w => w.warehouse || 'Unknown');
+                const units = warehouses.map(w => parseFloat(w.total_dn_quantity) || 0);
+                const dns = warehouses.map(w => parseFloat(w.total_dn_created) || 0);
+                const podQty = warehouses.map(w => parseFloat(w.pending_pod_quantity) || 0);
+                const pgiQty = warehouses.map(w => parseFloat(w.pending_delivery_quantity) || 0);
+                const delDays = warehouses.map(w => parseFloat(w.avg_delivery_days) || 0);
+                const podDays = warehouses.map(w => parseFloat(w.avg_pod_days) || 0);
 
-logger.info("=" * 60)
-logger.info("📊 EXCEL IMPORT SERVICE v3.7 - FIXED JHELUM MAPPING")
-logger.info("=" * 60)
-logger.info(f"  ✅ Batch Size: {DEFAULT_BATCH_SIZE:,} rows")
-logger.info(f"  ✅ Safe Insert Limit: {SAFE_INSERT_BATCH_SIZE:,} rows")
-logger.info(f"  ✅ Polars Engine: {'Enabled' if HAS_POLARS else 'Disabled'}")
-logger.info("  ✅ Safe Batch Mechanism: Enabled")
-logger.info("  ✅ Duplicate Deduplication: Enabled")
-logger.info("  ✅ Jhelum/Jehlum Mapping: FIXED")
-logger.info(f"  ✅ Warehouse Mapping: {len(CITY_TO_WAREHOUSE_MAP)} cities")
-logger.info("=" * 60)
+                const palette = [
+                    '#2a6fdb', '#4a8fe0', '#6aafe8', '#8ac9f0', '#aad9f5',
+                    '#c5e6fa', '#ddf0fd', '#f0f7ff'
+                ];
 
-# =====================================================================================================
-# END OF FILE
-# =====================================================================================================
+                function bgColors(n) {
+                    const c = [];
+                    for (let i = 0; i < n; i++) {
+                        c.push(palette[i % palette.length]);
+                    }
+                    return c;
+                }
+
+                const commonOpts = {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: { font: { family: 'Inter', size: 10 }, boxWidth: 12, padding: 8 }
+                        }
+                    },
+                    scales: {
+                        y: { beginAtZero: true, grid: { color: 'rgba(10,40,80,0.04)', drawBorder: false } },
+                        x: { grid: { display: false } }
+                    }
+                };
+
+                // Bar: Units
+                chartUnits = new Chart(document.getElementById('chartUnits').getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: 'Total Units',
+                            data: units,
+                            backgroundColor: bgColors(units.length),
+                            borderRadius: 6,
+                            borderSkipped: false,
+                            hoverBackgroundColor: '#2a6fdb'
+                        }]
+                    },
+                    options: { ...commonOpts, plugins: { legend: { display: false } } }
+                });
+
+                // Bar: DN
+                chartDn = new Chart(document.getElementById('chartDn').getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: 'Total DN',
+                            data: dns,
+                            backgroundColor: bgColors(dns.length),
+                            borderRadius: 6,
+                            borderSkipped: false,
+                            hoverBackgroundColor: '#2a6fdb'
+                        }]
+                    },
+                    options: { ...commonOpts, plugins: { legend: { display: false } } }
+                });
+
+                // Pie: POD
+                chartPiePod = new Chart(document.getElementById('chartPiePod').getContext('2d'), {
+                    type: 'pie',
+                    data: {
+                        labels,
+                        datasets: [{
+                            data: podQty,
+                            backgroundColor: bgColors(podQty.length),
+                            borderWidth: 2,
+                            borderColor: 'rgba(255,255,255,0.8)',
+                            hoverOffset: 8
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: 'bottom',
+                                labels: { boxWidth: 12, padding: 8, font: { family: 'Inter', size: 9 } }
+                            }
+                        }
+                    }
+                });
+
+                // Pie: PGI
+                chartPiePgi = new Chart(document.getElementById('chartPiePgi').getContext('2d'), {
+                    type: 'pie',
+                    data: {
+                        labels,
+                        datasets: [{
+                            data: pgiQty,
+                            backgroundColor: bgColors(pgiQty.length),
+                            borderWidth: 2,
+                            borderColor: 'rgba(255,255,255,0.8)',
+                            hoverOffset: 8
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: 'bottom',
+                                labels: { boxWidth: 12, padding: 8, font: { family: 'Inter', size: 9 } }
+                            }
+                        }
+                    }
+                });
+
+                // Line: Delivery Days
+                chartDeliveryDays = new Chart(document.getElementById('chartDeliveryDays').getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: 'Avg Delivery Days',
+                            data: delDays,
+                            borderColor: '#2a6fdb',
+                            backgroundColor: (ctx) => {
+                                const gradient = ctx.chart.ctx.createLinearGradient(0, 0, 0, 200);
+                                gradient.addColorStop(0, 'rgba(42,111,219,0.20)');
+                                gradient.addColorStop(1, 'rgba(42,111,219,0.01)');
+                                return gradient;
+                            },
+                            fill: true,
+                            tension: 0.3,
+                            pointBackgroundColor: '#2a6fdb',
+                            pointBorderColor: '#fff',
+                            pointBorderWidth: 2,
+                            pointRadius: 4,
+                            pointHoverRadius: 7,
+                            borderWidth: 2.5
+                        }]
+                    },
+                    options: { ...commonOpts, plugins: { legend: { display: false } } }
+                });
+
+                // Line: POD Days
+                chartPodDays = new Chart(document.getElementById('chartPodDays').getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: 'Avg POD Days',
+                            data: podDays,
+                            borderColor: '#e67e22',
+                            backgroundColor: (ctx) => {
+                                const gradient = ctx.chart.ctx.createLinearGradient(0, 0, 0, 200);
+                                gradient.addColorStop(0, 'rgba(230,126,34,0.20)');
+                                gradient.addColorStop(1, 'rgba(230,126,34,0.01)');
+                                return gradient;
+                            },
+                            fill: true,
+                            tension: 0.3,
+                            pointBackgroundColor: '#e67e22',
+                            pointBorderColor: '#fff',
+                            pointBorderWidth: 2,
+                            pointRadius: 4,
+                            pointHoverRadius: 7,
+                            borderWidth: 2.5
+                        }]
+                    },
+                    options: { ...commonOpts, plugins: { legend: { display: false } } }
+                });
+            }
+
+            // ─── Fetch ───
+            async function fetchData(showLoadingIndicator = true) {
+                if (isRefreshing) return;
+                isRefreshing = true;
+                refreshBtn.disabled = true;
+
+                if (showLoadingIndicator) showLoading(true);
+                hideError();
+
+                try {
+                    const resp = await fetch(WEBHOOK_URL, {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' }
+                    });
+
+                    if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+
+                    const data = await resp.json();
+
+                    if (!data || typeof data !== 'object' || !data.summary || !Array.isArray(data.warehouses)) {
+                        throw new Error('Invalid data structure: expected "summary" and "warehouses" array.');
+                    }
+
+                    const summary = data.summary;
+                    const warehouses = data.warehouses || [];
+
+                    if (Object.keys(summary).length === 0) throw new Error('Summary data is empty.');
+
+                    allWarehouses = warehouses;
+
+                    renderKpi(summary);
+                    renderTable();
+                    renderCharts(warehouses);
+
+                    setStatus(true);
+                    updateLastUpdated();
+                    hideError();
+
+                } catch (err) {
+                    console.error('Fetch error:', err);
+                    showError(err.message || 'Failed to load data from webhook.');
+                    setStatus(false);
+                    if (allWarehouses.length === 0) {
+                        tableBody.innerHTML = `<tr><td colspan="12" class="text-center text-muted py-4" style="font-size:0.9rem;">No data available</td></tr>`;
+                        warehouseCount.textContent = '0 warehouses';
+                    }
+                } finally {
+                    if (showLoadingIndicator) showLoading(false);
+                    isRefreshing = false;
+                    refreshBtn.disabled = false;
+                }
+            }
+
+            // ─── Export CSV ───
+            function exportCsv() {
+                if (filteredWarehouses.length === 0) {
+                    alert('No data to export.');
+                    return;
+                }
+                const headers = [
+                    'Warehouse', 'Total DN', 'Total Units',
+                    'Pending PGI DN', 'Pending PGI Qty',
+                    'Pending POD DN', 'Pending POD Qty',
+                    'Avg Delivery Days', 'Avg POD Days',
+                    'Avg Cycle Days', 'Avg Pending PGI Days', 'Avg Pending POD Days'
+                ];
+                const keys = [
+                    'warehouse', 'total_dn_created', 'total_dn_quantity',
+                    'pending_delivery_dn', 'pending_delivery_quantity',
+                    'pending_pod_dn', 'pending_pod_quantity',
+                    'avg_delivery_days', 'avg_pod_days',
+                    'avg_total_cycle_days', 'avg_pending_delivery_days', 'avg_pending_pod_days'
+                ];
+
+                let csv = headers.join(',') + '\n';
+                filteredWarehouses.forEach(w => {
+                    const row = keys.map(k => {
+                        let val = w[k] ?? '';
+                        if (typeof val === 'string' && val.includes(',')) val = `"${val}"`;
+                        return val;
+                    });
+                    csv += row.join(',') + '\n';
+                });
+
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `warehouse_export_${new Date().toISOString().slice(0, 10)}.csv`;
+                link.click();
+                URL.revokeObjectURL(link.href);
+            }
+
+            function printDashboard() {
+                window.print();
+            }
+
+            // ─── Sorting ───
+            function handleSort(e) {
+                const th = e.target.closest('th');
+                if (!th || !th.dataset.sort) return;
+                const key = th.dataset.sort;
+                if (key === sortKey) sortAsc = !sortAsc;
+                else {
+                    sortKey = key;
+                    sortAsc = true;
+                }
+                currentPage = 1;
+                renderTable();
+            }
+
+            function goToPage(dir) {
+                const total = filteredWarehouses.length;
+                const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+                const newPage = currentPage + dir;
+                if (newPage < 1 || newPage > totalPages) return;
+                currentPage = newPage;
+                renderTable();
+                tableScroll.scrollTop = 0;
+            }
+
+            // ─── Init ───
+            function init() {
+                updateClock();
+                setInterval(updateClock, 1000);
+
+                fetchData(true);
+                setInterval(() => fetchData(false), REFRESH_INTERVAL_MS);
+
+                refreshBtn.addEventListener('click', () => fetchData(true));
+                toastClose.addEventListener('click', () => errorToast.classList.remove('show'));
+
+                tableSearch.addEventListener('input', (e) => {
+                    searchTerm = e.target.value;
+                    currentPage = 1;
+                    renderTable();
+                });
+
+                document.querySelector('#warehouseTable thead')?.addEventListener('click', handleSort);
+
+                prevPage.addEventListener('click', () => goToPage(-1));
+                nextPage.addEventListener('click', () => goToPage(1));
+
+                exportCsvBtn.addEventListener('click', exportCsv);
+                printBtn.addEventListener('click', printDashboard);
+
+                document.addEventListener('keydown', (e) => {
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
+                        e.preventDefault();
+                        fetchData(true);
+                    }
+                });
+
+                let resizeTimer;
+                window.addEventListener('resize', () => {
+                    clearTimeout(resizeTimer);
+                    resizeTimer = setTimeout(() => {
+                        if (allWarehouses.length) renderCharts(allWarehouses);
+                    }, 300);
+                });
+            }
+
+            document.addEventListener('DOMContentLoaded', init);
+        })();
+    </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
