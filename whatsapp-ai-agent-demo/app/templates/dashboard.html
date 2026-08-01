@@ -1014,11 +1014,9 @@
             'use strict';
 
             // ─── CONFIG ───
-            // ✅ FIXED: The URL now dynamically uses the domain your app is hosted on!
-            // The app will call its own backend's /api/dashboard-data endpoint.
-            // If you want to use an external n8n webhook, replace "window.location.origin"
-            // with your actual public domain (e.g. "https://your-n8n-url.com")
-            const WEBHOOK_URL = window.location.origin + '/api/dashboard-data';
+            // ⚠️ CRITICAL: Replace 'YOUR_PUBLIC_N8N_URL' with your actual public n8n address.
+            // Example: 'https://your-n8n-app.up.railway.app' or 'https://abc123.ngrok.io'
+            const WEBHOOK_URL = 'YOUR_PUBLIC_N8N_URL/webhook/b8501db8-e0ec-4bcd-8e0c-b2d3ebe87a8c';
             
             const REFRESH_INTERVAL_MS = 30000;
             const PAGE_SIZE = 10;
