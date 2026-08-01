@@ -1,16 +1,20 @@
 # ==========================================================
-# FILE: app/services/excel_import_service.py (v6.0 - PANDAS)
-# PURPOSE: Reads Excel using pandas, maps all columns,
-#          replaces old data (truncates) if replace_mode=True,
-#          and inserts new rows in batches of 1000.
+# FILE: app/services/excel_import_service.py (v7.0 - ENTERPRISE)
+# ==========================================================
+# PURPOSE: Enterprise-grade Excel Import Engine using dynamic column mapping,
+#          full validation, backup, truncation, batch insertion,
+#          verification, and detailed reporting.
 # ==========================================================
 
 import logging
-import pandas as pd
-import numpy as np
+import time
+import uuid
 from datetime import datetime, date
-from typing import Dict, Any, List, Optional
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Tuple, Union
 
+import numpy as np
+import pandas as pd
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -23,10 +27,56 @@ logger = logging.getLogger(__name__)
 # ==========================================================
 
 class ExcelImportServiceError(Exception):
+    """Base exception for Excel import service errors."""
     pass
 
 class VerificationError(Exception):
+    """Raised when required columns are missing or validation fails."""
     pass
+
+# ==========================================================
+# CENTRALIZED COLUMN MAPPING DICTIONARY
+# ==========================================================
+# This is the single source of truth for all Excel-to-PostgreSQL mappings.
+# Future Excel changes only require updating this dictionary.
+
+EXCEL_TO_MODEL_MAP = {
+    # Required columns (must be present)
+    "ORDER_TYPE": "order_type",
+    "DN_NO": "dn_no",
+    "DN_AMOUNT": "dn_amount",
+    "DN_QTY": "dn_qty",
+    "DN_WORK": "dn_work",
+    "DIVISION": "division",
+    "MATERIAL_NO": "material_no",
+    "CUSTOMER_MODEL": "customer_model",
+    "SALES_OFFICE": "sales_office",
+    "SOLD_TO_PARTY_NAME": "customer_name",
+    "SHIP_TO_CITY": "ship_to_city",
+    "STORAGE": "storage_location",
+    "WAREHOUSE": "warehouse",
+    "DN_CREATE_DATE": "dn_create_date",
+    "GOOD_ISSUE_DATE": "good_issue_date",
+    "POD_DATE": "pod_date",
+    "SALES_MANAGER": "sales_manager",
+    # Optional columns (may be missing)
+    "CUSTOMER_CODE": "customer_code",
+    "DEALER_CODE": "dealer_code",
+    "WAREHOUSE_CODE": "warehouse_code",
+    "DELIVERY_LOCATION": "delivery_location",
+    "REMARKS": "remarks",
+}
+
+# Reverse mapping for reporting
+MODEL_TO_EXCEL_MAP = {v: k for k, v in EXCEL_TO_MODEL_MAP.items()}
+
+# Required columns (keys that must exist in Excel)
+REQUIRED_COLUMNS = [
+    "ORDER_TYPE", "DN_NO", "DN_AMOUNT", "DN_QTY", "DN_WORK", "DIVISION",
+    "MATERIAL_NO", "CUSTOMER_MODEL", "SALES_OFFICE", "SOLD_TO_PARTY_NAME",
+    "SHIP_TO_CITY", "STORAGE", "WAREHOUSE", "DN_CREATE_DATE", "GOOD_ISSUE_DATE",
+    "POD_DATE", "SALES_MANAGER"
+]
 
 # ==========================================================
 # HELPER FUNCTIONS
@@ -90,8 +140,59 @@ def _parse_date_from_excel(val) -> Optional[date]:
             pass
     return None
 
+def _normalize_header(header: str) -> str:
+    """Convert Excel header to standard uppercase with underscores."""
+    if not header:
+        return ""
+    # Replace special characters and spaces with underscores
+    normalized = header.strip().upper().replace(' ', '_')
+    normalized = normalized.replace('-', '_').replace('/', '_')
+    # Remove any other non-alphanumeric characters (keep underscores)
+    normalized = ''.join(c for c in normalized if c.isalnum() or c == '_')
+    return normalized
+
+def _derive_statuses(pod_date, good_issue_date):
+    """
+    Derive business fields based on dates.
+    """
+    delivery_status = "Delivered" if pod_date else "Pending"
+    pgi_status = "Completed" if good_issue_date else "Pending"
+    pod_status = "Completed" if pod_date else "Pending"
+    pending_flag = False if pod_date else True
+    return delivery_status, pgi_status, pod_status, pending_flag
+
+def _create_backup(db: Session) -> int:
+    """
+    Create a backup of the delivery_reports table by copying to a backup table.
+    Returns the number of records backed up.
+    """
+    try:
+        # Drop backup table if exists
+        db.execute(text("DROP TABLE IF EXISTS delivery_reports_backup"))
+        # Create backup table with same structure
+        db.execute(text("CREATE TABLE delivery_reports_backup AS SELECT * FROM delivery_reports"))
+        db.commit()
+        count = db.execute(text("SELECT COUNT(*) FROM delivery_reports_backup")).scalar()
+        logger.info(f"✅ Backup created: {count} records in delivery_reports_backup")
+        return count
+    except Exception as e:
+        logger.exception("Backup failed")
+        raise ExcelImportServiceError(f"Backup failed: {str(e)}")
+
+def _truncate_table(db: Session) -> None:
+    """
+    Truncate the delivery_reports table and reset the identity sequence.
+    """
+    try:
+        db.execute(text("TRUNCATE TABLE delivery_reports RESTART IDENTITY CASCADE"))
+        db.flush()
+        logger.info("✅ delivery_reports truncated (replace_mode=True).")
+    except Exception as e:
+        logger.exception("Truncation failed")
+        raise ExcelImportServiceError(f"Truncation failed: {str(e)}")
+
 # ==========================================================
-# MAIN IMPORT FUNCTION (WITH TRUNCATE)
+# CORE IMPORT FUNCTION
 # ==========================================================
 
 def import_delivery_excel(
@@ -103,37 +204,40 @@ def import_delivery_excel(
     replace_mode: bool = False
 ) -> Dict[str, Any]:
     """
-    Reads an Excel file using pandas, maps all columns to the
-    DeliveryReport model, and inserts the data in batches.
-    
-    If replace_mode is True, the table is truncated before insertion.
+    Enterprise-grade Excel import function.
+
+    Steps:
+    1. Read Excel with pandas
+    2. Normalize headers
+    3. Validate required columns
+    4. Create backup (if replace_mode=True)
+    5. Truncate table (if replace_mode=True)
+    6. Transform data (dates, numbers, blanks, etc.)
+    7. Derive business fields
+    8. Insert in batches of 1000
+    9. Verify row count
+    10. Return detailed import report
     """
+    import_start = time.time()
     logger.info(f"Starting import for batch: {upload_batch_id}, file: {source_filename}")
 
+    # Initialize metrics
     metrics = {
         "rows_read": 0,
         "rows_upserted": 0,
         "rows_failed": 0,
         "rows_valid": 0,
+        "rows_skipped": 0,
         "batch_id": upload_batch_id,
-        "errors": []
+        "execution_time_seconds": 0.0,
+        "import_speed_rows_per_second": 0.0,
+        "errors": [],
+        "warnings": [],
     }
 
-    # ==========================================================
-    # STEP 0: REPLACE MODE – TRUNCATE OLD DATA
-    # ==========================================================
-    if replace_mode:
-        try:
-            db.execute(text("TRUNCATE TABLE delivery_reports RESTART IDENTITY CASCADE"))
-            db.flush()
-            logger.info("✅ Existing data truncated (replace_mode=True).")
-        except Exception as e:
-            logger.exception("Truncation failed")
-            raise ExcelImportServiceError(f"Truncation failed: {str(e)}")
-
-    # ==========================================================
-    # STEP 1: READ EXCEL WITH PANDAS
-    # ==========================================================
+    # ----------------------------------------------------------
+    # STEP 1: READ EXCEL
+    # ----------------------------------------------------------
     try:
         df = pd.read_excel(file_path, engine='openpyxl', dtype=str, keep_default_na=False)
         df = df.replace(r'^\s*$', np.nan, regex=True)
@@ -141,69 +245,68 @@ def import_delivery_excel(
         logger.exception(f"Failed to read Excel file: {file_path}")
         raise ExcelImportServiceError(f"Failed to read Excel file: {str(e)}")
 
-    # Normalise column names: strip, uppercase, replace spaces with underscore
-    df.columns = df.columns.str.strip().str.upper().str.replace(' ', '_')
+    metrics["rows_read"] = len(df)
 
-    # ==========================================================
-    # STEP 2: VERIFY REQUIRED COLUMN
-    # ==========================================================
-    required_col = "DN_NO"
-    if required_col not in df.columns:
-        raise VerificationError(f"Required column '{required_col}' not found in Excel header.")
+    # ----------------------------------------------------------
+    # STEP 2: NORMALIZE HEADERS
+    # ----------------------------------------------------------
+    original_headers = list(df.columns)
+    normalized_headers = [_normalize_header(h) for h in original_headers]
+    df.columns = normalized_headers
 
-    # Map dataframe columns to model fields
-    column_mapping = {
-        "ORDER_TYPE": "order_type",
-        "DN_NO": "dn_no",
-        "DN_AMOUNT": "dn_amount",
-        "DN_QTY": "dn_qty",
-        "DN_WORK": "dn_work",
-        "DIVISION": "division",
-        "MATERIAL_NO": "material_no",
-        "CUSTOMER_MODEL": "customer_model",
-        "SALES_OFFICE": "sales_office",
-        "SOLD-TO-PARTY_NAME": "customer_name",
-        "CUSTOMER_CODE": "customer_code",
-        "DEALER_CODE": "dealer_code",
-        "SHIP-TO_CITY": "ship_to_city",
-        "STORAGE": "storage_location",
-        "WAREHOUSE": "warehouse",
-        "WAREHOUSE_CODE": "warehouse_code",
-        "DELIVERY_LOCATION": "delivery_location",
-        "DN_CREATE_DATE": "dn_create_date",
-        "GOOD_ISSUE_DATE": "good_issue_date",
-        "POD_DATE": "pod_date",
-        "SALES_MANAGER": "sales_manager",
-        "REMARKS": "remarks",
-    }
+    # ----------------------------------------------------------
+    # STEP 3: VALIDATE REQUIRED COLUMNS
+    # ----------------------------------------------------------
+    missing_columns = []
+    for req in REQUIRED_COLUMNS:
+        if req not in df.columns:
+            missing_columns.append(req)
+    if missing_columns:
+        raise VerificationError(f"Required columns missing: {', '.join(missing_columns)}")
 
-    # Check which optional columns are present
+    # Log optional missing columns
     present_cols = set(df.columns)
-    missing_cols = set(column_mapping.keys()) - present_cols
-    if missing_cols:
-        logger.warning(f"Optional columns missing: {', '.join(missing_cols)}")
+    optional_missing = [k for k in EXCEL_TO_MODEL_MAP if k not in present_cols and k not in REQUIRED_COLUMNS]
+    if optional_missing:
+        logger.warning(f"Optional columns missing: {', '.join(optional_missing)}")
+        metrics["warnings"].append(f"Optional columns missing: {', '.join(optional_missing)}")
 
-    # ==========================================================
-    # STEP 3: TRANSFORM DATAFRAME TO LIST OF DICTIONARIES
-    # ==========================================================
+    # Build dynamic mapping based on present columns
+    mapping = {}
+    for excel_col, model_field in EXCEL_TO_MODEL_MAP.items():
+        if excel_col in df.columns:
+            mapping[excel_col] = model_field
+
+    # ----------------------------------------------------------
+    # STEP 4: BACKUP EXISTING DATA (if replace_mode)
+    # ----------------------------------------------------------
+    if replace_mode:
+        backup_count = _create_backup(db)
+        metrics["backup_count"] = backup_count
+        _truncate_table(db)
+
+    # ----------------------------------------------------------
+    # STEP 5: TRANSFORM DATA AND DERIVE BUSINESS FIELDS
+    # ----------------------------------------------------------
     records = []
     errors = []
 
     for idx, row in df.iterrows():
-        metrics["rows_read"] += 1
         try:
+            # Extract DN_NO (required)
             dn_no = _clean_value(row.get("DN_NO"))
             if not dn_no:
                 raise ValueError("DN_NO is empty or missing")
 
-            # Build the record dictionary
             record = {}
-            for excel_col, model_field in column_mapping.items():
-                if excel_col not in df.columns:
+            # Map each column using the dynamic mapping
+            for excel_col, model_field in mapping.items():
+                raw = _clean_value(row[excel_col])
+                if raw is None:
                     record[model_field] = None
                     continue
-                raw = _clean_value(row[excel_col])
-                # Apply appropriate conversion based on model field
+
+                # Apply type-specific conversions
                 if model_field in ("dn_amount",):
                     record[model_field] = _safe_float(raw)
                 elif model_field in ("dn_qty",):
@@ -213,13 +316,15 @@ def import_delivery_excel(
                 else:
                     record[model_field] = str(raw) if raw is not None else None
 
-            # Derive statuses from dates
+            # Derive business fields from dates
             pod_date = record.get("pod_date")
             good_issue_date = record.get("good_issue_date")
-            record["delivery_status"] = "Delivered" if pod_date else "Pending"
-            record["pgi_status"] = "Completed" if good_issue_date else "Pending"
-            record["pod_status"] = "Completed" if pod_date else "Pending"
-            record["pending_flag"] = False if pod_date else True
+            delivery_status, pgi_status, pod_status, pending_flag = _derive_statuses(pod_date, good_issue_date)
+
+            record["delivery_status"] = delivery_status
+            record["pgi_status"] = pgi_status
+            record["pod_status"] = pod_status
+            record["pending_flag"] = pending_flag
             record["source_file"] = source_filename
             record["upload_batch_id"] = upload_batch_id
 
@@ -231,12 +336,12 @@ def import_delivery_excel(
             errors.append({"row": idx+2, "error": str(e)})
             metrics["rows_failed"] += 1
 
-    # ==========================================================
-    # STEP 4: BULK INSERT IN BATCHES OF 1000
-    # ==========================================================
+    # ----------------------------------------------------------
+    # STEP 6: INSERT DATA IN BATCHES
+    # ----------------------------------------------------------
+    total_inserted = 0
     if records:
         try:
-            total_inserted = 0
             for i in range(0, len(records), batch_size):
                 batch = records[i:i + batch_size]
                 db.bulk_insert_mappings(DeliveryReport, batch)
@@ -253,10 +358,30 @@ def import_delivery_excel(
             raise ExcelImportServiceError(f"Database insert failed: {str(e)}")
     else:
         logger.info("No valid records found to insert.")
+        metrics["rows_upserted"] = 0
 
-    metrics["errors"] = [f"Row {err['row']}: {err['error']}" for err in errors]
+    # ----------------------------------------------------------
+    # STEP 7: VERIFICATION - Compare rows in Excel vs inserted
+    # ----------------------------------------------------------
+    if metrics["rows_valid"] != metrics["rows_upserted"]:
+        warning_msg = f"Row count mismatch: Valid={metrics['rows_valid']}, Inserted={metrics['rows_upserted']}"
+        logger.warning(warning_msg)
+        metrics["warnings"].append(warning_msg)
+
+    # ----------------------------------------------------------
+    # STEP 8: BUILD FINAL REPORT
+    # ----------------------------------------------------------
+    execution_time = time.time() - import_start
+    metrics["execution_time_seconds"] = round(execution_time, 2)
+    metrics["import_speed_rows_per_second"] = round(metrics["rows_upserted"] / execution_time, 2) if execution_time > 0 else 0.0
+    metrics["rows_skipped"] = metrics["rows_read"] - metrics["rows_valid"] - metrics["rows_failed"]
+
     logger.info(f"Import completed for batch {upload_batch_id}. "
                 f"Read: {metrics['rows_read']}, "
                 f"Inserted: {metrics['rows_upserted']}, "
-                f"Failed: {metrics['rows_failed']}")
+                f"Failed: {metrics['rows_failed']}, "
+                f"Skipped: {metrics['rows_skipped']}, "
+                f"Time: {metrics['execution_time_seconds']}s, "
+                f"Speed: {metrics['import_speed_rows_per_second']} rows/s")
+
     return metrics
