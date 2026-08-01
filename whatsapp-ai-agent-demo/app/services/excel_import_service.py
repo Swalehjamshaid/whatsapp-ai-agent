@@ -8,7 +8,8 @@
     <!-- Bootstrap 5 + Icons + Chart.js -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js">
+    </script>
 
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet" />
@@ -28,8 +29,7 @@
             min-height: 100vh;
             display: flex;
             flex-direction: column;
-            background-image:
-                radial-gradient(ellipse at 10% 20%, rgba(42, 111, 219, 0.04) 0%, transparent 60%),
+            background-image: radial-gradient(ellipse at 10% 20%, rgba(42, 111, 219, 0.04) 0%, transparent 60%),
                 radial-gradient(ellipse at 90% 80%, rgba(42, 111, 219, 0.04) 0%, transparent 60%);
         }
 
@@ -201,6 +201,77 @@
             font-size: 0.9rem;
         }
 
+        /* ─── UPLOAD CARD ─── */
+        .upload-area {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px;
+        }
+        .upload-area .file-info {
+            font-size: 0.85rem;
+            color: #1a365d;
+            background: rgba(255,255,255,0.6);
+            padding: 0.3rem 1rem;
+            border-radius: 100px;
+            border: 1px solid rgba(10,40,80,0.06);
+            flex: 1;
+            min-width: 140px;
+        }
+        .upload-area .file-info i {
+            margin-right: 8px;
+            color: #2a6fdb;
+        }
+        .upload-area .btn-upload {
+            border-radius: 100px;
+            font-weight: 500;
+            padding: 0.4rem 1.4rem;
+            font-size: 0.85rem;
+            border: none;
+            transition: all 0.2s ease;
+        }
+        .upload-area .btn-upload.primary {
+            background: #2a6fdb;
+            color: #fff;
+        }
+        .upload-area .btn-upload.primary:hover {
+            background: #1a5abf;
+            transform: scale(1.02);
+            box-shadow: 0 4px 16px rgba(42,111,219,0.25);
+        }
+        .upload-area .btn-upload.primary:disabled {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+        .upload-area .btn-upload.outline {
+            background: transparent;
+            border: 1px solid rgba(10,40,80,0.12);
+            color: #1a365d;
+        }
+        .upload-area .btn-upload.outline:hover {
+            background: rgba(42,111,219,0.04);
+            border-color: rgba(42,111,219,0.3);
+        }
+        .upload-status {
+            margin-top: 10px;
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .upload-status .spinner-border-sm {
+            width: 1.2rem;
+            height: 1.2rem;
+            border-width: 0.15rem;
+        }
+        .upload-status .text-success {
+            color: #27ae60 !important;
+        }
+        .upload-status .text-danger {
+            color: #e74c3c !important;
+        }
+
         /* ─── KPI CARDS ─── */
         .kpi-card {
             background: rgba(255, 255, 255, 0.8);
@@ -265,20 +336,48 @@
             font-size: 2.2rem;
         }
 
-        .kpi-card.green::before { background: linear-gradient(90deg, #27ae60, #2ecc71); }
-        .kpi-card.green .kpi-icon { color: #27ae60; }
-        .kpi-card.orange::before { background: linear-gradient(90deg, #e67e22, #f39c12); }
-        .kpi-card.orange .kpi-icon { color: #e67e22; }
-        .kpi-card.purple::before { background: linear-gradient(90deg, #8e44ad, #9b59b6); }
-        .kpi-card.purple .kpi-icon { color: #8e44ad; }
-        .kpi-card.teal::before { background: linear-gradient(90deg, #1abc9c, #2ecc71); }
-        .kpi-card.teal .kpi-icon { color: #1abc9c; }
-        .kpi-card.rose::before { background: linear-gradient(90deg, #e74c3c, #f1948a); }
-        .kpi-card.rose .kpi-icon { color: #e74c3c; }
-        .kpi-card.indigo::before { background: linear-gradient(90deg, #3f51b5, #7986cb); }
-        .kpi-card.indigo .kpi-icon { color: #3f51b5; }
-        .kpi-card.amber::before { background: linear-gradient(90deg, #f39c12, #f7dc6f); }
-        .kpi-card.amber .kpi-icon { color: #f39c12; }
+        .kpi-card.green::before {
+            background: linear-gradient(90deg, #27ae60, #2ecc71);
+        }
+        .kpi-card.green .kpi-icon {
+            color: #27ae60;
+        }
+        .kpi-card.orange::before {
+            background: linear-gradient(90deg, #e67e22, #f39c12);
+        }
+        .kpi-card.orange .kpi-icon {
+            color: #e67e22;
+        }
+        .kpi-card.purple::before {
+            background: linear-gradient(90deg, #8e44ad, #9b59b6);
+        }
+        .kpi-card.purple .kpi-icon {
+            color: #8e44ad;
+        }
+        .kpi-card.teal::before {
+            background: linear-gradient(90deg, #1abc9c, #2ecc71);
+        }
+        .kpi-card.teal .kpi-icon {
+            color: #1abc9c;
+        }
+        .kpi-card.rose::before {
+            background: linear-gradient(90deg, #e74c3c, #f1948a);
+        }
+        .kpi-card.rose .kpi-icon {
+            color: #e74c3c;
+        }
+        .kpi-card.indigo::before {
+            background: linear-gradient(90deg, #3f51b5, #7986cb);
+        }
+        .kpi-card.indigo .kpi-icon {
+            color: #3f51b5;
+        }
+        .kpi-card.amber::before {
+            background: linear-gradient(90deg, #f39c12, #f7dc6f);
+        }
+        .kpi-card.amber .kpi-icon {
+            color: #f39c12;
+        }
 
         /* ─── CHART CONTAINERS ─── */
         .chart-container {
@@ -286,8 +385,12 @@
             height: 210px;
             width: 100%;
         }
-        .chart-container.pie-chart { height: 190px; }
-        .chart-container.line-chart { height: 190px; }
+        .chart-container.pie-chart {
+            height: 190px;
+        }
+        .chart-container.line-chart {
+            height: 190px;
+        }
 
         /* ─── TABLE ─── */
         .table-wrap {
@@ -326,14 +429,18 @@
             user-select: none;
             transition: background 0.15s;
         }
-        .table-scroll thead th:hover { background: #eef4fc; }
+        .table-scroll thead th:hover {
+            background: #eef4fc;
+        }
         .table-scroll thead th i {
             margin-left: 6px;
             font-size: 0.65rem;
             opacity: 0.4;
             transition: opacity 0.2s;
         }
-        .table-scroll thead th:hover i { opacity: 0.8; }
+        .table-scroll thead th:hover i {
+            opacity: 0.8;
+        }
 
         .table-scroll tbody td {
             padding: 0.7rem 0.9rem;
@@ -344,9 +451,15 @@
             background: transparent;
         }
 
-        .table-scroll tbody tr { transition: background 0.15s; }
-        .table-scroll tbody tr:hover { background: rgba(42, 111, 219, 0.03); }
-        .table-scroll tbody tr:last-child td { border-bottom: none; }
+        .table-scroll tbody tr {
+            transition: background 0.15s;
+        }
+        .table-scroll tbody tr:hover {
+            background: rgba(42, 111, 219, 0.03);
+        }
+        .table-scroll tbody tr:last-child td {
+            border-bottom: none;
+        }
 
         .table-scroll tbody td:first-child {
             font-weight: 600;
@@ -412,7 +525,9 @@
             border-color: rgba(42, 111, 219, 0.2);
             box-shadow: 0 4px 12px rgba(42, 111, 219, 0.06);
         }
-        .table-controls .btn-group-actions .btn i { margin-right: 6px; }
+        .table-controls .btn-group-actions .btn i {
+            margin-right: 6px;
+        }
 
         .pagination-controls {
             display: flex;
@@ -462,7 +577,9 @@
             z-index: 9999;
             flex-direction: column;
         }
-        #loadingOverlay.show { display: flex; }
+        #loadingOverlay.show {
+            display: flex;
+        }
         #loadingOverlay .spinner {
             width: 56px;
             height: 56px;
@@ -479,7 +596,9 @@
             font-size: 0.95rem;
         }
         @keyframes spin {
-            to { transform: rotate(360deg); }
+            to {
+                transform: rotate(360deg);
+            }
         }
 
         /* ─── ERROR TOAST ─── */
@@ -502,7 +621,9 @@
             gap: 14px;
             animation: slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
         }
-        #errorToast.show { display: flex; }
+        #errorToast.show {
+            display: flex;
+        }
         @keyframes slideUp {
             from {
                 opacity: 0;
@@ -533,7 +654,56 @@
             transition: color 0.2s;
             line-height: 1;
         }
-        #errorToast .toast-close:hover { color: #1a1f2e; }
+        #errorToast .toast-close:hover {
+            color: #1a1f2e;
+        }
+
+        /* ─── UPLOAD TOAST (success) ─── */
+        #uploadToast {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            z-index: 9998;
+            min-width: 320px;
+            max-width: 440px;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(16px) saturate(180%);
+            -webkit-backdrop-filter: blur(16px) saturate(180%);
+            border-left: 5px solid #27ae60;
+            border-radius: 18px;
+            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.12);
+            padding: 1rem 1.4rem;
+            display: none;
+            align-items: center;
+            gap: 14px;
+            animation: slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        #uploadToast.show {
+            display: flex;
+        }
+        #uploadToast .toast-icon {
+            color: #27ae60;
+            font-size: 1.6rem;
+        }
+        #uploadToast .toast-msg {
+            flex: 1;
+            font-weight: 500;
+            color: #1a1f2e;
+            font-size: 0.9rem;
+        }
+        #uploadToast .toast-close {
+            background: none;
+            border: none;
+            font-size: 1.4rem;
+            color: #8a9bb0;
+            cursor: pointer;
+            padding: 0 4px;
+            transition: color 0.2s;
+            line-height: 1;
+        }
+        #uploadToast .toast-close:hover {
+            color: #1a1f2e;
+        }
 
         /* ─── FOOTER ─── */
         .dashboard-footer {
@@ -571,8 +741,15 @@
             box-shadow: 0 0 12px rgba(231, 76, 60, 0.25);
         }
         @keyframes pulse-dot {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.5; transform: scale(0.8); }
+            0%,
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+            50% {
+                opacity: 0.5;
+                transform: scale(0.8);
+            }
         }
         .dashboard-footer .footer-right {
             display: flex;
@@ -593,7 +770,9 @@
 
         /* ─── RESPONSIVE ─── */
         @media (max-width: 768px) {
-            body { padding: 14px; }
+            body {
+                padding: 14px;
+            }
             .dashboard-header {
                 padding: 1rem 1.2rem;
                 flex-direction: column;
@@ -601,8 +780,12 @@
                 gap: 12px;
                 border-radius: 20px;
             }
-            .dashboard-header h1 { font-size: 1.2rem; }
-            .dashboard-header h1 i { font-size: 1.4rem; }
+            .dashboard-header h1 {
+                font-size: 1.2rem;
+            }
+            .dashboard-header h1 i {
+                font-size: 1.4rem;
+            }
             .header-right {
                 justify-content: space-between;
                 gap: 10px;
@@ -617,30 +800,53 @@
                 padding: 0.4rem 1rem;
                 font-size: 0.75rem;
             }
-            .kpi-card .kpi-value { font-size: 1.3rem; }
-            .kpi-card .kpi-label { font-size: 0.6rem; }
-            .kpi-card { padding: 1rem 0.9rem; }
+            .upload-area {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .upload-area .file-info {
+                width: 100%;
+            }
+            .kpi-card .kpi-value {
+                font-size: 1.3rem;
+            }
+            .kpi-card .kpi-label {
+                font-size: 0.6rem;
+            }
+            .kpi-card {
+                padding: 1rem 0.9rem;
+            }
             .table-controls {
                 flex-direction: column;
                 align-items: stretch;
                 padding: 0.8rem 1rem;
             }
-            .table-controls .search-box { flex: 1 1 auto; }
+            .table-controls .search-box {
+                flex: 1 1 auto;
+            }
             .pagination-controls {
                 justify-content: center;
                 margin-top: 4px;
             }
-            #errorToast {
+            #errorToast, #uploadToast {
                 left: 16px;
                 right: 16px;
                 min-width: unset;
                 max-width: unset;
                 bottom: 16px;
             }
-            .chart-container { height: 170px; }
-            .chart-container.pie-chart { height: 160px; }
-            .chart-container.line-chart { height: 160px; }
-            .glass-card .card-body { padding: 0.8rem 1rem; }
+            .chart-container {
+                height: 170px;
+            }
+            .chart-container.pie-chart {
+                height: 160px;
+            }
+            .chart-container.line-chart {
+                height: 160px;
+            }
+            .glass-card .card-body {
+                padding: 0.8rem 1rem;
+            }
             .glass-card .card-header {
                 padding: 0.8rem 1rem;
                 font-size: 0.75rem;
@@ -658,14 +864,22 @@
         }
 
         @media (max-width: 480px) {
-            .dashboard-header h1 { font-size: 1rem; }
-            .header-right .datetime { font-size: 0.65rem; }
+            .dashboard-header h1 {
+                font-size: 1rem;
+            }
+            .header-right .datetime {
+                font-size: 0.65rem;
+            }
             .btn-refresh {
                 padding: 0.3rem 0.8rem;
                 font-size: 0.7rem;
             }
-            .kpi-card .kpi-value { font-size: 1.1rem; }
-            .kpi-card { padding: 0.8rem 0.7rem; }
+            .kpi-card .kpi-value {
+                font-size: 1.1rem;
+            }
+            .kpi-card {
+                padding: 0.8rem 0.7rem;
+            }
             .table-scroll thead th {
                 font-size: 0.6rem;
                 padding: 0.6rem 0.5rem;
@@ -694,7 +908,9 @@
                 -webkit-print-color-adjust: exact;
                 print-color-adjust: exact;
             }
-            .kpi-card::before { display: none !important; }
+            .kpi-card::before {
+                display: none !important;
+            }
             .glass-card {
                 background: #fff !important;
                 backdrop-filter: none !important;
@@ -715,27 +931,43 @@
             .btn-refresh,
             .table-controls .btn-group-actions .btn,
             .pagination-controls .btn-page,
-            .no-print {
+            .no-print,
+            .upload-area .btn-upload,
+            .upload-status {
                 display: none !important;
             }
             .table-scroll {
                 max-height: none !important;
                 overflow: visible !important;
             }
-            .table-scroll thead { position: static !important; }
-            #loadingOverlay { display: none !important; }
-            #errorToast { display: none !important; }
+            .table-scroll thead {
+                position: static !important;
+            }
+            #loadingOverlay {
+                display: none !important;
+            }
+            #errorToast, #uploadToast {
+                display: none !important;
+            }
             .dashboard-footer {
                 background: #f8faff !important;
                 border: 1px solid #e2eaf5 !important;
                 box-shadow: none !important;
                 backdrop-filter: none !important;
             }
-            .chart-container { height: 180px !important; }
-            .kpi-card:hover { transform: none !important; }
-            .glass-card:hover { transform: none !important; }
+            .chart-container {
+                height: 180px !important;
+            }
+            .kpi-card:hover {
+                transform: none !important;
+            }
+            .glass-card:hover {
+                transform: none !important;
+            }
             .dashboard-header::after,
-            .dashboard-header::before { display: none !important; }
+            .dashboard-header::before {
+                display: none !important;
+            }
         }
     </style>
 </head>
@@ -752,6 +984,13 @@
         <span class="toast-icon"><i class="fas fa-circle-exclamation"></i></span>
         <span class="toast-msg" id="errorMsg">Unable to fetch data.</span>
         <button class="toast-close" id="toastClose">&times;</button>
+    </div>
+
+    <!-- ─── UPLOAD TOAST ─── -->
+    <div id="uploadToast">
+        <span class="toast-icon"><i class="fas fa-check-circle"></i></span>
+        <span class="toast-msg" id="uploadMsg">Upload successful.</span>
+        <button class="toast-close" id="uploadToastClose">&times;</button>
     </div>
 
     <!-- ─── MAIN ─── -->
@@ -775,6 +1014,32 @@
                 </button>
             </div>
         </header>
+
+        <!-- ═══ UPLOAD CARD ═══ -->
+        <section class="row g-3 mb-4">
+            <div class="col-12">
+                <div class="glass-card">
+                    <div class="card-header"><i class="fas fa-upload"></i>Import Excel Data</div>
+                    <div class="card-body">
+                        <div class="upload-area">
+                            <input type="file" id="fileInput" accept=".xlsx,.xls" style="display:none;" />
+                            <button class="btn-upload outline" id="chooseFileBtn">
+                                <i class="fas fa-folder-open"></i> Choose File
+                            </button>
+                            <span class="file-info" id="fileInfo"><i class="fas fa-file-excel"></i> No file selected</span>
+                            <button class="btn-upload primary" id="uploadBtn" disabled>
+                                <i class="fas fa-cloud-upload-alt"></i> Upload
+                            </button>
+                            <span class="badge-soft" style="font-size:0.7rem;">Supports .xlsx, .xls</span>
+                        </div>
+                        <div class="upload-status" id="uploadStatus" style="display:none;">
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                            <span id="uploadStatusText">Uploading…</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
 
         <!-- ═══ KPI ROW ═══ -->
         <section class="row g-3 mb-4" id="kpiRow">
@@ -878,7 +1143,8 @@
                                         <th data-sort="avg_pending_pod_days" class="text-end">POD Days <i class="fas fa-sort"></i></th>
                                     </tr>
                                 </thead>
-                                <tbody id="tableBody"></tbody>
+                                <tbody id="tableBody">
+                                </tbody>
                             </table>
                         </div>
 
@@ -914,11 +1180,12 @@
     <!-- ─── JAVASCRIPT ─── -->
     <!-- ────────────────────────────────────────────────────────── -->
     <script>
-        (function () {
+        (function() {
             'use strict';
 
             // ─── CONFIG ───
-            const WEBHOOK_URL = 'http://localhost:5678/webhook/e8c63b93-4b19-4705-b8b7-09c52ee1478f';
+            const WEBHOOK_URL =
+                'http://localhost:5678/webhook/e8c63b93-4b19-4705-b8b7-09c52ee1478f';
             const REFRESH_INTERVAL_MS = 30000;
             const PAGE_SIZE = 10;
 
@@ -966,6 +1233,17 @@
             const printBtn = $('#printBtn');
             const tableScroll = $('#tableScroll');
 
+            // Upload elements
+            const fileInput = $('#fileInput');
+            const chooseFileBtn = $('#chooseFileBtn');
+            const fileInfo = $('#fileInfo');
+            const uploadBtn = $('#uploadBtn');
+            const uploadStatus = $('#uploadStatus');
+            const uploadStatusText = $('#uploadStatusText');
+            const uploadToast = $('#uploadToast');
+            const uploadMsg = $('#uploadMsg');
+            const uploadToastClose = $('#uploadToastClose');
+
             // ─── Helpers ───
             function fmt(n) {
                 if (n === undefined || n === null) return '—';
@@ -993,8 +1271,15 @@
                 setTimeout(() => { errorToast.classList.remove('show'); }, 8000);
             }
 
-            function hideError() {
-                errorToast.classList.remove('show');
+            function hideError() { errorToast.classList.remove('show'); }
+
+            function showUploadToast(msg, isSuccess = true) {
+                uploadMsg.textContent = msg;
+                uploadToast.className = 'show';
+                uploadToast.style.borderLeftColor = isSuccess ? '#27ae60' : '#e74c3c';
+                uploadToast.querySelector('.toast-icon i').className = isSuccess ? 'fas fa-check-circle' :
+                    'fas fa-circle-exclamation';
+                setTimeout(() => { uploadToast.classList.remove('show'); }, 8000);
             }
 
             function updateClock() {
@@ -1035,18 +1320,57 @@
 
             // ─── KPI ───
             function renderKpi(summary) {
-                const items = [
-                    { label: 'Total DN Created', value: summary.total_dn_created || 0, icon: 'fa-file-invoice', cls: '' },
-                    { label: 'Total Units Created', value: summary.total_dn_quantity || 0, icon: 'fa-cubes', cls: 'green' },
-                    { label: 'Total Revenue', value: summary.total_revenue || 0, icon: 'fa-dollar-sign', cls: 'teal' },
-                    { label: 'Active Dealers', value: summary.active_dealers || 0, icon: 'fa-users', cls: 'indigo' },
-                    { label: 'Active Warehouses', value: summary.active_warehouses || 0, icon: 'fa-warehouse', cls: 'purple' },
-                    { label: 'Cities Served', value: summary.cities_served || 0, icon: 'fa-city', cls: 'amber' },
-                    { label: 'Delivered DN', value: summary.delivered_dn || 0, icon: 'fa-truck', cls: 'green' },
-                    { label: 'Pending Delivery DN', value: summary.pending_delivery_dn || 0, icon: 'fa-clock', cls: 'orange' },
-                    { label: 'Pending POD DN', value: summary.pending_pod_dn || 0, icon: 'fa-file-signature', cls: 'rose' },
-                    { label: 'POD Completed DN', value: summary.pod_completed_dn || 0, icon: 'fa-check-double', cls: 'teal' }
-                ];
+                const items = [{
+                    label: 'Total DN Created',
+                    value: summary.total_dn_created || 0,
+                    icon: 'fa-file-invoice',
+                    cls: ''
+                }, {
+                    label: 'Total Units Created',
+                    value: summary.total_dn_quantity || 0,
+                    icon: 'fa-cubes',
+                    cls: 'green'
+                }, {
+                    label: 'Total Revenue',
+                    value: summary.total_revenue || 0,
+                    icon: 'fa-dollar-sign',
+                    cls: 'teal'
+                }, {
+                    label: 'Active Dealers',
+                    value: summary.active_dealers || 0,
+                    icon: 'fa-users',
+                    cls: 'indigo'
+                }, {
+                    label: 'Active Warehouses',
+                    value: summary.active_warehouses || 0,
+                    icon: 'fa-warehouse',
+                    cls: 'purple'
+                }, {
+                    label: 'Cities Served',
+                    value: summary.cities_served || 0,
+                    icon: 'fa-city',
+                    cls: 'amber'
+                }, {
+                    label: 'Delivered DN',
+                    value: summary.delivered_dn || 0,
+                    icon: 'fa-truck',
+                    cls: 'green'
+                }, {
+                    label: 'Pending Delivery DN',
+                    value: summary.pending_delivery_dn || 0,
+                    icon: 'fa-clock',
+                    cls: 'orange'
+                }, {
+                    label: 'Pending POD DN',
+                    value: summary.pending_pod_dn || 0,
+                    icon: 'fa-file-signature',
+                    cls: 'rose'
+                }, {
+                    label: 'POD Completed DN',
+                    value: summary.pod_completed_dn || 0,
+                    icon: 'fa-check-double',
+                    cls: 'teal'
+                }];
 
                 kpiRow.innerHTML = '';
                 items.forEach((item) => {
@@ -1096,7 +1420,8 @@
                 warehouseCount.textContent = `${total} warehouse${total !== 1 ? 's' : ''}`;
 
                 if (total === 0) {
-                    tableBody.innerHTML = `<tr><td colspan="12" class="text-center text-muted py-4" style="font-size:0.9rem;">No warehouses found</td></tr>`;
+                    tableBody.innerHTML =
+                        `<tr><td colspan="12" class="text-center text-muted py-4" style="font-size:0.9rem;">No warehouses found</td></tr>`;
                 } else {
                     tableBody.innerHTML = pageItems.map(w => `
                         <tr>
@@ -1138,12 +1463,18 @@
 
             // ─── Charts ───
             function destroyCharts() {
-                if (chartUnits) { chartUnits.destroy(); chartUnits = null; }
-                if (chartDn) { chartDn.destroy(); chartDn = null; }
-                if (chartPiePod) { chartPiePod.destroy(); chartPiePod = null; }
-                if (chartPiePgi) { chartPiePgi.destroy(); chartPiePgi = null; }
-                if (chartDeliveryDays) { chartDeliveryDays.destroy(); chartDeliveryDays = null; }
-                if (chartPodDays) { chartPodDays.destroy(); chartPodDays = null; }
+                if (chartUnits) { chartUnits.destroy();
+                    chartUnits = null; }
+                if (chartDn) { chartDn.destroy();
+                    chartDn = null; }
+                if (chartPiePod) { chartPiePod.destroy();
+                    chartPiePod = null; }
+                if (chartPiePgi) { chartPiePgi.destroy();
+                    chartPiePgi = null; }
+                if (chartDeliveryDays) { chartDeliveryDays.destroy();
+                    chartDeliveryDays = null; }
+                if (chartPodDays) { chartPodDays.destroy();
+                    chartPodDays = null; }
             }
 
             function renderCharts(warehouses) {
@@ -1173,11 +1504,7 @@
                 const commonOpts = {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: {
-                        legend: {
-                            labels: { font: { family: 'Inter', size: 10 }, boxWidth: 12, padding: 8 }
-                        }
-                    },
+                    plugins: { legend: { labels: { font: { family: 'Inter', size: 10 }, boxWidth: 12, padding: 8 } } },
                     scales: {
                         y: { beginAtZero: true, grid: { color: 'rgba(10,40,80,0.04)', drawBorder: false } },
                         x: { grid: { display: false } }
@@ -1185,94 +1512,101 @@
                 };
 
                 // Bar: Units
-                chartUnits = new Chart(document.getElementById('chartUnits').getContext('2d'), {
+                const ctxUnits = document.getElementById('chartUnits').getContext('2d');
+                chartUnits = new Chart(ctxUnits, {
                     type: 'bar',
                     data: {
-                        labels,
+                        labels: labels,
                         datasets: [{
                             label: 'Total Units',
                             data: units,
                             backgroundColor: bgColors(units.length),
                             borderRadius: 6,
                             borderSkipped: false,
-                            hoverBackgroundColor: '#2a6fdb'
+                            hoverBackgroundColor: '#2a6fdb',
                         }]
                     },
-                    options: { ...commonOpts, plugins: { legend: { display: false } } }
+                    options: {
+                        ...commonOpts,
+                        plugins: { legend: { display: false } },
+                    }
                 });
 
                 // Bar: DN
-                chartDn = new Chart(document.getElementById('chartDn').getContext('2d'), {
+                const ctxDn = document.getElementById('chartDn').getContext('2d');
+                chartDn = new Chart(ctxDn, {
                     type: 'bar',
                     data: {
-                        labels,
+                        labels: labels,
                         datasets: [{
                             label: 'Total DN',
                             data: dns,
                             backgroundColor: bgColors(dns.length),
                             borderRadius: 6,
                             borderSkipped: false,
-                            hoverBackgroundColor: '#2a6fdb'
+                            hoverBackgroundColor: '#2a6fdb',
                         }]
                     },
-                    options: { ...commonOpts, plugins: { legend: { display: false } } }
+                    options: {
+                        ...commonOpts,
+                        plugins: { legend: { display: false } },
+                    }
                 });
 
                 // Pie: POD
-                chartPiePod = new Chart(document.getElementById('chartPiePod').getContext('2d'), {
+                const ctxPiePod = document.getElementById('chartPiePod').getContext('2d');
+                chartPiePod = new Chart(ctxPiePod, {
                     type: 'pie',
                     data: {
-                        labels,
+                        labels: labels,
                         datasets: [{
                             data: podQty,
                             backgroundColor: bgColors(podQty.length),
                             borderWidth: 2,
                             borderColor: 'rgba(255,255,255,0.8)',
-                            hoverOffset: 8
+                            hoverOffset: 8,
                         }]
                     },
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
                         plugins: {
-                            legend: {
-                                position: 'bottom',
-                                labels: { boxWidth: 12, padding: 8, font: { family: 'Inter', size: 9 } }
-                            }
+                            legend: { position: 'bottom', labels: { boxWidth: 12, padding: 8, font: { family: 'Inter',
+                                        size: 9 } } }
                         }
                     }
                 });
 
                 // Pie: PGI
-                chartPiePgi = new Chart(document.getElementById('chartPiePgi').getContext('2d'), {
+                const ctxPiePgi = document.getElementById('chartPiePgi').getContext('2d');
+                chartPiePgi = new Chart(ctxPiePgi, {
                     type: 'pie',
                     data: {
-                        labels,
+                        labels: labels,
                         datasets: [{
                             data: pgiQty,
                             backgroundColor: bgColors(pgiQty.length),
                             borderWidth: 2,
                             borderColor: 'rgba(255,255,255,0.8)',
-                            hoverOffset: 8
+                            hoverOffset: 8,
                         }]
                     },
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
                         plugins: {
-                            legend: {
-                                position: 'bottom',
-                                labels: { boxWidth: 12, padding: 8, font: { family: 'Inter', size: 9 } }
-                            }
+                            legend: { position: 'bottom', labels: { boxWidth: 12, padding: 8, font: { family: 'Inter',
+                                        size: 9 } } }
                         }
                     }
                 });
 
                 // Line: Delivery Days
-                chartDeliveryDays = new Chart(document.getElementById('chartDeliveryDays').getContext('2d'), {
+                const ctxDel = document.getElementById('chartDeliveryDays').getContext('2d');
+                chartDeliveryDays = new Chart(ctxDel, {
                     type: 'line',
                     data: {
-                        labels,
+                        labels: labels,
                         datasets: [{
                             label: 'Avg Delivery Days',
                             data: delDays,
@@ -1290,17 +1624,21 @@
                             pointBorderWidth: 2,
                             pointRadius: 4,
                             pointHoverRadius: 7,
-                            borderWidth: 2.5
+                            borderWidth: 2.5,
                         }]
                     },
-                    options: { ...commonOpts, plugins: { legend: { display: false } } }
+                    options: {
+                        ...commonOpts,
+                        plugins: { legend: { display: false } },
+                    }
                 });
 
                 // Line: POD Days
-                chartPodDays = new Chart(document.getElementById('chartPodDays').getContext('2d'), {
+                const ctxPod = document.getElementById('chartPodDays').getContext('2d');
+                chartPodDays = new Chart(ctxPod, {
                     type: 'line',
                     data: {
-                        labels,
+                        labels: labels,
                         datasets: [{
                             label: 'Avg POD Days',
                             data: podDays,
@@ -1318,10 +1656,13 @@
                             pointBorderWidth: 2,
                             pointRadius: 4,
                             pointHoverRadius: 7,
-                            borderWidth: 2.5
+                            borderWidth: 2.5,
                         }]
                     },
-                    options: { ...commonOpts, plugins: { legend: { display: false } } }
+                    options: {
+                        ...commonOpts,
+                        plugins: { legend: { display: false } },
+                    }
                 });
             }
 
@@ -1337,7 +1678,7 @@
                 try {
                     const resp = await fetch(WEBHOOK_URL, {
                         method: 'GET',
-                        headers: { 'Accept': 'application/json' }
+                        headers: { 'Accept': 'application/json' },
                     });
 
                     if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
@@ -1368,7 +1709,8 @@
                     showError(err.message || 'Failed to load data from webhook.');
                     setStatus(false);
                     if (allWarehouses.length === 0) {
-                        tableBody.innerHTML = `<tr><td colspan="12" class="text-center text-muted py-4" style="font-size:0.9rem;">No data available</td></tr>`;
+                        tableBody.innerHTML =
+                            `<tr><td colspan="12" class="text-center text-muted py-4" style="font-size:0.9rem;">No data available</td></tr>`;
                         warehouseCount.textContent = '0 warehouses';
                     }
                 } finally {
@@ -1412,14 +1754,12 @@
                 const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
                 const link = document.createElement('a');
                 link.href = URL.createObjectURL(blob);
-                link.download = `warehouse_export_${new Date().toISOString().slice(0, 10)}.csv`;
+                link.download = `warehouse_export_${new Date().toISOString().slice(0,10)}.csv`;
                 link.click();
                 URL.revokeObjectURL(link.href);
             }
 
-            function printDashboard() {
-                window.print();
-            }
+            function printDashboard() { window.print(); }
 
             // ─── Sorting ───
             function handleSort(e) {
@@ -1427,10 +1767,8 @@
                 if (!th || !th.dataset.sort) return;
                 const key = th.dataset.sort;
                 if (key === sortKey) sortAsc = !sortAsc;
-                else {
-                    sortKey = key;
-                    sortAsc = true;
-                }
+                else { sortKey = key;
+                    sortAsc = true; }
                 currentPage = 1;
                 renderTable();
             }
@@ -1445,6 +1783,88 @@
                 tableScroll.scrollTop = 0;
             }
 
+            // ─── Upload logic ───
+            let selectedFile = null;
+
+            function handleFileSelect(event) {
+                const file = event.target.files[0];
+                if (!file) {
+                    selectedFile = null;
+                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
+                    uploadBtn.disabled = true;
+                    return;
+                }
+                // Validate file type
+                const ext = file.name.split('.').pop().toLowerCase();
+                if (!['xlsx', 'xls'].includes(ext)) {
+                    showUploadToast('Please select an Excel file (.xlsx or .xls)', false);
+                    fileInput.value = '';
+                    selectedFile = null;
+                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
+                    uploadBtn.disabled = true;
+                    return;
+                }
+                selectedFile = file;
+                fileInfo.innerHTML = `<i class="fas fa-file-excel"></i> ${file.name} (${(file.size / 1024).toFixed(0)} KB)`;
+                uploadBtn.disabled = false;
+                // Hide any previous status
+                uploadStatus.style.display = 'none';
+            }
+
+            async function uploadFile() {
+                if (!selectedFile) return;
+
+                uploadBtn.disabled = true;
+                uploadStatus.style.display = 'flex';
+                uploadStatusText.textContent = 'Uploading…';
+
+                const formData = new FormData();
+                formData.append('file', selectedFile);
+
+                try {
+                    const response = await fetch('/upload/excel', {
+                        method: 'POST',
+                        body: formData,
+                    });
+
+                    const result = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(result.detail || result.message || 'Upload failed');
+                    }
+
+                    // Success
+                    uploadStatusText.textContent = '✅ Upload successful!';
+                    uploadStatus.style.display = 'none';
+                    showUploadToast(
+                        `✅ Import complete! Batch: ${result.batch_id || 'N/A'}, Rows: ${result.metrics?.rows_upserted || 0}`,
+                        true
+                    );
+
+                    // Refresh dashboard data automatically
+                    fetchData(true);
+
+                } catch (err) {
+                    console.error('Upload error:', err);
+                    uploadStatusText.textContent = '❌ ' + (err.message || 'Upload failed');
+                    setTimeout(() => {
+                        uploadStatus.style.display = 'none';
+                    }, 3000);
+                    showUploadToast('Upload failed: ' + (err.message || 'Unknown error'), false);
+                } finally {
+                    uploadBtn.disabled = false;
+                    // Reset file input
+                    fileInput.value = '';
+                    selectedFile = null;
+                    fileInfo.innerHTML = '<i class="fas fa-file-excel"></i> No file selected';
+                    uploadBtn.disabled = true;
+                    // Hide status after a moment
+                    setTimeout(() => {
+                        uploadStatus.style.display = 'none';
+                    }, 5000);
+                }
+            }
+
             // ─── Init ───
             function init() {
                 updateClock();
@@ -1455,6 +1875,7 @@
 
                 refreshBtn.addEventListener('click', () => fetchData(true));
                 toastClose.addEventListener('click', () => errorToast.classList.remove('show'));
+                uploadToastClose.addEventListener('click', () => uploadToast.classList.remove('show'));
 
                 tableSearch.addEventListener('input', (e) => {
                     searchTerm = e.target.value;
@@ -1469,6 +1890,11 @@
 
                 exportCsvBtn.addEventListener('click', exportCsv);
                 printBtn.addEventListener('click', printDashboard);
+
+                // Upload events
+                chooseFileBtn.addEventListener('click', () => fileInput.click());
+                fileInput.addEventListener('change', handleFileSelect);
+                uploadBtn.addEventListener('click', uploadFile);
 
                 document.addEventListener('keydown', (e) => {
                     if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
@@ -1490,6 +1916,8 @@
         })();
     </script>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js">
+    </script>
+
 </body>
 </html>
