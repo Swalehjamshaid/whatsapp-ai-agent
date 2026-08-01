@@ -1,20 +1,21 @@
 # ==========================================================
-# FILE: app/services/excel_import_service.py (v5.0 - EXTREMELY COMPREHENSIVE)
-# PURPOSE: Maps ALL Excel columns, replaces old data when requested,
+# FILE: app/services/excel_import_service.py (v6.0 - PANDAS)
+# PURPOSE: Reads Excel using pandas, maps all columns,
+#          replaces old data (truncates) if replace_mode=True,
 #          and inserts new rows in batches of 1000.
 # ==========================================================
 
 import logging
+import pandas as pd
+import numpy as np
 from datetime import datetime, date
 from typing import Dict, Any, List, Optional
 
-from openpyxl import load_workbook
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.models import DeliveryReport
 
-# Configure logger
 logger = logging.getLogger(__name__)
 
 # ==========================================================
@@ -22,83 +23,75 @@ logger = logging.getLogger(__name__)
 # ==========================================================
 
 class ExcelImportServiceError(Exception):
-    """Base exception for Excel import service errors."""
     pass
 
 class VerificationError(Exception):
-    """Raised when a critical column (like DN NO) is missing."""
     pass
 
 # ==========================================================
 # HELPER FUNCTIONS
 # ==========================================================
 
-def _clean_string(value: Any) -> Optional[str]:
-    """
-    Safely convert a value to a stripped string or None.
-    """
-    if value is None:
+def _clean_value(val):
+    """Convert pandas NaN/NaT to None."""
+    if pd.isna(val):
         return None
-    if isinstance(value, str):
-        cleaned = value.strip()
-        return cleaned if cleaned else None
-    return str(value)
+    return val
 
-def _safe_int(value: Any) -> Optional[int]:
-    """
-    Safely convert a value to an integer, handling comma thousand separators.
-    """
-    if value is None or str(value).strip() == "":
+def _safe_int(val) -> Optional[int]:
+    """Safely convert to int, handling commas and NaN."""
+    if val is None or pd.isna(val):
         return None
     try:
-        # Remove commas and convert to float first (handles decimals like 2.5)
-        return int(float(str(value).strip().replace(',', '')))
+        if isinstance(val, (int, float)):
+            return int(val)
+        if isinstance(val, str):
+            clean = val.replace(',', '').strip()
+            return int(float(clean))
     except (ValueError, TypeError):
         return None
+    return None
 
-def _safe_float(value: Any) -> Optional[float]:
-    """
-    Safely convert a value to a float, handling comma thousand separators.
-    """
-    if value is None or str(value).strip() == "":
+def _safe_float(val) -> Optional[float]:
+    """Safely convert to float, handling commas."""
+    if val is None or pd.isna(val):
         return None
     try:
-        return float(str(value).strip().replace(',', ''))
+        if isinstance(val, (int, float)):
+            return float(val)
+        if isinstance(val, str):
+            clean = val.replace(',', '').strip()
+            return float(clean)
     except (ValueError, TypeError):
         return None
+    return None
 
-def _parse_date_from_excel(value: Any) -> Optional[date]:
-    """
-    Parse a date from Excel values. Supports:
-    - datetime/date objects
-    - strings in DD.MM.YYYY, YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY, YYYYMMDD
-    - Excel serial numbers (floats)
-    """
-    if value is None or str(value).strip() == "":
+def _parse_date_from_excel(val) -> Optional[date]:
+    """Convert pandas Timestamp, string, or serial number to date."""
+    if val is None or pd.isna(val):
         return None
-    # If already a datetime or date object
-    if isinstance(value, (datetime, date)):
-        return value.date() if isinstance(value, datetime) else value
-    # If string, try common formats
-    if isinstance(value, str):
-        value = value.strip()
+    if isinstance(val, (datetime, date)):
+        return val.date() if isinstance(val, datetime) else val
+    if hasattr(val, 'to_pydatetime'):
+        return val.to_pydatetime().date()
+    if isinstance(val, str):
+        val = val.strip()
         for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y%m%d"):
             try:
-                return datetime.strptime(value, fmt).date()
+                return datetime.strptime(val, fmt).date()
             except ValueError:
                 continue
-        logger.warning(f"Could not parse date from string: {value}")
-    # If number, treat as Excel serial date (days since 1899-12-30)
-    if isinstance(value, (int, float)):
+        logger.warning(f"Could not parse date from string: {val}")
+    if isinstance(val, (int, float)):
+        from datetime import timedelta
         try:
-            from datetime import timedelta
-            return (datetime(1899, 12, 30) + timedelta(days=float(value))).date()
+            return (datetime(1899, 12, 30) + timedelta(days=float(val))).date()
         except Exception:
             pass
     return None
 
 # ==========================================================
-# MAIN IMPORT FUNCTION
+# MAIN IMPORT FUNCTION (WITH TRUNCATE)
 # ==========================================================
 
 def import_delivery_excel(
@@ -110,13 +103,10 @@ def import_delivery_excel(
     replace_mode: bool = False
 ) -> Dict[str, Any]:
     """
-    Reads an Excel file, maps all columns to the DeliveryReport model,
-    and inserts the data in batches of `batch_size` (default 1000).
+    Reads an Excel file using pandas, maps all columns to the
+    DeliveryReport model, and inserts the data in batches.
     
-    If `replace_mode` is True, the entire delivery_reports table is
-    truncated before insertion, effectively replacing all old data.
-    
-    Returns a dictionary containing import metrics.
+    If replace_mode is True, the table is truncated before insertion.
     """
     logger.info(f"Starting import for batch: {upload_batch_id}, file: {source_filename}")
 
@@ -129,12 +119,11 @@ def import_delivery_excel(
         "errors": []
     }
 
-    # ----------------------------------------------------------
-    # STEP 0: REPLACE MODE – TRUNCATE TABLE IF REQUESTED
-    # ----------------------------------------------------------
+    # ==========================================================
+    # STEP 0: REPLACE MODE – TRUNCATE OLD DATA
+    # ==========================================================
     if replace_mode:
         try:
-            # TRUNCATE is faster than DELETE and resets the auto-increment ID
             db.execute(text("TRUNCATE TABLE delivery_reports RESTART IDENTITY CASCADE"))
             db.flush()
             logger.info("✅ Existing data truncated (replace_mode=True).")
@@ -142,181 +131,120 @@ def import_delivery_excel(
             logger.exception("Truncation failed")
             raise ExcelImportServiceError(f"Truncation failed: {str(e)}")
 
-    # ----------------------------------------------------------
-    # STEP 1: LOAD THE EXCEL WORKBOOK
-    # ----------------------------------------------------------
+    # ==========================================================
+    # STEP 1: READ EXCEL WITH PANDAS
+    # ==========================================================
     try:
-        wb = load_workbook(file_path, data_only=True)
-        ws = wb.active
+        df = pd.read_excel(file_path, engine='openpyxl', dtype=str, keep_default_na=False)
+        df = df.replace(r'^\s*$', np.nan, regex=True)
     except Exception as e:
-        logger.exception(f"Failed to load Excel file: {file_path}")
+        logger.exception(f"Failed to read Excel file: {file_path}")
         raise ExcelImportServiceError(f"Failed to read Excel file: {str(e)}")
 
-    # ----------------------------------------------------------
-    # STEP 2: EXTRACT HEADERS AND BUILD COLUMN MAPPING
-    # ----------------------------------------------------------
-    headers = []
-    for cell in ws[1]:
-        header_val = _clean_string(cell.value)
-        headers.append(header_val.upper() if header_val else None)
+    # Normalise column names: strip, uppercase, replace spaces with underscore
+    df.columns = df.columns.str.strip().str.upper().str.replace(' ', '_')
 
-    # Map of expected Excel column names (uppercase) to model fields
-    expected_headers = {
-        "ORDER TYPE": "order_type",
-        "DN NO": "dn_no",                     # REQUIRED – if missing, raise error
-        "DN AMOUNT": "dn_amount",
-        "DN QTY": "dn_qty",
-        "DN WORK": "dn_work",
+    # ==========================================================
+    # STEP 2: VERIFY REQUIRED COLUMN
+    # ==========================================================
+    required_col = "DN_NO"
+    if required_col not in df.columns:
+        raise VerificationError(f"Required column '{required_col}' not found in Excel header.")
+
+    # Map dataframe columns to model fields
+    column_mapping = {
+        "ORDER_TYPE": "order_type",
+        "DN_NO": "dn_no",
+        "DN_AMOUNT": "dn_amount",
+        "DN_QTY": "dn_qty",
+        "DN_WORK": "dn_work",
         "DIVISION": "division",
-        "MATERIAL NO": "material_no",
-        "CUSTOMER MODEL": "customer_model",
-        "SALES OFFICE": "sales_office",
-        "SOLD-TO-PARTY NAME": "customer_name",
-        "CUSTOMER CODE": "customer_code",
-        "DEALER CODE": "dealer_code",
-        "SHIP-TO CITY": "ship_to_city",
+        "MATERIAL_NO": "material_no",
+        "CUSTOMER_MODEL": "customer_model",
+        "SALES_OFFICE": "sales_office",
+        "SOLD-TO-PARTY_NAME": "customer_name",
+        "CUSTOMER_CODE": "customer_code",
+        "DEALER_CODE": "dealer_code",
+        "SHIP-TO_CITY": "ship_to_city",
         "STORAGE": "storage_location",
         "WAREHOUSE": "warehouse",
-        "WAREHOUSE CODE": "warehouse_code",
-        "DELIVERY LOCATION": "delivery_location",
-        "DN CREATE DATE": "dn_create_date",
-        "GOOD ISSUE DATE": "good_issue_date",
-        "POD DATE": "pod_date",
-        "SALES MANAGER": "sales_manager",
+        "WAREHOUSE_CODE": "warehouse_code",
+        "DELIVERY_LOCATION": "delivery_location",
+        "DN_CREATE_DATE": "dn_create_date",
+        "GOOD_ISSUE_DATE": "good_issue_date",
+        "POD_DATE": "pod_date",
+        "SALES_MANAGER": "sales_manager",
         "REMARKS": "remarks",
     }
 
-    column_map = {}
-    missing_columns = []
-    for expected_upper, model_field in expected_headers.items():
-        found = False
-        for i, h in enumerate(headers):
-            if h and expected_upper in h:
-                column_map[model_field] = i
-                found = True
-                break
-        if not found:
-            if model_field == "dn_no":
-                # DN NO is mandatory – if not found, stop the import
-                raise VerificationError(f"Required column '{expected_upper}' (DN NO) not found in Excel header.")
-            else:
-                # Optional column – log a warning and skip mapping
-                missing_columns.append(expected_upper)
-                logger.warning(f"Optional column '{expected_upper}' not found, will leave field as NULL.")
+    # Check which optional columns are present
+    present_cols = set(df.columns)
+    missing_cols = set(column_mapping.keys()) - present_cols
+    if missing_cols:
+        logger.warning(f"Optional columns missing: {', '.join(missing_cols)}")
 
-    if missing_columns:
-        logger.info(f"The following optional columns were not found and will be left NULL: {', '.join(missing_columns)}")
-
-    # ----------------------------------------------------------
-    # STEP 3: PARSE ROWS AND BUILD OBJECTS
-    # ----------------------------------------------------------
-    records_to_insert = []
+    # ==========================================================
+    # STEP 3: TRANSFORM DATAFRAME TO LIST OF DICTIONARIES
+    # ==========================================================
+    records = []
     errors = []
 
-    # Helper to safely retrieve a cell value from the current row
-    def _get_cell(model_field):
-        idx = column_map.get(model_field)
-        return row[idx] if idx is not None else None
-
-    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+    for idx, row in df.iterrows():
         metrics["rows_read"] += 1
-
         try:
-            # Mandatory field: DN NO
-            dn_no = _clean_string(row[column_map["dn_no"]])
+            dn_no = _clean_value(row.get("DN_NO"))
             if not dn_no:
-                raise ValueError("DN No is empty or missing")
+                raise ValueError("DN_NO is empty or missing")
 
-            # Build the DeliveryReport instance using safe getters
-            report = DeliveryReport(
-                order_type=_clean_string(_get_cell("order_type")),
-                dn_no=dn_no,
-                dn_amount=_safe_float(_get_cell("dn_amount")),
-                dn_qty=_safe_int(_get_cell("dn_qty")),
-                dn_work=_clean_string(_get_cell("dn_work")),
-                division=_clean_string(_get_cell("division")),
-                material_no=_clean_string(_get_cell("material_no")),
-                customer_model=_clean_string(_get_cell("customer_model")),
-                sales_office=_clean_string(_get_cell("sales_office")),
-                customer_name=_clean_string(_get_cell("customer_name")),
-                customer_code=_clean_string(_get_cell("customer_code")),
-                dealer_code=_clean_string(_get_cell("dealer_code")),
-                ship_to_city=_clean_string(_get_cell("ship_to_city")),
-                storage_location=_clean_string(_get_cell("storage_location")),
-                warehouse=_clean_string(_get_cell("warehouse")),
-                warehouse_code=_clean_string(_get_cell("warehouse_code")),
-                delivery_location=_clean_string(_get_cell("delivery_location")),
-                dn_create_date=_parse_date_from_excel(_get_cell("dn_create_date")),
-                good_issue_date=_parse_date_from_excel(_get_cell("good_issue_date")),
-                pod_date=_parse_date_from_excel(_get_cell("pod_date")),
-                sales_manager=_clean_string(_get_cell("sales_manager")),
-                remarks=_clean_string(_get_cell("remarks")),
-                # Derive statuses from dates
-                delivery_status="Delivered" if _parse_date_from_excel(_get_cell("pod_date")) else "Pending",
-                pgi_status="Completed" if _parse_date_from_excel(_get_cell("good_issue_date")) else "Pending",
-                pod_status="Completed" if _parse_date_from_excel(_get_cell("pod_date")) else "Pending",
-                pending_flag=False if _parse_date_from_excel(_get_cell("pod_date")) else True,
-                source_file=source_filename,
-                upload_batch_id=upload_batch_id
-            )
+            # Build the record dictionary
+            record = {}
+            for excel_col, model_field in column_mapping.items():
+                if excel_col not in df.columns:
+                    record[model_field] = None
+                    continue
+                raw = _clean_value(row[excel_col])
+                # Apply appropriate conversion based on model field
+                if model_field in ("dn_amount",):
+                    record[model_field] = _safe_float(raw)
+                elif model_field in ("dn_qty",):
+                    record[model_field] = _safe_int(raw)
+                elif model_field in ("dn_create_date", "good_issue_date", "pod_date"):
+                    record[model_field] = _parse_date_from_excel(raw)
+                else:
+                    record[model_field] = str(raw) if raw is not None else None
 
-            records_to_insert.append(report)
+            # Derive statuses from dates
+            pod_date = record.get("pod_date")
+            good_issue_date = record.get("good_issue_date")
+            record["delivery_status"] = "Delivered" if pod_date else "Pending"
+            record["pgi_status"] = "Completed" if good_issue_date else "Pending"
+            record["pod_status"] = "Completed" if pod_date else "Pending"
+            record["pending_flag"] = False if pod_date else True
+            record["source_file"] = source_filename
+            record["upload_batch_id"] = upload_batch_id
+
+            records.append(record)
             metrics["rows_valid"] += 1
 
         except Exception as e:
-            logger.warning(f"Row {row_idx} failed validation: {e}")
-            errors.append({"row": row_idx, "error": str(e)})
+            logger.warning(f"Row {idx+2} failed validation: {e}")
+            errors.append({"row": idx+2, "error": str(e)})
             metrics["rows_failed"] += 1
 
-    # ----------------------------------------------------------
+    # ==========================================================
     # STEP 4: BULK INSERT IN BATCHES OF 1000
-    # ----------------------------------------------------------
-    if records_to_insert:
+    # ==========================================================
+    if records:
         try:
-            # Convert SQLAlchemy objects to dictionaries for bulk_insert_mappings
-            records_dict = [
-                {
-                    "order_type": r.order_type,
-                    "dn_no": r.dn_no,
-                    "dn_amount": r.dn_amount,
-                    "dn_qty": r.dn_qty,
-                    "dn_work": r.dn_work,
-                    "division": r.division,
-                    "material_no": r.material_no,
-                    "customer_model": r.customer_model,
-                    "sales_office": r.sales_office,
-                    "customer_name": r.customer_name,
-                    "customer_code": r.customer_code,
-                    "dealer_code": r.dealer_code,
-                    "ship_to_city": r.ship_to_city,
-                    "storage_location": r.storage_location,
-                    "warehouse": r.warehouse,
-                    "warehouse_code": r.warehouse_code,
-                    "delivery_location": r.delivery_location,
-                    "dn_create_date": r.dn_create_date,
-                    "good_issue_date": r.good_issue_date,
-                    "pod_date": r.pod_date,
-                    "sales_manager": r.sales_manager,
-                    "remarks": r.remarks,
-                    "delivery_status": r.delivery_status,
-                    "pgi_status": r.pgi_status,
-                    "pod_status": r.pod_status,
-                    "pending_flag": r.pending_flag,
-                    "source_file": r.source_file,
-                    "upload_batch_id": r.upload_batch_id
-                }
-                for r in records_to_insert
-            ]
-
             total_inserted = 0
-            for i in range(0, len(records_dict), batch_size):
-                batch = records_dict[i:i + batch_size]
+            for i in range(0, len(records), batch_size):
+                batch = records[i:i + batch_size]
                 db.bulk_insert_mappings(DeliveryReport, batch)
                 db.flush()
                 total_inserted += len(batch)
                 logger.info(f"Inserted batch of {len(batch)} records. Total so far: {total_inserted}")
 
-            metrics["rows_upserted"] = len(records_to_insert)
+            metrics["rows_upserted"] = total_inserted
             logger.info(f"✅ Successfully inserted {metrics['rows_upserted']} records into delivery_reports.")
 
         except Exception as e:
@@ -326,9 +254,6 @@ def import_delivery_excel(
     else:
         logger.info("No valid records found to insert.")
 
-    # ----------------------------------------------------------
-    # STEP 5: RETURN METRICS
-    # ----------------------------------------------------------
     metrics["errors"] = [f"Row {err['row']}: {err['error']}" for err in errors]
     logger.info(f"Import completed for batch {upload_batch_id}. "
                 f"Read: {metrics['rows_read']}, "
