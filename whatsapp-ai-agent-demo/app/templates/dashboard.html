@@ -1,3 +1,6 @@
+<!-- ========================================================== -->
+<!-- BLOCK 1: DOCUMENT TYPE, HEADER, AND ALL CSS STYLES         -->
+<!-- ========================================================== -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -210,6 +213,10 @@
             background: transparent;
             border: 1px solid rgba(10,40,80,0.12);
             color: #1a365d;
+        }
+        .upload-area .btn-upload.outline:hover {
+            background: rgba(42,111,219,0.04);
+            border-color: rgba(42,111,219,0.3);
         }
         .upload-status {
             margin-top: 10px;
@@ -733,6 +740,10 @@
         }
     </style>
 </head>
+
+<!-- ========================================================== -->
+<!-- BLOCK 2: BODY AND DASHBOARD LAYOUT STRUCTURE              -->
+<!-- ========================================================== -->
 <body>
 
     <!-- ─── LOADING ─── -->
@@ -966,6 +977,9 @@
         </footer>
     </div>
 
+<!-- ========================================================== -->
+<!-- BLOCK 3: JAVASCRIPT CONFIGURATION, STATE, AND HELPERS     -->
+<!-- ========================================================== -->
     <script>
         (function () {
             'use strict';
@@ -1093,6 +1107,10 @@
                     statusText.textContent = '⚠️ Disconnected';
                 }
             }
+
+// ========================================================== -->
+// BLOCK 4: JAVASCRIPT KPI, TABLE, CHART, AND FETCH LOGIC     -->
+// ========================================================== -->
 
             // ─── KPI ───
             function renderKpi(summary) {
@@ -1658,6 +1676,10 @@
                 renderTable();
                 tableScroll.scrollTop = 0;
             }
+
+<!-- ========================================================== -->
+<!-- BLOCK 5: JAVASCRIPT UPLOAD LOGIC AND INITIALIZATION        -->
+<!-- ========================================================== -->
 
             // ─── Upload logic ───
             let selectedFile = null;
