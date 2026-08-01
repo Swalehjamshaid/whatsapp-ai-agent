@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/services/excel_import_service.py (v4.0 - FULL MAPPING)
+# FILE: app/services/excel_import_service.py (v4.1 - SAFE OPTIONAL COLUMN ACCESS)
 # PURPOSE: Maps ALL available Excel columns to ALL database fields.
 # ==========================================================
 
@@ -76,7 +76,7 @@ def _parse_date_from_excel(value: Any) -> Optional[date]:
     return None
 
 # ==========================================================
-# CORE IMPORT FUNCTION (BATCH + FULL MAPPING)
+# CORE IMPORT FUNCTION (BATCH + FULL MAPPING + SAFE ACCESS)
 # ==========================================================
 
 def import_delivery_excel(
@@ -134,18 +134,18 @@ def import_delivery_excel(
         "CUSTOMER MODEL": "customer_model",
         "SALES OFFICE": "sales_office",
         "SOLD-TO-PARTY NAME": "customer_name",
-        "CUSTOMER CODE": "customer_code",   # New
-        "DEALER CODE": "dealer_code",       # New
+        "CUSTOMER CODE": "customer_code",
+        "DEALER CODE": "dealer_code",
         "SHIP-TO CITY": "ship_to_city",
         "STORAGE": "storage_location",
         "WAREHOUSE": "warehouse",
-        "WAREHOUSE CODE": "warehouse_code", # New
-        "DELIVERY LOCATION": "delivery_location", # New
+        "WAREHOUSE CODE": "warehouse_code",
+        "DELIVERY LOCATION": "delivery_location",
         "DN CREATE DATE": "dn_create_date",
         "GOOD ISSUE DATE": "good_issue_date",
         "POD DATE": "pod_date",
         "SALES MANAGER": "sales_manager",
-        "REMARKS": "remarks",              # New
+        "REMARKS": "remarks",
     }
 
     # Build column map, and warn if a column is missing (except for required ones)
@@ -172,7 +172,7 @@ def import_delivery_excel(
         logger.info(f"The following columns were not found and will be left NULL: {', '.join(missing_columns)}")
 
     # ----------------------------------------------------------
-    # STEP 3: PARSE ROWS INTO OBJECTS
+    # STEP 3: PARSE ROWS INTO OBJECTS (SAFE ACCESS FOR OPTIONAL COLUMNS)
     # ----------------------------------------------------------
     records_to_insert = []
     errors = []
@@ -186,34 +186,39 @@ def import_delivery_excel(
             if not dn_no:
                 raise ValueError("DN No is empty or missing")
 
-            # Optional fields – safe access with get()
+            # Helper to safely get column value
+            def _get_cell(model_field):
+                idx = column_map.get(model_field)
+                return row[idx] if idx is not None else None
+
+            # Optional fields – safe access with _get_cell()
             report = DeliveryReport(
-                order_type=_clean_string(row[column_map.get("order_type")]),
+                order_type=_clean_string(_get_cell("order_type")),
                 dn_no=dn_no,
-                dn_amount=_safe_float(row[column_map.get("dn_amount")]),
-                dn_qty=_safe_int(row[column_map.get("dn_qty")]),
-                dn_work=_clean_string(row[column_map.get("dn_work")]),
-                division=_clean_string(row[column_map.get("division")]),
-                material_no=_clean_string(row[column_map.get("material_no")]),
-                customer_model=_clean_string(row[column_map.get("customer_model")]),
-                sales_office=_clean_string(row[column_map.get("sales_office")]),
-                customer_name=_clean_string(row[column_map.get("customer_name")]),
-                customer_code=_clean_string(row[column_map.get("customer_code")]),   # New
-                dealer_code=_clean_string(row[column_map.get("dealer_code")]),       # New
-                ship_to_city=_clean_string(row[column_map.get("ship_to_city")]),
-                storage_location=_clean_string(row[column_map.get("storage_location")]),
-                warehouse=_clean_string(row[column_map.get("warehouse")]),
-                warehouse_code=_clean_string(row[column_map.get("warehouse_code")]), # New
-                delivery_location=_clean_string(row[column_map.get("delivery_location")]), # New
-                dn_create_date=_parse_date_from_excel(row[column_map.get("dn_create_date")]),
-                good_issue_date=_parse_date_from_excel(row[column_map.get("good_issue_date")]),
-                pod_date=_parse_date_from_excel(row[column_map.get("pod_date")]),
-                sales_manager=_clean_string(row[column_map.get("sales_manager")]),
-                remarks=_clean_string(row[column_map.get("remarks")]),               # New
-                delivery_status="Delivered" if _parse_date_from_excel(row[column_map.get("pod_date")]) else "Pending",
-                pgi_status="Completed" if _parse_date_from_excel(row[column_map.get("good_issue_date")]) else "Pending",
-                pod_status="Completed" if _parse_date_from_excel(row[column_map.get("pod_date")]) else "Pending",
-                pending_flag=False if _parse_date_from_excel(row[column_map.get("pod_date")]) else True,
+                dn_amount=_safe_float(_get_cell("dn_amount")),
+                dn_qty=_safe_int(_get_cell("dn_qty")),
+                dn_work=_clean_string(_get_cell("dn_work")),
+                division=_clean_string(_get_cell("division")),
+                material_no=_clean_string(_get_cell("material_no")),
+                customer_model=_clean_string(_get_cell("customer_model")),
+                sales_office=_clean_string(_get_cell("sales_office")),
+                customer_name=_clean_string(_get_cell("customer_name")),
+                customer_code=_clean_string(_get_cell("customer_code")),
+                dealer_code=_clean_string(_get_cell("dealer_code")),
+                ship_to_city=_clean_string(_get_cell("ship_to_city")),
+                storage_location=_clean_string(_get_cell("storage_location")),
+                warehouse=_clean_string(_get_cell("warehouse")),
+                warehouse_code=_clean_string(_get_cell("warehouse_code")),
+                delivery_location=_clean_string(_get_cell("delivery_location")),
+                dn_create_date=_parse_date_from_excel(_get_cell("dn_create_date")),
+                good_issue_date=_parse_date_from_excel(_get_cell("good_issue_date")),
+                pod_date=_parse_date_from_excel(_get_cell("pod_date")),
+                sales_manager=_clean_string(_get_cell("sales_manager")),
+                remarks=_clean_string(_get_cell("remarks")),
+                delivery_status="Delivered" if _parse_date_from_excel(_get_cell("pod_date")) else "Pending",
+                pgi_status="Completed" if _parse_date_from_excel(_get_cell("good_issue_date")) else "Pending",
+                pod_status="Completed" if _parse_date_from_excel(_get_cell("pod_date")) else "Pending",
+                pending_flag=False if _parse_date_from_excel(_get_cell("pod_date")) else True,
                 source_file=source_filename,
                 upload_batch_id=upload_batch_id
             )
