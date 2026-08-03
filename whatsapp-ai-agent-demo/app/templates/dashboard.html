@@ -986,8 +986,8 @@
         (function () {
             'use strict';
 
-            // ─── CONFIG ───
-            const WEBHOOK_URL = 'http://localhost:5678/webhook/e8c63b93-4b19-4705-b8b7-09c52ee1478f'; // Update this ID if needed
+            // ─── CONFIG (UPDATED WITH YOUR EXACT WORKING WEBHOOK ID) ───
+            const WEBHOOK_URL = 'http://localhost:5678/webhook/b8501db8-e0ec-4bcd-8e0c-b2d3ebe87a8c';
             const REFRESH_INTERVAL_MS = 30000;
             const PAGE_SIZE = 10;
 
@@ -1149,7 +1149,7 @@
                 });
             }
 
-            // ─── Table (Updated to use exact keys from warehouses array) ───
+            // ─── Table ───
             function renderTable() {
                 const term = searchTerm.trim().toLowerCase();
                 filteredWarehouses = allWarehouses.filter(w =>
@@ -1584,10 +1584,6 @@
 
                     const data = await resp.json();
 
-                    /* ------------------------------------------------------------
-                       NOTE: Adjusted to use "executive" instead of "summary" to
-                       map perfectly to the JSON data you provided in the prompt.
-                       ------------------------------------------------------------ */
                     if (!data || typeof data !== 'object' || !data.executive || !Array.isArray(data.warehouses)) {
                         throw new Error('Invalid data structure: expected "executive" and "warehouses" array.');
                     }
