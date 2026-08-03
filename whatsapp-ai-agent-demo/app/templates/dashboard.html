@@ -1,142 +1,214 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>n8n Webhook Test Dashboard</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background-color: #f4f6f9;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            margin: 0;
-            padding: 20px;
-            box-sizing: border-box;
-        }
-        .container {
-            background: white;
-            width: 100%;
-            max-width: 800px;
-            padding: 30px;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-        }
-        h1 {
-            margin-top: 0;
-            color: #333;
-            font-size: 24px;
-            border-bottom: 2px solid #eee;
-            padding-bottom: 15px;
-        }
-        button {
-            background-color: #ff6b00; /* n8n orange */
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            font-size: 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            width: 100%;
-            font-weight: 600;
-            margin-bottom: 20px;
-            transition: background 0.3s, opacity 0.3s;
-        }
-        button:hover:not(:disabled) {
-            background-color: #e65c00;
-        }
-        button:disabled {
-            opacity: 0.7;
-            cursor: not-allowed;
-        }
-        #responseArea {
-            background-color: #1e1e1e;
-            color: #d4d4d4;
-            padding: 20px;
-            border-radius: 8px;
-            max-height: 500px;
-            overflow-y: auto;
-            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-            font-size: 13px;
-            line-height: 1.6;
-            display: none; /* Hidden by default */
-        }
-        #responseArea pre {
-            margin: 0;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-        }
-        .loading-text {
-            text-align: center;
-            color: #666;
-            margin-top: 10px;
-        }
-        .success-text { color: #00ff00; }
-        .error-text { color: #ff6b6b; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Haier Logistics Dashboard</title>
+
+<style>
+
+body{
+    margin:0;
+    font-family:Arial,Helvetica,sans-serif;
+    background:#f4f6f9;
+}
+
+header{
+    background:#003366;
+    color:white;
+    padding:20px;
+    text-align:center;
+}
+
+.container{
+    width:95%;
+    margin:auto;
+}
+
+.cards{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+    gap:20px;
+    margin-top:25px;
+}
+
+.card{
+    background:white;
+    padding:20px;
+    border-radius:8px;
+    box-shadow:0 2px 10px rgba(0,0,0,.15);
+}
+
+.card h3{
+    margin:0;
+    color:#555;
+}
+
+.card h2{
+    margin-top:15px;
+    color:#0070c0;
+}
+
+table{
+    width:100%;
+    border-collapse:collapse;
+    margin-top:30px;
+    background:white;
+}
+
+th{
+    background:#003366;
+    color:white;
+    padding:10px;
+}
+
+td{
+    padding:10px;
+    text-align:center;
+    border-bottom:1px solid #ddd;
+}
+
+tr:hover{
+    background:#f2f2f2;
+}
+
+button{
+    padding:10px 20px;
+    background:#0070c0;
+    color:white;
+    border:none;
+    border-radius:5px;
+    cursor:pointer;
+    margin-top:20px;
+}
+
+button:hover{
+    background:#005999;
+}
+
+</style>
+
 </head>
+
 <body>
-    <div class="container">
-        <h1>🚀 n8n Integration Tester</h1>
-        <button id="triggerBtn">Trigger Webhook</button>
-        
-        <div id="statusMessage" class="loading-text"></div>
-        
-        <div id="responseArea">
-            <pre id="jsonOutput"></pre>
-        </div>
-    </div>
 
-    <script>
-        // Your n8n webhook URL
-        const WEBHOOK_URL = 'http://localhost:5678/webhook/b8501db8-40e0-4c8d-8e0c-b2d3ebe87a8c';
+<header>
 
-        const triggerBtn = document.getElementById('triggerBtn');
-        const responseArea = document.getElementById('responseArea');
-        const jsonOutput = document.getElementById('jsonOutput');
-        const statusMessage = document.getElementById('statusMessage');
+<h1>Haier Pakistan Logistics Dashboard</h1>
 
-        triggerBtn.addEventListener('click', async () => {
-            // Reset UI state
-            statusMessage.innerHTML = '⏳ Fetching data from n8n...';
-            statusMessage.className = 'loading-text';
-            responseArea.style.display = 'none';
-            triggerBtn.disabled = true;
+</header>
 
-            try {
-                const response = await fetch(WEBHOOK_URL, {
-                    method: 'GET', // Set to POST if you change your n8n Webhook Method
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
-                });
+<div class="container">
 
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
+<button onclick="loadData()">Refresh Dashboard</button>
 
-                const data = await response.json();
-                
-                // Display success
-                statusMessage.innerHTML = '✅ Data received successfully!';
-                statusMessage.className = 'success-text';
-                responseArea.style.display = 'block';
-                jsonOutput.textContent = JSON.stringify(data, null, 2);
+<div class="cards">
 
-            } catch (error) {
-                // Handle Errors (Network, CORS, n8n down, etc.)
-                statusMessage.innerHTML = `❌ Error: ${error.message}`;
-                statusMessage.className = 'error-text';
-                
-                if (error.message.includes('Failed to fetch')) {
-                    statusMessage.innerHTML += `<br><small>Hint: Check if n8n is running, or this might be a CORS block.</small>`;
-                }
-            } finally {
-                triggerBtn.disabled = false;
-            }
-        });
-    </script>
+<div class="card">
+<h3>Total Warehouses</h3>
+<h2 id="warehouseCount">0</h2>
+</div>
+
+<div class="card">
+<h3>Total Revenue</h3>
+<h2 id="revenue">0</h2>
+</div>
+
+<div class="card">
+<h3>Total Units</h3>
+<h2 id="units">0</h2>
+</div>
+
+<div class="card">
+<h3>Total Delivery Notes</h3>
+<h2 id="dns">0</h2>
+</div>
+
+</div>
+
+<table>
+
+<thead>
+
+<tr>
+
+<th>Warehouse</th>
+<th>Revenue</th>
+<th>Units</th>
+<th>DNs</th>
+<th>PGI %</th>
+<th>Delivery %</th>
+<th>POD %</th>
+
+</tr>
+
+</thead>
+
+<tbody id="tableBody">
+
+</tbody>
+
+</table>
+
+</div>
+
+<script>
+
+const API="http://localhost:5678/webhook/b8501db8-e0ec-4bcd-8e0c-b2d3ebe87a8c";
+
+async function loadData(){
+
+const response=await fetch(API);
+
+const data=await response.json();
+
+document.getElementById("warehouseCount").innerHTML=data.warehouses.length;
+
+document.getElementById("revenue").innerHTML=
+Number(data.executive.total_revenue).toLocaleString();
+
+document.getElementById("units").innerHTML=
+Number(data.executive.total_units).toLocaleString();
+
+document.getElementById("dns").innerHTML=
+Number(data.executive.total_dn).toLocaleString();
+
+let html="";
+
+data.warehouses.forEach(w=>{
+
+html+=`
+
+<tr>
+
+<td>${w.warehouse}</td>
+
+<td>${Number(w.total_revenue).toLocaleString()}</td>
+
+<td>${Number(w.total_units).toLocaleString()}</td>
+
+<td>${w.total_delivery_notes}</td>
+
+<td>${w.pgi_achievement_pct}%</td>
+
+<td>${w.delivery_achievement_pct}%</td>
+
+<td>${w.pod_achievement_pct}%</td>
+
+</tr>
+
+`;
+
+});
+
+document.getElementById("tableBody").innerHTML=html;
+
+}
+
+loadData();
+
+</script>
+
 </body>
+
 </html>
