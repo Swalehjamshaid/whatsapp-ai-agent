@@ -1,118 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Haier Pakistan Logistics Dashboard</title>
+
+<style>
+body{
+    font-family:Arial;
+    margin:0;
+    background:#f5f5f5;
+}
+
+header{
+    background:#003366;
+    color:#fff;
+    padding:20px;
+    text-align:center;
+    font-size:28px;
+}
+
+button{
+    margin:20px;
+    padding:12px 25px;
+    background:#0066cc;
+    color:#fff;
+    border:none;
+    cursor:pointer;
+}
+
+.cards{
+    display:grid;
+    grid-template-columns:repeat(6,1fr);
+    gap:15px;
+    margin:20px;
+}
+
+.card{
+    background:white;
+    padding:15px;
+    border-radius:8px;
+    box-shadow:0 0 5px #ccc;
+}
+
+.card h3{
+    color:#666;
+}
+
+.card h2{
+    color:#0066cc;
+}
+
+table{
+    width:96%;
+    margin:auto;
+    border-collapse:collapse;
+    background:white;
+}
+
+th{
+    background:#003366;
+    color:white;
+    padding:10px;
+}
+
+td{
+    border:1px solid #ddd;
+    padding:8px;
+    text-align:center;
+}
+
+pre{
+    margin:20px;
+    background:#222;
+    color:#00ff00;
+    padding:15px;
+    max-height:300px;
+    overflow:auto;
+}
+</style>
+
+</head>
+
+<body>
+
+<header>Haier Pakistan Logistics Dashboard</header>
+
+<button onclick="loadData()">Refresh Dashboard</button>
+
+<div id="status"></div>
+
+<div class="cards">
+
+<div class="card">
+<h3>Total Warehouses</h3>
+<h2 id="w">0</h2>
+</div>
+
+<div class="card">
+<h3>Total Revenue</h3>
+<h2 id="r">0</h2>
+</div>
+
+<div class="card">
+<h3>Total Units</h3>
+<h2 id="u">0</h2>
+</div>
+
+<div class="card">
+<h3>Total DNs</h3>
+<h2 id="d">0</h2>
+</div>
+
+<div class="card">
+<h3>Health</h3>
+<h2 id="h">0</h2>
+</div>
+
+<div class="card">
+<h3>Risk</h3>
+<h2 id="risk">-</h2>
+</div>
+
+</div>
+
+<table>
+
+<thead>
+
+<tr>
+
+<th>Rank</th>
+
+<th>Warehouse</th>
+
+<th>Revenue</th>
+
+<th>Units</th>
+
+<th>DN</th>
+
+<th>PGI %</th>
+
+<th>Delivery %</th>
+
+<th>POD %</th>
+
+</tr>
+
+</thead>
+
+<tbody id="tbody"></tbody>
+
+</table>
+
+<pre id="json"></pre>
+
 <script>
 
-const API = "https://anymore-novelty-casey-civilian.trycloudflare.com/webhook/b8501db8-e0ec-4bcd-8e0c-b2d3ebe87a8c";
+const API="http://localhost:5678/webhook/b8501db8-e0ec-4bcd-8e0c-b2d3ebe87a8c";
 
-async function loadData() {
+async function loadData(){
 
-    const status = document.getElementById("status");
-    const tableBody = document.getElementById("tableBody");
+try{
 
-    status.className = "status";
-    status.innerHTML = "Loading Dashboard...";
+const res=await fetch(API);
 
-    tableBody.innerHTML = "";
+const data=await res.json();
 
-    try {
+document.getElementById("json").textContent=
+JSON.stringify(data,null,2);
 
-        const controller = new AbortController();
+const e=data.executive;
 
-        const timeout = setTimeout(() => controller.abort(), 15000);
+document.getElementById("w").innerHTML=e.total_warehouses;
 
-        const response = await fetch(API, {
-            method: "GET",
-            mode: "cors",
-            cache: "no-cache",
-            headers: {
-                "Accept": "application/json"
-            },
-            signal: controller.signal
-        });
+document.getElementById("r").innerHTML=
+Number(e.total_revenue).toLocaleString();
 
-        clearTimeout(timeout);
+document.getElementById("u").innerHTML=
+Number(e.total_dn_units).toLocaleString();
 
-        if (!response.ok) {
-            throw new Error("HTTP Error : " + response.status);
-        }
+document.getElementById("d").innerHTML=
+Number(e.total_delivery_notes).toLocaleString();
 
-        const data = await response.json();
+document.getElementById("h").innerHTML=
+e.logistics_health_score+"%";
 
-        document.getElementById("jsonOutput").textContent =
-            JSON.stringify(data, null, 4);
+document.getElementById("risk").innerHTML=
+e.risk_level;
 
-        if (!data.executive || !data.warehouses) {
-            throw new Error("Invalid JSON returned from n8n.");
-        }
+let html="";
 
-        const e = data.executive;
+for(const x of data.warehouses){
 
-        document.getElementById("warehouseCount").innerHTML =
-            Number(e.total_warehouses).toLocaleString();
-
-        document.getElementById("revenue").innerHTML =
-            Number(e.total_revenue).toLocaleString();
-
-        document.getElementById("units").innerHTML =
-            Number(e.total_dn_units).toLocaleString();
-
-        document.getElementById("dns").innerHTML =
-            Number(e.total_delivery_notes).toLocaleString();
-
-        document.getElementById("health").innerHTML =
-            e.logistics_health_score + "%";
-
-        document.getElementById("risk").innerHTML =
-            e.risk_level;
-
-        let html = "";
-
-        data.warehouses.forEach(w => {
-
-            html += `
-            <tr>
-                <td>${w.rank}</td>
-                <td>${w.warehouse}</td>
-                <td>${Number(w.total_revenue).toLocaleString()}</td>
-                <td>${Number(w.total_units).toLocaleString()}</td>
-                <td>${Number(w.total_delivery_notes).toLocaleString()}</td>
-                <td>${w.pgi_achievement_pct}%</td>
-                <td>${w.delivery_achievement_pct}%</td>
-                <td>${w.pod_achievement_pct}%</td>
-                <td>${w.logistics_health_score}%</td>
-            </tr>
-            `;
-
-        });
-
-        tableBody.innerHTML = html;
-
-        status.className = "status success";
-        status.innerHTML = "✅ Dashboard Connected Successfully";
-
-    }
-
-    catch (err) {
-
-        status.className = "status error";
-
-        if (err.name === "AbortError") {
-
-            status.innerHTML = "Connection Timeout";
-
-        } else {
-
-            status.innerHTML = err.message;
-
-        }
-
-        document.getElementById("jsonOutput").textContent =
-            err.stack || err.message;
-
-        console.error(err);
-
-    }
+html+=`
+<tr>
+<td>${x.rank}</td>
+<td>${x.warehouse}</td>
+<td>${Number(x.total_revenue).toLocaleString()}</td>
+<td>${Number(x.total_units).toLocaleString()}</td>
+<td>${x.total_delivery_notes}</td>
+<td>${x.pgi_achievement_pct}%</td>
+<td>${x.delivery_achievement_pct}%</td>
+<td>${x.pod_achievement_pct}%</td>
+</tr>
+`;
 
 }
 
-window.onload = loadData;
+document.getElementById("tbody").innerHTML=html;
+
+document.getElementById("status").innerHTML="<h3 style='color:green'>Connected Successfully</h3>";
+
+}catch(err){
+
+document.getElementById("status").innerHTML="<h3 style='color:red'>"+err+"</h3>";
+
+console.log(err);
+
+}
+
+}
+
+loadData();
 
 </script>
+
+</body>
+</html>
