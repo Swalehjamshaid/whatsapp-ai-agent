@@ -1299,16 +1299,12 @@
         </footer>
     </div>
 
-    <!-- ========================================================== -->
-    <!-- JAVASCRIPT                                                 -->
-    <!-- ========================================================== -->
     <script>
         (function() {
             'use strict';
 
-            // ─── CONFIG ───
-            // ✅ Correct webhook URL as requested
-            const WEBHOOK_URL = 'http://localhost:5678/webhook/b8501db8-e0ec-4bcd-8e0c-b2d3ebe87a8c';
+            // ─── ✅ CORRECT WEBHOOK URL ───
+            const WEBHOOK_URL = 'http://localhost:5678/webhook/b8501db8-40e0-4c8d-8e0c-b2d3ebe87a8c';
 
             const REFRESH_INTERVAL_MS = 30000;
             const PAGE_SIZE = 10;
@@ -2017,6 +2013,7 @@
                 hideError();
 
                 try {
+                    console.log('Fetching from:', WEBHOOK_URL);
                     const resp = await fetch(WEBHOOK_URL, {
                         method: 'GET',
                         headers: { 'Accept': 'application/json' }
