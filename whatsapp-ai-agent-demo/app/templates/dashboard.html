@@ -3,109 +3,90 @@
 <head>
 
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-<title>Haier Logistics Dashboard Test</title>
+<title>n8n Integration Tester</title>
 
 <style>
 
 body{
-    font-family:Arial,Helvetica,sans-serif;
+    font-family:Arial;
     background:#f4f6f9;
-    margin:0;
+    margin:30px;
 }
 
-header{
-    background:#003366;
-    color:#fff;
-    text-align:center;
-    padding:20px;
-}
-
-.container{
-    width:95%;
-    margin:20px auto;
+h1{
+    color:#003366;
 }
 
 button{
     background:#0066cc;
     color:white;
-    border:none;
     padding:12px 20px;
+    border:none;
     cursor:pointer;
     border-radius:5px;
 }
 
 button:hover{
-    background:#004b99;
-}
-
-.cards{
-    display:grid;
-    grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
-    gap:20px;
-    margin-top:20px;
+    background:#004999;
 }
 
 .card{
+
     background:white;
-    padding:20px;
+    padding:15px;
+    margin-top:20px;
     border-radius:8px;
     box-shadow:0 2px 8px rgba(0,0,0,.2);
-}
 
-.card h3{
-    margin:0;
-    color:#666;
-}
-
-.card h2{
-    color:#0070c0;
-}
-
-table{
-    width:100%;
-    border-collapse:collapse;
-    margin-top:30px;
-    background:white;
-}
-
-th{
-    background:#003366;
-    color:white;
-    padding:10px;
-}
-
-td{
-    padding:10px;
-    border-bottom:1px solid #ddd;
-    text-align:center;
-}
-
-.status{
-    margin-top:20px;
-    padding:15px;
-    border-radius:6px;
-    font-weight:bold;
 }
 
 .success{
-    background:#d4edda;
-    color:#155724;
+
+    color:green;
+    font-weight:bold;
+
 }
 
 .error{
-    background:#f8d7da;
-    color:#721c24;
+
+    color:red;
+    font-weight:bold;
+
 }
 
 pre{
+
     background:#222;
-    color:#0f0;
+    color:#00ff00;
     padding:15px;
     overflow:auto;
-    max-height:300px;
-    border-radius:6px;
+    max-height:350px;
+
+}
+
+table{
+
+width:100%;
+border-collapse:collapse;
+margin-top:20px;
+
+}
+
+th{
+
+background:#003366;
+color:white;
+padding:10px;
+
+}
+
+td{
+
+padding:10px;
+border:1px solid #ddd;
+
 }
 
 </style>
@@ -114,41 +95,61 @@ pre{
 
 <body>
 
-<header>
+<h1>n8n Integration Tester</h1>
 
-<h1>Haier Pakistan Logistics Dashboard</h1>
+<button onclick="testWebhook()">
 
-</header>
+Test Integration
 
-<div class="container">
-
-<button onclick="loadData()">
-Refresh Dashboard
 </button>
 
-<div id="status"></div>
-
-<div class="cards">
-
 <div class="card">
-<h3>Total Warehouses</h3>
-<h2 id="warehouseCount">0</h2>
+
+<b>Webhook URL</b>
+
+<p id="url"></p>
+
 </div>
 
 <div class="card">
-<h3>Total Revenue</h3>
-<h2 id="revenue">0</h2>
+
+<b>Status</b>
+
+<p id="status">Waiting...</p>
+
 </div>
 
 <div class="card">
-<h3>Total Units</h3>
-<h2 id="units">0</h2>
+
+<b>HTTP Status</b>
+
+<p id="httpStatus">-</p>
+
 </div>
 
 <div class="card">
-<h3>Total Delivery Notes</h3>
-<h2 id="dns">0</h2>
+
+<b>Response Time</b>
+
+<p id="time">-</p>
+
 </div>
+
+<div class="card">
+
+<b>Executive Summary</b>
+
+<p>Total Warehouses :
+<span id="warehouse">0</span></p>
+
+<p>Total Revenue :
+<span id="revenue">0</span></p>
+
+<p>Total Units :
+<span id="units">0</span></p>
+
+<p>Total DNs :
+<span id="dns">0</span></p>
 
 </div>
 
@@ -159,68 +160,84 @@ Refresh Dashboard
 <tr>
 
 <th>Warehouse</th>
+
 <th>Revenue</th>
+
 <th>Units</th>
-<th>DNs</th>
+
+<th>DN</th>
+
 <th>PGI %</th>
+
 <th>Delivery %</th>
+
 <th>POD %</th>
 
 </tr>
 
 </thead>
 
-<tbody id="tableBody">
+<tbody id="tbody">
 
 </tbody>
 
 </table>
 
-<h2>Webhook JSON Response</h2>
+<div class="card">
 
-<pre id="jsonOutput">
+<h3>Raw JSON</h3>
+
+<pre id="json">
+
 Waiting...
+
 </pre>
 
 </div>
 
 <script>
 
-// =====================================================
-// REPLACE THIS URL
-// =====================================================
+//==============================
+// CHANGE ONLY THIS
+//==============================
 
 const API =
-"https://YOUR-CLOUDFLARE-URL.trycloudflare.com/webhook/b8501db8-e0ec-4bcd-8e0c-b2d3ebe87a8c";
+"https://anymore-novelty-casey-civilian.trycloudflare.com/webhook/b8501db8-e0ec-4bcd-8e0c-b2d3ebe87a8c";
 
-async function loadData(){
+document.getElementById("url").innerHTML=API;
 
-const status=document.getElementById("status");
+async function testWebhook(){
 
-status.innerHTML="Loading...";
-
-status.className="status";
+let start=performance.now();
 
 try{
 
+document.getElementById("status").innerHTML="Connecting...";
+
 const response=await fetch(API);
+
+document.getElementById("httpStatus").innerHTML=response.status;
+
+const end=performance.now();
+
+document.getElementById("time").innerHTML=
+Math.round(end-start)+" ms";
 
 if(!response.ok){
 
-throw new Error("HTTP "+response.status);
+throw new Error(response.status);
 
 }
 
 const data=await response.json();
 
-document.getElementById("jsonOutput").textContent=
+document.getElementById("status").innerHTML=
+"<span class='success'>CONNECTED SUCCESSFULLY</span>";
+
+document.getElementById("json").textContent=
 JSON.stringify(data,null,4);
 
-status.innerHTML="✅ Connected Successfully";
-
-status.className="status success";
-
-document.getElementById("warehouseCount").innerHTML=
+document.getElementById("warehouse").innerHTML=
 data.warehouses.length;
 
 document.getElementById("revenue").innerHTML=
@@ -260,26 +277,25 @@ html+=`
 
 });
 
-document.getElementById("tableBody").innerHTML=html;
+document.getElementById("tbody").innerHTML=html;
 
 }
 
-catch(error){
+catch(err){
 
-status.innerHTML="❌ "+error.message;
+document.getElementById("status").innerHTML=
+"<span class='error'>FAILED</span>";
 
-status.className="status error";
+document.getElementById("json").textContent=
+err.stack;
 
-document.getElementById("jsonOutput").textContent=
-error.stack;
-
-console.error(error);
-
-}
+console.error(err);
 
 }
 
-loadData();
+}
+
+testWebhook();
 
 </script>
 
