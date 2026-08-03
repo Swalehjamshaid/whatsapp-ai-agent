@@ -3,89 +3,170 @@
 <head>
 
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 
-<title>n8n Integration Tester</title>
+<title>Haier Pakistan Logistics Dashboard</title>
 
 <style>
 
-body{
-    font-family:Arial;
-    background:#f4f6f9;
-    margin:30px;
+*{
+margin:0;
+padding:0;
+box-sizing:border-box;
+font-family:Arial,Helvetica,sans-serif;
 }
 
-h1{
-    color:#003366;
+body{
+background:#f4f6f9;
+}
+
+header{
+background:#003366;
+color:white;
+padding:20px;
+text-align:center;
+font-size:30px;
+font-weight:bold;
+}
+
+.container{
+width:95%;
+margin:auto;
+padding:20px;
 }
 
 button{
-    background:#0066cc;
-    color:white;
-    padding:12px 20px;
-    border:none;
-    cursor:pointer;
-    border-radius:5px;
+
+background:#0070c0;
+color:white;
+border:none;
+padding:12px 25px;
+cursor:pointer;
+border-radius:5px;
+font-size:16px;
+
 }
 
 button:hover{
-    background:#004999;
+
+background:#005999;
+
 }
 
-.card{
+.status{
 
-    background:white;
-    padding:15px;
-    margin-top:20px;
-    border-radius:8px;
-    box-shadow:0 2px 8px rgba(0,0,0,.2);
+margin-top:15px;
+padding:15px;
+border-radius:6px;
+font-weight:bold;
 
 }
 
 .success{
 
-    color:green;
-    font-weight:bold;
+background:#d4edda;
+color:#155724;
 
 }
 
 .error{
 
-    color:red;
-    font-weight:bold;
+background:#f8d7da;
+color:#721c24;
 
 }
 
-pre{
+.cards{
 
-    background:#222;
-    color:#00ff00;
-    padding:15px;
-    overflow:auto;
-    max-height:350px;
+margin-top:25px;
+
+display:grid;
+
+grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+
+gap:20px;
+
+}
+
+.card{
+
+background:white;
+
+padding:20px;
+
+border-radius:8px;
+
+box-shadow:0 2px 8px rgba(0,0,0,.15);
+
+}
+
+.card h3{
+
+color:#666;
+
+margin-bottom:10px;
+
+}
+
+.card h2{
+
+color:#0070c0;
 
 }
 
 table{
 
 width:100%;
+
 border-collapse:collapse;
-margin-top:20px;
+
+margin-top:30px;
+
+background:white;
 
 }
 
 th{
 
 background:#003366;
+
 color:white;
-padding:10px;
+
+padding:12px;
 
 }
 
 td{
 
 padding:10px;
-border:1px solid #ddd;
+
+border-bottom:1px solid #ddd;
+
+text-align:center;
+
+}
+
+tr:hover{
+
+background:#f5f5f5;
+
+}
+
+pre{
+
+background:#222;
+
+color:#00ff00;
+
+padding:15px;
+
+overflow:auto;
+
+margin-top:25px;
+
+border-radius:6px;
+
+max-height:250px;
 
 }
 
@@ -95,61 +176,71 @@ border:1px solid #ddd;
 
 <body>
 
-<h1>n8n Integration Tester</h1>
+<header>
 
-<button onclick="testWebhook()">
+Haier Pakistan Logistics Dashboard
 
-Test Integration
+</header>
+
+<div class="container">
+
+<button onclick="loadData()">
+
+Refresh Dashboard
 
 </button>
 
+<div id="status"></div>
+
+<div class="cards">
+
 <div class="card">
 
-<b>Webhook URL</b>
+<h3>Total Warehouses</h3>
 
-<p id="url"></p>
+<h2 id="warehouseCount">0</h2>
 
 </div>
 
 <div class="card">
 
-<b>Status</b>
+<h3>Total Revenue</h3>
 
-<p id="status">Waiting...</p>
-
-</div>
-
-<div class="card">
-
-<b>HTTP Status</b>
-
-<p id="httpStatus">-</p>
+<h2 id="revenue">0</h2>
 
 </div>
 
 <div class="card">
 
-<b>Response Time</b>
+<h3>Total Units</h3>
 
-<p id="time">-</p>
+<h2 id="units">0</h2>
 
 </div>
 
 <div class="card">
 
-<b>Executive Summary</b>
+<h3>Total Delivery Notes</h3>
 
-<p>Total Warehouses :
-<span id="warehouse">0</span></p>
+<h2 id="dns">0</h2>
 
-<p>Total Revenue :
-<span id="revenue">0</span></p>
+</div>
 
-<p>Total Units :
-<span id="units">0</span></p>
+<div class="card">
 
-<p>Total DNs :
-<span id="dns">0</span></p>
+<h3>Health Score</h3>
+
+<h2 id="health">0</h2>
+
+</div>
+
+<div class="card">
+
+<h3>Risk Level</h3>
+
+<h2 id="risk">-</h2>
+
+</div>
 
 </div>
 
@@ -158,6 +249,8 @@ Test Integration
 <thead>
 
 <tr>
+
+<th>Rank</th>
 
 <th>Warehouse</th>
 
@@ -173,21 +266,21 @@ Test Integration
 
 <th>POD %</th>
 
+<th>Health</th>
+
 </tr>
 
 </thead>
 
-<tbody id="tbody">
+<tbody id="tableBody">
 
 </tbody>
 
 </table>
 
-<div class="card">
+<h2 style="margin-top:30px;">Raw JSON</h2>
 
-<h3>Raw JSON</h3>
-
-<pre id="json">
+<pre id="jsonOutput">
 
 Waiting...
 
@@ -197,57 +290,59 @@ Waiting...
 
 <script>
 
-//==============================
-// CHANGE ONLY THIS
-//==============================
+const API="https://anymore-novelty-casey-civilian.trycloudflare.com/webhook/b8501db8-e0ec-4bcd-8e0c-b2d3ebe87a8c";
 
-const API =
-"https://anymore-novelty-casey-civilian.trycloudflare.com/webhook/b8501db8-e0ec-4bcd-8e0c-b2d3ebe87a8c";
+async function loadData(){
 
-document.getElementById("url").innerHTML=API;
+const status=document.getElementById("status");
 
-async function testWebhook(){
+status.className="status";
 
-let start=performance.now();
+status.innerHTML="Loading Dashboard...";
 
 try{
 
-document.getElementById("status").innerHTML="Connecting...";
-
 const response=await fetch(API);
-
-document.getElementById("httpStatus").innerHTML=response.status;
-
-const end=performance.now();
-
-document.getElementById("time").innerHTML=
-Math.round(end-start)+" ms";
 
 if(!response.ok){
 
-throw new Error(response.status);
+throw new Error("HTTP "+response.status);
 
 }
 
 const data=await response.json();
 
-document.getElementById("status").innerHTML=
-"<span class='success'>CONNECTED SUCCESSFULLY</span>";
+document.getElementById("jsonOutput").textContent=
 
-document.getElementById("json").textContent=
 JSON.stringify(data,null,4);
 
-document.getElementById("warehouse").innerHTML=
-data.warehouses.length;
+status.className="status success";
+
+status.innerHTML="Connected Successfully";
+
+const e=data.executive;
+
+document.getElementById("warehouseCount").innerHTML=e.total_warehouses;
 
 document.getElementById("revenue").innerHTML=
-Number(data.executive.total_revenue).toLocaleString();
+
+Number(e.total_revenue).toLocaleString();
 
 document.getElementById("units").innerHTML=
-Number(data.executive.total_units).toLocaleString();
+
+Number(e.total_dn_units).toLocaleString();
 
 document.getElementById("dns").innerHTML=
-Number(data.executive.total_dn).toLocaleString();
+
+Number(e.total_delivery_notes).toLocaleString();
+
+document.getElementById("health").innerHTML=
+
+e.logistics_health_score+" %";
+
+document.getElementById("risk").innerHTML=
+
+e.risk_level;
 
 let html="";
 
@@ -256,6 +351,8 @@ data.warehouses.forEach(w=>{
 html+=`
 
 <tr>
+
+<td>${w.rank}</td>
 
 <td>${w.warehouse}</td>
 
@@ -271,34 +368,37 @@ html+=`
 
 <td>${w.pod_achievement_pct}%</td>
 
+<td>${w.logistics_health_score}%</td>
+
 </tr>
 
 `;
 
 });
 
-document.getElementById("tbody").innerHTML=html;
+document.getElementById("tableBody").innerHTML=html;
 
 }
 
-catch(err){
+catch(error){
 
-document.getElementById("status").innerHTML=
-"<span class='error'>FAILED</span>";
+status.className="status error";
 
-document.getElementById("json").textContent=
-err.stack;
+status.innerHTML=error.message;
 
-console.error(err);
+document.getElementById("jsonOutput").textContent=
+
+error.stack;
+
+console.error(error);
 
 }
 
 }
 
-testWebhook();
+loadData();
 
 </script>
 
 </body>
-
 </html>
